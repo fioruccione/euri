@@ -30,7 +30,9 @@ class DreamEngine:
         self._lock = threading.Lock()
         
         # Traccia l'ultimo activity (STT/TTS) globale di Euri
-        self._last_activity = time.monotonic()
+        # Usa time.time() (wall-clock) e non time.monotonic() perché
+        # monotonic si resetta quando il PC va in sospensione.
+        self._last_activity = time.time()
         
     def start(self):
         if not config.DREAM_ENGINE_ENABLED:
@@ -52,12 +54,12 @@ class DreamEngine:
     def notify_activity(self):
         """Chiamato da voice_daemon ad ogni STT/TTS per resettare l'idle timer."""
         with self._lock:
-            self._last_activity = time.monotonic()
+            self._last_activity = time.time()
             
     def _is_idle(self) -> bool:
         """Controlla se il sistema è inattivo da sufficienti ore."""
         with self._lock:
-            elapsed_hours = (time.monotonic() - self._last_activity) / 3600.0
+            elapsed_hours = (time.time() - self._last_activity) / 3600.0
         return elapsed_hours >= config.DREAM_ENGINE_IDLE_HOURS
 
     def _loop(self):
