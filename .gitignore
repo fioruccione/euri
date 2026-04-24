@@ -42,3 +42,6 @@ codice aggiornato/
 
 # Obsidian config
 .obsidian/
+
+# CodeRunner sandbox
+sandbox/

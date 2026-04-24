@@ -13,7 +13,7 @@ LOG_WHITELIST: dict[str, Path] = {
 }
 
 
-def tool_read_log(params: dict) -> ToolResult:
+def tool_read_log(params: dict, **kwargs) -> ToolResult:
     log_key = params.get("log_name", "euri")
     n_lines = params.get("n_lines", 20)
 

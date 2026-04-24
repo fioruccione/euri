@@ -6,6 +6,7 @@ Nessun codice arbitrario — solo tool pre-approvati in whitelist.
 import json
 import re
 import time
+import threading
 import concurrent.futures
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -115,6 +116,7 @@ class Executor:
     def __init__(self):
         self._registry: dict[str, ToolSpec] = {}
         self._guard = SandboxGuard()
+        self.stop_event = threading.Event()  # interruzione vocale per processi lunghi
         self._register_default_tools()
 
     def _register_default_tools(self):
@@ -207,6 +209,100 @@ class Executor:
             self._registry[spec.name] = spec
             logger.debug(f"Executor: tool registrato — {spec.name}")
 
+        # Tool CodeRunner (Data Orchestrator) — registrato solo se abilitato
+        if getattr(config, 'CODE_RUNNER_ENABLED', False):
+            self._register_code_runner_tools()
+
+    def _register_code_runner_tools(self):
+        """Registra i tool del CodeRunner (generazione + esecuzione codice)."""
+        from agent.code_runner import CodeRunner
+
+        self._code_runner = CodeRunner()
+
+        def _tool_run_code(params: dict, **kwargs) -> ToolResult:
+            """Handler per il tool run_code."""
+            stop_ev = kwargs.get('stop_event', self.stop_event)
+            task = params.get('task', '')
+            if not task:
+                return ToolResult(success=False, output="Non ho capito cosa devo fare con i file.")
+
+            from core.brain import Brain
+            brain = Brain._shared_instance if hasattr(Brain, '_shared_instance') else Brain()
+
+            result = self._code_runner.generate_and_run(
+                task=task,
+                brain=brain,
+                stop_event=stop_ev,
+            )
+            return ToolResult(
+                success=result.success,
+                output=result.output,
+                error=result.error,
+            )
+
+        def _tool_analyze_image(params: dict, **kwargs) -> ToolResult:
+            """Handler per analisi immagine via Gemma vision."""
+            question = params.get('question', '')
+            images = self._code_runner.find_images()
+            if not images:
+                return ToolResult(
+                    success=False,
+                    output="Non ho trovato immagini nella cartella dati.",
+                )
+
+            from core.brain import Brain
+            brain = Brain._shared_instance if hasattr(Brain, '_shared_instance') else Brain()
+
+            # Analizza la prima immagine (o tutte se sono poche)
+            if len(images) == 1:
+                result = brain.analyze_image(str(images[0]), question)
+                return ToolResult(success=True, output=result)
+            else:
+                # Analizza la più recente
+                latest = max(images, key=lambda p: p.stat().st_mtime)
+                result = brain.analyze_image(str(latest), question)
+                prefix = f"Ho trovato {len(images)} immagini. Analizzo la più recente, {latest.name}. "
+                return ToolResult(success=True, output=prefix + result)
+
+        def _tool_list_data_files(params: dict, **kwargs) -> ToolResult:
+            """Elenca i file nella cartella dati."""
+            files = self._code_runner.list_input_files()
+            if not files:
+                return ToolResult(success=True, output="La cartella dati è vuota.")
+            file_list = ", ".join(files[:10])
+            extra = f" e altri {len(files) - 10}" if len(files) > 10 else ""
+            return ToolResult(
+                success=True,
+                output=f"Nella cartella dati ci sono {len(files)} file: {file_list}{extra}.",
+            )
+
+        code_tools = [
+            ToolSpec(
+                name="run_code",
+                description="Genera ed esegue codice Python per elaborare file (CSV, PDF, Excel, immagini). Parametro: task (str) — cosa fare con i file.",
+                parameters_schema={"task": {"type": "str", "required": True}},
+                handler=_tool_run_code,
+                timeout_seconds=config.CODE_RUNNER_TIMEOUT + 10,  # margine per generazione
+            ),
+            ToolSpec(
+                name="analyze_image",
+                description="Analizza un'immagine nella cartella dati usando la visione artificiale. Parametro opzionale: question (str) — domanda specifica sull'immagine.",
+                parameters_schema={"question": {"type": "str", "required": False}},
+                handler=_tool_analyze_image,
+                timeout_seconds=30,
+            ),
+            ToolSpec(
+                name="list_data_files",
+                description="Elenca i file presenti nella cartella dati di input (Desktop/dati_per_Euri).",
+                parameters_schema={},
+                handler=_tool_list_data_files,
+            ),
+        ]
+
+        for spec in code_tools:
+            self._registry[spec.name] = spec
+            logger.debug(f"Executor: tool CodeRunner registrato — {spec.name}")
+
     def get_tools_description(self) -> str:
         lines = []
         for name, spec in self._registry.items():
@@ -270,6 +366,28 @@ class Executor:
             r'\b(appunti|clipboard|cosa\s+c[\'è]\s+negli\s+appunti|leggi\s+gli\s+appunti)\b',
             re.IGNORECASE,
         ), "clipboard_read", {}),
+        # ── CodeRunner patterns ──
+        # Operazioni su file/dati
+        (re.compile(
+            r'\b(unisci|fondi|combina|merge)\s+.*(csv|file|pdf|excel|dati)\b'
+            r'|\b(leggi|apri|elabora|processa|converti|trasforma)\s+.*(csv|file|pdf|excel|dati)\b'
+            r'|\b(crea|genera|esporta)\s+.*(csv|file|pdf|excel|grafico|report)\b'
+            r'|\b(ridimensiona|comprimi|ruota|taglia)\s+.*(foto|immagin[ei])\b'
+            r'|\bcartella\s+dati\b',
+            re.IGNORECASE,
+        ), "run_code", {}),
+        # Analisi immagine diretta (Gemma vision)
+        (re.compile(
+            r'\b(descrivi|analizza|guarda|cosa\s+vedi)\s+.*(foto|immagin[ei]|screenshot)\b'
+            r'|\b(analizza|descrivi)\s+.*(nella|dalla)\s+cartella\b',
+            re.IGNORECASE,
+        ), "analyze_image", {}),
+        # Lista file nella cartella dati
+        (re.compile(
+            r'\b(cosa|quali|quanti)\s+.*(file|document[io]|dati)\s+.*(ci\s+sono|hai|ho|nella|cartella)\b'
+            r'|\belenca\s+.*(file|dati)\b',
+            re.IGNORECASE,
+        ), "list_data_files", {}),
     ]
 
     def select_tool_by_regex(self, text: str) -> ToolCall | None:
@@ -318,7 +436,8 @@ class Executor:
         # Esecuzione in thread con timeout
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                future = ex.submit(spec.handler, call.parameters)
+                # Passa stop_event ai tool che lo supportano (es. run_code)
+                future = ex.submit(spec.handler, call.parameters, stop_event=self.stop_event)
                 result = future.result(timeout=spec.timeout_seconds)
             logger.info(f"Executor: {call.tool_name}({call.parameters}) → {'OK' if result.success else 'FAIL'}")
             return result

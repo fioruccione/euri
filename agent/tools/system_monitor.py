@@ -14,7 +14,7 @@ except ImportError:
     _HAS_PSUTIL = False
 
 
-def tool_cpu_usage(params: dict) -> ToolResult:
+def tool_cpu_usage(params: dict, **kwargs) -> ToolResult:
     process_name = params.get("process_name")
     try:
         if process_name:
@@ -51,7 +51,7 @@ def tool_cpu_usage(params: dict) -> ToolResult:
         return ToolResult(success=False, output="Errore durante la lettura della CPU.", error=str(e))
 
 
-def tool_ram_usage(params: dict) -> ToolResult:
+def tool_ram_usage(params: dict, **kwargs) -> ToolResult:
     try:
         if _HAS_PSUTIL:
             vm = psutil.virtual_memory()
@@ -83,7 +83,7 @@ def tool_ram_usage(params: dict) -> ToolResult:
         return ToolResult(success=False, output="Errore durante la lettura della RAM.", error=str(e))
 
 
-def tool_disk_usage(params: dict) -> ToolResult:
+def tool_disk_usage(params: dict, **kwargs) -> ToolResult:
     """Legge sempre il volume radice '/'."""
     try:
         usage = shutil.disk_usage("/")
@@ -100,7 +100,7 @@ def tool_disk_usage(params: dict) -> ToolResult:
         return ToolResult(success=False, output="Errore durante la lettura del disco.", error=str(e))
 
 
-def tool_top_processes(params: dict) -> ToolResult:
+def tool_top_processes(params: dict, **kwargs) -> ToolResult:
     n = int(params.get("n", 5))
     sort_by = params.get("sort_by", "cpu")
     try:
@@ -157,7 +157,7 @@ def tool_top_processes(params: dict) -> ToolResult:
         return ToolResult(success=False, output="Errore durante la lettura dei processi.", error=str(e))
 
 
-def tool_uptime(params: dict) -> ToolResult:
+def tool_uptime(params: dict, **kwargs) -> ToolResult:
     try:
         if _HAS_PSUTIL:
             boot_ts = psutil.boot_time()
@@ -189,7 +189,7 @@ def tool_uptime(params: dict) -> ToolResult:
         return ToolResult(success=False, output="Errore durante la lettura dell'uptime.", error=str(e))
 
 
-def tool_gpu_usage(params: dict) -> ToolResult:
+def tool_gpu_usage(params: dict, **kwargs) -> ToolResult:
     """Legge utilizzo GPU NVIDIA tramite nvidia-smi."""
     try:
         out = subprocess.check_output(

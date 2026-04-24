@@ -500,3 +500,88 @@ class Brain:
             return self._clean(response.message.content or "")
         except Exception:
             return text
+
+    def generate_code(self, task: str, available_files: list[str],
+                      input_dir: str, output_dir: str) -> str:
+        """
+        Chiede a Gemma di generare uno script Python per manipolare file.
+        Restituisce il codice puro (senza markdown fences).
+        """
+        files_list = "\n".join(f"  - {f}" for f in available_files) if available_files else "  (nessun file)"
+
+        prompt = (
+            f"Sei un programmatore Python esperto. Genera uno script Python che esegua il task richiesto.\n\n"
+            f"REGOLE TASSATIVE:\n"
+            f"1. Scrivi SOLO codice Python puro. Nessun commento, nessuna spiegazione, nessun markdown.\n"
+            f"2. I file di input sono in: {input_dir}\n"
+            f"3. Salva i file di output in: {output_dir}\n"
+            f"4. Usa print() per comunicare i risultati (verranno letti a voce all'utente).\n"
+            f"5. NON usare input(), GUI, subprocess, o librerie di rete.\n"
+            f"6. Librerie disponibili: pandas, numpy, json, csv, pathlib, PIL, matplotlib, PyPDF2, openpyxl, math, re, collections, statistics.\n"
+            f"7. Gestisci le eccezioni con try/except e stampa messaggi chiari in italiano.\n"
+            f"8. Se crei grafici con matplotlib usa plt.savefig() nella cartella output, NON plt.show().\n"
+            f"9. Stampa un breve riassunto dei risultati alla fine.\n\n"
+            f"FILE DISPONIBILI IN INPUT:\n{files_list}\n\n"
+            f"TASK: {task}"
+        )
+        try:
+            _t = time.perf_counter()
+            response = ollama.chat(
+                model=config.OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.2, "num_predict": 2000},
+                think=False,
+            )
+            elapsed = (time.perf_counter() - _t) * 1000
+            logger.info(f"[TIMING] brain.generate_code() Ollama: {elapsed:.0f}ms")
+
+            raw = self._clean(response.message.content or "")
+
+            # Rimuovi markdown fences se Gemma le ha messe
+            if "```python" in raw:
+                raw = raw.split("```python", 1)[1]
+                if "```" in raw:
+                    raw = raw.rsplit("```", 1)[0]
+            elif "```" in raw:
+                parts = raw.split("```")
+                if len(parts) >= 3:
+                    raw = parts[1]
+                elif len(parts) == 2:
+                    raw = parts[1]
+
+            return raw.strip()
+
+        except Exception as e:
+            logger.error(f"Errore generate_code: {e}")
+            return ""
+
+    def analyze_image(self, image_path: str, question: str = "") -> str:
+        """
+        Usa Gemma 4 vision per analizzare un'immagine.
+        Passa l'immagine direttamente a Ollama tramite il parametro images.
+        """
+        if not question:
+            question = (
+                "Descrivi questa immagine in italiano in modo dettagliato. "
+                "La descrizione verrà letta a voce, quindi usa frasi complete e naturali. "
+                "Non usare elenchi puntati o formattazione markdown."
+            )
+
+        try:
+            _t = time.perf_counter()
+            response = ollama.chat(
+                model=config.OLLAMA_MODEL,
+                messages=[{
+                    "role": "user",
+                    "content": question,
+                    "images": [image_path],
+                }],
+                options={"temperature": 0.3, "num_predict": 500},
+                think=False,
+            )
+            elapsed = (time.perf_counter() - _t) * 1000
+            logger.info(f"[TIMING] brain.analyze_image() Ollama: {elapsed:.0f}ms")
+            return self._clean(response.message.content or "Impossibile analizzare l'immagine.")
+        except Exception as e:
+            logger.error(f"Errore analyze_image: {e}")
+            return "Non sono riuscito ad analizzare l'immagine."

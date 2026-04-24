@@ -156,6 +156,15 @@ _PATTERNS: list[tuple[Intent, list[str]]] = [
         r"\bcosa\s+c[''è]\s+(negli\s+appunti|in\s+clipboard)\b",
         r"\bleggi\s+(gli\s+appunti|la\s+clipboard)\b",
         r"\bcopiami\b",
+        # CodeRunner — operazioni su file/dati
+        r"\b(unisci|fondi|combina|merge)\s+.*(csv|file|pdf|excel|dati)\b",
+        r"\b(leggi|apri|elabora|processa|converti|trasforma)\s+.*(csv|file|pdf|excel|dati)\b",
+        r"\b(crea|genera|esporta)\s+.*(csv|file|pdf|excel|grafico|report)\b",
+        r"\b(ridimensiona|comprimi|ruota|taglia)\s+.*(foto|immagin[ei])\b",
+        r"\bcartella\s+dati\b",
+        r"\b(descrivi|analizza)\s+.*(foto|immagin[ei]|screenshot)\b",
+        r"\b(cosa|quali|quanti)\s+.*(file|dati)\s+.*(ci\s+sono|nella|cartella)\b",
+        r"\belenca\s+.*(file|dati)\b",
     ]),
     (Intent.TEACH, [
         r"\bti\s+(racconto|spiego|insegno)\b",

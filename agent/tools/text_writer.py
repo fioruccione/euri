@@ -21,7 +21,7 @@ def _sanitize_filename(name: str) -> str:
     return name[:80] or "appunto"
 
 
-def tool_write_text(params: dict) -> ToolResult:
+def tool_write_text(params: dict, **kwargs) -> ToolResult:
     """
     Salva testo su file e lo copia negli appunti.
     Parametri:
@@ -75,7 +75,7 @@ def tool_write_text(params: dict) -> ToolResult:
         return ToolResult(success=False, output="Errore nel salvataggio del file.", error=str(e))
 
 
-def tool_clipboard_write(params: dict) -> ToolResult:
+def tool_clipboard_write(params: dict, **kwargs) -> ToolResult:
     """
     Copia testo negli appunti senza salvare su file.
     Parametro: text (str, required)
@@ -97,7 +97,7 @@ def tool_clipboard_write(params: dict) -> ToolResult:
         return ToolResult(success=False, output="Non riesco ad accedere agli appunti.", error=str(e))
 
 
-def tool_clipboard_read(params: dict) -> ToolResult:
+def tool_clipboard_read(params: dict, **kwargs) -> ToolResult:
     """
     Legge il contenuto degli appunti e lo riporta vocalmente (max 200 caratteri).
     """

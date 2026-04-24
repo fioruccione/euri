@@ -124,7 +124,7 @@ def _format_result(value: float) -> str:
     return formatted
 
 
-def tool_evaluate_math(params: dict) -> ToolResult:
+def tool_evaluate_math(params: dict, **kwargs) -> ToolResult:
     """
     Calcola un'espressione matematica in modo sicuro.
     Supporta: + - * / ** % // sqrt abs round ceil floor log sin cos tan pi e

@@ -99,6 +99,7 @@ class VoiceDaemon:
         self.embedder = Embedder()
         self.memory = MemoryManager(self.r, embedder=self.embedder)
         self.brain = Brain()
+        Brain._shared_instance = self.brain  # Condivisa col CodeRunner
         self.executor = Executor()
         self.vad = VAD()
         self.stt = STT()
@@ -457,6 +458,9 @@ class VoiceDaemon:
         """Esegue un tool di sistema tramite l'Executor sandbox."""
         self.memory.log_conversation("Stefano", text)
 
+        # Reset stop_event per la nuova esecuzione
+        self.executor.stop_event.clear()
+
         # Fast path: selettore regex deterministico (0ms, evita chiamata LLM)
         call = self.executor.select_tool_by_regex(text)
         if call is None:
@@ -470,10 +474,23 @@ class VoiceDaemon:
             self.memory.log_conversation("Euri", hint)
             self._speak(hint)
             return
-        self._speak("Controllo.")
+
+        # Per run_code: passa il testo originale come task se non c'è già
+        if call.tool_name == "run_code" and not call.parameters.get("task"):
+            call.parameters["task"] = text
+
+        # Feedback vocale differenziato
+        if call.tool_name == "run_code":
+            self._speak("Ci penso, genero ed eseguo il codice.")
+        elif call.tool_name == "analyze_image":
+            self._speak("Guardo l'immagine.")
+        else:
+            self._speak("Controllo.")
+
         result = self.executor.execute_safe(call)
         self.memory.log_conversation("Euri", result)
         self._speak(result)
+
 
     def _handle_audit_memory(self, text: str):
         """Audit vocale delle memorie: analizza con LLM e propone cancellazione del rumore."""
