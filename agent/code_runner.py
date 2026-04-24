@@ -8,8 +8,8 @@ Flusso:
   4. stdout/stderr catturati e restituiti come risultato vocale
 
 Cartelle I/O:
-  - Input:  ~/Desktop/dati_per_Euri/
-  - Output: ~/Desktop/scambio_dati/
+  - Input:  ~/Scrivania/dati_per_Euri/
+  - Output: ~/Scrivania/scambio_dati/
 """
 import ast
 import os
@@ -62,7 +62,7 @@ class SecurityScanner:
         "typing", "dataclasses", "enum", "functools",
         "glob", "fnmatch", "tempfile", "time",
         # Data Science
-        "pandas", "numpy", "openpyxl", "xlsxwriter",
+        "pandas", "numpy", "openpyxl", "xlsxwriter", "odf", "odfpy",
         # PDF
         "PyPDF2", "pypdf", "reportlab",
         # Immagini
@@ -208,7 +208,7 @@ class CodeRunner:
         if not available_files:
             return CodeResult(
                 success=False,
-                output="Non ci sono file nella cartella dati. Metti i file in Desktop, dati per Euri.",
+                output="Non ci sono file nella cartella dati. Metti i file in Scrivania, dati per Euri.",
                 error="no_input_files"
             )
 

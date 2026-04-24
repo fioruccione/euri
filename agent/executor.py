@@ -293,7 +293,7 @@ class Executor:
             ),
             ToolSpec(
                 name="list_data_files",
-                description="Elenca i file presenti nella cartella dati di input (Desktop/dati_per_Euri).",
+                description="Elenca i file presenti nella cartella dati di input (Scrivania/dati_per_Euri).",
                 parameters_schema={},
                 handler=_tool_list_data_files,
             ),

@@ -517,7 +517,7 @@ class Brain:
             f"3. Salva i file di output in: {output_dir}\n"
             f"4. Usa print() per comunicare i risultati (verranno letti a voce all'utente).\n"
             f"5. NON usare input(), GUI, subprocess, o librerie di rete.\n"
-            f"6. Librerie disponibili: pandas, numpy, json, csv, pathlib, PIL, matplotlib, PyPDF2, openpyxl, math, re, collections, statistics.\n"
+            f"6. Librerie disponibili: pandas, numpy, json, csv, pathlib, PIL, matplotlib, PyPDF2, openpyxl, math, re, collections, statistics, odfpy.\n"
             f"7. Gestisci le eccezioni con try/except e stampa messaggi chiari in italiano.\n"
             f"8. Se crei grafici con matplotlib usa plt.savefig() nella cartella output, NON plt.show().\n"
             f"9. Stampa un breve riassunto dei risultati alla fine.\n\n"

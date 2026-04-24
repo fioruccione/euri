@@ -118,7 +118,7 @@ TOOL VOCALI (intent EXECUTE — basta chiederlo a voce):
 - evaluate_math: "Calcola 450 per 0.15" / "Quanto fa 1200 meno il 3%?"
 - write_text: "Scrivi: [testo]" — salva su file e copia negli appunti
 - clipboard_read: "Cosa c'è negli appunti?"
-- run_code: "Unisci i CSV" / "Elabora i dati" / "Leggi il file Excel" — genera ed esegue codice Python per manipolare file nella cartella dati (Desktop/dati_per_Euri). I risultati vanno in Desktop/scambio_dati.
+- run_code: "Unisci i CSV" / "Elabora i dati" / "Leggi il file Excel" — genera ed esegue codice Python per manipolare file nella cartella dati (Scrivania/dati_per_Euri). I risultati vanno in Scrivania/scambio_dati.
 - analyze_image: "Analizza la foto" / "Descrivi l'immagine" — usa la visione artificiale per descrivere immagini nella cartella dati.
 - list_data_files: "Cosa c'è nella cartella dati?" / "Elenca i file" — mostra i file disponibili.
 
@@ -161,8 +161,8 @@ OBSIDIAN_VAULT_PATH = "/home/fio/EuriVault"
 # CodeRunner — Data Orchestrator (Phase 4)
 # Genera ed esegue codice Python per manipolare file locali.
 CODE_RUNNER_ENABLED = True
-CODE_RUNNER_INPUT_DIR = str(Path.home() / "Desktop" / "dati_per_Euri")
-CODE_RUNNER_OUTPUT_DIR = str(Path.home() / "Desktop" / "scambio_dati")
+CODE_RUNNER_INPUT_DIR = str(Path.home() / "Scrivania" / "dati_per_Euri")
+CODE_RUNNER_OUTPUT_DIR = str(Path.home() / "Scrivania" / "scambio_dati")
 CODE_RUNNER_SANDBOX_DIR = str(Path(__file__).parent / "sandbox")
 CODE_RUNNER_TIMEOUT = 30           # secondi max per esecuzione script
 CODE_RUNNER_MAX_OUTPUT_BYTES = 10240  # max stdout catturato
