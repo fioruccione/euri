@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+venv/
+
+# Logs
+logs/
+
+# Modelli e dati pesanti
+models/
+
+# Esperimenti vecchi
+experiments_output/
+
+# Cache
+.cache/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/
+
+# File temporanei
+*.wav
+*.tmp
+/tmp/
+
+# Backup vecchi
+codice aggiornato/
+
+# Obsidian config
+.obsidian/

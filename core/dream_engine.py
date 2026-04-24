@@ -1,0 +1,340 @@
+"""
+Dream Engine — Loop 2b (Sogni Onirici) e 2c (Insight e Promozione).
+
+Il Dream Engine gira in background quando Euri è in idle (es. la notte).
+Simula il processo di consolidamento della memoria umana:
+- Prende memorie lontane semanticamente (da domini diversi)
+- Cerca isomorfismi e connessioni nascoste (Loop 2b)
+- Se trova un'analogia, crea un Insight CANDIDATE
+- Se più sogni indipendenti confermano l'Insight, diventa VALIDATED e poi PROMOTED (Loop 2c)
+"""
+import time
+import threading
+import uuid
+import numpy as np
+from loguru import logger
+import ollama
+
+import config
+from utils.date_utils import now, to_timestamp
+from redis.commands.search.query import Query
+from utils.obsidian_sync import write_insight
+
+
+class DreamEngine:
+    def __init__(self, r, embedder):
+        self._r = r
+        self._embedder = embedder
+        self._running = False
+        self._thread = None
+        self._lock = threading.Lock()
+        
+        # Traccia l'ultimo activity (STT/TTS) globale di Euri
+        self._last_activity = time.monotonic()
+        
+    def start(self):
+        if not config.DREAM_ENGINE_ENABLED:
+            logger.info("Dream Engine disabilitato da config")
+            return
+            
+        with self._lock:
+            if self._running:
+                return
+            self._running = True
+            self._thread = threading.Thread(target=self._loop, daemon=True, name="dream-engine")
+            self._thread.start()
+            logger.info("Dream Engine avviato (background)")
+
+    def stop(self):
+        with self._lock:
+            self._running = False
+            
+    def notify_activity(self):
+        """Chiamato da voice_daemon ad ogni STT/TTS per resettare l'idle timer."""
+        with self._lock:
+            self._last_activity = time.monotonic()
+            
+    def _is_idle(self) -> bool:
+        """Controlla se il sistema è inattivo da sufficienti ore."""
+        with self._lock:
+            elapsed_hours = (time.monotonic() - self._last_activity) / 3600.0
+        return elapsed_hours >= config.DREAM_ENGINE_IDLE_HOURS
+
+    def _loop(self):
+        """Loop principale: controlla l'idle ogni 10 minuti."""
+        while self._running:
+            # Controllo ogni 10 minuti
+            for _ in range(600):
+                if not self._running:
+                    return
+                time.sleep(1)
+                
+            if self._is_idle():
+                self._run_dream_cycle()
+                
+                # Dopo un ciclo di sogno, aspetta almeno un'altra ora (se ancora idle)
+                # o finché non viene interrotto
+                for _ in range(3600):
+                    if not self._running or not self._is_idle():
+                        break
+                    time.sleep(1)
+
+    def _run_dream_cycle(self):
+        """Esegue un ciclo completo di sogni (Loop 2b) e validazione (Loop 2c)."""
+        logger.info("Dream Engine: inizio ciclo onirico")
+        try:
+            # 1. Trova domini unici
+            domains = self._get_unique_domains()
+            if len(domains) < 2:
+                logger.debug("Dream Engine: non ci sono abbastanza domini per sognare")
+                return
+                
+            # 2. Loop 2b: Sogni Onirici
+            dream = self._generate_dream(domains)
+            if dream and dream.get("status") == "candidate":
+                # 3. Loop 2c: Valutazione Insight
+                self._evaluate_insights()
+                
+            # 4. Pulizia Insight scaduti
+            self._cleanup_expired_insights()
+            
+        except Exception as e:
+            logger.error(f"Errore ciclo Dream Engine: {e}")
+
+    # ── Loop 2b: Sogni Onirici ─────────────────────────────────────────────
+
+    def _get_unique_domains(self) -> list[str]:
+        """Recupera tutti i domini unici dalle memorie (escludendo 'generale')."""
+        try:
+            # Usa FT.AGGREGATE per raggruppare per dominio
+            res = self._r.execute_command(
+                "FT.AGGREGATE", "idx:memories", "*",
+                "GROUPBY", "1", "@domain"
+            )
+            domains = []
+            # Il formato di ritorno di FT.AGGREGATE è [count, [b'domain', b'valore'], ...]
+            for row in res[1:]:
+                if isinstance(row, list) and len(row) >= 2:
+                    d = row[1].decode('utf-8') if isinstance(row[1], bytes) else str(row[1])
+                    if d and d != "generale":
+                        domains.append(d)
+            return domains
+        except Exception as e:
+            logger.debug(f"Errore aggregate domini: {e}")
+            return []
+
+    def _get_random_memory_from_domain(self, domain: str) -> dict | None:
+        """Recupera una memoria casuale da uno specifico dominio."""
+        try:
+            safe_domain = domain.replace(" ", "\\ ")
+            # Prende un campione casuale (Redis stack non ha RANDOM natively in FT.SEARCH, 
+            # ma possiamo prendere le prime con sort_by null e limit 10 e poi scegliere)
+            q = Query(f"@domain:{{{safe_domain}}}").paging(0, 10).return_fields("id", "content", "embedding")
+            res = self._r.ft("idx:memories").search(q)
+            if not res.docs:
+                return None
+                
+            import random
+            doc = random.choice(res.docs)
+            return {
+                "id": doc.id,
+                "content": doc.content,
+                "domain": domain,
+                "embedding": getattr(doc, "embedding", None)
+            }
+        except Exception as e:
+            logger.debug(f"Errore fetch memoria da {domain}: {e}")
+            return None
+
+    def _generate_dream(self, domains: list[str]) -> dict | None:
+        """Seleziona due memorie da domini diversi e cerca un'analogia."""
+        import random
+        
+        # Sceglie un dominio a caso
+        dom_a = random.choice(domains)
+        mem_a = self._get_random_memory_from_domain(dom_a)
+        if not mem_a or not mem_a.get("embedding"):
+            return None
+            
+        # Per massimizzare la creatività, cerchiamo un dominio B semanticamente DISTANTE
+        # (Idealmente qui faremmo una vector search invertita, ma per ora scegliamo random
+        # garantendo che sia diverso da A)
+        other_domains = [d for d in domains if d != dom_a]
+        if not other_domains:
+            return None
+            
+        dom_b = random.choice(other_domains)
+        mem_b = self._get_random_memory_from_domain(dom_b)
+        if not mem_b:
+            return None
+            
+        logger.info(f"Dream Engine: sogno tra '{dom_a}' e '{dom_b}'")
+        
+        # Chiedi a Gemma se esiste un isomorfismo
+        prompt = f"""\
+Sei un sistema cognitivo che analizza due memorie apparentemente slegate per trovare analogie profonde, 
+isomorfismi strutturali o pattern nascosti che possano generare un Insight (intuizione utile).
+
+Memoria A (dominio: {dom_a}):
+"{mem_a['content']}"
+
+Memoria B (dominio: {dom_b}):
+"{mem_b['content']}"
+
+Esiste un'analogia astratta e non banale tra questi due concetti? 
+Puoi estrarre un principio generale utile che li accomuna?
+
+Se NON c'è nessuna analogia sensata, rispondi SOLO: "NESSUN INSIGHT".
+Se invece c'è, descrivi l'insight in UNA sola frase chiara e concisa."""
+
+        try:
+            response = ollama.chat(
+                model=config.OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.6, "num_predict": 100},
+                think=False,
+            )
+            text = response.message.content or ""
+            if "<channel|>" in text:
+                text = text.split("<channel|>", 1)[-1]
+            import re
+            text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+            
+            status = "discarded"
+            insight_content = ""
+            
+            if text and "NESSUN INSIGHT" not in text.upper() and len(text) > 15:
+                status = "candidate"
+                insight_content = text
+                logger.info(f"Dream Engine: generato CANDIDATE Insight → {insight_content[:50]}...")
+            else:
+                logger.debug("Dream Engine: sogno scartato (nessun isomorfismo)")
+                
+            # Salva il sogno
+            dream_id = str(uuid.uuid4())
+            dream_doc = {
+                "id": dream_id,
+                "content": insight_content if status == "candidate" else "Nessuna analogia trovata",
+                "status": status,
+                "domain_a": dom_a,
+                "domain_b": dom_b,
+                "memory_a_id": mem_a["id"],
+                "memory_b_id": mem_b["id"],
+                "created_at": to_timestamp(now()),
+            }
+            self._r.json().set(f"euri:dream:{dream_id}", "$", dream_doc)
+            # TTL di 7 giorni per i sogni grezzi
+            self._r.expire(f"euri:dream:{dream_id}", 86400 * 7)
+            
+            # Se è un candidato, creiamo anche un entry provvisoria negli insights
+            if status == "candidate":
+                vec = self._embedder.encode(insight_content)
+                insight_id = str(uuid.uuid4())
+                insight_doc = {
+                    "id": insight_id,
+                    "content": insight_content,
+                    "status": "candidate",
+                    "domain_a": dom_a,
+                    "domain_b": dom_b,
+                    "created_at": to_timestamp(now()),
+                    "recalled_count": 0,
+                    "embedding": vec.tolist() if vec is not None else None,
+                    "convergence_count": 1
+                }
+                self._r.json().set(f"euri:insight:{insight_id}", "$", insight_doc)
+                
+            return dream_doc
+            
+        except Exception as e:
+            logger.error(f"Errore generazione sogno: {e}")
+            return None
+
+    # ── Loop 2c: Insight e Promozione ──────────────────────────────────────
+
+    def _evaluate_insights(self):
+        """Valuta i candidate insights per la promozione (convergenza)."""
+        try:
+            # Cerca tutti i CANDIDATE
+            q = Query("@status:{candidate}").return_fields("id", "content", "embedding", "convergence_count")
+            res = self._r.ft("idx:insights").search(q)
+            
+            if not res.docs:
+                return
+                
+            # Per ogni candidato, controlla se ci sono altri candidati molto simili
+            # (Convergenza = la stessa intuizione è emersa da sogni indipendenti)
+            promoted_count = 0
+            
+            for doc in res.docs:
+                vec_str = getattr(doc, "embedding", None)
+                if not vec_str:
+                    continue
+                    
+                import json
+                import numpy as np
+                try:
+                    vec_list = json.loads(vec_str)
+                    vec_bytes = np.array(vec_list, dtype=np.float32).tobytes()
+                except Exception as e:
+                    logger.debug(f"Errore parsing vettore: {e}")
+                    continue
+                    
+                # Cerca simili (senza escludere da query per evitare syntax error, filtriamo in python)
+                q_sim = (
+                    Query("(@status:{candidate}) => [KNN 4 @embedding $vec AS score]")
+                    .sort_by("score")
+                    .return_fields("id", "score")
+                    .dialect(2)
+                )
+                res_sim = self._r.ft("idx:insights").search(q_sim, query_params={"vec": vec_bytes})
+                
+                # Conta quanti hanno score molto alto (distanza cosine bassa, < 0.15)
+                convergences = int(getattr(doc, "convergence_count", 1))
+                similar_ids = []
+                
+                for sim in res_sim.docs:
+                    if sim.id == doc.id:
+                        continue  # Salta se stesso
+                    if float(sim.score) < 0.15:  # Molto simili
+                        convergences += 1
+                        similar_ids.append(sim.id)
+                        
+                # Se abbiamo abbastanza convergenze, promuoviamo!
+                if convergences >= config.DREAM_INSIGHT_MIN_CONVERGENCES:
+                    # Promuovi questo a PROMOTED
+                    self._r.json().set(doc.id, "$.status", "promoted")
+                    self._r.json().set(doc.id, "$.convergence_count", convergences)
+                    
+                    # Rimuovi i duplicati assorbiti
+                    for sid in similar_ids:
+                        self._r.delete(sid)
+                        
+                    logger.success(f"Dream Engine: Insight PROMOSSO! (convergenze: {convergences})")
+                    promoted_count += 1
+                    
+                    # Scrivi nel vault di Obsidian
+                    try:
+                        doc_promoted = self._r.json().get(doc.id, "$")
+                        if doc_promoted:
+                            write_insight(doc_promoted[0])
+                    except Exception as e:
+                        logger.debug(f"Errore sync insight su Obsidian: {e}")
+                        
+        except Exception as e:
+            logger.error(f"Errore valutazione insights: {e}")
+
+    def _cleanup_expired_insights(self):
+        """Gli insight non utilizzati (PROMOTED ma con recalled_count=0) evaporano dopo TTL."""
+        try:
+            ttl_sec = config.INSIGHT_TTL_DAYS * 86400
+            cutoff = to_timestamp(now()) - ttl_sec
+            
+            q = Query(f"@status:{{promoted}} @recalled_count:[0 0] @created_at:[-inf {cutoff}]")
+            res = self._r.ft("idx:insights").search(q)
+            
+            for doc in res.docs:
+                self._r.delete(doc.id)
+                logger.info(f"Dream Engine: Insight evaporato (ID: {doc.id})")
+                
+        except Exception as e:
+            logger.error(f"Errore pulizia insights: {e}")

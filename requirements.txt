@@ -1,0 +1,27 @@
+# Core
+redis[hiredis]>=5.0
+faster-whisper>=1.0
+sherpa-onnx>=1.9
+streamlit>=1.35
+ollama>=0.2
+dateparser>=1.2
+sentence-transformers>=2.0
+resemblyzer>=0.1.4
+
+# Audio
+pyaudio>=0.2.14
+sounddevice>=0.4.6
+soundfile>=0.12
+
+# VAD (silero usa torch)
+torch>=2.0
+torchaudio>=2.0
+
+# Utilities
+pyperclip>=1.8
+psutil>=5.9
+loguru>=0.7
+ddgs>=0.1
+beautifulsoup4>=4.12
+pytz>=2024.1
+uuid7>=0.1
