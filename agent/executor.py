@@ -367,25 +367,26 @@ class Executor:
             re.IGNORECASE,
         ), "clipboard_read", {}),
         # ── CodeRunner patterns ──
-        # Operazioni su file/dati
+        # PRIMA: Elaborazione documenti/dati (run_code) — ha la precedenza su analisi immagini
         (re.compile(
-            r'\b(unisci|fondi|combina|merge)\s+.*(csv|file|pdf|excel|dati)\b'
-            r'|\b(leggi|apri|elabora|processa|converti|trasforma)\s+.*(csv|file|pdf|excel|dati)\b'
-            r'|\b(crea|genera|esporta)\s+.*(csv|file|pdf|excel|grafico|report)\b'
-            r'|\b(ridimensiona|comprimi|ruota|taglia)\s+.*(foto|immagin[ei])\b'
-            r'|\bcartella\s+dati\b',
+            r'\b(unisci|fondi|combina|merge|raggruppa)\s+.*(csv|file|pdf|excel|dati|document[io]|ods|odt|txt|json)\b'
+            r'|\b(leggi|apri|elabora|processa|converti|trasforma|analizza|controlla|riassumi|estrai)\s+.*(csv|pdf|excel|dati|document[io]|ods|odt|txt|json|presentazion[ei])\b'
+            r'|\b(analizza|leggi|controlla|estrai|riassumi)\s+il\s+(documento|file|pdf|foglio|testo)\b'
+            r'|\b(crea|genera|esporta|salva)\s+.*(csv|file|pdf|excel|grafico|report|tabella|document[io])\b'
+            r'|\b(ridimensiona|comprimi|ruota|taglia|converti)\s+.*(foto|immagin[ei])\b',
             re.IGNORECASE,
-        ), "run_code", {}),
-        # Analisi immagine diretta (Gemma vision)
+        ), "run_code", {"task": "__USER_TEXT__"}),   # __USER_TEXT__ sarà sostituito dal voice_daemon
+        # DOPO: Analisi immagine diretta con Gemma Vision (solo se non è un documento testo)
         (re.compile(
-            r'\b(descrivi|analizza|guarda|cosa\s+vedi)\s+.*(foto|immagin[ei]|screenshot)\b'
-            r'|\b(analizza|descrivi)\s+.*(nella|dalla)\s+cartella\b',
+            r'\b(descrivi|guarda|analizza|controlla)\s+.*(foto|immagin[ei]|screenshot|fotografia)\b'
+            r'|\b(cosa\s+vedi|cosa\s+c[\'\`è])\s+.*(foto|immagin[ei]|screenshot)\b',
             re.IGNORECASE,
         ), "analyze_image", {}),
         # Lista file nella cartella dati
         (re.compile(
             r'\b(cosa|quali|quanti)\s+.*(file|document[io]|dati)\s+.*(ci\s+sono|hai|ho|nella|cartella)\b'
-            r'|\belenca\s+.*(file|dati)\b',
+            r'|\belenca\s+.*(file|dati|document[io])\b'
+            r'|\bcosa\s+c[\'\`è]\s+(nella|in)\s+cartella\b',
             re.IGNORECASE,
         ), "list_data_files", {}),
     ]

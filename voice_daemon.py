@@ -475,9 +475,10 @@ class VoiceDaemon:
             self._speak(hint)
             return
 
-        # Per run_code: passa il testo originale come task se non c'è già
-        if call.tool_name == "run_code" and not call.parameters.get("task"):
-            call.parameters["task"] = text
+        # Per run_code: sostituisce la sentinella __USER_TEXT__ con la frase reale dell'utente
+        if call.tool_name == "run_code":
+            if not call.parameters.get("task") or call.parameters.get("task") == "__USER_TEXT__":
+                call.parameters["task"] = text
 
         # Feedback vocale differenziato
         if call.tool_name == "run_code":

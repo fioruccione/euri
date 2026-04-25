@@ -19,10 +19,11 @@ def assign_domain(content: str) -> str:
     Se fallisce o è troppo generico, ritorna "generale".
     """
     prompt = f"""\
-Leggi la seguente informazione e assegna UNA sola parola (o due parole molto brevi) 
-che descriva l'ambito, il contesto o l'argomento principale di cosa si sta parlando.
+Leggi la seguente informazione e assegna UN'etichetta di dominio: una o due parole \
+che descrivano l'ambito o l'argomento principale.
 
-Esempi: "lavoro", "famiglia", "moto", "chimica polimeri", "spesa", "programmazione", "salute".
+Esempi: "lavoro", "famiglia", "moto", "chimica polimeri", "stampaggio iniezione", \
+"spesa", "programmazione", "salute", "elettronica", "business".
 
 Informazione: "{content}"
 
@@ -32,7 +33,7 @@ Rispondi SOLO con l'etichetta. Nessuna spiegazione. Niente virgolette. Tutto min
         response = ollama.chat(
             model=config.OLLAMA_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0.2, "num_predict": 20},
+            options={"temperature": 0.2, "num_predict": 30},
             think=False,
         )
         # Pulisce eventuale reasoning <think> come nel validator
@@ -41,14 +42,14 @@ Rispondi SOLO con l'etichetta. Nessuna spiegazione. Niente virgolette. Tutto min
             text = text.split("<channel|>", 1)[-1]
         import re
         text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-        
+
         domain = text.strip().strip('"\'').lower()
-        
-        # Filtra risultati spazzatura dell'LLM
-        if not domain or len(domain) > 30 or " " in domain.strip():
-            # Se ha restituito un'intera frase, fallback
+        words = domain.split()
+
+        # Rifiuta solo frasi (3+ parole) o stringhe vuote/troppo lunghe
+        if not domain or len(domain) > 30 or len(words) > 2:
             return "generale"
-            
+
         return domain
     except Exception as e:
         logger.debug(f"Errore assign_domain: {e}")
