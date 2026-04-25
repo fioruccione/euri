@@ -301,6 +301,10 @@ Rispondi SOLO con SÌ o NO."""
             promoted_count = 0
             
             for doc in res.docs:
+                # Potrebbe essere già stato eliminato come duplicato in un'iterazione precedente
+                if not self._r.exists(doc.id):
+                    continue
+
                 vec_str = getattr(doc, "embedding", None)
                 if not vec_str:
                     continue
