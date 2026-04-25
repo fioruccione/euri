@@ -202,8 +202,8 @@ class Brain:
             response = ollama.chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                options={"temperature": 0.1, "num_predict": 1000},
-                think=False,
+                options={"temperature": 0.1, "num_predict": 2000},
+                think=True,
             )
             result = self._clean(response.message.content or "")
             if not result or "NOTHING" in result.upper():
@@ -249,8 +249,8 @@ class Brain:
                     {"role": "system", "content": self._REFLECTION_SYSTEM},
                     {"role": "user", "content": user_msg},
                 ],
-                options={"temperature": 0.4, "num_predict": 200},
-                think=False,
+                options={"temperature": 0.4, "num_predict": 1000},
+                think=True,
             )
             result = self._clean(response.message.content or "")
             if not result or "NO_COHERENT_PATTERN" in result:
@@ -271,8 +271,8 @@ class Brain:
             response = ollama.chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                options={"temperature": 0.3, "num_predict": 1200},
-                think=False,
+                options={"temperature": 0.3, "num_predict": 2000},
+                think=True,
             )
             return self._clean(response.message.content or "")
         except Exception as e:

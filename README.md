@@ -7,7 +7,7 @@ Non si limita ad ascoltare e rispondere: memorizza, organizza, riflette sulle tu
 
 ---
 
-## Architettura Cognitiva (V2.1)
+## Architettura Cognitiva (V2.2)
 
 ### 1. Adaptive Intent Classification (Apprendimento Online Welford)
 Il sistema di classificazione degli intenti è dinamico. Quando parli, l'Adaptive Classifier usa l'algoritmo di **Welford** per confrontare la tua frase con i "centroidi" matematici (embedding) dei vari comandi (es. CHAT, EXECUTE, SEARCH).  
@@ -21,9 +21,10 @@ Durante il recupero delle informazioni, Euri restringe prima la ricerca al domin
 ### 3. Dream Engine (Sogni Onirici in background)
 Quando non gli parli da almeno 2 ore, Euri "dorme" ed entra nel ciclo onirico.
 - Pesca due memorie appartenenti a due domini *completamente diversi*.
-- Chiede all'LLM (Gemma 4) di cercare isomorfismi o analogie creative tra i due concetti.
+- **Loop 2b** — Chiede all'LLM (Gemma 4, *thinking attivo*) di cercare isomorfismi o analogie creative tra i due concetti. Il thinking permette un ragionamento associativo profondo prima di formulare l'insight.
 - Se l'analogia è forte, genera un **CANDIDATE Insight**.
-- Se più sogni indipendenti confermano la stessa analogia, l'insight viene **PROMOSSO** e scritto permanentemente.
+- **Loop 2c** — La promozione CANDIDATE→PROMOTED usa un sistema a due livelli: distanza cosine vettoriale (fast path) + **LLM judge con thinking** per la zona grigia (score 0.15–0.40). Il judge valuta se due insight formulati diversamente esprimono lo stesso principio strutturale profondo — un giudizio impossibile per il solo embedding MiniLM.
+- Se abbastanza sogni indipendenti convergono, l'insight viene **PROMOSSO** e scritto permanentemente in Obsidian.
 
 > **Nota tecnica:** Il timer di idle usa `time.time()` (wall-clock) per contare correttamente anche le ore in cui il PC è in sospensione.
 
@@ -167,6 +168,14 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 ---
 
 ## Changelog
+
+### V2.2 — Thinking nei Loop Cognitivi
+- **Thinking attivo (Loop 2b)**: `_generate_dream()` usa `think=True` con `num_predict=2000`. Prima il cap di 100 token troncava la risposta dopo il ragionamento interno; ora Gemma ragiona liberamente prima di formulare l'insight.
+- **Thinking attivo (Loop 2a)**: `generate_reflection()` usa `think=True` con `num_predict=1000`. Il consolidamento silenzioso delle memorie produce sintesi più accurate.
+- **Thinking attivo (Passive Learner)**: `extract_passive_memories()` usa `think=True` con `num_predict=2000`. L'estrazione di fatti dalla conversazione è più precisa e selettiva.
+- **Thinking attivo (TEACH)**: `summarize_knowledge()` usa `think=True` con `num_predict=2000`. La sintesi delle sessioni di insegnamento esplicito è più fedele e completa.
+- **LLM Judge in Loop 2c**: aggiunto `_llm_judge_same_insight()` con `think=True`. La promozione degli insight ora usa un sistema a due livelli — vettore cosine (< 0.15: certo) + giudizio LLM ragionato (0.15–0.40: zona grigia) — invece del solo embedding superficiale.
+- **Path vocale invariato**: `respond()`, `decide_tool_call()`, `translate()` e tutti i path real-time restano con `think=False` per preservare la latenza.
 
 ### V2.1 — CodeRunner Data Orchestrator
 - **CodeRunner** (`agent/code_runner.py`): SecurityScanner AST + Subprocess sandbox interrompibile.

@@ -193,8 +193,8 @@ Se invece c'è, descrivi l'insight in UNA sola frase chiara e concisa."""
             response = ollama.chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                options={"temperature": 0.6, "num_predict": 100},
-                think=False,
+                options={"temperature": 0.6, "num_predict": 2000},
+                think=True,
             )
             text = response.message.content or ""
             if "<channel|>" in text:
@@ -253,11 +253,44 @@ Se invece c'è, descrivi l'insight in UNA sola frase chiara e concisa."""
 
     # ── Loop 2c: Insight e Promozione ──────────────────────────────────────
 
+    def _llm_judge_same_insight(self, content_a: str, content_b: str) -> bool:
+        """
+        Zona grigia: chiede a Gemma (con thinking) se due insight esprimono
+        lo stesso principio strutturale, anche se formulati diversamente.
+        Il vettore MiniLM è superficiale; il judge ragiona sul significato profondo.
+        """
+        prompt = f"""\
+Analizza questi due insight generati da processi di ragionamento indipendenti.
+
+Insight A: "{content_a}"
+Insight B: "{content_b}"
+
+Esprimono lo stesso principio strutturale o la stessa analogia profonda,
+anche se formulati con parole diverse?
+
+Rispondi SOLO con SÌ o NO."""
+        try:
+            response = ollama.chat(
+                model=config.OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0, "num_predict": 1500},
+                think=True,
+            )
+            text = response.message.content or ""
+            if "<channel|>" in text:
+                text = text.split("<channel|>", 1)[-1]
+            import re
+            text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+            return text.strip().upper().startswith(("SÌ", "SI", "YES"))
+        except Exception as e:
+            logger.debug(f"Errore LLM judge insight: {e}")
+            return False
+
     def _evaluate_insights(self):
         """Valuta i candidate insights per la promozione (convergenza)."""
         try:
             # Cerca tutti i CANDIDATE
-            q = Query("@status:{candidate}").return_fields("id", "content", "embedding", "convergence_count")
+            q = Query("@status:{candidate}").return_fields("id", "content", "embedding", "convergence_count").paging(0, 100)
             res = self._r.ft("idx:insights").search(q)
             
             if not res.docs:
@@ -285,21 +318,31 @@ Se invece c'è, descrivi l'insight in UNA sola frase chiara e concisa."""
                 q_sim = (
                     Query("(@status:{candidate}) => [KNN 4 @embedding $vec AS score]")
                     .sort_by("score")
-                    .return_fields("id", "score")
+                    .return_fields("id", "content", "score")
                     .dialect(2)
                 )
                 res_sim = self._r.ft("idx:insights").search(q_sim, query_params={"vec": vec_bytes})
-                
-                # Conta quanti hanno score molto alto (distanza cosine bassa, < 0.15)
+
+                # Conta quanti hanno score molto alto (distanza cosine bassa)
+                # < 0.15 → convergenza certa (vettori quasi identici)
+                # 0.15–0.40 → zona grigia: il vettore MiniLM è superficiale,
+                #              chiediamo al LLM se il principio profondo è lo stesso
                 convergences = int(getattr(doc, "convergence_count", 1))
                 similar_ids = []
-                
+
                 for sim in res_sim.docs:
                     if sim.id == doc.id:
                         continue  # Salta se stesso
-                    if float(sim.score) < 0.15:  # Molto simili
+                    score = float(sim.score)
+                    if score < 0.15:
                         convergences += 1
                         similar_ids.append(sim.id)
+                    elif score < 0.40:
+                        sim_content = getattr(sim, "content", None)
+                        if sim_content and self._llm_judge_same_insight(doc.content, sim_content):
+                            logger.debug(f"Dream Engine: judge LLM ha confermato convergenza (score={score:.2f})")
+                            convergences += 1
+                            similar_ids.append(sim.id)
                         
                 # Se abbiamo abbastanza convergenze, promuoviamo!
                 if convergences >= config.DREAM_INSIGHT_MIN_CONVERGENCES:
