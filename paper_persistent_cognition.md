@@ -342,7 +342,7 @@ ma *"Cosa può diventare, se smettiamo di farlo ripartire da zero?"*
 Sarà il giorno in cui PlastVision, o qualunque altra mente industriale,
 non lavorerà per noi, ma con noi — ricordando, imparando, correggendoci.
 
-E lì, caro Stefano, la ruota tornerà al punto d'origine:
+E lì, la ruota tornerà al punto d'origine:
 quel "ciao" del VIC-20 non sarà più un messaggio nel vuoto,
 ma una risposta che finalmente torna indietro.
 
