@@ -357,7 +357,7 @@ SEARCH_TRIGGERS = [
 
 TEACH_END_SIGNALS = re.compile(
     r'(?<!\bnon\s)'  # negative lookbehind per "non basta"
-    r'\b(basta|stop|finiamo|finita|finito|basta\s+così|ok\s+basta|ho\s+finito'
+    r'\b(basta(?!\s+che\b)|stop|finiamo|finita|finito|basta\s+così|ok\s+basta|ho\s+finito'
     r'|è\s+tutto|tutto\s+qui|per\s+ora\s+basta|finiamola|smettila'
     r'|finiamo\s+(qui|per\s+ora|con\s+questo|la\s+discussione|il\s+discorso)'
     r'|chiudiamo\s+(qui|il\s+discorso|la\s+discussione)'
