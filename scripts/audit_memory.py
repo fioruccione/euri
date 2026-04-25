@@ -170,6 +170,41 @@ def delete_by_source(r: redis.Redis, source: str):
         print("  → Annullato.")
 
 
+def backfill_domains(r: redis.Redis, only_generale: bool = True):
+    """
+    Ricalcola il domain label per le memorie esistenti usando assign_domain().
+    Per default aggiorna solo quelle con domain='generale' (le mal classificate).
+    """
+    from core.domain_gater import assign_domain
+
+    docs = scan_memories(r, "all")
+    targets = [d for d in docs if (d.get("domain") == "generale") or not only_generale]
+
+    if not targets:
+        print("\nNessuna memoria da aggiornare.")
+        return
+
+    print_header(f"BACKFILL DOMINI — {len(targets)} memorie da rietichettare")
+    updated = 0
+    unchanged = 0
+
+    for i, doc in enumerate(targets, 1):
+        content = doc.get("content", "")
+        old_domain = doc.get("domain", "generale")
+        print(f"[{i}/{len(targets)}] elaborazione...         ", end="\r", flush=True)
+
+        new_domain = assign_domain(content)
+
+        if new_domain != old_domain:
+            r.json().set(doc["_key"], "$.domain", new_domain)
+            print(f"[{i}/{len(targets)}] {old_domain:15} → {new_domain:20} | {content[:55]}")
+            updated += 1
+        else:
+            unchanged += 1
+
+    print(f"\n→ {updated} aggiornate, {unchanged} invariate (già corrette o ancora 'generale').")
+
+
 def stats(r: redis.Redis):
     """Stampa statistiche rapide per source."""
     docs = scan_memories(r, "all")
@@ -191,6 +226,10 @@ if __name__ == "__main__":
                         help="Cancella TUTTE le memorie di una source senza audit")
     parser.add_argument("--stats", action="store_true",
                         help="Mostra solo statistiche per source")
+    parser.add_argument("--backfill-domains", action="store_true",
+                        help="Ricalcola il domain label per le memorie con domain='generale'")
+    parser.add_argument("--backfill-all", action="store_true",
+                        help="Ricalcola il domain label per TUTTE le memorie")
     args = parser.parse_args()
 
     r = get_client()
@@ -205,5 +244,9 @@ if __name__ == "__main__":
         stats(r)
     elif args.delete:
         delete_by_source(r, args.delete)
+    elif args.backfill_all:
+        backfill_domains(r, only_generale=False)
+    elif args.backfill_domains:
+        backfill_domains(r, only_generale=True)
     else:
         audit(r, args.source)
