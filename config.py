@@ -35,7 +35,7 @@ WHISPER_MODEL = "large-v3-turbo"
 # Prompt iniziale per Whisper: nomi propri, termini tecnici, brand specifici di Stefano.
 # Aiuta il decoder a riconoscere correttamente questi termini senza costo di latenza.
 WHISPER_INITIAL_PROMPT = (
-    "Luciflast, Easy Plast, Reagenz, Realube 5014, polirefine, polistirolo, "
+    "Lucy Plast, Easy Plast, Reagenz, Realube 5014, polirefine, polistirolo, "
     "stampaggio iniezione, Melt Flow Index, MFI, IZOD, granulatore, "
     "Euri, Redis, Obsidian, PlastVision, Ollama, Gemma."
 )
