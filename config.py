@@ -28,9 +28,17 @@ REDIS_DB = 0
 OLLAMA_HOST = "http://localhost:11434"
 OLLAMA_MODEL = "gemma4:26b"   # verifica con `ollama list`
 
-# STT — mlx-whisper large-v3-turbo (MLX Apple Silicon, modello hardcoded in voice/stt.py)
-# WHISPER_LANGUAGE usato come default per force_lang in STT.transcribe()
+# STT
 WHISPER_LANGUAGE = "it"
+# Modello: "large-v3-turbo" (veloce, ~800ms) o "large-v3" (più preciso sui nomi propri, ~1500ms)
+WHISPER_MODEL = "large-v3-turbo"
+# Prompt iniziale per Whisper: nomi propri, termini tecnici, brand specifici di Stefano.
+# Aiuta il decoder a riconoscere correttamente questi termini senza costo di latenza.
+WHISPER_INITIAL_PROMPT = (
+    "Luciflast, Easy Plast, Reagenz, Realube 5014, polirefine, polistirolo, "
+    "stampaggio iniezione, Melt Flow Index, MFI, IZOD, granulatore, "
+    "Euri, Redis, Obsidian, PlastVision, Ollama, Gemma."
+)
 
 # Adaptive Fingerprints (Welford online learning — sostituisce EmbeddingClassifier statico)
 # Stato Welford persistito in Redis: sopravvive ai restart e migliora nel tempo.

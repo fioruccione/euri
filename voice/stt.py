@@ -7,17 +7,15 @@ from loguru import logger
 import config
 from faster_whisper import WhisperModel
 
-_MODEL_SIZE = "large-v3-turbo"
-
 class STT:
     def __init__(self):
         self._loaded = False
         self.model = None
 
     def load(self):
-        logger.info(f"Caricamento Whisper {_MODEL_SIZE} su CUDA...")
+        logger.info(f"Caricamento Whisper {config.WHISPER_MODEL} su CUDA...")
         # Usa CUDA con precisione FP16 per le RTX 4060 Ti
-        self.model = WhisperModel(_MODEL_SIZE, device="cuda", compute_type="float16")
+        self.model = WhisperModel(config.WHISPER_MODEL, device="cuda", compute_type="float16")
         
         # Warmup
         dummy = np.zeros(16000, dtype=np.float32)
@@ -37,6 +35,7 @@ class STT:
             audio,
             language=force_lang,
             beam_size=5,
+            initial_prompt=config.WHISPER_INITIAL_PROMPT,
             vad_filter=True,
             vad_parameters=dict(min_silence_duration_ms=500)
         )
