@@ -167,6 +167,9 @@ DREAM_ENGINE_ENABLED = True
 DREAM_ENGINE_IDLE_HOURS = 2
 DREAM_INSIGHT_MIN_CONVERGENCES = 2
 INSIGHT_TTL_DAYS = 30
+# Memorie passive/reflection mai richiamate evaporano dopo 90 giorni.
+# Memorie user/teach/obsidian_vault non scadono mai automaticamente.
+MEMORY_TTL_PASSIVE_DAYS = 90
 
 # Obsidian Integration (Phase 3)
 OBSIDIAN_SYNC_ENABLED = True

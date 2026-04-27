@@ -99,7 +99,10 @@ class DreamEngine:
                 
             # 4. Pulizia Insight scaduti
             self._cleanup_expired_insights()
-            
+
+            # 5. Pulizia Memorie stantie (passive/reflection mai richiamate)
+            self._cleanup_stale_memories()
+
         except Exception as e:
             logger.error(f"Errore ciclo Dream Engine: {e}")
 
@@ -377,13 +380,50 @@ Rispondi SOLO con SÌ o NO."""
         try:
             ttl_sec = config.INSIGHT_TTL_DAYS * 86400
             cutoff = to_timestamp(now()) - ttl_sec
-            
+
             q = Query(f"@status:{{promoted}} @recalled_count:[0 0] @created_at:[-inf {cutoff}]")
             res = self._r.ft("idx:insights").search(q)
-            
+
             for doc in res.docs:
                 self._r.delete(doc.id)
                 logger.info(f"Dream Engine: Insight evaporato (ID: {doc.id})")
-                
+
         except Exception as e:
             logger.error(f"Errore pulizia insights: {e}")
+
+    def _cleanup_stale_memories(self):
+        """
+        Elimina memorie passive/reflection mai richiamate dopo MEMORY_TTL_PASSIVE_DAYS.
+        Le memorie user/teach/obsidian_vault non vengono mai toccate automaticamente:
+        sono state salvate con intenzione esplicita e non hanno data di scadenza.
+        recalled_count non è indicizzato in RediSearch — la scan è necessaria.
+        """
+        _EPHEMERAL_SOURCES = {"passive", "reflection", "conversation"}
+        try:
+            ttl_sec = config.MEMORY_TTL_PASSIVE_DAYS * 86400
+            cutoff = to_timestamp(now()) - ttl_sec
+            evaporated = 0
+
+            for key in self._r.scan_iter("euri:memory:*"):
+                try:
+                    d = self._r.json().get(key, "$")
+                    if not d:
+                        continue
+                    doc = d[0]
+                    if doc.get("source") not in _EPHEMERAL_SOURCES:
+                        continue
+                    if doc.get("recalled_count", 0) > 0:
+                        continue
+                    if doc.get("created_at", 0) > cutoff:
+                        continue
+                    self._r.delete(key)
+                    evaporated += 1
+                    logger.debug(f"Dream Engine: memoria stantia evaporata ({key})")
+                except Exception:
+                    continue
+
+            if evaporated:
+                logger.info(f"Dream Engine: {evaporated} memorie stantie evaporate")
+
+        except Exception as e:
+            logger.error(f"Errore pulizia memorie stantie: {e}")
