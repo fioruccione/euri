@@ -22,9 +22,10 @@ from utils.obsidian_sync import write_insight
 
 
 class DreamEngine:
-    def __init__(self, r, embedder):
+    def __init__(self, r, embedder, brain=None):
         self._r = r
         self._embedder = embedder
+        self._brain = brain  # usato dal Loop 2d (death-row gate)
         self._running = False
         self._thread = None
         self._lock = threading.Lock()
@@ -102,6 +103,9 @@ class DreamEngine:
 
             # 5. Pulizia Memorie stantie (passive/reflection mai richiamate)
             self._cleanup_stale_memories()
+
+            # 6. Loop 2d: Death-row gate per memorie in scadenza entro 7 giorni
+            self._pruning_pass()
 
         except Exception as e:
             logger.error(f"Errore ciclo Dream Engine: {e}")
@@ -427,3 +431,72 @@ Rispondi SOLO con SÌ o NO."""
 
         except Exception as e:
             logger.error(f"Errore pulizia memorie stantie: {e}")
+
+    def _pruning_pass(self):
+        """
+        Loop 2d — Death-row gate: memorie in scadenza entro 7 giorni ricevono una
+        valutazione LLM prima di essere eliminate.
+
+        Logica:
+        - recalled_count >= MEMORY_KEEP_IF_RECALLED → estendi TTL senza chiamare LLM
+        - recalled_count == 0 → chiedi al LLM: KEEP (estendi) o DROP (elimina)
+        - Errore LLM → conserva per sicurezza
+        """
+        if not self._brain:
+            return
+        try:
+            from core.memory_manager import _TTL_BY_SOURCE
+            from datetime import timedelta
+            from utils.date_utils import to_timestamp
+
+            keep_threshold = config.MEMORY_KEEP_IF_RECALLED
+            days_ahead = 7
+            cutoff_near = to_timestamp(now() + timedelta(days=days_ahead))
+            now_ts = to_timestamp(now())
+
+            kept = dropped = extended = 0
+
+            for key in self._r.scan_iter("euri:memory:*"):
+                try:
+                    d = self._r.json().get(key, "$")
+                    if not d:
+                        continue
+                    doc = d[0]
+                    exp = doc.get("expires_at")
+                    if not exp or not (now_ts < exp <= cutoff_near):
+                        continue
+
+                    source = doc.get("source", "")
+                    if source not in _TTL_BY_SOURCE:
+                        continue  # user/teach/obsidian_vault — mai toccare
+
+                    recalled = doc.get("recalled_count", 0)
+                    ttl_days = _TTL_BY_SOURCE[source]
+
+                    if recalled >= keep_threshold:
+                        # Abbastanza richiamate — estendi senza LLM
+                        new_exp = to_timestamp(now() + timedelta(days=ttl_days))
+                        self._r.json().set(key, "$.expires_at", new_exp)
+                        extended += 1
+                        continue
+
+                    # Death-row: chiedi al LLM
+                    verdict = self._brain.evaluate_memory_relevance(doc.get("content", ""))
+                    if verdict == "KEEP":
+                        new_exp = to_timestamp(now() + timedelta(days=ttl_days))
+                        self._r.json().set(key, "$.expires_at", new_exp)
+                        kept += 1
+                        logger.debug(f"Loop 2d: memoria salvata dal giudice LLM ({key[-8:]})")
+                    else:
+                        self._r.delete(key)
+                        dropped += 1
+                        logger.info(f"Loop 2d: memoria eliminata dal giudice LLM ({key[-8:]})")
+
+                except Exception:
+                    continue
+
+            if kept or dropped or extended:
+                logger.info(f"Loop 2d: {extended} estese, {kept} salvate LLM, {dropped} eliminate LLM")
+
+        except Exception as e:
+            logger.error(f"Errore Loop 2d pruning: {e}")

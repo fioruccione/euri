@@ -14,6 +14,14 @@ from core.domain_gater import assign_domain, domain_aware_search
 from utils.obsidian_sync import write_memory
 
 
+_TTL_BY_SOURCE: dict[str, int] = {
+    "passive":      90,
+    "reflection":   90,
+    "conversation": 90,
+}
+# Memorie user/teach/obsidian_vault non hanno TTL automatico — non compaiono qui.
+
+
 class MemoryManager:
     def __init__(self, r: redis_lib.Redis, embedder=None):
         self.r = r
@@ -27,6 +35,13 @@ class MemoryManager:
         mid = str(uuid.uuid4())
         key = f"euri:memory:{mid}"
         ts = now()
+
+        # Auto-assegna expires_at in base alla source (finestra scorrevole)
+        if expires_at is None:
+            ttl_days = _TTL_BY_SOURCE.get(source)
+            if ttl_days:
+                from datetime import timedelta
+                expires_at = ts + timedelta(days=ttl_days)
 
         # Embedding semantico
         embedding = None
@@ -207,11 +222,17 @@ class MemoryManager:
                 merged.append(d)
                 seen.add(d["id"])
 
-        # Aggiorna contatori richiami
+        # Aggiorna contatori richiami e resetta finestra scorrevole TTL
         for item in merged[:limit]:
             key = f"euri:memory:{item['id']}"
             self.r.json().numincrby(key, "$.recalled_count", 1)
-            self.r.json().set(key, "$.last_recalled_at", to_timestamp(now()))
+            ts_now = to_timestamp(now())
+            self.r.json().set(key, "$.last_recalled_at", ts_now)
+            ttl_days = _TTL_BY_SOURCE.get(item.get("source", ""))
+            if ttl_days:
+                from datetime import timedelta
+                new_exp = to_timestamp(now() + timedelta(days=ttl_days))
+                self.r.json().set(key, "$.expires_at", new_exp)
 
         return merged[:limit]
 
@@ -225,8 +246,34 @@ class MemoryManager:
                 item["_created_at"] = from_timestamp(item.get("created_at"))
                 docs.append(item)
                 self.r.json().numincrby(doc.id, "$.recalled_count", 1)
-                self.r.json().set(doc.id, "$.last_recalled_at", to_timestamp(now()))
+                ts_now = to_timestamp(now())
+                self.r.json().set(doc.id, "$.last_recalled_at", ts_now)
+                ttl_days = _TTL_BY_SOURCE.get(item.get("source", ""))
+                if ttl_days:
+                    from datetime import timedelta
+                    new_exp = to_timestamp(now() + timedelta(days=ttl_days))
+                    self.r.json().set(doc.id, "$.expires_at", new_exp)
         return docs
+
+    def get_expiring_memories(self, days_ahead: int = 7) -> list[dict]:
+        """Restituisce memorie con expires_at entro days_ahead giorni (escluse user/teach/obsidian)."""
+        from datetime import timedelta
+        cutoff = to_timestamp(now() + timedelta(days=days_ahead))
+        now_ts = to_timestamp(now())
+        results = []
+        for key in self.r.scan_iter("euri:memory:*"):
+            try:
+                d = self.r.json().get(key, "$")
+                if not d:
+                    continue
+                doc = d[0]
+                exp = doc.get("expires_at")
+                if exp and now_ts < exp <= cutoff:
+                    doc["_key"] = key
+                    results.append(doc)
+            except Exception:
+                continue
+        return results
 
     def get_recent_memories(self, limit: int = 10, source_filter: list[str] | None = None) -> list[dict]:
         return self._search_keyword("*", limit=limit, source_filter=source_filter)

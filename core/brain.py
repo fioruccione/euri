@@ -279,6 +279,32 @@ class Brain:
             logger.error(f"Errore summarize_knowledge: {e}")
             return accumulated
 
+    def evaluate_memory_relevance(self, content: str) -> str:
+        """
+        Death-row gate: valuta se una memoria in scadenza vale ancora la pena conservare.
+        Ritorna 'KEEP' o 'DROP'.
+        Chiamato solo per memorie passive/reflection mai richiamate vicine alla scadenza.
+        """
+        prompt = (
+            f"Sei il sistema di gestione memoria di Euri, l'assistente personale di Stefano.\n"
+            f"Questa memoria sta per scadere perché non è mai stata richiamata in conversazione:\n\n"
+            f"\"{content}\"\n\n"
+            f"Vale la pena conservarla? Potrebbe essere stagionale, tecnica, o utile in futuro?\n"
+            f"Rispondi SOLO con KEEP o DROP."
+        )
+        try:
+            response = ollama.chat(
+                model=config.OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0, "num_predict": 10},
+                think=False,
+            )
+            text = self._clean(response.message.content or "").strip().upper()
+            return "KEEP" if text.startswith("KEEP") else "DROP"
+        except Exception as e:
+            logger.debug(f"Errore evaluate_memory_relevance: {e}")
+            return "KEEP"  # In caso di errore, conserva per sicurezza
+
     def probe_same_meaning(self, question: str) -> str:
         """Probe leggero: risponde SI o NO. Usato per dedup semantico."""
         try:

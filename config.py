@@ -170,6 +170,8 @@ INSIGHT_TTL_DAYS = 30
 # Memorie passive/reflection mai richiamate evaporano dopo 90 giorni.
 # Memorie user/teach/obsidian_vault non scadono mai automaticamente.
 MEMORY_TTL_PASSIVE_DAYS = 90
+# Loop 2d: soglia recalled_count per estendere TTL senza invocare il giudice LLM.
+MEMORY_KEEP_IF_RECALLED = 3
 
 # Obsidian Integration (Phase 3)
 OBSIDIAN_SYNC_ENABLED = True
