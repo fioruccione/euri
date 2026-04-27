@@ -154,6 +154,38 @@ The critical design principle: **the system generates knowledge that was not in 
 No one told it to connect polymer regeneration with distributed systems resilience.
 It arrived there by itself, during idle, from memories accumulated through natural conversation.
 
+### Phase 5 — Memory Lifecycle: Selective Reinforcement
+
+A persistent memory system that only accumulates will eventually degrade.
+Facts become stale. Temporary states become permanent lies.
+Noise accumulates alongside signal.
+
+The architecture implements a **selective reinforcement** principle
+inspired by the biological forgetting curve:
+every retrieval resets the decay clock; what is never recalled, fades.
+
+Three decay levels govern the system:
+
+| Memory type | Sources | TTL | Rationale |
+|---|---|---|---|
+| Ephemeral knowledge | `passive`, `reflection`, `conversation` | 90 days if `recalled_count = 0` | Observed automatically — if never useful, not worth keeping |
+| Semantic insights | Dream Engine candidates → promoted | 30 days if `recalled_count = 0` | Abstractions age faster than facts |
+| Intentional knowledge | `user`, `teach`, `obsidian_vault` | Never | Explicitly saved — the system has no right to discard them |
+
+The key invariant: **`recalled_count` is incremented at every retrieval.**
+A memory about Reagenz that surfaces every week will never expire.
+A memory about a microphone problem from three months ago,
+never once retrieved in conversation, will quietly disappear.
+
+This is not a TTL. It is a usage-weighted lifecycle.
+The difference matters: a fixed TTL treats all memories as equally perishable.
+Selective reinforcement treats each memory as a hypothesis —
+confirmed by use, discarded by silence.
+
+The cleanup runs inside the Dream Engine cycle,
+during the same idle hours when insights are generated and validated.
+The system prunes and grows at the same time, in the same silence.
+
 ---
 
 ## 5 — Extended Reasoning as a Cognitive Multiplier
