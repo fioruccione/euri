@@ -215,7 +215,26 @@ with main_col:
                 if results:
                     context = "MEMORIE CORRELATE TROVATE IN REDIS:\n"
                     for r in results:
-                        context += f"- [{r.get('domain', 'generale')}] {r['content']}\n"
+                        import time as _time
+                        ts = r.get("created_at")
+                        try:
+                            days = (_time.time() - float(ts)) / 86400 if ts else None
+                        except Exception:
+                            days = None
+                        if days is None:
+                            age = ""
+                        elif days < 1:
+                            age = "oggi"
+                        elif days < 7:
+                            age = f"{int(days)}g fa"
+                        elif days < 30:
+                            age = f"{int(days/7)}sett fa"
+                        elif days < 365:
+                            age = f"{int(days/30)}mesi fa"
+                        else:
+                            age = f"{int(days/365)}anni fa"
+                        label = f"[{r.get('domain', 'generale')} | {age}]" if age else f"[{r.get('domain', 'generale')}]"
+                        context += f"- {label} {r['content']}\n"
 
             # Risposta Euri
             with st.chat_message("assistant"):

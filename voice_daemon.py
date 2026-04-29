@@ -586,6 +586,30 @@ class VoiceDaemon:
             self._audit_rumore = []
             self._speak("Ok, non cancello niente.")
 
+    @staticmethod
+    def _relative_time(ts) -> str:
+        """Converte un timestamp unix in stringa relativa (es. '3 settimane fa')."""
+        if not ts:
+            return ""
+        try:
+            delta = time.time() - float(ts)
+            days = delta / 86400
+            if days < 1:
+                return "oggi"
+            if days < 7:
+                d = int(days)
+                return f"{d} {'giorno' if d == 1 else 'giorni'} fa"
+            if days < 30:
+                w = int(days / 7)
+                return f"{w} {'settimana' if w == 1 else 'settimane'} fa"
+            if days < 365:
+                m = int(days / 30)
+                return f"{m} {'mese' if m == 1 else 'mesi'} fa"
+            y = int(days / 365)
+            return f"{y} {'anno' if y == 1 else 'anni'} fa"
+        except Exception:
+            return ""
+
     # Parole funzione italiane da escludere dalla query di ricerca
     _STOP_WORDS = {
         "come", "cosa", "quando", "dove", "perché", "però", "anche", "solo",
@@ -632,7 +656,11 @@ class VoiceDaemon:
         if reflection_lines:
             sections.append("Sintesi recenti:\n" + "\n".join(reflection_lines))
         if results:
-            mem_lines = [f"- {r['content']}" for r in results[:6]]
+            mem_lines = []
+            for r in results[:6]:
+                age = self._relative_time(r.get("created_at"))
+                label = f"[{r.get('domain', 'generale')} | {age}]" if age else f"[{r.get('domain', 'generale')}]"
+                mem_lines.append(f"- {label} {r['content']}")
             sections.append("Ricordi/note rilevanti:\n" + "\n".join(mem_lines))
         return "\n\n".join(sections)
 
