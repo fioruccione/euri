@@ -150,22 +150,38 @@ class DreamEngine:
             safe_domain = domain.replace(" ", "\\ ")
             # Prende un campione casuale (Redis stack non ha RANDOM natively in FT.SEARCH, 
             # ma possiamo prendere le prime con sort_by null e limit 10 e poi scegliere)
-            q = Query(f"@domain:{{{safe_domain}}}").paging(0, 10).return_fields("id", "content", "embedding")
+            q = Query(f"@domain:{{{safe_domain}}}").paging(0, 10).return_fields("id", "content", "embedding", "created_at")
             res = self._r.ft("idx:memories").search(q)
             if not res.docs:
                 return None
-                
+
             import random
             doc = random.choice(res.docs)
             return {
                 "id": doc.id,
                 "content": doc.content,
                 "domain": domain,
-                "embedding": getattr(doc, "embedding", None)
+                "embedding": getattr(doc, "embedding", None),
+                "created_at": getattr(doc, "created_at", None),
             }
         except Exception as e:
             logger.debug(f"Errore fetch memoria da {domain}: {e}")
             return None
+
+    @staticmethod
+    def _memory_age(ts) -> str:
+        """Converte un timestamp unix in stringa relativa."""
+        if not ts:
+            return ""
+        try:
+            days = (time.time() - float(ts)) / 86400
+            if days < 1:   return "oggi"
+            if days < 7:   return f"{int(days)} {'giorno' if int(days)==1 else 'giorni'} fa"
+            if days < 30:  return f"{int(days/7)} {'settimana' if int(days/7)==1 else 'settimane'} fa"
+            if days < 365: return f"{int(days/30)} {'mese' if int(days/30)==1 else 'mesi'} fa"
+            return f"{int(days/365)} {'anno' if int(days/365)==1 else 'anni'} fa"
+        except Exception:
+            return ""
 
     def _generate_dream(self, domains: list[str]) -> dict | None:
         """Seleziona due memorie da domini diversi e cerca un'analogia."""
@@ -192,20 +208,26 @@ class DreamEngine:
         logger.info(f"Dream Engine: sogno tra '{dom_a}' e '{dom_b}'")
         
         # Chiedi a Gemma se esiste un isomorfismo
+        age_a = self._memory_age(mem_a.get("created_at"))
+        age_b = self._memory_age(mem_b.get("created_at"))
+        label_a = f"dominio: {dom_a}" + (f", {age_a}" if age_a else "")
+        label_b = f"dominio: {dom_b}" + (f", {age_b}" if age_b else "")
+
         prompt = f"""\
 Sei un motore cognitivo analogico. Il tuo compito è trovare isomorfismi strutturali tra due memorie di domini distinti.
 
 PROCESSO:
 1. Astrai ogni memoria alla sua struttura logica essenziale, ignorando i dettagli di dominio.
 2. Cerca se le due strutture condividono la stessa dinamica sottostante: stesso vincolo, stesso meccanismo causale, stessa legge emergente.
-3. Formula il principio generale che li governa entrambi.
+3. Se le memorie sono temporalmente distanti, considera anche se una rappresenta un'evoluzione o una risposta all'altra.
+4. Formula il principio generale che li governa entrambi.
 
 PREFERISCI analogie non ovvie — evita connessioni banali del tipo "entrambi sono processi". Cerca il meccanismo profondo, non la somiglianza superficiale.
 
-Memoria A (dominio: {dom_a}):
+Memoria A ({label_a}):
 "{mem_a['content']}"
 
-Memoria B (dominio: {dom_b}):
+Memoria B ({label_b}):
 "{mem_b['content']}"
 
 Se proprio non esiste nessuna connessione sensata, rispondi SOLO: "NESSUN INSIGHT".
