@@ -184,23 +184,25 @@ with main_col:
     elif page == "Silent Chat":
         st.title("💬 Silent Chat")
         st.markdown("Chatta con Euri usando la tastiera. Nessun Voice Daemon, no TTS. La sessione LLM è condivisa.")
-        
+
         # Inizializza cronologia messaggi
         if "messages" not in st.session_state:
             st.session_state.messages = []
-            
+        if "chat_log_offset" not in st.session_state:
+            st.session_state.chat_log_offset = len(memory_manager.get_today_conversation())
+
         # Mostra messaggi precedenti
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
-                
+
         # Input utente
         if prompt := st.chat_input("Scrivi a Euri..."):
             # Mostra utente
             st.session_state.messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
                 st.markdown(prompt)
-                
+
             # Ricerca veloce su Redis per iniettare contesto
             with st.spinner("Cerco nella memoria..."):
                 results = memory_manager.search_memories(prompt, limit=3)
@@ -209,15 +211,43 @@ with main_col:
                     context = "MEMORIE CORRELATE TROVATE IN REDIS:\n"
                     for r in results:
                         context += f"- [{r.get('domain', 'generale')}] {r['content']}\n"
-                        
+
             # Risposta Euri
             with st.chat_message("assistant"):
                 with st.spinner("Euri sta pensando..."):
                     response = brain.respond(prompt, context=context)
                     st.markdown(response)
-            
+
             # Salva risposta
             st.session_state.messages.append({"role": "assistant", "content": response})
+
+            # Log della conversazione — alimenta il passive learner
+            memory_manager.log_conversation("Stefano", prompt)
+            memory_manager.log_conversation("Euri", response)
+
+            # Ogni 6 turni (3 scambi) lancia l'estrazione passiva inline
+            if len(st.session_state.messages) % 6 == 0:
+                try:
+                    from core.validator import validate_payload
+                    full_log = memory_manager.get_today_conversation()
+                    st.session_state.chat_log_offset = len(full_log)
+                    # extract_passive_memories vuole list[dict] con role/content
+                    recent_msgs = st.session_state.messages[-6:]
+                    if recent_msgs:
+                        facts = brain.extract_passive_memories(recent_msgs)
+                        saved = 0
+                        for fact in facts:
+                            clean = validate_payload(fact, "memory")
+                            if not clean:
+                                continue
+                            if memory_manager.is_duplicate_memory(clean, llm_probe_fn=brain.probe_same_meaning):
+                                continue
+                            memory_manager.save_memory(clean, category="passivo", source="passive")
+                            saved += 1
+                        if saved:
+                            st.caption(f"Passive learner: {saved} fatto/i memorizzato/i.")
+                except Exception as e:
+                    st.caption(f"Passive learner: errore ({e})")
 
 
     # ── PAGE 3: RAG EXPLORER ──────────────────────────────────────────────────────

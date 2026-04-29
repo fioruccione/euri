@@ -12,6 +12,7 @@ import time
 import threading
 import uuid
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from loguru import logger
 import ollama
 
@@ -62,6 +63,17 @@ class DreamEngine:
         with self._lock:
             elapsed_hours = (time.time() - self._last_activity) / 3600.0
         return elapsed_hours >= config.DREAM_ENGINE_IDLE_HOURS
+
+    def _ollama_chat(self, **kwargs) -> ollama.ChatResponse:
+        """Wrapper con timeout (default 90s) attorno a ollama.chat — evita hang notturni."""
+        timeout = kwargs.pop("_timeout", 90)
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(ollama.chat, **kwargs)
+            try:
+                return future.result(timeout=timeout)
+            except FuturesTimeout:
+                logger.warning(f"Dream Engine: timeout LLM dopo {timeout}s — ciclo abortito")
+                raise
 
     def _loop(self):
         """Loop principale: controlla l'idle ogni 10 minuti."""
@@ -197,7 +209,7 @@ Se NON c'è nessuna analogia sensata, rispondi SOLO: "NESSUN INSIGHT".
 Se invece c'è, descrivi l'insight in UNA sola frase chiara e concisa."""
 
         try:
-            response = ollama.chat(
+            response = self._ollama_chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": 0.6, "num_predict": 2000},
@@ -277,7 +289,7 @@ anche se formulati con parole diverse?
 
 Rispondi SOLO con SÌ o NO."""
         try:
-            response = ollama.chat(
+            response = self._ollama_chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": 0, "num_predict": 1500},

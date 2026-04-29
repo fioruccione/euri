@@ -10,8 +10,7 @@ logger.remove()
 logger.add(sys.stderr, level="DEBUG")
 
 import config
-# Forziamo la promozione immediata per il test
-config.DREAM_INSIGHT_MIN_CONVERGENCES = 1  
+# MIN_CONVERGENCES dal config — stesso comportamento del Dream Engine notturno
 
 import redis
 from core.embedder import Embedder
