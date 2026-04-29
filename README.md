@@ -21,7 +21,7 @@ Durante il recupero delle informazioni, Euri restringe prima la ricerca al domin
 ### 3. Dream Engine (Sogni Onirici in background)
 Quando non gli parli da almeno 2 ore, Euri "dorme" ed entra nel ciclo onirico.
 - Pesca due memorie appartenenti a due domini *completamente diversi*.
-- **Loop 2b** — Chiede all'LLM (Gemma 4, *thinking attivo*) di cercare isomorfismi o analogie creative tra i due concetti. Il thinking permette un ragionamento associativo profondo prima di formulare l'insight.
+- **Loop 2b** — Chiede a **Qwen3.6 35B** (*thinking attivo*, modello dedicato) di cercare isomorfismi strutturali tra i due concetti usando un processo in 3 passi: astrazione logica → ricerca della dinamica condivisa → formulazione del principio generale. Qwen3.6 è separato da Gemma4: più lento ma con ragionamento astratto superiore, usato solo nei cicli notturni senza vincoli di latenza.
 - Se l'analogia è forte, genera un **CANDIDATE Insight**.
 - **Loop 2c** — La promozione CANDIDATE→PROMOTED usa un sistema a due livelli: distanza cosine vettoriale (fast path) + **LLM judge con thinking** per la zona grigia (score 0.15–0.40). Il judge valuta se due insight formulati diversamente esprimono lo stesso principio strutturale profondo — un giudizio impossibile per il solo embedding MiniLM.
 - Se abbastanza sogni indipendenti convergono, l'insight viene **PROMOSSO** e scritto permanentemente in Obsidian.
@@ -73,7 +73,8 @@ Un'interfaccia web leggera (`ui/app.py`) per:
 
 | Componente | Tecnologia |
 |---|---|
-| Ragionamento / LLM | Ollama — `gemma4:26b` |
+| Ragionamento / LLM (conversazione) | Ollama — `gemma4:26b` |
+| Ragionamento / LLM (Dream Engine) | Ollama — `qwen3.6:35b` |
 | Visione Artificiale | Gemma 4 Vision (multimodale, offline) |
 | Memoria Attiva | Redis Stack (JSON + RediSearch full-text + VECTOR embedding) |
 | Memoria Passiva/UI | Obsidian Vault sincronizzato via `watchdog` |
@@ -169,7 +170,16 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 
 ## Changelog
 
-### V2.2 — Thinking nei Loop Cognitivi
+### V2.2 — Thinking nei Loop Cognitivi + Qwen3.6 Dream Engine
+- **Architettura dual-model**: `DREAM_OLLAMA_MODEL = "qwen3.6:35b"` separato da `OLLAMA_MODEL`. Gemma4 26B per la conversazione vocale (latenza < 2s), Qwen3.6 35B per i cicli onirici notturni (nessun vincolo di latenza, ragionamento astratto superiore).
+- **Prompt analogico in 3 passi** (`_generate_dream`): astrazione logica → ricerca della dinamica condivisa → formulazione del principio generale. Evita connessioni superficiali senza forzare un dominio specifico.
+- **Timeout LLM alzato a 150s** nel Dream Engine (Qwen3.6 impiega ~85s per il judge; il precedente 90s era troppo vicino al limite).
+- **Silent Chat integrata nel Passive Learner**: la chat testuale ora chiama `log_conversation()` e trigger l'estrazione passiva ogni 6 messaggi — stessa pipeline del voice daemon.
+- **Fix Dream Engine hang notturno**: wrapper `_ollama_chat()` con `ThreadPoolExecutor` — se Ollama non risponde entro il timeout il ciclo viene abortito pulitamente.
+- **Fix intent router**: 3 pattern regex tightened per evitare falsi positivi su linguaggio manifatturiero (`risultato di`, `percentuale di`, `monitoraggio`).
+- **Episodic Compression (Layer 0)**: ogni 30 messaggi, i 20 più vecchi vengono compressi in un episodio e iniettati come sistema message nelle chiamate successive. TTL 7 giorni.
+
+
 - **Thinking attivo (Loop 2b)**: `_generate_dream()` usa `think=True` con `num_predict=2000`. Prima il cap di 100 token troncava la risposta dopo il ragionamento interno; ora Gemma ragiona liberamente prima di formulare l'insight.
 - **Thinking attivo (Loop 2a)**: `generate_reflection()` usa `think=True` con `num_predict=1000`. Il consolidamento silenzioso delle memorie produce sintesi più accurate.
 - **Thinking attivo (Passive Learner)**: `extract_passive_memories()` usa `think=True` con `num_predict=2000`. L'estrazione di fatti dalla conversazione è più precisa e selettiva.

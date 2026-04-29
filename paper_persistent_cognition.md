@@ -136,7 +136,8 @@ This is the most architecturally novel component.
 
 When the system has been idle for at least 2 hours, the Dream Engine activates.
 It selects two memories from **semantically distant domains**,
-asks the LLM (with extended reasoning, `think=True`, `temperature=0.6`, `num_predict=2000`)
+asks a **dedicated reasoning model** (`qwen3.6:35b`, separate from the conversation model)
+with extended reasoning (`think=True`, `temperature=0.6`, `num_predict=2000`)
 to search for deep structural isomorphisms between the two concepts,
 and — if an analogy is found — saves it as a **CANDIDATE insight**.
 
@@ -426,6 +427,61 @@ long enough to accumulate 30 messages. No restart required.
 
 The session produced 4 commits, 6 modified files, and approximately 120 new lines of production code —
 written between medical rest periods, via keyboard, on the same system being modified.
+
+---
+
+## 7c — Session 2026-04-29 (Evening): Dedicated Dream Model and Analogical Prompt
+
+The afternoon session addressed a latent architectural question:
+whether the reasoning model optimal for real-time conversation
+is also optimal for the generative, unconstrained work of the Dream Engine.
+
+**The hypothesis.** The two tasks have opposite requirements.
+Conversation demands low latency: Gemma 4 26B (17GB VRAM) returns responses in under 2 seconds.
+Dream Engine cycles run at night, with no latency budget,
+on memories that may come from any domain in the user's cognitive life.
+The quality constraint for dream generation is depth of analogical reasoning, not speed.
+
+**Qwen3.6 35B.** Released April 2026, dense architecture, 256K context window, 24GB on disk.
+The model was evaluated against the specific task of cross-domain isomorphism detection —
+asking it to find structural analogies between pairs of semantically distant memories.
+
+The result was immediate and qualitative.
+Where Gemma4 produced analogies like:
+> *"L'integrazione di un agente di riduzione delle resistenze ottimizza il processo minimizzando le complessità."*
+
+Qwen3.6 produced:
+> *"In ogni sistema complesso, la continuità del canale informativo prevale sulla rigidità normativa, poiché solo un flusso percettivo integro abilita il feedback adattivo necessario all'ottimizzazione dinamica."*
+
+The difference is not stylistic. Gemma4 connected two surface-level domain observations.
+Qwen3.6 extracted a principle from dynamical systems theory — one that applies equally to
+motorsport telemetry and software automation because it is about information flow in adaptive systems,
+not about either domain specifically.
+
+**The dual-model architecture** was formalized with a single config key:
+`DREAM_OLLAMA_MODEL = "qwen3.6:35b"`, separate from `OLLAMA_MODEL = "gemma4:26b"`.
+The separation is architectural: the two models never compete for VRAM during normal operation.
+Qwen3.6 loads only when the Dream Engine fires — at night, when Gemma4 is idle.
+
+**The analogical prompt** was redesigned to guide *how* the model reasons,
+not *what* it reasons about.
+The first iteration of the prompt was too prescriptive ("SCARTA se..."),
+causing Qwen3.6 to reject all 10 candidates in a test run — zero insights found.
+The production prompt uses a 3-step process (abstraction → shared dynamics → principle formulation)
+with a preference instruction rather than a hard rejection rule:
+
+> *"PREFERISCI analogie non ovvie — evita connessioni banali del tipo 'entrambi sono processi'.
+> Cerca il meccanismo profondo, non la somiglianza superficiale."*
+
+This distinction — preference vs. prohibition — is non-obvious but critical.
+A model instructed to *reject* shallow analogies applies the criterion conservatively and rejects everything.
+A model instructed to *prefer* deep analogies applies the criterion aspirationally and still produces output.
+The former produces silence; the latter produces better signal.
+
+**LLM timeout calibration.** The Qwen3.6 judge call (Loop 2c) took 85 seconds in testing,
+against a 90-second timeout set for Gemma4. The timeout was raised to 150 seconds —
+enough headroom for Qwen3.6 under moderate system load,
+conservative enough to still catch genuine hangs.
 
 ---
 
