@@ -70,6 +70,11 @@ r = get_redis()
 embedder = get_embedder()
 brain = get_brain()
 memory_manager = MemoryManager(r, embedder)
+if brain._episode_callback is None:
+    brain._episode_callback = lambda summary: memory_manager.save_memory(
+        summary,
+        category="episodio", source="episode"
+    )
 
 # Layout generale: 2 colonne (Main a sinistra, Terminale a destra)
 main_col, term_col = st.columns([2.5, 1.5], gap="large")
