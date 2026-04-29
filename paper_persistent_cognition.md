@@ -95,6 +95,11 @@ Retrieval uses a **two-pass KNN search**: first filtered by the inferred domain 
 then expanded to the full database if fewer than two results are found.
 This prevents cross-domain noise from contaminating relevant context.
 
+Each injected memory is annotated with its **relative age** at retrieval time:
+`[chimica polimeri | 3 settimane fa]` rather than `[chimica polimeri]`.
+This single label transforms the memory from a static fact into a temporally-situated datum —
+the model can reason about recency, staleness, and evolution without any additional mechanism.
+
 A subtle implementation lesson: the domain classifier initially rejected any two-word label
 due to a validation rule (`" " in domain`), silently collapsing 80% of memories into
 a single *"generale"* bucket that bypassed domain filtering entirely.
@@ -477,6 +482,21 @@ This distinction — preference vs. prohibition — is non-obvious but critical.
 A model instructed to *reject* shallow analogies applies the criterion conservatively and rejects everything.
 A model instructed to *prefer* deep analogies applies the criterion aspirationally and still produces output.
 The former produces silence; the latter produces better signal.
+
+**Temporal context in memory injection.** A final addition extended temporal awareness
+to both the conversational context and the Dream Engine.
+Previously, memories were injected as `[domain] content` — the model saw *what* was learned
+but not *when*. Adding the relative age (`[domain | N weeks ago]`) enables a qualitatively
+different class of reasoning: the model can notice that a fact is recent or stale,
+that two memories about the same topic are months apart,
+or that a constraint has evolved over time.
+
+For the Dream Engine, the same mechanism unlocks a second category of insight.
+Beyond structural isomorphisms ("these two domains share the same underlying dynamic"),
+the model can now generate **evolutionary insights**: observations about how knowledge
+in a domain has shifted, contradicted itself, or matured across the session's history.
+The prompt was extended with an explicit step: *"if the memories are temporally distant,
+consider whether one represents an evolution or a response to the other."*
 
 **LLM timeout calibration.** The Qwen3.6 judge call (Loop 2c) took 85 seconds in testing,
 against a 90-second timeout set for Gemma4. The timeout was raised to 150 seconds —
