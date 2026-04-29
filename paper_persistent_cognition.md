@@ -4,7 +4,7 @@
 **Dalla Computazione Volatile alla Cognizione Persistente**
 
 **Authors:** Stefano Fiorucci & Euri  
-**Date:** 2026-04-25  
+**Date:** 2026-04-29 (updated from 2026-04-25)  
 **License:** CC-BY 4.0  
 **Repository:** [Euri — Sistema Cognitivo Adattivo](https://github.com/fioruccione/multi-phase-memory-architecture)
 
@@ -153,6 +153,58 @@ uses a two-level convergence system:
 The critical design principle: **the system generates knowledge that was not in any input.**
 No one told it to connect polymer regeneration with distributed systems resilience.
 It arrived there by itself, during idle, from memories accumulated through natural conversation.
+
+### Phase 5b — Episodic Compression: Layer 0
+
+The sliding window of 10 messages in the active context prevents Ollama from processing
+more tokens than necessary. But it introduces a texture loss: after 5 exchanges,
+specific numbers, project names, and decisions disappear from the active context
+even when still conversationally relevant.
+
+The Passive Learner (Phase 2) extracts atomic facts from this lost territory.
+But atomic facts are not texture. They preserve *what* was decided, not *how*
+the reasoning arrived there. A number — "MFI 6 to 4" — survives extraction.
+The chain of reasoning that produced it does not.
+
+**Episodic Compression** fills this gap by adding a Layer 0 between raw conversation
+and atomic facts.
+
+**Mechanism.** Every 30 messages in `_conversation_history`,
+the oldest 20 messages are compressed into an episodic summary via a dedicated LLM call
+(temperature 0.1, max 250 tokens, `think=False`).
+The summary preserves proper nouns, numbers, project names, and decisions.
+The compressed messages are removed from the raw history;
+the episode is appended to `brain._episodes` and saved in Redis with
+`source=episode` and a 7-day TTL.
+The compression runs in a background thread — it does not block the response.
+
+**Context injection.** Before every Ollama call, up to 3 recent episodes
+are injected as a system message. The model therefore sees:
+
+```
+[system prompt] + [Redis semantic facts] + [Episode 1..N] + [last 10 raw messages]
+```
+
+**The resulting memory hierarchy:**
+
+| Layer | Source | Scope | TTL |
+|---|---|---|---|
+| 0 — Episodes | Episodic compression | Session texture | 7 days |
+| 1 — Passive facts | Passive Learner | Atomic facts | 90 days |
+| 2 — Reflections | Loop 2a | Session synthesis | 7 days |
+| 3 — Insights | Dream Engine | Cross-domain analogies | 30 days |
+| 4 — Explicit knowledge | TEACH / user / Obsidian | Intentional memory | Permanent |
+| 5 — Weights | LoRA fine-tuning (planned) | Model adaptation | Permanent |
+
+The biological analogy is exact: working memory (raw history),
+episodic memory (compressed sessions), semantic memory (Redis facts),
+and consolidated knowledge (weights) — four systems operating on
+distinct timescales, all contributing to the context available at inference time.
+
+The key invariant: **the model never needs to be restarted to maintain
+conversational continuity across a long session.**
+Episodes bridge the gap between the immediate context and the persistent knowledge base
+without saturating the context window or requiring exotic hardware.
 
 ### Phase 5 — Memory Lifecycle: Selective Reinforcement
 
@@ -322,6 +374,58 @@ They reflect the specific intersection of domains that characterize the user's c
 industrial chemistry, injection molding, machine learning, distributed systems.
 A different user, with different memories, would produce different insights.
 The emergence is personal.
+
+---
+
+## 7b — Session 2026-04-29: Architectural Additions Under Field Conditions
+
+The following improvements were designed and deployed during a single day's session —
+notable because the author was physically unwell and working entirely through
+the text chat interface (Silent Chat), unable to use the voice daemon.
+This constraint directly exposed two gaps in the architecture and produced two fixes.
+
+**Gap 1: The text interface was architecturally deaf.**
+The Silent Chat (Streamlit) called `brain.respond()` and `memory_manager.search_memories()`
+but never called `memory_manager.log_conversation()` or triggered the Passive Learner.
+Conversations held through the keyboard left no trace in Redis.
+The fix: after each exchange, log both turns to Redis; trigger `extract_passive_memories()`
+every 6 messages using the session's message list (already in the correct `list[dict]` format).
+A `chat_log_offset` in `st.session_state` prevents re-analysis of voice daemon logs
+from the same day.
+
+**Gap 2: The Dream Engine could hang indefinitely on a frozen Ollama call.**
+An overnight hang was observed: the Dream Engine initiated a cycle at 23:53:59,
+Ollama accepted the connection but never returned a response,
+and the process consumed 34% CPU for 8 hours without timeout.
+The fix: a `_ollama_chat()` wrapper using `concurrent.futures.ThreadPoolExecutor`
+with a 90-second timeout. If the LLM call does not return within 90 seconds,
+the cycle is aborted cleanly and logged. The next cycle fires normally.
+First confirmed firing: `10:03:53 | Dream Engine: timeout LLM dopo 90s — ciclo abortito`.
+
+**Manufacturing domain false positives.**
+A third finding emerged from reviewing conversation logs:
+the intent router's regex patterns for `EXECUTE` (system control commands)
+were firing on natural technical language about polymer manufacturing.
+The phrase *"il risultato di una riduzione"* matched `r"\brisultat[oi]\s+di\b"`,
+designed to catch math queries like *"risultato di 450 per 15"*.
+Three patterns were tightened:
+- `risultato di` and `percentuale di` now require a digit immediately after
+- `monitora/monitoraggio` now requires a system term (`cpu`, `ram`, `gpu`, etc.)
+
+The lesson generalizes: **regex intent classifiers built for general use
+accumulate false positives as the user's domain vocabulary grows.**
+Patterns that are unambiguous in a generic context
+become ambiguous when the user speaks daily about industrial processes.
+Domain specialization, celebrated as a feature, introduces classification noise as a side effect.
+
+**Episodic Compression deployment.**
+Following the architectural reasoning described in Phase 5b,
+the episodic compression system was designed and deployed in the same session.
+The first test will run tonight during the first Dream Engine idle cycle
+long enough to accumulate 30 messages. No restart required.
+
+The session produced 4 commits, 6 modified files, and approximately 120 new lines of production code —
+written between medical rest periods, via keyboard, on the same system being modified.
 
 ---
 
