@@ -173,6 +173,14 @@ MEMORY_TTL_PASSIVE_DAYS = 90
 # Loop 2d: soglia recalled_count per estendere TTL senza invocare il giudice LLM.
 MEMORY_KEEP_IF_RECALLED = 3
 
+# Episodic Compression (Layer 0 — memoria di sessione)
+# Ogni EPISODE_COMPRESSION_THRESHOLD messaggi, i più vecchi vengono compressi in un episodio.
+# Gli episodi sopravvivono EPISODE_TTL_DAYS giorni in Redis e vengono iniettati come contesto.
+EPISODE_COMPRESSION_THRESHOLD = 30   # messaggi in history prima di comprimere
+EPISODE_COMPRESSION_CHUNK = 20       # messaggi da comprimere in un blocco
+EPISODE_TTL_DAYS = 7
+EPISODE_MAX_INJECT = 3               # max episodi iniettati nel contesto Ollama
+
 # Obsidian Integration (Phase 3)
 OBSIDIAN_SYNC_ENABLED = True
 OBSIDIAN_VAULT_PATH = "/home/fio/EuriVault"

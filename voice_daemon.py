@@ -100,6 +100,10 @@ class VoiceDaemon:
         self.memory = MemoryManager(self.r, embedder=self.embedder)
         self.brain = Brain()
         Brain._shared_instance = self.brain  # Condivisa col CodeRunner
+        self.brain._episode_callback = lambda summary: self.memory.save_memory(
+            {"content": summary, "domain": "episodio", "tags": "episodio,sessione"},
+            category="episodio", source="episode"
+        )
         self.executor = Executor()
         self.vad = VAD()
         self.stt = STT()

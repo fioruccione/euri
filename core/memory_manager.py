@@ -18,6 +18,7 @@ _TTL_BY_SOURCE: dict[str, int] = {
     "passive":      90,
     "reflection":   90,
     "conversation": 90,
+    "episode":       7,
 }
 # Memorie user/teach/obsidian_vault non hanno TTL automatico — non compaiono qui.
 

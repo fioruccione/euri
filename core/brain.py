@@ -4,6 +4,7 @@ Interviene per: generazione risposte naturali, comprensione complessa, disambigu
 """
 import re
 import time
+import threading
 from loguru import logger
 import ollama
 import config
@@ -15,6 +16,9 @@ class Brain:
         self._conversation_history: list[dict] = []
         self._max_history = 10  # ultimi 10 scambi in contesto
         self._next_trusted = False  # impostato da voice_daemon prima di respond()
+        self._episodes: list[str] = []       # episodi compressi della sessione corrente
+        self._compress_lock = threading.Lock()
+        self._episode_callback = None        # fn(summary: str) → salva in Redis; iniettata da voice_daemon
 
     @staticmethod
     def _clean(text: str) -> str:
@@ -44,6 +48,14 @@ class Brain:
             "content": "Contesto disponibile:\n" + "\n".join(ctx_parts)
         })
 
+        # Episodi compressi della sessione corrente (max EPISODE_MAX_INJECT)
+        if self._episodes:
+            ep_text = "\n\n".join(
+                f"[Episodio {i+1}] {ep}"
+                for i, ep in enumerate(self._episodes[-config.EPISODE_MAX_INJECT:])
+            )
+            messages.append({"role": "system", "content": f"Episodi conversazione corrente:\n{ep_text}"})
+
         # Aggiungi storico recente (solo role+content — strip dei campi extra)
         messages.extend(
             {"role": m["role"], "content": m["content"]}
@@ -69,11 +81,50 @@ class Brain:
             self._conversation_history.append({"role": "assistant", "content": reply, "trusted": self._next_trusted})
             self._next_trusted = False  # reset — il prossimo scambio è non-trusted di default
 
+            # Compressione episodica in background se la history è abbastanza lunga
+            if len(self._conversation_history) >= config.EPISODE_COMPRESSION_THRESHOLD:
+                threading.Thread(target=self._compress_episode, daemon=True).start()
+
             return reply
 
         except Exception as e:
             logger.error(f"Errore Ollama: {e}")
             return "Scusa, ho avuto un problema. Riprova."
+
+    def _compress_episode(self):
+        """Comprime i messaggi più vecchi in un episodio — gira in background."""
+        with self._compress_lock:
+            if len(self._conversation_history) < config.EPISODE_COMPRESSION_THRESHOLD:
+                return  # un altro thread ha già compresso
+            chunk = self._conversation_history[:config.EPISODE_COMPRESSION_CHUNK]
+            lines = []
+            for m in chunk:
+                role = "Stefano" if m["role"] == "user" else "Euri"
+                lines.append(f"{role}: {m['content']}")
+            dialogue = "\n".join(lines)
+            prompt = (
+                "Riassumi questa conversazione in modo conciso ma preciso. "
+                "Preserva: nomi propri, numeri, nomi di progetto, decisioni, fatti tecnici. "
+                "Scrivi in terza persona. Max 120 parole.\n\n"
+                f"{dialogue}\n\nRiassunto:"
+            )
+            try:
+                response = ollama.chat(
+                    model=config.OLLAMA_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    options={"temperature": 0.1, "num_predict": 250},
+                    think=False,
+                )
+                summary = self._clean(response.message.content or "")
+                if not summary:
+                    return
+                self._conversation_history = self._conversation_history[config.EPISODE_COMPRESSION_CHUNK:]
+                self._episodes.append(summary)
+                logger.info(f"Episodic compression: {config.EPISODE_COMPRESSION_CHUNK} messaggi → episodio #{len(self._episodes)}")
+                if self._episode_callback:
+                    self._episode_callback(summary)
+            except Exception as e:
+                logger.error(f"Episodic compression errore: {e}")
 
     def confirm_save(self, item_type: str, content: str, due_at_str: str = "") -> str:
         """
