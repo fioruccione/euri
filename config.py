@@ -27,6 +27,9 @@ REDIS_DB = 0
 # Ollama
 OLLAMA_HOST = "http://localhost:11434"
 OLLAMA_MODEL = "gemma4:26b"   # verifica con `ollama list`
+# Modello dedicato al Dream Engine (sogni notturni + insight).
+# Separato da OLLAMA_MODEL per poter usare un modello più capace per il ragionamento astratto.
+DREAM_OLLAMA_MODEL = "qwen3.6:35b"
 
 # STT
 WHISPER_LANGUAGE = "it"

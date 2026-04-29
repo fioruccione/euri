@@ -65,8 +65,8 @@ class DreamEngine:
         return elapsed_hours >= config.DREAM_ENGINE_IDLE_HOURS
 
     def _ollama_chat(self, **kwargs) -> ollama.ChatResponse:
-        """Wrapper con timeout (default 90s) attorno a ollama.chat — evita hang notturni."""
-        timeout = kwargs.pop("_timeout", 90)
+        """Wrapper con timeout (default 150s) attorno a ollama.chat — evita hang notturni."""
+        timeout = kwargs.pop("_timeout", 150)
         with ThreadPoolExecutor(max_workers=1) as ex:
             future = ex.submit(ollama.chat, **kwargs)
             try:
@@ -193,8 +193,14 @@ class DreamEngine:
         
         # Chiedi a Gemma se esiste un isomorfismo
         prompt = f"""\
-Sei un sistema cognitivo che analizza due memorie apparentemente slegate per trovare analogie profonde, 
-isomorfismi strutturali o pattern nascosti che possano generare un Insight (intuizione utile).
+Sei un motore cognitivo analogico. Il tuo compito è trovare isomorfismi strutturali tra due memorie di domini distinti.
+
+PROCESSO:
+1. Astrai ogni memoria alla sua struttura logica essenziale, ignorando i dettagli di dominio.
+2. Cerca se le due strutture condividono la stessa dinamica sottostante: stesso vincolo, stesso meccanismo causale, stessa legge emergente.
+3. Formula il principio generale che li governa entrambi.
+
+PREFERISCI analogie non ovvie — evita connessioni banali del tipo "entrambi sono processi". Cerca il meccanismo profondo, non la somiglianza superficiale.
 
 Memoria A (dominio: {dom_a}):
 "{mem_a['content']}"
@@ -202,15 +208,12 @@ Memoria A (dominio: {dom_a}):
 Memoria B (dominio: {dom_b}):
 "{mem_b['content']}"
 
-Esiste un'analogia astratta e non banale tra questi due concetti? 
-Puoi estrarre un principio generale utile che li accomuna?
-
-Se NON c'è nessuna analogia sensata, rispondi SOLO: "NESSUN INSIGHT".
-Se invece c'è, descrivi l'insight in UNA sola frase chiara e concisa."""
+Se proprio non esiste nessuna connessione sensata, rispondi SOLO: "NESSUN INSIGHT".
+Altrimenti formula l'insight come principio generale in UNA sola frase concisa."""
 
         try:
             response = self._ollama_chat(
-                model=config.OLLAMA_MODEL,
+                model=config.DREAM_OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": 0.6, "num_predict": 2000},
                 think=True,
@@ -290,7 +293,7 @@ anche se formulati con parole diverse?
 Rispondi SOLO con SÌ o NO."""
         try:
             response = self._ollama_chat(
-                model=config.OLLAMA_MODEL,
+                model=config.DREAM_OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": 0, "num_predict": 1500},
                 think=True,
