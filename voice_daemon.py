@@ -123,6 +123,8 @@ class VoiceDaemon:
         self._teach_asked: list[str] = []
         self._teach_pending_save = ""
         self._web_pending: dict = {}  # contesto ultima ricerca web (per "approfondisci" / "salva")
+        self._pending_todo: dict | None = None   # todo in attesa di conferma
+        self._pending_todo_ts: float = 0.0       # timestamp della domanda (timeout 60s)
         self._translate_bidir = False       # modalità interprete bidirezionale IT↔EN
         self._dictation_mode = False
         self._dictation_buffer: list[str] = []
@@ -358,18 +360,44 @@ class VoiceDaemon:
         from core.validator import validate_payload
         content = extract_content_after_trigger(text, SAVE_TODO_TRIGGERS)
         if not content:
-            self._speak("Cosa devi fare?")
+            self._speak("Cosa devo segnarti?")
             return
         content = validate_payload(content, "todo")
         if not content:
             self._speak("Non sembra un impegno concreto.")
             return
         if self.memory.is_duplicate_todo(content):
-            self._speak("L'ho già in lista oggi.")
+            self._speak("L'ho già in lista.")
             return
         due_at = extract_due_date(text)
+        # Non salva subito — chiede conferma e dettagli
+        self._pending_todo = {"content": content, "due_at": due_at}
+        self._pending_todo_ts = time.time()
+        due_str = f", scadenza {format_datetime(due_at)}" if due_at else ""
+        self._speak(f"Segno: '{content}'{due_str}. Vuoi aggiungere dettagli o una scadenza? Oppure dimmi 'no' per annullare.")
+
+    def _handle_pending_todo(self, text: str):
+        """Gestisce la risposta di conferma/dettaglio/annullamento per un todo in attesa."""
+        _CANCEL = re.compile(r'\b(no|annulla|lascia\s+perdere|non\s+salvare|non\s+voglio|scrap)\b', re.I)
+        _CONFIRM = re.compile(r'\b(sì|si|ok|vai|salva|conferma|basta\s+così|va\s+bene)\b', re.I)
+
+        pending = self._pending_todo
+        self._pending_todo = None
+        self._pending_todo_ts = 0.0
+
+        if _CANCEL.search(text):
+            self._speak("Ok, non segno niente.")
+            return
+
+        content = pending["content"]
+        due_at = pending["due_at"]
+
+        if not _CONFIRM.search(text):
+            # L'utente ha aggiunto dettagli — arricchisce il contenuto
+            due_at = extract_due_date(text) or due_at
+            content = f"{content} — {text.strip()}"
+
         self.memory.save_todo(content, due_at=due_at)
-        self.memory.log_conversation("Stefano", text)
         due_str = format_datetime(due_at) if due_at else ""
         reply = self.brain.confirm_save("todo", content, due_str)
         self.memory.log_conversation("Euri", reply)
@@ -967,6 +995,16 @@ class VoiceDaemon:
             self._handle_teach_recovery(text)
             return
 
+
+        # Todo pending: attende conferma/dettagli/annullamento (timeout 60s)
+        if self._pending_todo:
+            if time.time() - self._pending_todo_ts > 60:
+                self._pending_todo = None
+                self._pending_todo_ts = 0.0
+                logger.debug("Todo pending scaduto (timeout 60s)")
+            else:
+                self._handle_pending_todo(text)
+                return
 
         # Audit memory: attende sì/no per cancellare le memorie rumore
         if self._audit_confirm_mode:
