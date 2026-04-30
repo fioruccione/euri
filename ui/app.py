@@ -161,7 +161,7 @@ with main_col:
         # Recuperiamo le chiavi da redis
         welford_keys = r.keys("euri:welford:*")
         if not welford_keys:
-            st.info("Nessuno stato Welford trovato. Euri non ha ancora imparato niente.")
+            st.info("Nessuno stato Welford in questa sessione. I centroidi si ricostruiscono automaticamente con le prossime conversazioni — normale dopo un riavvio.")
         else:
             # Prepariamo i dati per la tabella
             welford_data = []
