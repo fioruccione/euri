@@ -351,7 +351,7 @@ class MemoryManager:
         return True
 
     def find_todo_by_content(self, query: str) -> list[dict]:
-        return self._query_todos(query, limit=3)
+        return self._query_todos(self._sanitize_query(query), limit=3)
 
     @staticmethod
     def _safe_keywords(content: str) -> list[str]:
@@ -492,7 +492,7 @@ class MemoryManager:
 
     def _query_todos(self, query: str, limit: int = 20) -> list[dict]:
         try:
-            q = Query(self._sanitize_query(query)).paging(0, limit).sort_by("due_at", asc=True)
+            q = Query(query).paging(0, limit).sort_by("due_at", asc=True)
             results = self.r.ft("idx:todos").search(q)
             docs = []
             for doc in results.docs:
