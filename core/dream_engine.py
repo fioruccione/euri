@@ -106,9 +106,10 @@ class DreamEngine:
                 
             # 2. Loop 2b: Sogni Onirici
             dream = self._generate_dream(domains)
-            if dream and dream.get("status") == "candidate":
-                # 3. Loop 2c: Valutazione Insight
-                self._evaluate_insights()
+
+            # 3. Loop 2c: Valutazione Insight — sempre, non solo se il sogno ha prodotto un candidato.
+            # I candidati accumulati nei cicli precedenti vanno valutati indipendentemente.
+            self._evaluate_insights()
                 
             # 4. Pulizia Insight scaduti
             self._cleanup_expired_insights()
