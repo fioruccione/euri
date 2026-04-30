@@ -127,6 +127,7 @@ class VoiceDaemon:
         self._pending_todo_ts: float = 0.0       # timestamp della domanda (timeout 60s)
         self._pending_write: dict | None = None  # richiesta scrittura file in attesa di conferma
         self._pending_write_ts: float = 0.0      # timestamp (timeout 120s)
+        self._last_speech_content: str = ""      # ultima risposta lunga di Euri (per "scrivilo")
         self._translate_bidir = False       # modalità interprete bidirezionale IT↔EN
         self._dictation_mode = False
         self._dictation_buffer: list[str] = []
@@ -404,6 +405,13 @@ class VoiceDaemon:
         reply = self.brain.confirm_save("todo", content, due_str)
         self.memory.log_conversation("Euri", reply)
         self._speak(reply)
+
+    _SAVE_REPLY_RE = re.compile(
+        r'\b(sì|si)[,.]?\s*(scrivilo?|salvalo?|mettilo?)\b'
+        r'|\b(scrivilo?|salvalo?)\s*(lo|la|quello|questo)?\s*(nella?|sul?|in)\s*(cartella|file|disco|documento|testo)\b'
+        r'|\bsalva\s+(quello\s+che\s+hai\s+(detto|appena\s+detto)|la\s+risposta|il\s+riassunto)\b',
+        re.IGNORECASE
+    )
 
     _WRITE_REQUEST_RE = re.compile(
         r'\b(potresti|puoi|riesci|mi\s+fai|fammi)\s+'
@@ -890,6 +898,8 @@ class VoiceDaemon:
         context = (context + "\n\n" if context else "") + "[Modalità conversazione: sii presente e naturale, non rigido.]"
         reply = self.brain.respond(text, context=context)
         self.memory.log_conversation("Euri", reply)
+        if len(reply) > 150:
+            self._last_speech_content = reply
         self._speak(reply)
 
     def _handle_teach(self, text: str):
@@ -1076,6 +1086,21 @@ class VoiceDaemon:
         # Teach mode: intercetta prima della classificazione normale
         if self._teach_mode:
             self._handle_teach_continue(text)
+            return
+
+        # "Scrivilo / salvalo" dopo una risposta lunga → usa il contenuto dell'ultima risposta
+        if self._last_speech_content and self._SAVE_REPLY_RE.search(text):
+            from agent.tools.text_writer import tool_write_text
+            self.memory.log_conversation("Stefano", text)
+            res = tool_write_text({"text": self._last_speech_content})
+            if res.success:
+                fname = res.raw_data.get("filepath", "file").split("/")[-1]
+                reply = f"Salvato in {fname}."
+            else:
+                reply = "Errore nel salvataggio."
+            self._last_speech_content = ""
+            self.memory.log_conversation("Euri", reply)
+            self._speak(reply)
             return
 
         _t_classify = time.perf_counter()

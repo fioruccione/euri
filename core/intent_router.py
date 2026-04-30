@@ -91,7 +91,7 @@ _PATTERNS: list[tuple[Intent, list[str]]] = [
         r"\btraduci\b",
         r"\bmodalit[àa]\s+trad\w*\b",
         r"\bmodalit[àa]\s+interprete\b",
-        r"\bcome\s+si\s+dice\b",
+        r"\bcome\s+si\s+dice\s+(in\s+)?(inglese|francese|spagnolo|tedesco|cinese|giapponese|russo|arabo|portoghese)\b",
         r"\btraduzione\s+(in\s+)?tempo\s+reale\b",
         r"\binizia\s+a\s+tradurre\b",
         r"\bfacciamo\s+(?:una\s+)?traduzione\b",
