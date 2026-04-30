@@ -125,6 +125,8 @@ class VoiceDaemon:
         self._web_pending: dict = {}  # contesto ultima ricerca web (per "approfondisci" / "salva")
         self._pending_todo: dict | None = None   # todo in attesa di conferma
         self._pending_todo_ts: float = 0.0       # timestamp della domanda (timeout 60s)
+        self._pending_write: dict | None = None  # richiesta scrittura file in attesa di conferma
+        self._pending_write_ts: float = 0.0      # timestamp (timeout 120s)
         self._translate_bidir = False       # modalità interprete bidirezionale IT↔EN
         self._dictation_mode = False
         self._dictation_buffer: list[str] = []
@@ -402,6 +404,32 @@ class VoiceDaemon:
         reply = self.brain.confirm_save("todo", content, due_str)
         self.memory.log_conversation("Euri", reply)
         self._speak(reply)
+
+    _WRITE_REQUEST_RE = re.compile(
+        r'\b(potresti|puoi|riesci|mi\s+fai|fammi)\s+'
+        r'(crea[ri]?|scriv[ei]?|generar[ei]?|preparar[ei]?|far[ei]?)\s+'
+        r'(un[ao]?\s+)?(file|riassunto|testo|documento|report|schema|bozza|nota)\b',
+        re.IGNORECASE
+    )
+
+    def _handle_pending_write(self, text: str):
+        """Gestisce la risposta di conferma/dettaglio/annullamento per una richiesta di scrittura file."""
+        _CANCEL = re.compile(r'\b(no|annulla|lascia\s+perdere|non\s+importa|non\s+voglio|scrap)\b', re.I)
+        _CONFIRM = re.compile(r'\b(sì|si|ok|vai|procedi|fai|conferm[ao]|basta\s+così|va\s+bene)\b', re.I)
+
+        pending = self._pending_write
+        self._pending_write = None
+        self._pending_write_ts = 0.0
+
+        if _CANCEL.search(text):
+            self._speak("Ok, non creo niente.")
+            return
+
+        task = pending["task"]
+        if not _CONFIRM.search(text):
+            task = f"{task} — in più: {text.strip()}"
+
+        self._handle_execute(task)
 
     def _handle_save_note(self, text: str):
         from core.validator import validate_payload
@@ -850,6 +878,14 @@ class VoiceDaemon:
 
     def _handle_chat(self, text: str):
         self.memory.log_conversation("Stefano", text)
+
+        # Intercetta richieste conversazionali di creazione file prima di chiamare l'LLM
+        if self._WRITE_REQUEST_RE.search(text):
+            self._pending_write = {"task": text}
+            self._pending_write_ts = time.time()
+            self._speak("Perfetto. Di' 'vai' per procedere subito, oppure aggiungimi dettagli da includere nel file.")
+            return
+
         context = self._build_context(text)
         context = (context + "\n\n" if context else "") + "[Modalità conversazione: sii presente e naturale, non rigido.]"
         reply = self.brain.respond(text, context=context)
@@ -1004,6 +1040,16 @@ class VoiceDaemon:
                 logger.debug("Todo pending scaduto (timeout 60s)")
             else:
                 self._handle_pending_todo(text)
+                return
+
+        # Write pending: attende conferma/dettagli/annullamento (timeout 120s)
+        if self._pending_write:
+            if time.time() - self._pending_write_ts > 120:
+                self._pending_write = None
+                self._pending_write_ts = 0.0
+                logger.debug("Write pending scaduto (timeout 120s)")
+            else:
+                self._handle_pending_write(text)
                 return
 
         # Audit memory: attende sì/no per cancellare le memorie rumore

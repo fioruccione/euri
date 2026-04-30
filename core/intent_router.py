@@ -160,6 +160,8 @@ _PATTERNS: list[tuple[Intent, list[str]]] = [
         r"\b(unisci|fondi|combina|merge|raggruppa)\s+.*(csv|file|pdf|excel|dati|document[io]|docx?|txt|json|xml|markdown|md|ods|odt|odp|libreoffice|calc|writer)\b",
         r"\b(leggi|apri|elabora|processa|converti|trasforma|analizza|controlla|riassumi|estrai|cerca\s+nel)\s+.*(csv|file|pdf|excel|dati|document[io]|docx?|txt|json|xml|markdown|md|testo|presentazion[ei]|ppt|ods|odt|odp|libreoffice|calc|writer)\b",
         r"\b(crea|genera|esporta|salva|scrivi)\s+.*(csv|file|pdf|excel|grafico|report|tabella|document[io]|txt|ods|odt|odp)\b",
+        r"\bcrea[ri]?\s+(un\s+)?(file|riassunto|testo|documento|report)\b",
+        r"\b(salva|scrivi|metti|esporta).*(cartella\s+(di\s+)?scambio|scambio_dati)\b",
         r"\b(ridimensiona|comprimi|ruota|taglia)\s+.*(foto|immagin[ei])\b",
         r"\bcartella\s+dati\b",
         r"\b(descrivi|analizza|controlla|guarda|leggi)\s+.*(foto|immagin[ei]|screenshot)\b",
