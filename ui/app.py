@@ -329,3 +329,40 @@ with main_col:
                     for idx, res in enumerate(results):
                         with st.expander(f"#{idx+1} [Score: {res['score']:.3f}] [{res.get('domain', 'generale')}] {res['content'][:50]}..."):
                             st.write(res["content"])
+
+        # ── TODO MANAGER ──────────────────────────────────────────────────────
+        st.markdown("---")
+        st.subheader("📋 Todo Manager")
+
+        pending = memory_manager.get_pending_todos()
+
+        if not pending:
+            st.info("Nessun todo pendente.")
+        else:
+            st.caption(f"{len(pending)} todo pendenti")
+            for todo in pending:
+                tid = todo.get("id", "")
+                content = todo.get("content", "")
+                due = todo.get("_due_at")
+                priority = todo.get("priority", "media")
+                due_str = due.strftime("%d/%m %H:%M") if due else "nessuna scadenza"
+                badge = "🔴" if priority == "alta" else "🟡" if priority == "media" else "🟢"
+
+                with st.expander(f"{badge} {content[:60]} | {due_str}"):
+                    new_content = st.text_input("Contenuto", value=content, key=f"edit_{tid}")
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        if st.button("💾 Salva", key=f"save_{tid}"):
+                            r.json().set(f"euri:todo:{tid}", "$.content", new_content)
+                            st.success("Aggiornato!")
+                            st.rerun()
+                    with c2:
+                        if st.button("✅ Completa", key=f"done_{tid}"):
+                            memory_manager.complete_todo(tid)
+                            st.success("Completato!")
+                            st.rerun()
+                    with c3:
+                        if st.button("🗑️ Elimina", key=f"del_{tid}"):
+                            r.delete(f"euri:todo:{tid}")
+                            st.success("Eliminato!")
+                            st.rerun()
