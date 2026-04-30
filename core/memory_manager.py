@@ -2,6 +2,7 @@
 CRUD Redis per memories, todos, notes.
 Tutte le operazioni usano Redis JSON + RediSearch.
 """
+import re
 import uuid
 from datetime import datetime
 from loguru import logger
@@ -113,6 +114,12 @@ class MemoryManager:
         return self._search_keyword(query, limit, source_filter=source_filter)
 
     @staticmethod
+    def _sanitize_query(text: str) -> str:
+        """Rimuove caratteri speciali RediSearch da input utente grezzo."""
+        clean = re.sub(r'[^\w\sàáâãäåèéêëìíîïòóôõöùúûüÀÁÂÃÄÅÈÉÊËÌÍÎÏÒÓÔÕÖÙÚÛÜ]', ' ', text)
+        return ' '.join(clean.split()) or "*"
+
+    @staticmethod
     def _source_prefix(source_filter: list[str] | None) -> str:
         """Restituisce il prefisso RediSearch per filtrare per source, o stringa vuota."""
         if not source_filter:
@@ -123,15 +130,16 @@ class MemoryManager:
     def _search_keyword(self, query: str, limit: int, source_filter: list[str] | None = None) -> list[dict]:
         try:
             prefix = self._source_prefix(source_filter).strip()
-            
+            safe_query = query if query == "*" else self._sanitize_query(query)
+
             # Se abbiamo sia un filtro source che una query testuale, li isoliamo con parentesi
             # altrimenti operatori testuali come '|' (OR) rompono l'AST di RediSearch.
-            if prefix and query != "*":
-                full_query = f"({prefix}) ({query})"
-            elif prefix and query == "*":
+            if prefix and safe_query != "*":
+                full_query = f"({prefix}) ({safe_query})"
+            elif prefix and safe_query == "*":
                 full_query = prefix  # Se query è "*", usiamo solo il filtro tag
             else:
-                full_query = query
+                full_query = safe_query
                 
             q = Query(full_query).paging(0, limit).sort_by("created_at", asc=False)
             results = self.r.ft("idx:memories").search(q)
@@ -484,7 +492,7 @@ class MemoryManager:
 
     def _query_todos(self, query: str, limit: int = 20) -> list[dict]:
         try:
-            q = Query(query).paging(0, limit).sort_by("due_at", asc=True)
+            q = Query(self._sanitize_query(query)).paging(0, limit).sort_by("due_at", asc=True)
             results = self.r.ft("idx:todos").search(q)
             docs = []
             for doc in results.docs:
@@ -519,9 +527,10 @@ class MemoryManager:
         return nid
 
     def search_notes(self, query: str, category: str = None, limit: int = 5) -> list[dict]:
-        q_str = query
+        safe = self._sanitize_query(query)
+        q_str = safe
         if category:
-            q_str = f"@category:{{{category}}} {query}"
+            q_str = f"@category:{{{category}}} {safe}"
         try:
             q = Query(q_str).paging(0, limit).sort_by("created_at", asc=False)
             results = self.r.ft("idx:notes").search(q)
