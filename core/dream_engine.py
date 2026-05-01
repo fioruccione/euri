@@ -231,7 +231,9 @@ Memoria A ({label_a}):
 Memoria B ({label_b}):
 "{mem_b['content']}"
 
-Genera SEMPRE un principio generale in UNA sola frase concisa. Anche se la connessione è indiretta o metaforica, esplicitala. Il tuo compito è la sintesi creativa — la valutazione critica avviene dopo, non adesso."""
+Formula l'insight in 2-4 frasi. La prima frase enuncia il principio generale. Le successive spiegano PERCHÉ le due strutture condividono quel meccanismo — non solo che si somigliano, ma quale forza o vincolo produce lo stesso comportamento in entrambi i domini. Se il concetto è complesso (processi industriali, materiali, relazioni tra persone, sistemi tecnici), usa tutto lo spazio necessario per renderlo preciso e non banale.
+
+Rispondi con NESSUN INSIGHT solo se le due memorie riguardano aspetti così specifici e non generalizzabili che qualsiasi connessione risulterebbe artificiosa o fuorviante."""
 
         try:
             response = self._ollama_chat(
