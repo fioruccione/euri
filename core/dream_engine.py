@@ -231,8 +231,7 @@ Memoria A ({label_a}):
 Memoria B ({label_b}):
 "{mem_b['content']}"
 
-Se proprio non esiste nessuna connessione sensata, rispondi SOLO: "NESSUN INSIGHT".
-Altrimenti formula l'insight come principio generale in UNA sola frase concisa."""
+Genera SEMPRE un principio generale in UNA sola frase concisa. Anche se la connessione è indiretta o metaforica, esplicitala. Il tuo compito è la sintesi creativa — la valutazione critica avviene dopo, non adesso."""
 
         try:
             response = self._ollama_chat(
