@@ -210,31 +210,40 @@ with main_col:
 
             # Ricerca veloce su Redis per iniettare contesto
             with st.spinner("Cerco nella memoria..."):
-                results = memory_manager.search_memories(prompt, limit=3)
+                import time as _time
+
+                def _age_label(ts):
+                    try:
+                        days = (_time.time() - float(ts)) / 86400 if ts else None
+                    except Exception:
+                        days = None
+                    if days is None: return ""
+                    if days < 1: return "oggi"
+                    if days < 7: return f"{int(days)}g fa"
+                    if days < 30: return f"{int(days/7)}sett fa"
+                    if days < 365: return f"{int(days/30)}mesi fa"
+                    return f"{int(days/365)}anni fa"
+
+                def _fmt(r):
+                    age = _age_label(r.get("created_at"))
+                    label = f"[{r.get('domain', 'generale')} | {age}]" if age else f"[{r.get('domain', 'generale')}]"
+                    return f"- {label} {r['content']}"
+
+                # Memorie recenti per timestamp (sempre — danno continuità dopo riavvio)
+                recent = memory_manager.get_recent_memories(limit=4)
+                recent_ids = {r.get("id") for r in recent}
+
+                # Memorie semanticamente rilevanti per la query corrente
+                semantic = [r for r in memory_manager.search_memories(prompt, limit=3)
+                            if r.get("id") not in recent_ids]
+
                 context = ""
-                if results:
-                    context = "MEMORIE CORRELATE TROVATE IN REDIS:\n"
-                    for r in results:
-                        import time as _time
-                        ts = r.get("created_at")
-                        try:
-                            days = (_time.time() - float(ts)) / 86400 if ts else None
-                        except Exception:
-                            days = None
-                        if days is None:
-                            age = ""
-                        elif days < 1:
-                            age = "oggi"
-                        elif days < 7:
-                            age = f"{int(days)}g fa"
-                        elif days < 30:
-                            age = f"{int(days/7)}sett fa"
-                        elif days < 365:
-                            age = f"{int(days/30)}mesi fa"
-                        else:
-                            age = f"{int(days/365)}anni fa"
-                        label = f"[{r.get('domain', 'generale')} | {age}]" if age else f"[{r.get('domain', 'generale')}]"
-                        context += f"- {label} {r['content']}\n"
+                if recent:
+                    context += "MEMORIE RECENTI (ultime per data):\n"
+                    context += "\n".join(_fmt(r) for r in recent) + "\n"
+                if semantic:
+                    context += "\nMEMORIE CORRELATE ALLA DOMANDA:\n"
+                    context += "\n".join(_fmt(r) for r in semantic) + "\n"
 
             # Risposta Euri
             with st.chat_message("assistant"):
