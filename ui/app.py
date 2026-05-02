@@ -239,7 +239,9 @@ with main_col:
             # Risposta Euri
             with st.chat_message("assistant"):
                 with st.spinner("Euri sta pensando..."):
-                    response = brain.respond(prompt, context=context)
+                    chat_hint = "[Modalità chat testuale — nessun vincolo TTS. Puoi rispondere con più profondità, sviluppare i concetti, fare domande di ritorno. Sii presente e partecipe come in una conversazione reale.]"
+                    context_full = (context + "\n\n" + chat_hint) if context else chat_hint
+                    response = brain.respond(prompt, context=context_full)
                     st.markdown(response)
 
             # Salva risposta
