@@ -225,6 +225,8 @@ with main_col:
             st.session_state.voice_history = []
         if "mobile_waiting" not in st.session_state:
             st.session_state.mobile_waiting = False
+        if "audio_widget_key" not in st.session_state:
+            st.session_state.audio_widget_key = 0
 
         def _d(v):
             return v.decode() if isinstance(v, bytes) else (v or "")
@@ -359,9 +361,16 @@ with main_col:
         with tab_manual:
             st.caption("Premi il microfono, parla, aspetta la risposta audio.")
 
-            audio_input = st.audio_input("🎤 Registra e invia")
+            # La key cambia dopo ogni invio: il rerun da st.rerun() trova un widget
+            # fresco (valore None) e non rimanda lo stesso audio in loop.
+            audio_input = st.audio_input(
+                "🎤 Registra e invia",
+                key=f"audio_{st.session_state.audio_widget_key}",
+            )
 
             if audio_input is not None and not st.session_state.mobile_waiting:
+                # Incrementa subito la key — il prossimo rerun vedrà widget vuoto
+                st.session_state.audio_widget_key += 1
                 raw = audio_input.getvalue()
                 with io.BytesIO(raw) as buf:
                     with wave.open(buf) as wf:
@@ -371,7 +380,6 @@ with main_col:
                 audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
                 if n_ch > 1:
                     audio = audio.reshape(-1, n_ch).mean(axis=1)
-                # Manda al daemon al sample rate originale (il daemon risampla)
                 _send_audio_to_daemon(audio, sr_wav)
 
     # ── PAGE 1: TELEMETRIA ────────────────────────────────────────────────────────
