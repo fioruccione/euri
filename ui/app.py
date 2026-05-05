@@ -87,9 +87,9 @@ def get_voice_processor():
 
     audio_q: _queue.Queue = _queue.Queue(maxsize=1)
 
-    ENERGY_THR = 0.008      # soglia energia RMS per attivazione (lievemente alzata vs rumori ambiente)
-    SILENCE_N  = 80         # frame di silenzio prima di chiudere l'utterance
-    MIN_N      = 20         # frame minimi di voce per utterance valida
+    ENERGY_THR = 0.004      # soglia energia RMS — conservativa per mic iPhone via WebRTC/Opus
+    SILENCE_N  = 70         # frame di silenzio prima di chiudere l'utterance
+    MIN_N      = 15         # frame minimi di voce per utterance valida
     COOLDOWN_S = 3.5        # secondi di pausa dopo TTS per evitare echo
 
     class _Proc:
@@ -306,21 +306,30 @@ with main_col:
             webrtc_ctx = webrtc_streamer(
                 key="euri-voice-auto",
                 mode=WebRtcMode.SENDONLY,
-                rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+                rtc_configuration={"iceServers": [
+                    {"urls": ["stun:stun.l.google.com:19302"]},
+                    {"urls": ["stun:stun1.l.google.com:19302"]},
+                    {"urls": ["stun:stun2.l.google.com:19302"]},
+                ]},
                 audio_frame_callback=_proc.recv,
                 media_stream_constraints={"audio": True, "video": False},
                 async_processing=True,
             )
 
-            # Debug live formato WebRTC
+            # Debug live: sempre visibile — distingue problema ICE da problema VAD
             @st.fragment(run_every=2)
             def _debug_audio():
+                playing = webrtc_ctx.state.playing
                 d = _proc.debug
-                if d["sr"] > 0:
-                    icon = "🔴" if d["active"] else "⬜"
+                if not playing:
+                    st.caption("⚫ WebRTC: in attesa di START (o connessione non stabilita)")
+                elif d["sr"] == 0:
+                    st.caption("🟡 WebRTC connesso — nessun frame audio ricevuto ancora")
+                else:
+                    icon = "🔴 parlando" if d["active"] else "⬜ silenzio"
                     st.caption(
-                        f"WebRTC → fmt:`{d['fmt']}` sr:`{d['sr']}` ch:`{d['ch']}` "
-                        f"energy:`{d['energy']:.5f}` {icon}"
+                        f"🟢 WebRTC ok → fmt:`{d['fmt']}` sr:`{d['sr']}` "
+                        f"energy:`{d['energy']:.5f}` (soglia:0.004) {icon}"
                     )
             _debug_audio()
 
