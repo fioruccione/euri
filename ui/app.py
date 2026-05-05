@@ -241,53 +241,55 @@ with main_col:
             }, maxlen=10)
             st.session_state.mobile_waiting = True
 
-        def _render_daemon_response(data: dict):
-            """Legge risposta dal daemon e aggiorna UI + riproduce audio."""
-            text     = _d(data.get("text", ""))
-            response = _d(data.get("response", ""))
-            ab64     = _d(data.get("audio_b64", ""))
-            sr_out   = int(_d(data.get("sample_rate", "22050")) or 22050)
-
-            if text:
-                st.markdown(f"**Tu:** {text}")
-                st.markdown(f"**Euri:** {response}")
-                st.session_state.voice_history.extend([
-                    {"role": "Tu",   "content": text},
-                    {"role": "Euri", "content": response},
-                ])
-            elif not ab64:
-                st.warning("Non ho capito. Riprova.")
-
-            if ab64:
-                samples_i16 = np.frombuffer(_b64.b64decode(ab64), dtype=np.int16)
-                wav_buf = io.BytesIO()
-                with wave.open(wav_buf, "wb") as wf:
-                    wf.setnchannels(1); wf.setsampwidth(2)
-                    wf.setframerate(sr_out)
-                    wf.writeframes(samples_i16.tobytes())
-                wav_buf.seek(0)
-                st.audio(wav_buf.read(), format="audio/wav", autoplay=True)
-                _proc.set_cooldown()
-                r.expire("euri:mobile:active", 5)
-
-        # Mostra cronologia conversazione
+        # Mostra cronologia (re-renderizzata ad ogni rerun completo della pagina)
         for turn in st.session_state.voice_history[-8:]:
             st.markdown(f"**{turn['role']}:** {turn['content']}")
 
-        # Polling risposte — gira sempre, indipendente dalla tab attiva
+        # Audio in attesa: prodotto dal rerun post-risposta, consumato una sola volta
+        if "mobile_audio_data" in st.session_state:
+            st.audio(st.session_state.mobile_audio_data, format="audio/wav", autoplay=True)
+            del st.session_state.mobile_audio_data
+
+        # Polling risposte — fragment run_every=1; quando trova la risposta
+        # salva in session_state e chiama st.rerun() per aggiornare la pagina intera.
         @st.fragment(run_every=1)
         def _poll_daemon():
             if not st.session_state.mobile_waiting:
                 return
             msgs = r.xread({"euri:mobile:out": st.session_state.mobile_out_id}, count=1)
             if not msgs:
-                st.caption("⏳ Elaborazione in corso...")
+                st.caption("⏳ Euri sta elaborando...")
                 return
             for _, messages in msgs:
                 for msg_id, data in messages:
                     st.session_state.mobile_out_id = _d(msg_id)
+                    text     = _d(data.get("text", ""))
+                    response = _d(data.get("response", ""))
+                    ab64     = _d(data.get("audio_b64", ""))
+                    sr_out   = int(_d(data.get("sample_rate", "22050")) or 22050)
+
+                    if text:
+                        st.session_state.voice_history.extend([
+                            {"role": "Tu",   "content": text},
+                            {"role": "Euri", "content": response},
+                        ])
+                    if ab64:
+                        samples_i16 = np.frombuffer(_b64.b64decode(ab64), dtype=np.int16)
+                        wav_buf = io.BytesIO()
+                        with wave.open(wav_buf, "wb") as wf:
+                            wf.setnchannels(1); wf.setsampwidth(2)
+                            wf.setframerate(sr_out)
+                            wf.writeframes(samples_i16.tobytes())
+                        wav_buf.seek(0)
+                        st.session_state.mobile_audio_data = wav_buf.read()
+                        get_voice_processor()[0].set_cooldown()
+                        r.expire("euri:mobile:active", 5)
+                    elif not text:
+                        st.session_state.voice_history.append(
+                            {"role": "Euri", "content": "⚠ Non ho capito. Riprova."}
+                        )
                     st.session_state.mobile_waiting = False
-                    _render_daemon_response(data)
+                    st.rerun()  # ricarica la pagina: mostra history aggiornata + riproduce audio
 
         _poll_daemon()
 
