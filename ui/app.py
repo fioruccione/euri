@@ -327,7 +327,15 @@ with main_col:
             @st.fragment(run_every=1)
             def _auto_listen():
                 if st.session_state.mobile_waiting:
-                    return  # attende risposta daemon
+                    # Svuota la coda: audio arrivato durante l'elaborazione viene scartato.
+                    # Senza questo, al termine del processing il chunk accumulato riparte
+                    # subito verso il daemon creando un loop.
+                    try:
+                        while True:
+                            _audio_q.get_nowait()
+                    except _queue.Empty:
+                        pass
+                    return
                 try:
                     audio_raw, sr = _audio_q.get_nowait()
                 except _queue.Empty:
