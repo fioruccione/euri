@@ -307,15 +307,12 @@ with main_col:
 
             webrtc_ctx = webrtc_streamer(
                 key="euri-voice-auto",
-                mode=WebRtcMode.SENDONLY,
-                rtc_configuration={"iceServers": [
-                    {"urls": ["stun:stun.l.google.com:19302"]},
-                    {"urls": ["stun:stun1.l.google.com:19302"]},
-                    {"urls": ["stun:stun2.l.google.com:19302"]},
-                ]},
+                mode=WebRtcMode.SENDRECV,  # SENDRECV più compatibile con Safari iOS
+                rtc_configuration={"iceServers": []},  # no STUN: LAN pura, host candidates diretti
                 audio_frame_callback=_proc.recv,
                 media_stream_constraints={"audio": True, "video": False},
                 async_processing=True,
+                sendback_audio=False,  # non rimandare audio al browser via WebRTC
             )
 
             # Debug live: sempre visibile — distingue problema ICE da problema VAD
