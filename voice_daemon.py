@@ -1453,6 +1453,12 @@ class VoiceDaemon:
                 if not speech_ended:
                     continue
 
+                # Gate mobile: silenzio se la pagina Voce Mobile sta processando
+                if self.r.exists("euri:mobile:active"):
+                    logger.debug("Mobile gate: voce ignorata — sessione mobile attiva")
+                    self.vad.reset()
+                    continue
+
                 # Gate visivo: ignora voce se nessuno è presente
                 if not self.visual_gate.is_user_present():
                     logger.debug("VisualGate: voce rilevata ma gate INACTIVE — ignorata")

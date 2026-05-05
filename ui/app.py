@@ -1,5 +1,6 @@
 import sys
 import os
+import queue as _queue
 from pathlib import Path
 import json
 
@@ -65,6 +66,68 @@ def get_brain():
     """Istanza condivisa del Brain."""
     return Brain()
 
+@st.cache_resource
+def get_stt():
+    from voice.stt import STT
+    stt = STT()
+    stt.load()
+    return stt
+
+@st.cache_resource
+def get_tts_engine():
+    from voice.tts import TTS
+    tts = TTS()
+    tts.load()
+    return tts
+
+@st.cache_resource
+def get_voice_processor():
+    """Processore WebRTC e coda audio — persistono tra i rerun (un'istanza per processo)."""
+    import av
+
+    audio_q: _queue.Queue = _queue.Queue(maxsize=1)
+
+    ENERGY_THR = 0.006      # soglia energia RMS per attivazione
+    SILENCE_N  = 120        # frame di silenzio prima di chiudere l'utterance (~1.2s @ 48kHz/10ms)
+    MIN_N      = 25         # frame minimi per considerare l'utterance valida
+
+    class _Proc:
+        def __init__(self):
+            self._buf    = []
+            self._silent = 0
+            self._active = False
+
+        def recv(self, frame: av.AudioFrame) -> av.AudioFrame:
+            arr = frame.to_ndarray()
+            if "s16" in frame.format.name:
+                pcm = arr.astype(np.float32) / 32768.0
+            else:
+                pcm = arr.astype(np.float32)
+            mono = pcm.mean(axis=0) if pcm.ndim > 1 else pcm.flatten()
+            energy = float(np.abs(mono).mean())
+
+            if energy > ENERGY_THR:
+                self._active  = True
+                self._silent  = 0
+                self._buf.append((mono.copy(), frame.sample_rate))
+            elif self._active:
+                self._silent += 1
+                self._buf.append((mono.copy(), frame.sample_rate))
+                if self._silent >= SILENCE_N:
+                    if len(self._buf) >= MIN_N:
+                        audio  = np.concatenate([b[0] for b in self._buf])
+                        sr     = self._buf[0][1]
+                        try:
+                            audio_q.put_nowait((audio, sr))
+                        except _queue.Full:
+                            pass
+                    self._buf    = []
+                    self._active = False
+                    self._silent = 0
+            return frame
+
+    return _Proc(), audio_q
+
 # Inizializzazione
 r = get_redis()
 embedder = get_embedder()
@@ -82,7 +145,7 @@ main_col, term_col = st.columns([2.5, 1.5], gap="large")
 # Sidebar
 st.sidebar.title("Euri Control Room 🧠")
 st.sidebar.markdown("---")
-page = st.sidebar.radio("Navigazione", ["Telemetria & Welford", "Silent Chat", "RAG Explorer"])
+page = st.sidebar.radio("Navigazione", ["🎙️ Voce", "Telemetria & Welford", "Silent Chat", "RAG Explorer"])
 
 st.sidebar.markdown("---")
 st.sidebar.info(f"**Modello:** {config.OLLAMA_MODEL}\n\n**Vault:** {config.OBSIDIAN_VAULT_PATH}")
@@ -118,8 +181,167 @@ with term_col:
 # ── COLONNA SINISTRA: CONTENUTO PRINCIPALE ───────────────────────────────────
 with main_col:
 
+    # ── PAGE 0: VOCE MOBILE ──────────────────────────────────────────────────────
+    if page == "🎙️ Voce":
+        import io, wave, re as _re, time as _time, datetime as _dt
+        from math import gcd
+        from pathlib import Path as _Path
+        from scipy.signal import resample_poly
+
+        st.title("🎙️ Voce Mobile")
+
+        _STOP = {"sono","questo","quello","della","dello","degli","delle","nella",
+                 "nelle","negli","sulle","sugli","dalla","dalle","dagli","anche",
+                 "come","quando","dove","quale","quali","cosa","però","perché",
+                 "quindi","allora","adesso","prima","dopo","ancora","sempre",
+                 "molto","poco","tutto","niente","ogni","altro","altri","altre",
+                 "forse","oppure","invece","mentre","senza","solo","così","fare",
+                 "fatto","avere","essere","avevo","erano","vuole","vuoi","devo"}
+
+        def _build_mobile_context(text: str) -> str:
+            words = _re.findall(r'\b[a-zA-ZàáâãäåèéêëìíîïòóôõöùúûüÀÁÂÃÄÅÈÉÊËÌÍÎÏÒÓÔÕÖÙÚÛÜ]{4,}\b', text)
+            keywords = list(dict.fromkeys(w for w in words if w.lower() not in _STOP))
+            def _age(ts):
+                try: days = (_time.time() - float(ts)) / 86400 if ts else None
+                except: days = None
+                if days is None: return ""
+                if days < 1: return "oggi"
+                if days < 7: return f"{int(days)}g fa"
+                if days < 30: return f"{int(days/7)}sett fa"
+                return f"{int(days/30)}mesi fa"
+            recent = memory_manager.get_recent_memories(limit=5)
+            seen = {mem.get("id") for mem in recent}
+            extra = [mem for mem in memory_manager.search_memories(" | ".join(keywords[:8]), limit=3)
+                     if mem.get("id") not in seen] if keywords else []
+            insights = memory_manager.search_insights(text, limit=2) if keywords else []
+            sections = []
+            all_mem = (recent + extra)[:6]
+            if all_mem:
+                lines = [f"- [{mem.get('domain','generale')} | {_age(mem.get('created_at'))}] {mem['content']}"
+                         for mem in all_mem]
+                sections.append("Ricordi/note rilevanti:\n" + "\n".join(lines))
+            if insights:
+                sections.append("Principi trasversali:\n" + "\n".join(
+                    f"- [{i.get('domain_a','?')} ↔ {i.get('domain_b','?')}] {i['content']}"
+                    for i in insights))
+            return "\n\n".join(sections)
+
+        def _append_to_daemon_log(lines: list[str]):
+            log_path = _Path("logs/voice_daemon.log")
+            if log_path.exists():
+                ts = _dt.datetime.now().strftime("%H:%M:%S")
+                with open(log_path, "a") as f:
+                    for line in lines:
+                        f.write(f"{ts} | [Mobile] {line}\n")
+
+        def _process_audio_and_respond(audio_16k: np.ndarray):
+            """STT → Brain → TTS → st.audio. Restituisce (text, response) o (None, None)."""
+            with st.spinner("Trascrivo..."):
+                stt = get_stt()
+                text, _ = stt.transcribe(audio_16k, force_lang="it")
+            if not text.strip():
+                st.warning("Non ho capito. Riprova.")
+                return None, None
+            st.markdown(f"**Tu:** {text}")
+            context = _build_mobile_context(text)
+            context = (context + "\n\n" if context else "") + \
+                "[Modalità voce mobile — risposte concise, TTS-friendly, niente markdown.]"
+            with st.spinner("Euri sta pensando..."):
+                response = brain.respond(text, context=context)
+            st.markdown(f"**Euri:** {response}")
+            memory_manager.log_conversation("Stefano", text)
+            memory_manager.log_conversation("Euri", response)
+            _append_to_daemon_log([f"STT: '{text}'", f"Euri: {response}"])
+            with st.spinner("Sintetizzo audio..."):
+                tts_eng = get_tts_engine()
+                samples, sample_rate = tts_eng.synthesize(response)
+            samples_i16 = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16)
+            wav_buf = io.BytesIO()
+            with wave.open(wav_buf, 'wb') as wf:
+                wf.setnchannels(1); wf.setsampwidth(2)
+                wf.setframerate(sample_rate)
+                wf.writeframes(samples_i16.tobytes())
+            wav_buf.seek(0)
+            st.audio(wav_buf.read(), format='audio/wav', autoplay=True)
+            return text, response
+
+        tab_auto, tab_manual = st.tabs(["🔄 Auto (VAD continuo)", "🖐 Manuale (pulsante)"])
+
+        # ── TAB AUTO: WebRTC + VAD ───────────────────────────────────────────────
+        with tab_auto:
+            from streamlit_webrtc import webrtc_streamer, WebRtcMode
+
+            _proc, _audio_q = get_voice_processor()
+
+            st.caption("Premi **START**, poi parla liberamente. Euri risponde dopo ~1s di silenzio.")
+
+            webrtc_ctx = webrtc_streamer(
+                key="euri-voice-auto",
+                mode=WebRtcMode.SENDONLY,
+                rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+                audio_frame_callback=_proc.recv,
+                media_stream_constraints={"audio": True, "video": False},
+                async_processing=True,
+            )
+
+            if "voice_history" not in st.session_state:
+                st.session_state.voice_history = []
+
+            # Mostra gli ultimi scambi
+            for turn in st.session_state.voice_history[-8:]:
+                st.markdown(f"**{turn['role']}:** {turn['content']}")
+
+            @st.fragment(run_every=1)
+            def _auto_listen():
+                try:
+                    audio_raw, sr = _audio_q.get_nowait()
+                except _queue.Empty:
+                    if webrtc_ctx.state.playing:
+                        st.caption("🎙️ In ascolto...")
+                    return
+
+                r.setex("euri:mobile:active", 90, 1)
+
+                # Resample → 16kHz
+                g = gcd(16000, int(sr))
+                audio_16k = resample_poly(audio_raw, 16000 // g, int(sr) // g).astype(np.float32)
+
+                text, response = _process_audio_and_respond(audio_16k)
+                if text:
+                    st.session_state.voice_history.extend([
+                        {"role": "Tu", "content": text},
+                        {"role": "Euri", "content": response},
+                    ])
+                r.expire("euri:mobile:active", 5)
+
+            _auto_listen()
+
+        # ── TAB MANUALE: pulsante classico ───────────────────────────────────────
+        with tab_manual:
+            st.caption("Premi il microfono, parla, aspetta la risposta audio.")
+
+            audio_input = st.audio_input("🎤 Tieni premuto e parla")
+
+            if audio_input is not None:
+                r.setex("euri:mobile:active", 60, 1)
+                raw = audio_input.getvalue()
+                with io.BytesIO(raw) as buf:
+                    with wave.open(buf) as wf:
+                        sr = wf.getframerate()
+                        n_ch = wf.getnchannels()
+                        frames = wf.readframes(wf.getnframes())
+                audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+                if n_ch > 1:
+                    audio = audio.reshape(-1, n_ch).mean(axis=1)
+                if sr != 16000:
+                    g = gcd(16000, sr)
+                    audio = resample_poly(audio, 16000 // g, sr // g).astype(np.float32)
+
+                _process_audio_and_respond(audio)
+                r.expire("euri:mobile:active", 5)
+
     # ── PAGE 1: TELEMETRIA ────────────────────────────────────────────────────────
-    if page == "Telemetria & Welford":
+    elif page == "Telemetria & Welford":
         st.title("🎛️ Telemetria Sistema")
         st.markdown("Monitoraggio in tempo reale dei contatori Redis e dell'apprendimento online di Euri.")
         
