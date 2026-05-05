@@ -526,6 +526,42 @@ class MemoryManager:
         logger.info(f"Nota salvata: {nid}")
         return nid
 
+    def search_insights(self, query: str, limit: int = 2) -> list[dict]:
+        """KNN search su idx:insights filtrato per status=promoted. Aggiorna recalled_count."""
+        vec = self._embedder.encode(query)
+        if vec is None:
+            return []
+        try:
+            import config
+            from redis.commands.search.query import Query as RQuery
+            import redis as _redis
+            raw_r = _redis.Redis(
+                host=config.REDIS_HOST,
+                port=config.REDIS_PORT,
+                db=config.REDIS_DB,
+                decode_responses=False,
+            )
+            q = (RQuery("(@status:{promoted})=>[KNN $k @embedding $vec AS vec_score]")
+                 .sort_by("vec_score")
+                 .paging(0, limit)
+                 .return_fields("vec_score")
+                 .dialect(2))
+            raw_results = raw_r.ft("idx:insights").search(
+                q, query_params={"vec": vec.tobytes(), "k": limit * 2}
+            )
+            docs = []
+            for doc in raw_results.docs:
+                doc_id = doc.id.decode() if isinstance(doc.id, bytes) else doc.id
+                data = self.r.json().get(doc_id, "$")
+                if data:
+                    item = data[0]
+                    docs.append(item)
+                    self.r.json().numincrby(doc_id, "$.recalled_count", 1)
+            return docs[:limit]
+        except Exception as e:
+            logger.error(f"Errore ricerca insights: {e}")
+            return []
+
     def search_notes(self, query: str, category: str = None, limit: int = 5) -> list[dict]:
         safe = self._sanitize_query(query)
         q_str = safe

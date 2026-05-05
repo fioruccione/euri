@@ -716,6 +716,15 @@ class VoiceDaemon:
                     results.append(r)
                     seen_ids.add(r.get("id"))
 
+        # Insights cross-domain rilevanti per la query corrente
+        insight_lines = []
+        if keywords:
+            insight_query = " ".join(keywords[:6])
+            for ins in self.memory.search_insights(insight_query, limit=2):
+                dom_a = ins.get("domain_a", "?")
+                dom_b = ins.get("domain_b", "?")
+                insight_lines.append(f"- [{dom_a} ↔ {dom_b}] {ins['content']}")
+
         sections = []
         if reflection_lines:
             sections.append("Sintesi recenti:\n" + "\n".join(reflection_lines))
@@ -726,6 +735,8 @@ class VoiceDaemon:
                 label = f"[{r.get('domain', 'generale')} | {age}]" if age else f"[{r.get('domain', 'generale')}]"
                 mem_lines.append(f"- {label} {r['content']}")
             sections.append("Ricordi/note rilevanti:\n" + "\n".join(mem_lines))
+        if insight_lines:
+            sections.append("Principi trasversali:\n" + "\n".join(insight_lines))
         return "\n\n".join(sections)
 
     def _handle_web_search(self, text: str):

@@ -26,7 +26,7 @@ REDIS_DB = 0
 
 # Ollama
 OLLAMA_HOST = "http://localhost:11434"
-OLLAMA_MODEL = "qwen3.6:35b"   # verifica con `ollama list`
+OLLAMA_MODEL = "gemma4:26b"   # verifica con `ollama list`
 # Modello dedicato al Dream Engine (sogni notturni + insight).
 # Separato da OLLAMA_MODEL per poter usare un modello più capace per il ragionamento astratto.
 DREAM_OLLAMA_MODEL = "qwen3.6:35b"
@@ -38,9 +38,11 @@ WHISPER_MODEL = "large-v3-turbo"
 # Prompt iniziale per Whisper: nomi propri, termini tecnici, brand specifici di Stefano.
 # Aiuta il decoder a riconoscere correttamente questi termini senza costo di latenza.
 WHISPER_INITIAL_PROMPT = (
-    "Lucy Plast, Easy Plast, Reagenz, Realube 5014, polirefine, polistirolo, "
-    "stampaggio iniezione, Melt Flow Index, MFI, IZOD, granulatore, "
-    "Euri, Redis, Obsidian, PlastVision, Ollama, Gemma."
+    "Lucy Plast, Easy Plast, Fanti Plast, ISI Plast, Reagenz, Realube 5014, VistaMax, "
+    "polirefine, polistirolo, polipropilene, perossido, Dicumil perossido, "
+    "stampaggio iniezione, estrusione, granulatore, trafila, "
+    "Melt Flow Index, MFI, IZOD, modulo a flessione, "
+    "Euri, Redis, Obsidian, PlastVision, Ollama, Gemma, Qwen."
 )
 
 # Adaptive Fingerprints (Welford online learning — sostituisce EmbeddingClassifier statico)

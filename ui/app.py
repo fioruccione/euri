@@ -237,6 +237,8 @@ with main_col:
                 semantic = [r for r in memory_manager.search_memories(prompt, limit=3)
                             if r.get("id") not in recent_ids]
 
+                insights = memory_manager.search_insights(prompt, limit=2)
+
                 context = ""
                 if recent:
                     context += "MEMORIE RECENTI (ultime per data):\n"
@@ -244,6 +246,12 @@ with main_col:
                 if semantic:
                     context += "\nMEMORIE CORRELATE ALLA DOMANDA:\n"
                     context += "\n".join(_fmt(r) for r in semantic) + "\n"
+                if insights:
+                    context += "\nPRINCIPI TRASVERSALI:\n"
+                    context += "\n".join(
+                        f"- [{i.get('domain_a','?')} ↔ {i.get('domain_b','?')}] {i['content']}"
+                        for i in insights
+                    ) + "\n"
 
             # Risposta Euri
             with st.chat_message("assistant"):

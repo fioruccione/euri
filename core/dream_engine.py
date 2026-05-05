@@ -231,7 +231,10 @@ Memoria A ({label_a}):
 Memoria B ({label_b}):
 "{mem_b['content']}"
 
-Formula l'insight in 2-4 frasi. La prima frase enuncia il principio generale. Le successive spiegano PERCHÉ le due strutture condividono quel meccanismo — non solo che si somigliano, ma quale forza o vincolo produce lo stesso comportamento in entrambi i domini. Se il concetto è complesso (processi industriali, materiali, relazioni tra persone, sistemi tecnici), usa tutto lo spazio necessario per renderlo preciso e non banale.
+Formula l'insight in ALMENO 2 frasi, idealmente 3-4. NON usare mai una sola frase.
+- Frase 1: il principio generale.
+- Frase 2+: spiega PERCHÉ le due strutture condividono quel meccanismo — quale forza o vincolo produce lo stesso comportamento in entrambi i domini. Nomina i dettagli specifici delle due memorie (materiali, processi, sistemi) per ancorare il principio alla realtà concreta, non tenerlo astratto.
+- Se il meccanismo è complesso, usa 4 frasi. La profondità è preferibile alla sintesi prematura.
 
 Rispondi con NESSUN INSIGHT solo se le due memorie riguardano aspetti così specifici e non generalizzabili che qualsiasi connessione risulterebbe artificiosa o fuorviante."""
 
@@ -239,7 +242,7 @@ Rispondi con NESSUN INSIGHT solo se le due memorie riguardano aspetti così spec
             response = self._ollama_chat(
                 model=config.DREAM_OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                options={"temperature": 0.6, "num_predict": 2000},
+                options={"temperature": 0.6, "num_predict": 4500},
                 think=True,
             )
             text = response.message.content or ""
