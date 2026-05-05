@@ -83,28 +83,54 @@ def get_tts_engine():
 @st.cache_resource
 def get_voice_processor():
     """Processore WebRTC e coda audio — persistono tra i rerun (un'istanza per processo)."""
-    import av
+    import av, time as _t
 
     audio_q: _queue.Queue = _queue.Queue(maxsize=1)
 
-    ENERGY_THR = 0.006      # soglia energia RMS per attivazione
-    SILENCE_N  = 120        # frame di silenzio prima di chiudere l'utterance (~1.2s @ 48kHz/10ms)
-    MIN_N      = 25         # frame minimi per considerare l'utterance valida
+    ENERGY_THR = 0.008      # soglia energia RMS per attivazione (lievemente alzata vs rumori ambiente)
+    SILENCE_N  = 80         # frame di silenzio prima di chiudere l'utterance
+    MIN_N      = 20         # frame minimi di voce per utterance valida
+    COOLDOWN_S = 3.5        # secondi di pausa dopo TTS per evitare echo
 
     class _Proc:
         def __init__(self):
+            self._buf          = []
+            self._silent       = 0
+            self._active       = False
+            self._cooldown_end = 0.0
+            # debug: aggiornato a ogni frame, leggibile dal fragment UI
+            self.debug = {"fmt": "?", "sr": 0, "ch": 0, "energy": 0.0, "active": False}
+
+        def set_cooldown(self):
+            self._cooldown_end = _t.time() + COOLDOWN_S
             self._buf    = []
-            self._silent = 0
             self._active = False
+            self._silent = 0
 
         def recv(self, frame: av.AudioFrame) -> av.AudioFrame:
+            # Ignora durante cooldown post-TTS
+            if _t.time() < self._cooldown_end:
+                return frame
+
             arr = frame.to_ndarray()
-            if "s16" in frame.format.name:
+
+            # Normalizza in base al dtype reale (più affidabile del nome del formato)
+            if arr.dtype == np.int16:
                 pcm = arr.astype(np.float32) / 32768.0
+            elif arr.dtype == np.int32:
+                pcm = arr.astype(np.float32) / 2147483648.0
             else:
                 pcm = arr.astype(np.float32)
-            mono = pcm.mean(axis=0) if pcm.ndim > 1 else pcm.flatten()
+
+            # → mono: usa frame.channels per reshape corretto su qualsiasi layout
+            ch = frame.channels if frame.channels > 0 else 1
+            mono = pcm.reshape(ch, -1).mean(axis=0)
+
             energy = float(np.abs(mono).mean())
+            self.debug = {
+                "fmt": frame.format.name, "sr": frame.sample_rate,
+                "ch": ch, "energy": round(energy, 5), "active": self._active,
+            }
 
             if energy > ENERGY_THR:
                 self._active  = True
@@ -115,8 +141,8 @@ def get_voice_processor():
                 self._buf.append((mono.copy(), frame.sample_rate))
                 if self._silent >= SILENCE_N:
                     if len(self._buf) >= MIN_N:
-                        audio  = np.concatenate([b[0] for b in self._buf])
-                        sr     = self._buf[0][1]
+                        audio = np.concatenate([b[0] for b in self._buf])
+                        sr    = self._buf[0][1]
                         try:
                             audio_q.put_nowait((audio, sr))
                         except _queue.Full:
@@ -291,6 +317,19 @@ with main_col:
             for turn in st.session_state.voice_history[-8:]:
                 st.markdown(f"**{turn['role']}:** {turn['content']}")
 
+            # ── Debug live: formato audio in arrivo dall'iPhone ─────────────────
+            @st.fragment(run_every=2)
+            def _debug_audio():
+                d = _proc.debug
+                if d["sr"] > 0:
+                    active_icon = "🔴 parlando" if d["active"] else "⬜ silenzio"
+                    st.caption(
+                        f"WebRTC → fmt:`{d['fmt']}` sr:`{d['sr']}` ch:`{d['ch']}` "
+                        f"energy:`{d['energy']:.5f}` {active_icon}"
+                    )
+
+            _debug_audio()
+
             @st.fragment(run_every=1)
             def _auto_listen():
                 try:
@@ -302,9 +341,13 @@ with main_col:
 
                 r.setex("euri:mobile:active", 90, 1)
 
-                # Resample → 16kHz
-                g = gcd(16000, int(sr))
-                audio_16k = resample_poly(audio_raw, 16000 // g, int(sr) // g).astype(np.float32)
+                # Resample → 16kHz (gcd garantisce frazioni minime, no artefatti)
+                _sr = int(sr)
+                if _sr != 16000:
+                    g = gcd(16000, _sr)
+                    audio_16k = resample_poly(audio_raw, 16000 // g, _sr // g).astype(np.float32)
+                else:
+                    audio_16k = audio_raw.astype(np.float32)
 
                 text, response = _process_audio_and_respond(audio_16k)
                 if text:
@@ -312,6 +355,8 @@ with main_col:
                         {"role": "Tu", "content": text},
                         {"role": "Euri", "content": response},
                     ])
+                    # Cooldown post-TTS: evita che l'eco della risposta venga riascoltato
+                    _proc.set_cooldown()
                 r.expire("euri:mobile:active", 5)
 
             _auto_listen()
