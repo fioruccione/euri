@@ -136,6 +136,8 @@ class VoiceDaemon:
         self._last_activity_ts: float = 0.0   # timestamp ultima attività vocale (per passive learner)
         self._passive_history_len: int = 0     # lunghezza history già analizzata
         self._consolidation_last_run: float = 0.0  # timestamp ultimo Loop 2a
+        self._brain_lock = threading.Lock()  # protegge brain tra main loop e mobile worker
+        self._tts_lock   = threading.Lock()  # protegge il modello TTS da accessi concorrenti
 
     def setup(self):
         logger.info("Inizializzazione Euri...")
@@ -907,7 +909,8 @@ class VoiceDaemon:
 
         context = self._build_context(text)
         context = (context + "\n\n" if context else "") + "[Modalità conversazione: sii presente e naturale, non rigido.]"
-        reply = self.brain.respond(text, context=context)
+        with self._brain_lock:
+            reply = self.brain.respond(text, context=context)
         self.memory.log_conversation("Euri", reply)
         if len(reply) > 150:
             self._last_speech_content = reply
@@ -1410,6 +1413,10 @@ class VoiceDaemon:
         t3 = threading.Thread(target=self._consolidation_loop, daemon=True)
         t3.start()
 
+        # Thread mobile worker — gestisce richieste dalla pagina Streamlit via Redis Stream
+        t_mobile = threading.Thread(target=self._mobile_worker, daemon=True)
+        t_mobile.start()
+
         # Avvia Dream Engine (Loop 2b/2c)
         if hasattr(self, 'dream_engine'):
             self.dream_engine.start()
@@ -1542,6 +1549,98 @@ class VoiceDaemon:
                 self._dispatch(text, detected_lang=detected_lang)
 
         logger.info("Euri spento.")
+
+    def _mobile_worker(self):
+        """
+        Thread che gestisce richieste vocali dalla pagina mobile.
+        Legge audio da euri:mobile:in (Redis Stream), usa gli stessi STT/Brain/TTS
+        del daemon principale, risponde su euri:mobile:out.
+        La conversazione è condivisa — brain_lock garantisce history coerente.
+        """
+        import base64
+        from math import gcd
+        from scipy.signal import resample_poly
+
+        STREAM_IN  = "euri:mobile:in"
+        STREAM_OUT = "euri:mobile:out"
+        last_id    = "$"   # solo messaggi nuovi dall'avvio
+
+        def _d(v):
+            return v.decode() if isinstance(v, bytes) else (v or "")
+
+        logger.info("Mobile worker: in ascolto su euri:mobile:in")
+
+        while self._running:
+            try:
+                msgs = self.r.xread({STREAM_IN: last_id}, count=1, block=3000)
+                if not msgs:
+                    continue
+
+                for _, messages in msgs:
+                    for msg_id, data in messages:
+                        last_id   = _d(msg_id)
+                        req_id    = _d(data.get("request_id", b"?"))
+                        audio_b64 = _d(data.get("audio_b64", b""))
+                        sr        = int(_d(data.get("sr", b"48000")))
+
+                        if not audio_b64:
+                            continue
+
+                        # float32 bytes → numpy
+                        audio_raw = np.frombuffer(base64.b64decode(audio_b64), dtype=np.float32)
+
+                        # Resample → 16kHz
+                        if sr != 16000:
+                            g         = gcd(16000, sr)
+                            audio_16k = resample_poly(audio_raw, 16000 // g, sr // g).astype(np.float32)
+                        else:
+                            audio_16k = audio_raw
+
+                        # STT (modello condiviso col main loop — già thread-safe in faster-whisper)
+                        _t = time.perf_counter()
+                        text, _ = self.stt.transcribe(audio_16k, force_lang="it")
+                        logger.info(f"[Mobile] STT {(time.perf_counter()-_t)*1000:.0f}ms → '{text[:70]}'")
+
+                        if not text.strip():
+                            self.r.xadd(STREAM_OUT, {
+                                "request_id": req_id, "text": "", "response": "",
+                                "audio_b64": "", "sample_rate": "22050",
+                            }, maxlen=20)
+                            continue
+
+                        self._last_activity_ts = time.monotonic()
+                        self.memory.log_conversation("Stefano", text)
+
+                        context = self._build_context(text)
+                        context = (context + "\n\n" if context else "") + \
+                            "[Messaggio da interfaccia mobile — Stefano è lontano dalla workstation. " \
+                            "Rispondi in modo conciso e TTS-friendly, niente markdown.]"
+
+                        # Brain — lock condiviso con _handle_chat()
+                        with self._brain_lock:
+                            response = self.brain.respond(text, context=context)
+
+                        self.memory.log_conversation("Euri", response)
+                        logger.info(f"[Mobile] Euri: {response[:80]}")
+
+                        # TTS — lock per sicurezza sui modelli ONNX
+                        with self._tts_lock:
+                            samples, sample_rate = self.tts.synthesize(response)
+
+                        samples_i16   = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16)
+                        audio_b64_out = base64.b64encode(samples_i16.tobytes()).decode()
+
+                        self.r.xadd(STREAM_OUT, {
+                            "request_id": req_id,
+                            "text":        text,
+                            "response":    response,
+                            "audio_b64":   audio_b64_out,
+                            "sample_rate": str(sample_rate),
+                        }, maxlen=20)
+
+            except Exception as e:
+                logger.error(f"Mobile worker: {e}")
+                time.sleep(1)
 
     def _morning_brief_if_needed(self):
         """Riepilogo mattutino alla prima interazione del giorno."""

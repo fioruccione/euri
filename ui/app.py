@@ -209,91 +209,91 @@ with main_col:
 
     # ── PAGE 0: VOCE MOBILE ──────────────────────────────────────────────────────
     if page == "🎙️ Voce":
-        import io, wave, re as _re, time as _time, datetime as _dt
-        from math import gcd
-        from pathlib import Path as _Path
-        from scipy.signal import resample_poly
+        import io, wave, base64 as _b64, uuid as _uuid, time as _time
 
         st.title("🎙️ Voce Mobile")
+        st.caption("La conversazione è condivisa col daemon — stessa storia, stesso contesto.")
 
-        _STOP = {"sono","questo","quello","della","dello","degli","delle","nella",
-                 "nelle","negli","sulle","sugli","dalla","dalle","dagli","anche",
-                 "come","quando","dove","quale","quali","cosa","però","perché",
-                 "quindi","allora","adesso","prima","dopo","ancora","sempre",
-                 "molto","poco","tutto","niente","ogni","altro","altri","altre",
-                 "forse","oppure","invece","mentre","senza","solo","così","fare",
-                 "fatto","avere","essere","avevo","erano","vuole","vuoi","devo"}
+        # Inizializza stream ID per non ricevere risposte vecchie
+        if "mobile_out_id" not in st.session_state:
+            try:
+                msgs = r.xrevrange("euri:mobile:out", count=1)
+                st.session_state.mobile_out_id = msgs[0][0] if msgs else "0-0"
+            except Exception:
+                st.session_state.mobile_out_id = "0-0"
+        if "voice_history" not in st.session_state:
+            st.session_state.voice_history = []
+        if "mobile_waiting" not in st.session_state:
+            st.session_state.mobile_waiting = False
 
-        def _build_mobile_context(text: str) -> str:
-            words = _re.findall(r'\b[a-zA-ZàáâãäåèéêëìíîïòóôõöùúûüÀÁÂÃÄÅÈÉÊËÌÍÎÏÒÓÔÕÖÙÚÛÜ]{4,}\b', text)
-            keywords = list(dict.fromkeys(w for w in words if w.lower() not in _STOP))
-            def _age(ts):
-                try: days = (_time.time() - float(ts)) / 86400 if ts else None
-                except: days = None
-                if days is None: return ""
-                if days < 1: return "oggi"
-                if days < 7: return f"{int(days)}g fa"
-                if days < 30: return f"{int(days/7)}sett fa"
-                return f"{int(days/30)}mesi fa"
-            recent = memory_manager.get_recent_memories(limit=5)
-            seen = {mem.get("id") for mem in recent}
-            extra = [mem for mem in memory_manager.search_memories(" | ".join(keywords[:8]), limit=3)
-                     if mem.get("id") not in seen] if keywords else []
-            insights = memory_manager.search_insights(text, limit=2) if keywords else []
-            sections = []
-            all_mem = (recent + extra)[:6]
-            if all_mem:
-                lines = [f"- [{mem.get('domain','generale')} | {_age(mem.get('created_at'))}] {mem['content']}"
-                         for mem in all_mem]
-                sections.append("Ricordi/note rilevanti:\n" + "\n".join(lines))
-            if insights:
-                sections.append("Principi trasversali:\n" + "\n".join(
-                    f"- [{i.get('domain_a','?')} ↔ {i.get('domain_b','?')}] {i['content']}"
-                    for i in insights))
-            return "\n\n".join(sections)
+        def _d(v):
+            return v.decode() if isinstance(v, bytes) else (v or "")
 
-        def _append_to_daemon_log(lines: list[str]):
-            log_path = _Path("logs/voice_daemon.log")
-            if log_path.exists():
-                ts = _dt.datetime.now().strftime("%H:%M:%S")
-                with open(log_path, "a") as f:
-                    for line in lines:
-                        f.write(f"{ts} | [Mobile] {line}\n")
+        def _send_audio_to_daemon(audio_float32: np.ndarray, sr: int):
+            """Serializza audio float32 e pubblica su euri:mobile:in."""
+            req_id    = str(_uuid.uuid4())[:8]
+            audio_b64 = _b64.b64encode(audio_float32.astype(np.float32).tobytes()).decode()
+            r.setex("euri:mobile:active", 120, 1)
+            r.xadd("euri:mobile:in", {
+                "request_id": req_id,
+                "audio_b64":  audio_b64,
+                "sr":         str(sr),
+            }, maxlen=10)
+            st.session_state.mobile_waiting = True
 
-        def _process_audio_and_respond(audio_16k: np.ndarray):
-            """STT → Brain → TTS → st.audio. Restituisce (text, response) o (None, None)."""
-            with st.spinner("Trascrivo..."):
-                stt = get_stt()
-                text, _ = stt.transcribe(audio_16k, force_lang="it")
-            if not text.strip():
+        def _render_daemon_response(data: dict):
+            """Legge risposta dal daemon e aggiorna UI + riproduce audio."""
+            text     = _d(data.get("text", ""))
+            response = _d(data.get("response", ""))
+            ab64     = _d(data.get("audio_b64", ""))
+            sr_out   = int(_d(data.get("sample_rate", "22050")) or 22050)
+
+            if text:
+                st.markdown(f"**Tu:** {text}")
+                st.markdown(f"**Euri:** {response}")
+                st.session_state.voice_history.extend([
+                    {"role": "Tu",   "content": text},
+                    {"role": "Euri", "content": response},
+                ])
+            elif not ab64:
                 st.warning("Non ho capito. Riprova.")
-                return None, None
-            st.markdown(f"**Tu:** {text}")
-            context = _build_mobile_context(text)
-            context = (context + "\n\n" if context else "") + \
-                "[Modalità voce mobile — risposte concise, TTS-friendly, niente markdown.]"
-            with st.spinner("Euri sta pensando..."):
-                response = brain.respond(text, context=context)
-            st.markdown(f"**Euri:** {response}")
-            memory_manager.log_conversation("Stefano", text)
-            memory_manager.log_conversation("Euri", response)
-            _append_to_daemon_log([f"STT: '{text}'", f"Euri: {response}"])
-            with st.spinner("Sintetizzo audio..."):
-                tts_eng = get_tts_engine()
-                samples, sample_rate = tts_eng.synthesize(response)
-            samples_i16 = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16)
-            wav_buf = io.BytesIO()
-            with wave.open(wav_buf, 'wb') as wf:
-                wf.setnchannels(1); wf.setsampwidth(2)
-                wf.setframerate(sample_rate)
-                wf.writeframes(samples_i16.tobytes())
-            wav_buf.seek(0)
-            st.audio(wav_buf.read(), format='audio/wav', autoplay=True)
-            return text, response
+
+            if ab64:
+                samples_i16 = np.frombuffer(_b64.b64decode(ab64), dtype=np.int16)
+                wav_buf = io.BytesIO()
+                with wave.open(wav_buf, "wb") as wf:
+                    wf.setnchannels(1); wf.setsampwidth(2)
+                    wf.setframerate(sr_out)
+                    wf.writeframes(samples_i16.tobytes())
+                wav_buf.seek(0)
+                st.audio(wav_buf.read(), format="audio/wav", autoplay=True)
+                _proc.set_cooldown()
+                r.expire("euri:mobile:active", 5)
+
+        # Mostra cronologia conversazione
+        for turn in st.session_state.voice_history[-8:]:
+            st.markdown(f"**{turn['role']}:** {turn['content']}")
+
+        # Polling risposte — gira sempre, indipendente dalla tab attiva
+        @st.fragment(run_every=1)
+        def _poll_daemon():
+            if not st.session_state.mobile_waiting:
+                return
+            msgs = r.xread({"euri:mobile:out": st.session_state.mobile_out_id}, count=1)
+            if not msgs:
+                st.caption("⏳ Elaborazione in corso...")
+                return
+            for _, messages in msgs:
+                for msg_id, data in messages:
+                    st.session_state.mobile_out_id = _d(msg_id)
+                    st.session_state.mobile_waiting = False
+                    _render_daemon_response(data)
+
+        _poll_daemon()
 
         tab_auto, tab_manual = st.tabs(["🔄 Auto (VAD continuo)", "🖐 Manuale (pulsante)"])
 
-        # ── TAB AUTO: WebRTC + VAD ───────────────────────────────────────────────
+        # ── TAB AUTO: WebRTC + VAD → daemon ─────────────────────────────────────
         with tab_auto:
             from streamlit_webrtc import webrtc_streamer, WebRtcMode
 
@@ -310,80 +310,50 @@ with main_col:
                 async_processing=True,
             )
 
-            if "voice_history" not in st.session_state:
-                st.session_state.voice_history = []
-
-            # Mostra gli ultimi scambi
-            for turn in st.session_state.voice_history[-8:]:
-                st.markdown(f"**{turn['role']}:** {turn['content']}")
-
-            # ── Debug live: formato audio in arrivo dall'iPhone ─────────────────
+            # Debug live formato WebRTC
             @st.fragment(run_every=2)
             def _debug_audio():
                 d = _proc.debug
                 if d["sr"] > 0:
-                    active_icon = "🔴 parlando" if d["active"] else "⬜ silenzio"
+                    icon = "🔴" if d["active"] else "⬜"
                     st.caption(
                         f"WebRTC → fmt:`{d['fmt']}` sr:`{d['sr']}` ch:`{d['ch']}` "
-                        f"energy:`{d['energy']:.5f}` {active_icon}"
+                        f"energy:`{d['energy']:.5f}` {icon}"
                     )
-
             _debug_audio()
 
             @st.fragment(run_every=1)
             def _auto_listen():
+                if st.session_state.mobile_waiting:
+                    return  # attende risposta daemon
                 try:
                     audio_raw, sr = _audio_q.get_nowait()
                 except _queue.Empty:
                     if webrtc_ctx.state.playing:
                         st.caption("🎙️ In ascolto...")
                     return
-
-                r.setex("euri:mobile:active", 90, 1)
-
-                # Resample → 16kHz (gcd garantisce frazioni minime, no artefatti)
-                _sr = int(sr)
-                if _sr != 16000:
-                    g = gcd(16000, _sr)
-                    audio_16k = resample_poly(audio_raw, 16000 // g, _sr // g).astype(np.float32)
-                else:
-                    audio_16k = audio_raw.astype(np.float32)
-
-                text, response = _process_audio_and_respond(audio_16k)
-                if text:
-                    st.session_state.voice_history.extend([
-                        {"role": "Tu", "content": text},
-                        {"role": "Euri", "content": response},
-                    ])
-                    # Cooldown post-TTS: evita che l'eco della risposta venga riascoltato
-                    _proc.set_cooldown()
-                r.expire("euri:mobile:active", 5)
+                _send_audio_to_daemon(audio_raw, int(sr))
 
             _auto_listen()
 
-        # ── TAB MANUALE: pulsante classico ───────────────────────────────────────
+        # ── TAB MANUALE: pulsante → daemon ───────────────────────────────────────
         with tab_manual:
             st.caption("Premi il microfono, parla, aspetta la risposta audio.")
 
-            audio_input = st.audio_input("🎤 Tieni premuto e parla")
+            audio_input = st.audio_input("🎤 Registra e invia")
 
-            if audio_input is not None:
-                r.setex("euri:mobile:active", 60, 1)
+            if audio_input is not None and not st.session_state.mobile_waiting:
                 raw = audio_input.getvalue()
                 with io.BytesIO(raw) as buf:
                     with wave.open(buf) as wf:
-                        sr = wf.getframerate()
-                        n_ch = wf.getnchannels()
+                        sr_wav = wf.getframerate()
+                        n_ch   = wf.getnchannels()
                         frames = wf.readframes(wf.getnframes())
                 audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
                 if n_ch > 1:
                     audio = audio.reshape(-1, n_ch).mean(axis=1)
-                if sr != 16000:
-                    g = gcd(16000, sr)
-                    audio = resample_poly(audio, 16000 // g, sr // g).astype(np.float32)
-
-                _process_audio_and_respond(audio)
-                r.expire("euri:mobile:active", 5)
+                # Manda al daemon al sample rate originale (il daemon risampla)
+                _send_audio_to_daemon(audio, sr_wav)
 
     # ── PAGE 1: TELEMETRIA ────────────────────────────────────────────────────────
     elif page == "Telemetria & Welford":
