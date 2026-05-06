@@ -262,7 +262,9 @@ _COMPLETE_CONDITIONAL = re.compile(
     r'|dovrei|dovresti|dovrebbe'
     r'|era\s+il\s+software|era\s+il\s+programma|era\s+il\s+codice'
     r'|ti\s+ho\s+fatto|che\s+ti\s+ho\s+fatto|che\s+ho\s+fatto'
-    r'|ho\s+fatto\s+bene)\b',
+    r'|ho\s+fatto\s+bene'
+    r'|ho\s+(fatto|finito|completato)\s+(anche|pure|oltre|diverse?|alcune?|molte?|pi[uù]|tante?|varie?|gi[àa])\b'
+    r'|abbiamo\s+(fatto|risolto|completato|finito)\b)\b',
     re.IGNORECASE
 )
 
