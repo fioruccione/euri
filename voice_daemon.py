@@ -1046,8 +1046,11 @@ class VoiceDaemon:
     def _dispatch(self, text: str, detected_lang: str = "it"):
         """Smista il testo trascritto all'handler corretto."""
         if self.memory.is_silent_mode():
-            logger.debug("Modalità silenziosa attiva — input ignorato")
-            return
+            # Anche in silenzio: ripristino e shutdown passano sempre
+            _intent_check, _ = classify(text)
+            if _intent_check not in (Intent.RESTORE_ALERTS, Intent.SHUTDOWN):
+                logger.debug("Modalità silenziosa attiva — input ignorato")
+                return
 
         # TEACH recovery: attende sì/no dopo domanda di ripristino sessione
         if self._teach_recovery_mode:
