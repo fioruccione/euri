@@ -55,25 +55,27 @@ def _is_manufacturing_context(text: str) -> bool:
 
 
 _PROMPT = """\
-Classifica questa frase con UNA SOLA parola tra: WEB_SEARCH, SEARCH, SAVE_TODO, SAVE_MEMORY, EXECUTE, CHAT.
+Classifica questa frase con UNA SOLA parola tra: WEB_SEARCH, SEARCH, SAVE_TODO, SAVE_MEMORY, EXECUTE, COMPLETE, CHAT.
 
 Definizioni PRECISE — ogni confine è importante:
 
-EXECUTE: l'utente vuole DATI HARDWARE del sistema. La frase deve menzionare esplicitamente: cpu, ram, gpu, disco, spazio, processi, uptime, log di errore, temperatura. Esempi corretti: "controlla la cpu", "quanta ram ho", "spazio su disco", "leggi il log". NON è EXECUTE: "funziona?", "stai bene?", "sei operativo?", "come va?", "tutto ok?" — queste sono CHAT.
+EXECUTE: l'utente vuole DATI HARDWARE del sistema. Menziona esplicitamente: cpu, ram, gpu, disco, spazio, processi, uptime, log di errore, temperatura. Es: "controlla la cpu", "quanta ram ho", "spazio su disco", "leggi il log". NON è EXECUTE: "funziona?", "stai bene?", "come va?" — queste sono CHAT.
 
-SEARCH: l'utente vuole che Euri cerchi nelle SUE MEMORIE INTERNE. Esempi: "ricordi X?", "hai in memoria X?", "cosa sai di X?", "di cosa stavamo parlando?", "cerca nelle tue memorie", "cerca i ricordi di [data/argomento]", "cosa ricordi di ieri?". NON è SEARCH: cercare su internet.
+SEARCH: l'utente vuole che Euri cerchi nelle SUE MEMORIE INTERNE. Es: "ricordi X?", "hai in memoria X?", "di cosa stavamo parlando?", "cerca i ricordi di ieri", "cosa sai di X?". NON è SEARCH: cercare su internet.
 
-WEB_SEARCH: l'utente vuole cercare su INTERNET, lo dice esplicitamente con parole come "online", "internet", "nel web", "su Google". NON è WEB_SEARCH: cercare nei ricordi interni di Euri.
+WEB_SEARCH: cerca su INTERNET, detto esplicitamente ("online", "internet", "nel web", "su Google"). NON è WEB_SEARCH: cercare nei ricordi di Euri.
 
-SAVE_TODO: l'utente vuole ricordarsi di FARE qualcosa in futuro (compito, appuntamento, azione). Esempi: "devo fare X", "ricordami di chiamare X", "segna che devo X tra Y giorni".
+SAVE_TODO: vuole ricordarsi di FARE qualcosa in futuro. Es: "devo fare X", "ricordami di chiamare X", "segna che devo X".
 
-SAVE_MEMORY: l'utente vuole che Euri ricordi un FATTO o informazione. Esempi: "ricordati che X", "segna che X", "tieni a mente che X", "il cliente X si chiama Y".
+SAVE_MEMORY: vuole che Euri ricordi un FATTO. Es: "ricordati che X", "segna che X", "tieni a mente che X".
 
-CHAT: tutto il resto — conversazione normale, domande generali, chiarimenti, spiegazioni, saluti, domande su Euri che non riguardano hardware.
+COMPLETE: l'utente dice di aver APPENA COMPLETATO un compito specifico, in modo diretto e breve. Es: "l'ho fatto", "ho chiamato Mario", "ho inviato la mail", "ho pagato la fattura". NON è COMPLETE: narrazioni lunghe di ciò che è successo durante la giornata, racconti con dettagli tecnici, frasi che descrivono un processo o un risultato.
+
+CHAT: tutto il resto — conversazione, domande generali, narrazioni, spiegazioni, saluti.
 
 Frase: "{text}"
 
-Rispondi SOLO con una delle sei parole. Nient'altro."""
+Rispondi SOLO con una delle sette parole. Nient'altro."""
 
 
 def llm_fallback_classify(text: str) -> str | None:
@@ -104,7 +106,7 @@ def llm_fallback_classify(text: str) -> str | None:
             think=False,
         )
         result = _clean(response.message.content or "").upper().split()[0] if (response.message.content or "").strip() else ""
-        if result in ("WEB_SEARCH", "SEARCH", "SAVE_TODO", "SAVE_MEMORY", "EXECUTE"):
+        if result in ("WEB_SEARCH", "SEARCH", "SAVE_TODO", "SAVE_MEMORY", "EXECUTE", "COMPLETE"):
             if result == "EXECUTE" and _is_manufacturing_context(text):
                 logger.debug(f"EXECUTE LLM bloccato: contesto manifatturiero — '{text[:50]}'")
                 return None

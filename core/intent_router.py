@@ -61,9 +61,7 @@ _PATTERNS: list[tuple[Intent, list[str]]] = [
         r"riepilogo\s+(del\s+)?giorno",
     ]),
     (Intent.COMPLETE, [
-        r"^(fatto|completato|finito)[.!]?\s*$",   # solo come utterance breve isolata
-        r"\bl'ho\s+(fatto|completato|finito|chiamato|inviato|mandato|pagato)\b",
-        r"\bho\s+(fatto|completato|finito|chiamato|inviato|mandato|pagato)\b",
+        r"^(fatto|completato|finito)[.!]?\s*$",   # utterance isolata — inequivocabile
         r"cancella\s+(il\s+)?(promemoria|todo|task)",
         r"segna\s+(come\s+)?(fatto|completato)",
         r"rimuovi\s+(il\s+)?promemoria",
