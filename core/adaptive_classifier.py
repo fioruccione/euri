@@ -297,11 +297,14 @@ class AdaptiveClassifier:
                 best_intent = intent
                 best_threshold = adaptive_threshold
 
-        # Soglie minime per intent ad alto costo: evitano falsi positivi da frasi ambigue.
-        # SILENCE_MODE/SHUTDOWN richiedono confidenza molto alta — un errore li attiva per 2 ore.
+        # Soglie minime per intent ad alto costo con e5-large (1024-dim).
+        # e5-large ha vicinato semantico più ampio di MiniLM: frasi generiche
+        # raggiungono sim=0.84 su EXECUTE/STATUS. Sotto la soglia minima → LLM.
         _MIN_THRESHOLDS = {
             Intent.SILENCE_MODE: 0.88,
-            Intent.SHUTDOWN: 0.90,
+            Intent.SHUTDOWN:     0.90,
+            Intent.EXECUTE:      0.88,
+            Intent.STATUS:       0.88,
         }
         effective_threshold = max(best_threshold, _MIN_THRESHOLDS.get(best_intent, 0.0))
 

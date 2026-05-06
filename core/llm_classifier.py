@@ -76,8 +76,8 @@ def llm_fallback_classify(text: str) -> str | None:
     oppure None se la risposta è CHAT o non riconoscibile.
 
     Pipeline:
-      1. Prova l'Adaptive Classifier (Welford-based, ~5ms)
-      2. Se non sicuro, chiama il LLM Gemma (lento, ~600ms)
+      1. Prova l'Adaptive Classifier (Welford-based, ~400ms con e5-large su CPU)
+      2. Se sotto soglia, chiama il LLM Gemma (~600ms)
       3. Se LLM classifica con successo, aggiorna il centroide Welford per imparare
     """
     # ── Layer 1: Adaptive classifier (Welford) ──
