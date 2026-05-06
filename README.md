@@ -170,13 +170,19 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 
 ## Changelog
 
-### V2.3 — Embedding Upgrade + Mobile Voice + Memory Coherence
+### V2.3 — Embedding Upgrade + Mobile Voice + Memory Coherence + Intent Routing
 
-- **Embedding: MiniLM → multilingual-e5-large**: sostituito `paraphrase-multilingual-MiniLM-L12-v2` (384-dim) con `intfloat/multilingual-e5-large` (1024-dim). Encoding asimmetrico: `"query: "` per ricerche/classificazione, `"passage: "` per il salvataggio in Redis. Migrazione completa: 306 memorie + 92 insight ri-embeddati, indici Redis ricreati a DIM=1024, fingerprint Welford resettate e reiniziallizzate dai seed.
-- **WebRTC mobile voice (iOS Safari)**: risolto il problema "in ascolto ma nessun frame audio" su iPhone. Causa radice: con `WebRtcMode.SENDONLY`, iOS Safari non attiva il proprio encoder audio (SDP direction `sendonly`). Fix: `WebRtcMode.SENDRECV` + `audio_frame_callback` che restituisce sempre un frame di silenzio (`np.zeros_like(arr)`) — VAD processa l'audio originale, nessun echo verso il browser.
-- **Memory coherence**: aggiunta regola esplicita al system prompt — la conversazione corrente è memoria tanto quanto Redis. Risolto il caso in cui Euri diceva "Non ho niente in memoria" su fatti discussi pochi minuti prima nella stessa sessione.
-- **Passive Learner esteso**: `extract_passive_memories()` ora cattura anche fatti strategici e causali (se X allora Y, dipendenze cross-domain, vincoli produttivi). Max fatti per estrazione alzato da 5 a 6.
-- **Microfono workstation**: `AUDIO_INPUT_DEVICE = "OSM09"` (era "Jabra Speak2 40"). L'OSM09 è il default PipeWire di sistema; il fallback automatico è invariato.
+- **Embedding: MiniLM → multilingual-e5-large**: sostituito `paraphrase-multilingual-MiniLM-L12-v2` (384-dim) con `intfloat/multilingual-e5-large` (1024-dim). Encoding asimmetrico: `"query: "` per ricerche/classificazione, `"passage: "` per il salvataggio in Redis. Migrazione completa: 306 memorie + 92 insight ri-embeddati, indici Redis ricreati a DIM=1024, fingerprint Welford resettate.
+- **WebRTC mobile voice (iOS Safari)**: risolto il problema "in ascolto ma nessun frame audio" su iPhone. Causa radice: con `WebRtcMode.SENDONLY`, iOS Safari non attiva il proprio encoder audio. Fix: `WebRtcMode.SENDRECV` + silence frame (`np.zeros_like(arr)`) — nessun echo, VAD invariato.
+- **Memory coherence**: system prompt aggiornato — la conversazione corrente è memoria quanto Redis. Fix per "Non ho niente in memoria" su fatti discussi in sessione.
+- **Ricerca temporale additiva**: `_build_context` ora parsa riferimenti temporali italiani ("ieri", "5 maggio", "lunedì", "due giorni fa" ecc.) e prepend le memorie Redis di quel periodo al contesto. Implementata via filtro numerico `@created_at` su RediSearch — additiva, non restrittiva.
+- **AdaptiveClassifier disabilitato**: con e5-large (1024-dim) il Welford aveva stessa latenza del LLM (~400ms) con falsi positivi sistematici. Routing ora: regex (0ms) → LLM Gemma (600ms). Fingerprint Redis puliti.
+- **Prompt LLM intent riscritto**: definizioni precise per EXECUTE (solo hardware esplicito), SEARCH (memoria interna vs internet), COMPLETE (aggiunto con guard anti-narrazione), WEB_SEARCH, SAVE_TODO, SAVE_MEMORY, CHAT.
+- **COMPLETE migrato a LLM**: rimossi i pattern regex ambigui ("ho fatto X", "l'ho fatto") — il LLM distingue narrazione da completamento task usando il contesto. Restano nel regex solo le utterance isolate inequivocabili.
+- **Guard manifatturiero EXECUTE**: se la frase contiene termini chimici/analitici (XRF, talco, carbonato, MFI...) senza termini di sistema, EXECUTE viene bloccato a prescindere dal classificatore.
+- **RESTORE_ALERTS e SHUTDOWN** esentati dal blocco silence mode — si può uscire dalla modalità silenziosa a voce anche se Euri ignora tutto il resto.
+- **SpeakerAuth**: rigetto voci non riconosciute silenzioso (rimossa risposta vocale "prendo ordini solo da Stefano").
+- **`_build_context` semantic fix**: `search_memories` e `search_insights` ora ricevono il testo completo invece del join di keyword — e5-large e `assign_domain` lavorano su linguaggio naturale.
 
 ### V2.2 — Thinking nei Loop Cognitivi + Qwen3.6 Dream Engine
 - **Architettura dual-model**: `DREAM_OLLAMA_MODEL = "qwen3.6:35b"` separato da `OLLAMA_MODEL`. Gemma4 26B per la conversazione vocale (latenza < 2s), Qwen3.6 35B per i cicli onirici notturni (nessun vincolo di latenza, ragionamento astratto superiore).
