@@ -18,6 +18,7 @@ class Brain:
         self._next_trusted = False  # impostato da voice_daemon prima di respond()
         self._episodes: list[str] = []       # episodi compressi della sessione corrente
         self._compress_lock = threading.Lock()
+        self.history_lock = threading.Lock()  # protegge _conversation_history da accessi concorrenti
         self._episode_callback = None        # fn(summary: str) → salva in Redis; iniettata da voice_daemon
 
     @staticmethod
@@ -56,11 +57,12 @@ class Brain:
             )
             messages.append({"role": "system", "content": f"Episodi conversazione corrente:\n{ep_text}"})
 
-        # Aggiungi storico recente (solo role+content — strip dei campi extra)
-        messages.extend(
-            {"role": m["role"], "content": m["content"]}
-            for m in self._conversation_history[-self._max_history:]
-        )
+        # Aggiungi storico recente sotto lock — evita race con _compress_episode
+        with self.history_lock:
+            messages.extend(
+                {"role": m["role"], "content": m["content"]}
+                for m in self._conversation_history[-self._max_history:]
+            )
         messages.append({"role": "user", "content": user_text})
 
         try:
@@ -77,12 +79,14 @@ class Brain:
             reply = self._clean(response.message.content or "")
 
             # Aggiorna storico (trusted=True → analizzabile dal passive learner)
-            self._conversation_history.append({"role": "user", "content": user_text, "trusted": self._next_trusted})
-            self._conversation_history.append({"role": "assistant", "content": reply, "trusted": self._next_trusted})
+            with self.history_lock:
+                self._conversation_history.append({"role": "user", "content": user_text, "trusted": self._next_trusted})
+                self._conversation_history.append({"role": "assistant", "content": reply, "trusted": self._next_trusted})
+                trigger_compress = len(self._conversation_history) >= config.EPISODE_COMPRESSION_THRESHOLD
             self._next_trusted = False  # reset — il prossimo scambio è non-trusted di default
 
             # Compressione episodica in background se la history è abbastanza lunga
-            if len(self._conversation_history) >= config.EPISODE_COMPRESSION_THRESHOLD:
+            if trigger_compress:
                 threading.Thread(target=self._compress_episode, daemon=True).start()
 
             return reply
@@ -118,7 +122,8 @@ class Brain:
                 summary = self._clean(response.message.content or "")
                 if not summary:
                     return
-                self._conversation_history = self._conversation_history[config.EPISODE_COMPRESSION_CHUNK:]
+                with self.history_lock:
+                    self._conversation_history = self._conversation_history[config.EPISODE_COMPRESSION_CHUNK:]
                 self._episodes.append(summary)
                 logger.info(f"Episodic compression: {config.EPISODE_COMPRESSION_CHUNK} messaggi → episodio #{len(self._episodes)}")
                 if self._episode_callback:

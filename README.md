@@ -7,12 +7,18 @@ Non si limita ad ascoltare e rispondere: memorizza, organizza, riflette sulle tu
 
 ---
 
-## Architettura Cognitiva (V2.3)
+## Architettura Cognitiva (V2.4)
 
-### 1. Adaptive Intent Classification (Apprendimento Online Welford)
-Il sistema di classificazione degli intenti è dinamico. Quando parli, l'Adaptive Classifier usa l'algoritmo di **Welford** per confrontare la tua frase con i "centroidi" matematici (embedding) dei vari comandi (es. CHAT, EXECUTE, SEARCH).  
-Se la classificazione fallisce, l'LLM pesante interviene, corregge il tiro, e il sistema **aggiorna i centroidi matematici in tempo reale su Redis**.  
-*Risultato:* Euri impara il tuo gergo personale e diventa sempre più veloce (5ms) a capirti senza usare la GPU.
+### 1. Intent Classification — Pipeline a Due Layer
+La classificazione dell'intent è a cascata: il layer veloce esaurisce la maggior parte dei casi, il layer lento interviene solo quando necessario.
+
+**Layer 1 — Regex Router (0ms):** ~18 categorie di intent con pattern ordinati per specificità. Copre la quasi totalità dei comandi strutturati (SAVE_MEMORY, SAVE_TODO, WEB_SEARCH, EXECUTE, TEACH, DICTATION…).
+
+**Layer 2 — LLM Fallback Gemma 26B (~600ms):** chiamato *solo* quando il router restituisce CHAT. Classifica 7 intent critici (WEB_SEARCH, SEARCH, SAVE_TODO, SAVE_MEMORY, EXECUTE, COMPLETE, CHAT) con un prompt a definizioni precise. COMPLETE è gestito interamente dal LLM — il contesto conversazionale distingue "l'ho fatto" da narrazioni complesse che il regex non può disambiguare.
+
+**Guard manifatturiero:** se la frase contiene termini chimici/analitici (XRF, talco, MFI, carbonato…) senza termini di sistema espliciti, EXECUTE viene bloccato in entrambi i layer.
+
+> **AdaptiveClassifier (Welford) — sospeso:** con e5-large 1024-dim, il costo di encoding (~400ms) era uguale al LLM fallback, con il rischio aggiuntivo di corruzione dei centroidi per feedback loop su classificazioni errate. Architettura sospesa: il codice è presente ma `ADAPTIVE_CLASSIFIER_ENABLED = False`. Riabilitabile solo con un modello di embedding leggero dedicato all'intent.
 
 ### 2. Domain Gating (RAG Autonomo)
 Tutte le memorie estratte dalle conversazioni vengono lette dall'LLM, che assegna loro automaticamente delle "etichette di dominio" (es. *informatica, chimica, business, casa*).  
@@ -63,7 +69,7 @@ Euri può analizzare immagini locali usando **Gemma 4 Vision** (multimodale), se
 
 ### 7. Control Room (Streamlit UI)
 Un'interfaccia web leggera (`ui/app.py`) per:
-- Monitorare la telemetria di Welford (vedere come si stanno spostando i pesi matematici dell'apprendimento).
+- Monitorare la telemetria dei classificatori (AdaptiveClassifier sospeso — sezione disponibile ma non aggiornata).
 - Chattare silenziosamente (senza far scattare il Passive Learner vocale).
 - Esplorare e interrogare il database RAG.
 
@@ -81,7 +87,7 @@ Un'interfaccia web leggera (`ui/app.py`) per:
 | STT / Trascrizione | faster-whisper `large-v3-turbo` (CUDA float16 — NVIDIA RTX 4060 Ti) |
 | TTS / Voce | sherpa-onnx + Piper (`vits-piper-it_IT-paola-medium`) |
 | Embedding | sentence-transformers `intfloat/multilingual-e5-large` (1024-dim, asimmetrico query/passage) |
-| Classificatore Veloce | Algoritmo di Welford su Vettori (Aggiornamento Online) |
+| Classificatore Veloce | ~~Welford AdaptiveClassifier~~ — sospeso (vedi sezione 1) |
 | Web search | ddgs (DuckDuckGo, no API key) + beautifulsoup4 |
 | Gate visivo | OpenCV Haar cascade (webcam, 2fps) |
 | CodeRunner / Sandbox | subprocess isolato + AST SecurityScanner |
@@ -169,6 +175,31 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 ---
 
 ## Changelog
+
+### V2.6 — Quality Audit + Numerical Verification + Dream Engine Format
+
+- **Audit qualità memorie passive:** campione 50 memorie valutato da Stefano → 52% accurate, 22% false, 26% generiche. Eliminate 3 memorie pericolose con dosaggi errati (veleno operativo in contesto manifatturiero).
+- **`requires_verification` flag:** `save_memory()` detecta automaticamente contenuti con numeri, percentuali, dosaggi e unità di misura (regex su cifre+unità). Il campo viene scritto nel documento JSON. In `_build_context()`, le memorie flaggate vengono iniettate nel prompt con il suffisso `[DATO NON VERIFICATO — contiene valori numerici]` — Euri le cita con cautela invece che come fatti certi. Le memorie precedenti senza il campo non sono impattate.
+- **Dream Engine — formato strutturato:** riscritto il prompt di `_generate_dream()`. Output ora forzato in tre righe etichettate: "Nel dominio [X] succede: [concreto]", "Nel dominio [Y] succede: [concreto]", "La connessione operativa non ovvia è: [effetto pratico verificabile]". Insight senza tutte e tre le righe vengono scartati prima della promozione. Eliminato il template filosofico precedente che produceva principi astratti formulati in modo elaborato.
+- **Audit insight PROMOTED:** 30 insight valutati → 27% genuinamente non ovvi. Difetto principale identificato: template di scrittura uniforme rendeva impossibile distinguere insight profondi da banalità. Il nuovo formato forza la distinzione a monte.
+
+### V2.5 — Memory TTL
+- **Memory TTL:** sincronizzazione `r.expireat()` con `expires_at` JSON. Sliding window operativa: ogni recall estende il TTL di 90 giorni. Loop 2a come safety net per memorie pre-fix.
+
+### V2.4 — Stabilità Architetturale + Document Routing + Concorrenza
+
+**Fix concorrenza (bug silenzioso critico):**
+- **Race condition passive learner**: `brain._conversation_history` veniva letta senza lock dal passive learner (thread background) mentre `_compress_episode()` (altro thread daemon) poteva rimpiazzare la lista con `self._conversation_history = self._conversation_history[CHUNK:]`. Risultato: `_passive_history_len` si desincronizzava silenziosamente, con un epoch intero di apprendimento perso senza log di errore. Fix: `Brain.history_lock` (threading.Lock) protegge ora tutte le letture e scritture su `_conversation_history` — sia in `respond()` che in `_compress_episode()`, e con snapshot `list(...)` nel passive learner e in `_handle_save_last`.
+
+**State machine timeout:**
+- Sostituiti i tre pattern `(dict, float)` sparsi nell'`__init__` (`_pending_todo` + `_pending_todo_ts`, `_pending_write` + `_pending_write_ts`) con la classe `_PendingState(data, timeout)` e metodo `.expired()`. Il timeout è codificato nel costruttore, non nel sito di controllo in `_dispatch`. Pattern uniforme per ogni stato temporaneo futuro.
+
+**`_last_speech_content` TTL:**
+- Aggiunto `_last_speech_ts` — il contenuto dell'ultima risposta lunga scade dopo 300 secondi. Prima, una risposta di ore prima poteva essere salvata silenziosamente da un misrecognition STT che triggerava `_SAVE_REPLY_RE`.
+
+**Routing documenti di testo:**
+- "Crea un documento di testo con tutti questi valori" non va più a CodeRunner. Rimosso da EXECUTE il pattern `\bcrea[ri]?\s+(un\s+)?(file|riassunto|testo|documento|report)\b` e `document[io]` dalla lista format (riga 160). Estesa `_WRITE_REQUEST_RE` con forme imperative senza "potresti/puoi": `crea (un) documento`, `scrivimi (un) testo`, `generami (un) schema`.
+- `_handle_pending_write` ora distingue: task con formati dati strutturati (csv, excel, pdf…) → CodeRunner; task generico di testo → LLM compone il documento dalla conversazione recente → `tool_write_text`. In entrambi i casi il flusso passa per la conferma vocale.
 
 ### V2.3 — Embedding Upgrade + Mobile Voice + Memory Coherence + Intent Routing
 

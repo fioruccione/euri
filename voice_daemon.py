@@ -93,6 +93,19 @@ logger.add(sys.stderr, level="INFO", format="<green>{time:HH:mm:ss}</green> | <l
 logger.add("logs/voice_daemon.log", rotation="10 MB", retention="7 days", level="DEBUG", enqueue=True)
 
 
+class _PendingState:
+    """Stato temporaneo con timeout — sostituisce le coppie (dict, float) sparse in __init__."""
+    __slots__ = ("data", "_ts", "_timeout")
+
+    def __init__(self, data: dict, timeout: float):
+        self.data = data
+        self._ts = time.time()
+        self._timeout = timeout
+
+    def expired(self) -> bool:
+        return time.time() - self._ts > self._timeout
+
+
 class VoiceDaemon:
     def __init__(self):
         self.r: redis_lib.Redis = get_client()
@@ -123,11 +136,10 @@ class VoiceDaemon:
         self._teach_asked: list[str] = []
         self._teach_pending_save = ""
         self._web_pending: dict = {}  # contesto ultima ricerca web (per "approfondisci" / "salva")
-        self._pending_todo: dict | None = None   # todo in attesa di conferma
-        self._pending_todo_ts: float = 0.0       # timestamp della domanda (timeout 60s)
-        self._pending_write: dict | None = None  # richiesta scrittura file in attesa di conferma
-        self._pending_write_ts: float = 0.0      # timestamp (timeout 120s)
+        self._pending_todo: _PendingState | None = None   # todo in attesa di conferma (timeout 60s)
+        self._pending_write: _PendingState | None = None  # richiesta scrittura file in attesa (timeout 120s)
         self._last_speech_content: str = ""      # ultima risposta lunga di Euri (per "scrivilo")
+        self._last_speech_ts: float = 0.0        # timestamp di _last_speech_content (TTL 300s)
         self._translate_bidir = False       # modalità interprete bidirezionale IT↔EN
         self._dictation_mode = False
         self._dictation_buffer: list[str] = []
@@ -376,8 +388,7 @@ class VoiceDaemon:
             return
         due_at = extract_due_date(text)
         # Non salva subito — chiede conferma e dettagli
-        self._pending_todo = {"content": content, "due_at": due_at}
-        self._pending_todo_ts = time.time()
+        self._pending_todo = _PendingState({"content": content, "due_at": due_at}, timeout=60)
         due_str = f", scadenza {format_datetime(due_at)}" if due_at else ""
         self._speak(f"Segno: '{content}'{due_str}. Vuoi aggiungere dettagli o una scadenza? Oppure dimmi 'no' per annullare.")
 
@@ -388,14 +399,13 @@ class VoiceDaemon:
 
         pending = self._pending_todo
         self._pending_todo = None
-        self._pending_todo_ts = 0.0
 
         if _CANCEL.search(text):
             self._speak("Ok, non segno niente.")
             return
 
-        content = pending["content"]
-        due_at = pending["due_at"]
+        content = pending.data["content"]
+        due_at = pending.data["due_at"]
 
         if not _CONFIRM.search(text):
             # L'utente ha aggiunto dettagli — arricchisce il contenuto
@@ -418,9 +428,14 @@ class VoiceDaemon:
     _WRITE_REQUEST_RE = re.compile(
         r'\b(potresti|puoi|riesci|mi\s+fai|fammi)\s+'
         r'(crea[ri]?|scriv[ei]?|generar[ei]?|preparar[ei]?|far[ei]?)\s+'
-        r'(un[ao]?\s+)?(file|riassunto|testo|documento|report|schema|bozza|nota)\b',
+        r'(un[ao]?\s+)?(file|riassunto|testo|documento|report|schema|bozza|nota)\b'
+        r'|\bcrea[ri]?\s+(un[ao]?\s+)?(documento|riassunto|schema|bozza|nota)(\s+di\s+testo)?\b'
+        r'|\bscrivimi\s+(un[ao]?\s+)?(documento|testo|riassunto|schema|bozza|nota)\b'
+        r'|\bgenera[mi]?\s+(un[ao]?\s+)?(documento|testo|riassunto|schema|bozza|nota)\b',
         re.IGNORECASE
     )
+
+    _DATA_FORMAT_RE = re.compile(r'\b(csv|excel|xlsx?|pdf|grafico|tabella|ods|odt|odp)\b', re.I)
 
     def _handle_pending_write(self, text: str):
         """Gestisce la risposta di conferma/dettaglio/annullamento per una richiesta di scrittura file."""
@@ -429,17 +444,36 @@ class VoiceDaemon:
 
         pending = self._pending_write
         self._pending_write = None
-        self._pending_write_ts = 0.0
 
         if _CANCEL.search(text):
             self._speak("Ok, non creo niente.")
             return
 
-        task = pending["task"]
+        task = pending.data["task"]
         if not _CONFIRM.search(text):
             task = f"{task} — in più: {text.strip()}"
 
-        self._handle_execute(task)
+        # Se il task richiede formati dati strutturati (CSV, Excel, PDF…) → CodeRunner
+        if self._DATA_FORMAT_RE.search(task):
+            self._handle_execute(task)
+            return
+
+        # Altrimenti: documento di testo → LLM compone il contenuto, poi write_text
+        self._speak("Sto componendo il documento.")
+        compose_prompt = (
+            f"Crea un documento di testo ben strutturato che risponda a questa richiesta: {task}\n"
+            "Scrivi solo il contenuto del documento, senza introduzioni o note. "
+            "Usa i dati e i valori menzionati nella conversazione recente."
+        )
+        composed = self.brain.respond(compose_prompt, context="[Componi un documento strutturato dai dati della conversazione. Solo contenuto, no prefazioni.]")
+        from agent.tools.text_writer import tool_write_text
+        res = tool_write_text({"text": composed})
+        if res.success:
+            fname = res.raw_data.get("filepath", "file").split("/")[-1]
+            self.memory.log_conversation("Euri", f"[Documento salvato: {fname}]")
+            self._speak(f"Documento creato e salvato come {fname}.")
+        else:
+            self._speak("Errore nella creazione del documento.")
 
     def _handle_save_note(self, text: str):
         from core.validator import validate_payload
@@ -746,7 +780,8 @@ class VoiceDaemon:
             for r in results[:6]:
                 age = self._relative_time(r.get("created_at"))
                 label = f"[{r.get('domain', 'generale')} | {age}]" if age else f"[{r.get('domain', 'generale')}]"
-                mem_lines.append(f"- {label} {r['content']}")
+                suffix = " [DATO NON VERIFICATO — contiene valori numerici]" if r.get("requires_verification") else ""
+                mem_lines.append(f"- {label} {r['content']}{suffix}")
             sections.append("Ricordi/note rilevanti:\n" + "\n".join(mem_lines))
         if insight_lines:
             sections.append("Principi trasversali:\n" + "\n".join(insight_lines))
@@ -893,7 +928,8 @@ class VoiceDaemon:
     def _handle_save_last(self, text: str):
         """Salva un riassunto della conversazione recente."""
         self.memory.log_conversation("Stefano", text)
-        history = self.brain._conversation_history
+        with self.brain.history_lock:
+            history = list(self.brain._conversation_history)
         if len(history) < 2:
             self._speak("Non c'è abbastanza conversazione da salvare.")
             return
@@ -913,8 +949,7 @@ class VoiceDaemon:
 
         # Intercetta richieste conversazionali di creazione file prima di chiamare l'LLM
         if self._WRITE_REQUEST_RE.search(text):
-            self._pending_write = {"task": text}
-            self._pending_write_ts = time.time()
+            self._pending_write = _PendingState({"task": text}, timeout=120)
             self._speak("Perfetto. Di' 'vai' per procedere subito, oppure aggiungimi dettagli da includere nel file.")
             return
 
@@ -925,6 +960,7 @@ class VoiceDaemon:
         self.memory.log_conversation("Euri", reply)
         if len(reply) > 150:
             self._last_speech_content = reply
+            self._last_speech_ts = time.time()
         self._speak(reply)
 
     def _handle_teach(self, text: str):
@@ -1072,9 +1108,8 @@ class VoiceDaemon:
 
         # Todo pending: attende conferma/dettagli/annullamento (timeout 60s)
         if self._pending_todo:
-            if time.time() - self._pending_todo_ts > 60:
+            if self._pending_todo.expired():
                 self._pending_todo = None
-                self._pending_todo_ts = 0.0
                 logger.debug("Todo pending scaduto (timeout 60s)")
             else:
                 self._handle_pending_todo(text)
@@ -1082,9 +1117,8 @@ class VoiceDaemon:
 
         # Write pending: attende conferma/dettagli/annullamento (timeout 120s)
         if self._pending_write:
-            if time.time() - self._pending_write_ts > 120:
+            if self._pending_write.expired():
                 self._pending_write = None
-                self._pending_write_ts = 0.0
                 logger.debug("Write pending scaduto (timeout 120s)")
             else:
                 self._handle_pending_write(text)
@@ -1116,8 +1150,10 @@ class VoiceDaemon:
             self._handle_teach_continue(text)
             return
 
-        # "Scrivilo / salvalo" dopo una risposta lunga → usa il contenuto dell'ultima risposta
-        if self._last_speech_content and self._SAVE_REPLY_RE.search(text):
+        # "Scrivilo / salvalo" dopo una risposta lunga → usa il contenuto dell'ultima risposta (TTL 300s)
+        if (self._last_speech_content
+                and time.time() - self._last_speech_ts < 300
+                and self._SAVE_REPLY_RE.search(text)):
             from agent.tools.text_writer import tool_write_text
             self.memory.log_conversation("Stefano", text)
             res = tool_write_text({"text": self._last_speech_content})
@@ -1127,6 +1163,7 @@ class VoiceDaemon:
             else:
                 reply = "Errore nel salvataggio."
             self._last_speech_content = ""
+            self._last_speech_ts = 0.0
             self.memory.log_conversation("Euri", reply)
             self._speak(reply)
             return
@@ -1196,8 +1233,9 @@ class VoiceDaemon:
                 if idle < IDLE_TRIGGER:
                     continue
 
-                # Abbastanza nuovi scambi da analizzare?
-                history = self.brain._conversation_history
+                # Abbastanza nuovi scambi da analizzare? — snapshot atomico sotto history_lock
+                with self.brain.history_lock:
+                    history = list(self.brain._conversation_history)
                 new_exchanges = len(history) - self._passive_history_len
                 if new_exchanges < MIN_NEW_EXCHANGES:
                     continue
@@ -1307,6 +1345,16 @@ class VoiceDaemon:
                 )
                 logger.info("Loop 2a: reflection salvata silenziosamente")
                 self._consolidation_last_run = time.monotonic()
+
+                # Cleanup memorie scadute (safety net per memorie mai richiamate)
+                try:
+                    expired = self.memory.get_expiring_memories(days_ahead=0)
+                    for mem in expired:
+                        self.r.delete(f"euri:memory:{mem['id']}")
+                    if expired:
+                        logger.info(f"Loop 2a: {len(expired)} memorie scadute rimosse")
+                except Exception as cleanup_err:
+                    logger.debug(f"Loop 2a cleanup error: {cleanup_err}")
 
             except Exception as e:
                 logger.error(f"Errore consolidation loop: {e}")

@@ -70,12 +70,23 @@ class MemoryManager:
         # Domain assignment auto-scoperto via LLM
         domain_label = assign_domain(content)
 
+        # Flag dati numerici non verificati (dosaggi, percentuali, misure)
+        import re as _re
+        _NUM_PAT = _re.compile(
+            r'\b\d+[.,]?\d*\s*(%|g|kg|ml|l|mg|ppm|bar|°[Cc]|rpm|mm|cm|m\b)|'
+            r'\b\d+[.,]\d+\b|'
+            r'\b(grado|gradi)\s+\d+\b',
+            _re.IGNORECASE
+        )
+        requires_verification = bool(_NUM_PAT.search(content))
+
         doc = {
             "id": mid,
             "content": content,
             "category": category,
             "source": source,
             "domain": domain_label,
+            "requires_verification": requires_verification,
             "created_at": to_timestamp(ts),
             "due_at": None,
             "expires_at": to_timestamp(expires_at) if expires_at else None,
@@ -86,14 +97,16 @@ class MemoryManager:
             "context_meta": context_meta,
         }
         self.r.json().set(key, "$", doc)
+        if expires_at:
+            self.r.expireat(key, expires_at)
         logger.info(f"Memory salvata: {mid}")
-        
+
         # Sincronizza verso Obsidian Vault (se abilitato)
         try:
             write_memory(doc)
         except Exception as e:
             logger.debug(f"Obsidian sync memory error: {e}")
-            
+
         return mid
 
     def search_memories(self, query: str, limit: int = 5, source_filter: list[str] | None = None) -> list[dict]:
@@ -240,8 +253,9 @@ class MemoryManager:
             ttl_days = _TTL_BY_SOURCE.get(item.get("source", ""))
             if ttl_days:
                 from datetime import timedelta
-                new_exp = to_timestamp(now() + timedelta(days=ttl_days))
-                self.r.json().set(key, "$.expires_at", new_exp)
+                new_exp_dt = now() + timedelta(days=ttl_days)
+                self.r.json().set(key, "$.expires_at", to_timestamp(new_exp_dt))
+                self.r.expireat(key, new_exp_dt)
 
         return merged[:limit]
 
@@ -260,8 +274,9 @@ class MemoryManager:
                 ttl_days = _TTL_BY_SOURCE.get(item.get("source", ""))
                 if ttl_days:
                     from datetime import timedelta
-                    new_exp = to_timestamp(now() + timedelta(days=ttl_days))
-                    self.r.json().set(doc.id, "$.expires_at", new_exp)
+                    new_exp_dt = now() + timedelta(days=ttl_days)
+                    self.r.json().set(doc.id, "$.expires_at", to_timestamp(new_exp_dt))
+                    self.r.expireat(doc.id, new_exp_dt)
         return docs
 
     def get_expiring_memories(self, days_ahead: int = 7) -> list[dict]:

@@ -216,15 +216,7 @@ class DreamEngine:
         label_b = f"dominio: {dom_b}" + (f", {age_b}" if age_b else "")
 
         prompt = f"""\
-Sei un motore cognitivo analogico. Il tuo compito è trovare isomorfismi strutturali tra due memorie di domini distinti.
-
-PROCESSO:
-1. Astrai ogni memoria alla sua struttura logica essenziale, ignorando i dettagli di dominio.
-2. Cerca se le due strutture condividono la stessa dinamica sottostante: stesso vincolo, stesso meccanismo causale, stessa legge emergente.
-3. Se le memorie sono temporalmente distanti, considera anche se una rappresenta un'evoluzione o una risposta all'altra.
-4. Formula il principio generale che li governa entrambi.
-
-PREFERISCI analogie non ovvie — evita connessioni banali del tipo "entrambi sono processi". Cerca il meccanismo profondo, non la somiglianza superficiale.
+Hai due memorie da domini diversi. Il tuo compito è trovare una connessione operativa non ovvia — qualcosa che non emerge guardando un solo dominio.
 
 Memoria A ({label_a}):
 "{mem_a['content']}"
@@ -232,12 +224,16 @@ Memoria A ({label_a}):
 Memoria B ({label_b}):
 "{mem_b['content']}"
 
-Formula l'insight in ALMENO 2 frasi, idealmente 3-4. NON usare mai una sola frase.
-- Frase 1: il principio generale.
-- Frase 2+: spiega PERCHÉ le due strutture condividono quel meccanismo — quale forza o vincolo produce lo stesso comportamento in entrambi i domini. Nomina i dettagli specifici delle due memorie (materiali, processi, sistemi) per ancorare il principio alla realtà concreta, non tenerlo astratto.
-- Se il meccanismo è complesso, usa 4 frasi. La profondità è preferibile alla sintesi prematura.
+Se esiste una connessione genuina, rispondi ESATTAMENTE in questo formato (tre righe, niente altro):
+Nel dominio [{dom_a}] succede: [descrivi cosa succede concretamente, con i dettagli specifici della memoria A]
+Nel dominio [{dom_b}] succede: [descrivi cosa succede concretamente, con i dettagli specifici della memoria B]
+La connessione operativa non ovvia è: [effetto pratico verificabile — cosa puoi fare o evitare sapendo entrambe le cose]
 
-Rispondi con NESSUN INSIGHT solo se le due memorie riguardano aspetti così specifici e non generalizzabili che qualsiasi connessione risulterebbe artificiosa o fuorviante."""
+REGOLE:
+- La terza riga deve descrivere un effetto pratico che si può verificare o applicare, non un principio filosofico.
+- Se la connessione che trovi è ovvia (es. "entrambi ottimizzano un processo"), rispondi NESSUN INSIGHT.
+- Se non riesci a formulare la terza riga con un effetto concreto, rispondi NESSUN INSIGHT.
+- Nessuna frase introduttiva, nessun commento fuori formato."""
 
         try:
             response = self._ollama_chat(
@@ -255,12 +251,16 @@ Rispondi con NESSUN INSIGHT solo se le due memorie riguardano aspetti così spec
             status = "discarded"
             insight_content = ""
             
-            if text and "NESSUN INSIGHT" not in text.upper() and len(text) > 15:
+            has_structure = (
+                "connessione operativa" in text.lower()
+                and "nel dominio" in text.lower()
+            )
+            if text and "NESSUN INSIGHT" not in text.upper() and has_structure:
                 status = "candidate"
                 insight_content = text
                 logger.info(f"Dream Engine: generato CANDIDATE Insight → {insight_content[:50]}...")
             else:
-                logger.debug("Dream Engine: sogno scartato (nessun isomorfismo)")
+                logger.debug("Dream Engine: sogno scartato (nessun isomorfismo o formato incompleto)")
                 
             # Salva il sogno
             dream_id = str(uuid.uuid4())
