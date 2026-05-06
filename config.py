@@ -67,7 +67,7 @@ AUDIO_CHUNK_MS = 32
 AUDIO_CHUNK_SAMPLES = int(AUDIO_RATE * AUDIO_CHUNK_MS / 1000)  # 512
 
 # Microfono preferito — cerca per nome (substring, case-insensitive). None = default di sistema.
-AUDIO_INPUT_DEVICE = "OSM09"
+AUDIO_INPUT_DEVICE = None  # PipeWire usa già OSM09 come default; ALSA diretto non supporta 16kHz
 # Speaker preferito — stesso schema. None = default di sistema.
 AUDIO_OUTPUT_DEVICE = "Jabra Speak2 40"
 # True = salta sounddevice, usa direttamente aplay (Linux) o afplay (macOS).
