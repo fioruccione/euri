@@ -692,6 +692,7 @@ class VoiceDaemon:
 
     def _build_context(self, text: str) -> str:
         """Cerca in Redis contenuto rilevante da iniettare come contesto nella risposta."""
+        from utils.temporal import extract_temporal_range
         source_filter = config.DEMO_CONTEXT_SOURCES if config.DEMO_MODE else None
 
         # Reflections da Loop 2a — solo fuori DEMO_MODE (source=reflection non è in DEMO_CONTEXT_SOURCES)
@@ -702,6 +703,17 @@ class VoiceDaemon:
 
         results = self.memory.get_recent_memories(limit=5, source_filter=source_filter)
         seen_ids = {r.get("id") for r in results}
+
+        # Ricerca temporale: se la query contiene "ieri", "5 maggio", "lunedì" ecc.
+        # le memorie di quel periodo vengono aggiunte in cima ai risultati.
+        time_range = extract_temporal_range(text, now())
+        if time_range:
+            ts_start, ts_end = time_range
+            time_mems = self.memory.search_memories_by_timerange(ts_start, ts_end, limit=5)
+            for r in reversed(time_mems):
+                if r.get("id") not in seen_ids:
+                    results.insert(0, r)
+                    seen_ids.add(r.get("id"))
 
         words = re.findall(
             r'\b[a-zA-ZàáâãäåèéêëìíîïòóôõöùúûüÀÁÂÃÄÅÈÉÊËÌÍÎÏÒÓÔÕÖÙÚÛÜ]{4,}\b', text

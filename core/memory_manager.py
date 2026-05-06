@@ -287,6 +287,18 @@ class MemoryManager:
     def get_recent_memories(self, limit: int = 10, source_filter: list[str] | None = None) -> list[dict]:
         return self._search_keyword("*", limit=limit, source_filter=source_filter)
 
+    def search_memories_by_timerange(self, ts_start: float, ts_end: float, limit: int = 5) -> list[dict]:
+        """Recupera memorie in un range temporale tramite filtro numerico su created_at."""
+        try:
+            q = (Query(f"@created_at:[{ts_start} {ts_end}]")
+                 .sort_by("created_at", asc=False)
+                 .paging(0, limit))
+            results = self.r.ft("idx:memories").search(q)
+            return self._hydrate(results.docs)
+        except Exception as e:
+            logger.error(f"Errore ricerca temporale: {e}")
+            return []
+
     def get_recent_reflections(self, limit: int = 2) -> list[dict]:
         """Restituisce le reflection più recenti generate da Loop 2a."""
         return self._search_keyword("*", limit=limit, source_filter=["reflection"])
