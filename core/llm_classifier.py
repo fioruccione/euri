@@ -34,6 +34,26 @@ def _clean(text: str) -> str:
     return text.strip()
 
 
+_MANUFACTURING_TERMS = {
+    "xrf", "talco", "carbonato", "polimero", "polipropilene", "polietilene",
+    "polistirolo", "mfi", "izod", "stampo", "granulatore", "estrusione",
+    "trafila", "perossido", "additivo", "carica", "reagenz", "realube",
+    "vistamax", "bicarbonato", "ceneri", "residuo", "campione", "analisi",
+    "laboratorio", "misurazione", "certificato", "collaudo", "specifica",
+    "fornitura", "lotto", "scheda tecnica", "polirefine", "luciflast",
+}
+_SYSTEM_TERMS = {"cpu", "ram", "gpu", "disco", "processi", "uptime", "log", "processo"}
+
+
+def _is_manufacturing_context(text: str) -> bool:
+    """True se il testo ha termini manifatturieri/analitici ma nessun termine di sistema."""
+    lower = text.lower()
+    return (
+        any(t in lower for t in _MANUFACTURING_TERMS)
+        and not any(t in lower for t in _SYSTEM_TERMS)
+    )
+
+
 _PROMPT = """\
 Classifica questa frase con UNA SOLA parola tra: WEB_SEARCH, SEARCH, SAVE_TODO, SAVE_MEMORY, EXECUTE, CHAT.
 
@@ -64,7 +84,10 @@ def llm_fallback_classify(text: str) -> str | None:
     if _adaptive_clf is not None and config.ADAPTIVE_CLASSIFIER_ENABLED:
         result = _adaptive_clf.classify(text)
         if result is not None:
-            return result.value
+            if result.value == "EXECUTE" and _is_manufacturing_context(text):
+                logger.debug(f"EXECUTE bloccato: contesto manifatturiero — '{text[:50]}'")
+            else:
+                return result.value
 
     # ── Layer 2: LLM fallback ──
     try:
@@ -76,6 +99,9 @@ def llm_fallback_classify(text: str) -> str | None:
         )
         result = _clean(response.message.content or "").upper().split()[0] if (response.message.content or "").strip() else ""
         if result in ("WEB_SEARCH", "SEARCH", "SAVE_TODO", "SAVE_MEMORY", "EXECUTE"):
+            if result == "EXECUTE" and _is_manufacturing_context(text):
+                logger.debug(f"EXECUTE LLM bloccato: contesto manifatturiero — '{text[:50]}'")
+                return None
             logger.info(f"LLM fallback: '{text[:50]}' → {result}")
             
             # ── Layer 3: Feedback Loop Welford ──

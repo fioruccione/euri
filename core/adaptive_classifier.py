@@ -297,17 +297,25 @@ class AdaptiveClassifier:
                 best_intent = intent
                 best_threshold = adaptive_threshold
 
-        if best_score >= best_threshold:
+        # Soglie minime per intent ad alto costo: evitano falsi positivi da frasi ambigue.
+        # SILENCE_MODE/SHUTDOWN richiedono confidenza molto alta — un errore li attiva per 2 ore.
+        _MIN_THRESHOLDS = {
+            Intent.SILENCE_MODE: 0.88,
+            Intent.SHUTDOWN: 0.90,
+        }
+        effective_threshold = max(best_threshold, _MIN_THRESHOLDS.get(best_intent, 0.0))
+
+        if best_score >= effective_threshold:
             logger.info(
                 f"AdaptiveClassifier: '{text[:50]}' → {best_intent.value} "
-                f"(sim={best_score:.3f}, thr={best_threshold:.3f}, "
+                f"(sim={best_score:.3f}, thr={effective_threshold:.3f}, "
                 f"n={self._states[best_intent].n}, σ={self._states[best_intent].std:.3f})"
             )
             return best_intent
 
         logger.debug(
             f"AdaptiveClassifier: '{text[:50]}' sotto soglia "
-            f"(best={best_score:.3f} < {best_threshold:.3f}) → LLM"
+            f"(best={best_score:.3f} < {effective_threshold:.3f}) → LLM"
         )
         return None
 
