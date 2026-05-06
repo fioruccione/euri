@@ -48,7 +48,7 @@ class MemoryManager:
         # Embedding semantico
         embedding = None
         if self._embedder and self._embedder.available:
-            vec = self._embedder.encode(content)
+            vec = self._embedder.encode(content, mode="passage")
             if vec is not None:
                 embedding = vec.tolist()
 
@@ -150,7 +150,7 @@ class MemoryManager:
         
     def _search_semantic(self, query: str, limit: int, source_filter: list[str] | None = None) -> list[dict]:
         """KNN search tramite embedding — restituisce docs ordinati per distanza coseno."""
-        vec = self._embedder.encode(query)
+        vec = self._embedder.encode(query, mode="query")
         if vec is None:
             return []
         try:
@@ -528,7 +528,7 @@ class MemoryManager:
 
     def search_insights(self, query: str, limit: int = 2) -> list[dict]:
         """KNN search su idx:insights filtrato per status=promoted. Aggiorna recalled_count."""
-        vec = self._embedder.encode(query)
+        vec = self._embedder.encode(query, mode="query")
         if vec is None:
             return []
         try:

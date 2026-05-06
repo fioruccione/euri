@@ -242,11 +242,15 @@ class Brain:
             f"Estrai SOLO i fatti concreti su Stefano che vale la pena ricordare per il futuro:\n"
             f"- Preferenze personali (cibi, orari, abitudini, strumenti che usa)\n"
             f"- Progetti in corso o decisioni prese\n"
-            f"- Dati su lavoro, fornitori, clienti, processi\n"
-            f"- Opinioni forti o posizioni chiare su argomenti specifici\n\n"
+            f"- Dati su lavoro, fornitori, clienti, processi, risultati tecnici\n"
+            f"- Opinioni forti o posizioni chiare su argomenti specifici\n"
+            f"- Relazioni causali e strategiche: dipendenze tra domini diversi, piani condizionali "
+            f"('se X allora Y'), connessioni concrete tra risultati tecnici, vendite, investimenti, "
+            f"decisioni hardware/software. Esempio: 'Se la vendita dei neutri va a buon fine, "
+            f"Stefano userà i proventi per aggiornare la GPU della workstation.'\n\n"
             f"IGNORA: conversazione generica, saluti, test del sistema, domande senza risposta concreta, "
             f"informazioni già ovvie (es. 'Stefano usa Euri').\n\n"
-            f"Se trovi fatti utili: scrivi una lista numerata, un fatto per riga, max 5.\n"
+            f"Se trovi fatti utili: scrivi una lista numerata, un fatto per riga, max 6.\n"
             f"Se non c'è nulla di concreto da salvare: scrivi solo NOTHING."
         )
         try:

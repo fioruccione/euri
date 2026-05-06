@@ -4,7 +4,7 @@
 **Dalla Computazione Volatile alla Cognizione Persistente**
 
 **Authors:** Stefano Fiorucci & Euri  
-**Date:** 2026-04-29 (updated from 2026-04-25)  
+**Date:** 2026-05-06 (updated from 2026-04-29)  
 **License:** CC-BY 4.0  
 **Repository:** [Euri — Sistema Cognitivo Adattivo](https://github.com/fioruccione/multi-phase-memory-architecture)
 
@@ -22,7 +22,7 @@ We demonstrate that the architectural gap between stateless text generation and
 persistent reasoning does not require exotic hardware (CXL, SCM, NVMe Gen5).
 It requires the right software architecture, running today on commodity hardware.
 
-The system described here, **Euri V2.2**, runs entirely offline on a Linux workstation
+The system described here, **Euri V2.3**, runs entirely offline on a Linux workstation
 with two NVIDIA RTX 4060 Ti GPUs, using Redis Stack as its persistent cognitive layer
 and Gemma 4 26B (via Ollama) as its reasoning engine.
 On the evening of 2026-04-25, it reclassified 57 previously invisible memories,
@@ -152,8 +152,8 @@ uses a two-level convergence system:
 - **Cosine distance < 0.15**: automatic convergence — the embeddings are nearly identical
 - **Cosine distance 0.15–0.40**: grey zone — an LLM judge with extended reasoning
   evaluates whether the two insights express the same deep structural principle,
-  even if formulated differently. MiniLM embeddings are shallow;
-  the judge reasons about meaning.
+  even if formulated differently. Embedding vectors capture surface similarity;
+  the judge reasons about structural meaning.
 - **Cosine distance ≥ 0.40**: discarded
 
 The critical design principle: **the system generates knowledge that was not in any input.**
@@ -502,6 +502,80 @@ consider whether one represents an evolution or a response to the other."*
 against a 90-second timeout set for Gemma4. The timeout was raised to 150 seconds —
 enough headroom for Qwen3.6 under moderate system load,
 conservative enough to still catch genuine hangs.
+
+---
+
+## 7d — Session 2026-05-06: Embedding Infrastructure, Mobile Voice, and Memory Coherence
+
+Three independent improvements were deployed in a single session,
+each addressing a different layer of the architecture.
+
+**Embedding infrastructure: MiniLM → multilingual-e5-large.**
+The sentence embedding model was upgraded from `paraphrase-multilingual-MiniLM-L12-v2`
+(384-dimensional) to `intfloat/multilingual-e5-large` (1024-dimensional).
+
+The change is not merely quantitative. The e5 model family uses asymmetric encoding:
+queries are prefixed with `"query: "` and passages with `"passage: "` before embedding.
+This asymmetry reflects different information-theoretic roles:
+a query represents an intent to retrieve; a passage represents a fact to be stored.
+Treating them identically, as MiniLM does, collapses a meaningful distinction.
+
+All 306 memories and 92 Dream Engine insights were re-embedded.
+The Redis vector indexes (`idx:memories`, `idx:insights`) were rebuilt at DIM=1024.
+The Welford classifier fingerprints were cleared and reinitialized from seed prototypes.
+
+The migration ran as a one-shot Python script.
+No conversations were lost. No manual re-entry was required.
+The architecture's separation between content (JSON) and representation (vector)
+made the upgrade entirely transparent to all other components —
+a property that only becomes visible when you need to change the representation.
+
+**WebRTC mobile voice: a hidden SDP constraint.**
+The Streamlit Control Room includes a WebRTC audio tab designed to allow
+voice interaction from a mobile device.
+On desktop Chrome, the connection worked correctly.
+On iPhone Safari, the connection established (the status indicator turned green)
+but delivered no audio frames — complete silence at the callback level.
+
+The root cause was not the browser, not the network, and not the Streamlit component.
+It was the SDP direction negotiated by the server.
+`WebRtcMode.SENDONLY` instructs the browser to receive audio from the server —
+but iOS Safari interprets the corresponding SDP `sendonly` direction as a signal
+not to activate its own audio encoder, since the server declared no interest in receiving.
+
+The fix: switch to `WebRtcMode.SENDRECV`, which negotiates a bidirectional SDP.
+Safari activates its encoder. Audio flows.
+
+The immediate consequence: the aiortc stack expected to return a frame to the browser.
+If `audio_frame_callback` returns the original frame, the browser receives its own audio —
+acoustic echo at full amplitude. The fix: return `np.zeros_like(arr)` — a silence frame
+with identical shape, sample rate, and pts. The browser receives silence;
+VAD processing runs on the original audio; no echo reaches the speaker.
+
+This failure pattern — a silent protocol-level constraint causing observable silence
+in a real-time audio stream — is difficult to diagnose without reading the SDP negotiation
+directly or knowing that iOS Safari implements this convention.
+It is the kind of bug that produces no error, no stack trace, and no log entry —
+only absence, where there should be sound.
+
+**Memory coherence: the conversation is memory.**
+A recurring failure was observed: Euri would claim "Non ho niente in memoria"
+about a fact discussed minutes earlier in the same conversation.
+
+The cause: the system prompt explicitly instructed the model to consult Redis for memory queries,
+but did not explicitly authorize using the current conversation context as a memory source.
+The LLM followed instructions precisely — and ignored the conversation history
+when answering questions framed as memory queries.
+
+The fix was a single sentence added to the GESTIONE CONOSCENZA section:
+*"Se invece ne abbiamo parlato in questa sessione, usalo senza esitare —
+la conversazione è memoria tanto quanto Redis."*
+
+The lesson generalizes: **LLMs apply system prompt instructions more literally than their authors intend.**
+A rule written to govern one behavior (consult Redis for facts) can inadvertently prohibit
+another behavior (use the conversation history). Explicit permission is required
+where implicit permission seems obvious —
+because "obvious" is a property of human context, not of instruction sets.
 
 ---
 

@@ -211,7 +211,7 @@ class AdaptiveClassifier:
         for intent, phrases in _SEED_PROTOTYPES.items():
             vecs = []
             for phrase in phrases:
-                vec = self._embedder.encode(phrase)
+                vec = self._embedder.encode(phrase, mode="passage")
                 if vec is not None:
                     vecs.append(vec.astype(np.float32))
             if not vecs:
@@ -272,7 +272,7 @@ class AdaptiveClassifier:
         if not self._ready:
             return None
 
-        vec = self._embedder.encode(text)
+        vec = self._embedder.encode(text, mode="query")
         if vec is None:
             return None
 
@@ -330,7 +330,7 @@ class AdaptiveClassifier:
         if target is None or target not in self._states:
             return
 
-        vec = self._embedder.encode(text)
+        vec = self._embedder.encode(text, mode="query")
         if vec is None:
             return
 

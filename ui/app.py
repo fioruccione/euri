@@ -108,13 +108,22 @@ def get_voice_processor():
             self._silent = 0
 
         def recv(self, frame: av.AudioFrame) -> av.AudioFrame:
-            # Ignora durante cooldown post-TTS
-            if _t.time() < self._cooldown_end:
-                return frame
-
             arr = frame.to_ndarray()
 
-            # Normalizza in base al dtype reale (più affidabile del nome del formato)
+            # Frame silenzio da restituire al browser — impedisce echo del microfono
+            try:
+                sf = av.AudioFrame.from_ndarray(
+                    np.zeros_like(arr), format=frame.format.name, layout=frame.layout.name
+                )
+                sf.sample_rate = frame.sample_rate
+                sf.pts = frame.pts
+            except Exception:
+                sf = frame  # fallback: non dovrebbe mai accadere
+
+            if _t.time() < self._cooldown_end:
+                return sf
+
+            # Normalizza in base al dtype reale
             if arr.dtype == np.int16:
                 pcm = arr.astype(np.float32) / 32768.0
             elif arr.dtype == np.int32:
@@ -122,7 +131,7 @@ def get_voice_processor():
             else:
                 pcm = arr.astype(np.float32)
 
-            # → mono: usa frame.channels per reshape corretto su qualsiasi layout
+            # → mono
             ch = frame.channels if frame.channels > 0 else 1
             mono = pcm.reshape(ch, -1).mean(axis=0)
 
@@ -150,7 +159,7 @@ def get_voice_processor():
                     self._buf    = []
                     self._active = False
                     self._silent = 0
-            return frame
+            return sf  # silenzio: nessun echo verso il browser
 
     return _Proc(), audio_q
 
@@ -307,12 +316,18 @@ with main_col:
 
             webrtc_ctx = webrtc_streamer(
                 key="euri-voice-auto",
-                mode=WebRtcMode.SENDRECV,  # SENDRECV più compatibile con Safari iOS
-                rtc_configuration={"iceServers": []},  # no STUN: LAN pura, host candidates diretti
-                audio_frame_callback=_proc.recv,
-                media_stream_constraints={"audio": True, "video": False},
+                mode=WebRtcMode.SENDRECV,  # iOS Safari workaround: sendonly non avvia encoder
+                rtc_configuration={"iceServers": []},
+                audio_frame_callback=_proc.recv,  # recv() ritorna silenzio → no echo
+                media_stream_constraints={
+                    "audio": {
+                        "echoCancellation": True,
+                        "noiseSuppression": True,
+                        "autoGainControl": True,
+                    },
+                    "video": False,
+                },
                 async_processing=True,
-                sendback_audio=False,  # non rimandare audio al browser via WebRTC
             )
 
             # Debug live: sempre visibile — distingue problema ICE da problema VAD
@@ -335,15 +350,15 @@ with main_col:
             @st.fragment(run_every=1)
             def _auto_listen():
                 if st.session_state.mobile_waiting:
-                    # Svuota la coda: audio arrivato durante l'elaborazione viene scartato.
-                    # Senza questo, al termine del processing il chunk accumulato riparte
-                    # subito verso il daemon creando un loop.
+                    # Scarta audio accumulato durante elaborazione daemon (anti-loop)
                     try:
                         while True:
                             _audio_q.get_nowait()
                     except _queue.Empty:
                         pass
                     return
+
+                # La callback audio_frame_callback riempie _audio_q quando il VAD chiude l'utterance
                 try:
                     audio_raw, sr = _audio_q.get_nowait()
                 except _queue.Empty:

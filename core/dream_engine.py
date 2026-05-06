@@ -23,10 +23,11 @@ from utils.obsidian_sync import write_insight
 
 
 class DreamEngine:
-    def __init__(self, r, embedder, brain=None):
+    def __init__(self, r, embedder, brain=None, memory=None):
         self._r = r
         self._embedder = embedder
-        self._brain = brain  # usato dal Loop 2d (death-row gate)
+        self._brain = brain        # usato dal Loop 2d (death-row gate)
+        self._memory_manager = memory  # usato dal Bridge Synthesis
         self._running = False
         self._thread = None
         self._lock = threading.Lock()
@@ -279,7 +280,7 @@ Rispondi con NESSUN INSIGHT solo se le due memorie riguardano aspetti così spec
             
             # Se è un candidato, creiamo anche un entry provvisoria negli insights
             if status == "candidate":
-                vec = self._embedder.encode(insight_content)
+                vec = self._embedder.encode(insight_content, mode="passage")
                 insight_id = str(uuid.uuid4())
                 insight_doc = {
                     "id": insight_id,

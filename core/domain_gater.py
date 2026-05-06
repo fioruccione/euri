@@ -64,7 +64,7 @@ def domain_aware_search(query: str, embedder, r, limit: int = 5) -> list[dict]:
     """
     # 1. Capisci di che dominio stiamo cercando informazioni
     query_domain = assign_domain(query)
-    vec = embedder.encode(query)
+    vec = embedder.encode(query, mode="query")
     if vec is None:
         return []
     vec_bytes = vec.astype("float32").tobytes()

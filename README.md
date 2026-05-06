@@ -7,7 +7,7 @@ Non si limita ad ascoltare e rispondere: memorizza, organizza, riflette sulle tu
 
 ---
 
-## Architettura Cognitiva (V2.2)
+## Architettura Cognitiva (V2.3)
 
 ### 1. Adaptive Intent Classification (Apprendimento Online Welford)
 Il sistema di classificazione degli intenti è dinamico. Quando parli, l'Adaptive Classifier usa l'algoritmo di **Welford** per confrontare la tua frase con i "centroidi" matematici (embedding) dei vari comandi (es. CHAT, EXECUTE, SEARCH).  
@@ -23,7 +23,7 @@ Quando non gli parli da almeno 2 ore, Euri "dorme" ed entra nel ciclo onirico.
 - Pesca due memorie appartenenti a due domini *completamente diversi*.
 - **Loop 2b** — Chiede a **Qwen3.6 35B** (*thinking attivo*, modello dedicato) di cercare isomorfismi strutturali tra i due concetti usando un processo in 3 passi: astrazione logica → ricerca della dinamica condivisa → formulazione del principio generale. Qwen3.6 è separato da Gemma4: più lento ma con ragionamento astratto superiore, usato solo nei cicli notturni senza vincoli di latenza.
 - Se l'analogia è forte, genera un **CANDIDATE Insight**.
-- **Loop 2c** — La promozione CANDIDATE→PROMOTED usa un sistema a due livelli: distanza cosine vettoriale (fast path) + **LLM judge con thinking** per la zona grigia (score 0.15–0.40). Il judge valuta se due insight formulati diversamente esprimono lo stesso principio strutturale profondo — un giudizio impossibile per il solo embedding MiniLM.
+- **Loop 2c** — La promozione CANDIDATE→PROMOTED usa un sistema a due livelli: distanza cosine vettoriale (fast path) + **LLM judge con thinking** per la zona grigia (score 0.15–0.40). Il judge valuta se due insight formulati diversamente esprimono lo stesso principio strutturale profondo — un giudizio che il solo vettore cosine non può dare.
 - Se abbastanza sogni indipendenti convergono, l'insight viene **PROMOSSO** e scritto permanentemente in Obsidian.
 
 > **Nota tecnica:** Il timer di idle usa `time.time()` (wall-clock) per contare correttamente anche le ore in cui il PC è in sospensione.
@@ -80,7 +80,7 @@ Un'interfaccia web leggera (`ui/app.py`) per:
 | Memoria Passiva/UI | Obsidian Vault sincronizzato via `watchdog` |
 | STT / Trascrizione | faster-whisper `large-v3-turbo` (CUDA float16 — NVIDIA RTX 4060 Ti) |
 | TTS / Voce | sherpa-onnx + Piper (`vits-piper-it_IT-paola-medium`) |
-| Embedding | sentence-transformers paraphrase-multilingual-MiniLM-L12-v2 |
+| Embedding | sentence-transformers `intfloat/multilingual-e5-large` (1024-dim, asimmetrico query/passage) |
 | Classificatore Veloce | Algoritmo di Welford su Vettori (Aggiornamento Online) |
 | Web search | ddgs (DuckDuckGo, no API key) + beautifulsoup4 |
 | Gate visivo | OpenCV Haar cascade (webcam, 2fps) |
@@ -169,6 +169,14 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 ---
 
 ## Changelog
+
+### V2.3 — Embedding Upgrade + Mobile Voice + Memory Coherence
+
+- **Embedding: MiniLM → multilingual-e5-large**: sostituito `paraphrase-multilingual-MiniLM-L12-v2` (384-dim) con `intfloat/multilingual-e5-large` (1024-dim). Encoding asimmetrico: `"query: "` per ricerche/classificazione, `"passage: "` per il salvataggio in Redis. Migrazione completa: 306 memorie + 92 insight ri-embeddati, indici Redis ricreati a DIM=1024, fingerprint Welford resettate e reiniziallizzate dai seed.
+- **WebRTC mobile voice (iOS Safari)**: risolto il problema "in ascolto ma nessun frame audio" su iPhone. Causa radice: con `WebRtcMode.SENDONLY`, iOS Safari non attiva il proprio encoder audio (SDP direction `sendonly`). Fix: `WebRtcMode.SENDRECV` + `audio_frame_callback` che restituisce sempre un frame di silenzio (`np.zeros_like(arr)`) — VAD processa l'audio originale, nessun echo verso il browser.
+- **Memory coherence**: aggiunta regola esplicita al system prompt — la conversazione corrente è memoria tanto quanto Redis. Risolto il caso in cui Euri diceva "Non ho niente in memoria" su fatti discussi pochi minuti prima nella stessa sessione.
+- **Passive Learner esteso**: `extract_passive_memories()` ora cattura anche fatti strategici e causali (se X allora Y, dipendenze cross-domain, vincoli produttivi). Max fatti per estrazione alzato da 5 a 6.
+- **Microfono workstation**: `AUDIO_INPUT_DEVICE = "OSM09"` (era "Jabra Speak2 40"). L'OSM09 è il default PipeWire di sistema; il fallback automatico è invariato.
 
 ### V2.2 — Thinking nei Loop Cognitivi + Qwen3.6 Dream Engine
 - **Architettura dual-model**: `DREAM_OLLAMA_MODEL = "qwen3.6:35b"` separato da `OLLAMA_MODEL`. Gemma4 26B per la conversazione vocale (latenza < 2s), Qwen3.6 35B per i cicli onirici notturni (nessun vincolo di latenza, ragionamento astratto superiore).

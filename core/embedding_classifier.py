@@ -126,7 +126,7 @@ class EmbeddingClassifier:
         for intent, phrases in _PROTOTYPES.items():
             vecs = []
             for phrase in phrases:
-                vec = self._embedder.encode(phrase)
+                vec = self._embedder.encode(phrase, mode="passage")
                 if vec is not None:
                     vecs.append(vec)
             if vecs:
@@ -149,7 +149,7 @@ class EmbeddingClassifier:
         if not self._ready or not self._prototypes:
             return None
 
-        vec = self._embedder.encode(text)
+        vec = self._embedder.encode(text, mode="query")
         if vec is None:
             return None
 

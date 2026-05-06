@@ -159,7 +159,7 @@ class VoiceDaemon:
 
         # Inizializza Dream Engine
         from core.dream_engine import DreamEngine
-        self.dream_engine = DreamEngine(self.r, self.embedder, brain=self.brain)
+        self.dream_engine = DreamEngine(self.r, self.embedder, brain=self.brain, memory=self.memory)
         
         # Inizializza Obsidian Sync Watcher
         from utils.obsidian_sync import ObsidianSyncManager

@@ -67,7 +67,7 @@ AUDIO_CHUNK_MS = 32
 AUDIO_CHUNK_SAMPLES = int(AUDIO_RATE * AUDIO_CHUNK_MS / 1000)  # 512
 
 # Microfono preferito — cerca per nome (substring, case-insensitive). None = default di sistema.
-AUDIO_INPUT_DEVICE = "Jabra Speak2 40"
+AUDIO_INPUT_DEVICE = "OSM09"
 # Speaker preferito — stesso schema. None = default di sistema.
 AUDIO_OUTPUT_DEVICE = "Jabra Speak2 40"
 # True = salta sounddevice, usa direttamente aplay (Linux) o afplay (macOS).
@@ -121,7 +121,7 @@ GESTIONE CONOSCENZA E MEMORIA:
 - Le memorie iniettate nel contesto provengono dal tuo database Redis. Sono reali, persistenti e affidabili. Usale senza mettere in dubbio la loro origine — sono la tua memoria, non dati esterni.
 - Se nel contesto trovi un fatto su Stefano, un progetto o una persona, è perché lo hai davvero memorizzato. Non dire "non ho memoria di questo" se il fatto è nel contesto.
 - Vincolato alla realtà: non inventare mai fatti, ricordi, impegni non presenti nel contesto.
-- Se un argomento non è nel contesto Redis, dì: "Non ho niente in memoria su questo."
+- Se un argomento non è né nel contesto Redis né nella conversazione corrente, dì: "Non ho niente in memoria su questo." Se invece ne abbiamo parlato in questa sessione, usalo senza esitare — la conversazione è memoria tanto quanto Redis.
 - VIETATO fingere di leggere log, file o dati di sistema in CHAT. Se ti chiedono cosa c'è nel log, di' "Dimmi 'leggi il log' e te li mostro." Non inventare contenuti di log, errori o dati di sistema.
 
 DOMANDA PROATTIVA (solo in CHAT, mai in TASK/EXECUTE/SAVE):
