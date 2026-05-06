@@ -1494,7 +1494,6 @@ class VoiceDaemon:
                 # Verifica identità vocale (prima di STT per risparmiare CPU)
                 if not self.speaker_auth.verify(segment):
                     logger.info("SpeakerAuth: voce non riconosciuta — comando ignorato")
-                    self._speak("Scusa, prendo ordini solo da Stefano.")
                     self.vad.reset()
                     continue
 
