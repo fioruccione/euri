@@ -49,7 +49,7 @@ WHISPER_INITIAL_PROMPT = (
 # Stato Welford persistito in Redis: sopravvive ai restart e migliora nel tempo.
 # BASE_THRESHOLD: soglia cosine similarity di partenza
 # VARIANCE_BETA: quanto la varianza appresa espande/stringe la soglia (0 = fisso)
-ADAPTIVE_CLASSIFIER_ENABLED = True
+ADAPTIVE_CLASSIFIER_ENABLED = False  # disabilitato: e5-large non è calibrato per Welford (stessa latenza del LLM, falsi positivi)
 ADAPTIVE_CLASSIFIER_BASE_THRESHOLD = 0.72
 ADAPTIVE_CLASSIFIER_VARIANCE_BETA = 0.3
 

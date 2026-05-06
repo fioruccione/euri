@@ -57,13 +57,19 @@ def _is_manufacturing_context(text: str) -> bool:
 _PROMPT = """\
 Classifica questa frase con UNA SOLA parola tra: WEB_SEARCH, SEARCH, SAVE_TODO, SAVE_MEMORY, EXECUTE, CHAT.
 
-Regole:
-- WEB_SEARCH: l'utente vuole cercare qualcosa su internet / nel web (esplicito: "cerca online", "cerca su internet", "cerca nel web")
-- SEARCH: l'utente chiede se Euri RICORDA o HA IN MEMORIA qualcosa — cerca nella memoria interna di Euri, NON su internet (es: "ricordi X?", "hai in memoria X?", "cosa sai di X?", "hai informazioni su X?")
-- SAVE_TODO: l'utente vuole ricordarsi di fare qualcosa in futuro (azione, appuntamento, compito)
-- SAVE_MEMORY: l'utente vuole che Euri ricordi un fatto, un'informazione, un dato importante
-- EXECUTE: l'utente vuole controllare lo stato del sistema (CPU, RAM, GPU, disco, processi, uptime, log)
-- CHAT: tutto il resto — domande generali, conversazione, spiegazioni, saluti
+Definizioni PRECISE — ogni confine è importante:
+
+EXECUTE: l'utente vuole DATI HARDWARE del sistema. La frase deve menzionare esplicitamente: cpu, ram, gpu, disco, spazio, processi, uptime, log di errore, temperatura. Esempi corretti: "controlla la cpu", "quanta ram ho", "spazio su disco", "leggi il log". NON è EXECUTE: "funziona?", "stai bene?", "sei operativo?", "come va?", "tutto ok?" — queste sono CHAT.
+
+SEARCH: l'utente vuole che Euri cerchi nelle SUE MEMORIE INTERNE. Esempi: "ricordi X?", "hai in memoria X?", "cosa sai di X?", "di cosa stavamo parlando?", "cerca nelle tue memorie", "cerca i ricordi di [data/argomento]", "cosa ricordi di ieri?". NON è SEARCH: cercare su internet.
+
+WEB_SEARCH: l'utente vuole cercare su INTERNET, lo dice esplicitamente con parole come "online", "internet", "nel web", "su Google". NON è WEB_SEARCH: cercare nei ricordi interni di Euri.
+
+SAVE_TODO: l'utente vuole ricordarsi di FARE qualcosa in futuro (compito, appuntamento, azione). Esempi: "devo fare X", "ricordami di chiamare X", "segna che devo X tra Y giorni".
+
+SAVE_MEMORY: l'utente vuole che Euri ricordi un FATTO o informazione. Esempi: "ricordati che X", "segna che X", "tieni a mente che X", "il cliente X si chiama Y".
+
+CHAT: tutto il resto — conversazione normale, domande generali, chiarimenti, spiegazioni, saluti, domande su Euri che non riguardano hardware.
 
 Frase: "{text}"
 
