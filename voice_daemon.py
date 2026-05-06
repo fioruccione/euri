@@ -710,9 +710,9 @@ class VoiceDaemon:
             w for w in words if w.lower() not in self._STOP_WORDS
         ))
         if keywords:
-            query = " | ".join(keywords[:8])
-            extra_memories = self.memory.search_memories(query, limit=3, source_filter=source_filter)
-            extra_notes = self.memory.search_notes(query, limit=2)
+            extra_memories = self.memory.search_memories(text, limit=3, source_filter=source_filter)
+            kw_query = " | ".join(keywords[:8])
+            extra_notes = self.memory.search_notes(kw_query, limit=2)
             for r in extra_memories + extra_notes:
                 if r.get("id") not in seen_ids:
                     results.append(r)
@@ -721,8 +721,7 @@ class VoiceDaemon:
         # Insights cross-domain rilevanti per la query corrente
         insight_lines = []
         if keywords:
-            insight_query = " ".join(keywords[:6])
-            for ins in self.memory.search_insights(insight_query, limit=2):
+            for ins in self.memory.search_insights(text, limit=2):
                 dom_a = ins.get("domain_a", "?")
                 dom_b = ins.get("domain_b", "?")
                 insight_lines.append(f"- [{dom_a} ↔ {dom_b}] {ins['content']}")
