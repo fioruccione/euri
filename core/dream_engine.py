@@ -36,6 +36,7 @@ class DreamEngine:
         # Usa time.time() (wall-clock) e non time.monotonic() perché
         # monotonic si resetta quando il PC va in sospensione.
         self._last_activity = time.time()
+        self._consolidation_last_run = 0.0  # timestamp ultimo Loop 2e
         
     def start(self):
         if not config.DREAM_ENGINE_ENABLED:
@@ -120,6 +121,11 @@ class DreamEngine:
 
             # 6. Loop 2d: Death-row gate per memorie in scadenza entro 7 giorni
             self._pruning_pass()
+
+            # 7. Loop 2e: Memory Consolidation — max una volta ogni 24h
+            if time.time() - self._consolidation_last_run >= 86400:
+                self._consolidation_pass()
+                self._consolidation_last_run = time.time()
 
         except Exception as e:
             logger.error(f"Errore ciclo Dream Engine: {e}")
@@ -543,3 +549,174 @@ Rispondi SOLO con SÌ o NO."""
 
         except Exception as e:
             logger.error(f"Errore Loop 2d pruning: {e}")
+
+    # ── Loop 2e: Memory Consolidation ─────────────────────────────────────────
+
+    def _consolidation_pass(self):
+        """
+        Loop 2e — Consolidamento semantico delle memorie.
+        Raggruppa memorie dello stesso dominio con recalled_count >= 3 e
+        requires_verification = False in documenti sintetici più ricchi.
+        Ispirato al consolidamento ippocampale durante il sonno: i frammenti
+        episodici vengono integrati in nodi di conoscenza semantica stabile.
+        Max 3 consolidazioni per ciclo. Gira max una volta ogni 24h.
+        """
+        if not self._embedder or not self._embedder.available:
+            return
+        if not self._memory_manager:
+            return
+
+        PROCESSED_KEY = "euri:loop2e:processed"
+        MIN_RECALLED = 3
+        MIN_CLUSTER = 3
+        MAX_PER_CYCLE = 3
+        SKIP_SOURCES = {"loop2e", "campus", "web", "reflection"}
+
+        try:
+            # 1. Raccogli candidati: recalled_count >= 3, no verifica numerica, no loop2e
+            candidates = []
+            for key in self._r.scan_iter("euri:memory:*"):
+                try:
+                    d = self._r.json().get(key, "$")
+                    if not d:
+                        continue
+                    doc = d[0]
+                    if doc.get("source") in SKIP_SOURCES:
+                        continue
+                    if doc.get("requires_verification"):
+                        continue
+                    if doc.get("recalled_count", 0) < MIN_RECALLED:
+                        continue
+                    candidates.append(doc)
+                except Exception:
+                    continue
+
+            if not candidates:
+                logger.debug("Loop 2e: nessun candidato qualificato")
+                return
+
+            consolidated = 0
+
+            for seed in candidates:
+                if consolidated >= MAX_PER_CYCLE:
+                    break
+
+                seed_id = seed.get("id", "")
+                seed_domain = seed.get("domain", "generale")
+                seed_emb = seed.get("embedding")
+                if not seed_emb or seed_domain == "generale":
+                    continue
+
+                # 2. Trova memorie simili nello stesso dominio via KNN
+                try:
+                    vec = self._embedder.encode(seed.get("content", ""), mode="query")
+                    if vec is None:
+                        continue
+                    vec_bytes = vec.astype("float32").tobytes()
+                    safe_domain = seed_domain.replace(" ", "\\ ")
+                    q = (
+                        Query(f"(@domain:{{{safe_domain}}})=>[KNN 6 @embedding $vec AS score]")
+                        .sort_by("score")
+                        .return_fields("id", "content", "recalled_count", "requires_verification", "source", "domain")
+                        .dialect(2)
+                    )
+                    res = self._r.ft("idx:memories").search(q, query_params={"vec": vec_bytes})
+                except Exception:
+                    continue
+
+                # 3. Filtra: stessi criteri del seed, escludi già processati
+                cluster = []
+                for doc in res.docs:
+                    did = doc.id.replace("euri:memory:", "") if "euri:memory:" in doc.id else doc.id
+                    if did == seed_id:
+                        cluster.append(doc)
+                        continue
+                    if getattr(doc, "source", "") in SKIP_SOURCES:
+                        continue
+                    try:
+                        rc = int(getattr(doc, "recalled_count", 0) or 0)
+                    except (ValueError, TypeError):
+                        rc = 0
+                    if rc < MIN_RECALLED:
+                        continue
+                    rv = getattr(doc, "requires_verification", "false")
+                    if str(rv).lower() in ("true", "1"):
+                        continue
+                    cluster.append(doc)
+
+                if len(cluster) < MIN_CLUSTER:
+                    continue
+
+                # 4. Fingerprint cluster — evita ri-consolidare lo stesso gruppo
+                cluster_ids = sorted(
+                    doc.id.replace("euri:memory:", "") for doc in cluster[:5]
+                )
+                fingerprint = "|".join(cluster_ids)
+                if self._r.sismember(PROCESSED_KEY, fingerprint):
+                    continue
+
+                # 5. Chiedi a Qwen di sintetizzare
+                memories_text = "\n".join(
+                    f"- {getattr(doc, 'content', '')[:200]}" for doc in cluster[:5]
+                )
+                prompt = f"""Hai queste memorie correlate nel dominio "{seed_domain}":
+
+{memories_text}
+
+Sintetizzale in un unico blocco di conoscenza strutturata.
+Regole:
+- Mantieni tutti i dati specifici: numeri, nomi propri, valori, misure
+- Elimina ripetizioni e ridondanze
+- Scrivi in italiano, massimo 4 frasi dense
+- Nessuna interpretazione, solo sintesi dei fatti
+- Se le memorie si contraddicono su un dato numerico, scrivi "dato non certo"
+Rispondi SOLO con la sintesi. Niente intestazioni."""
+
+                try:
+                    resp = self._ollama_chat(
+                        model=config.DREAM_OLLAMA_MODEL,
+                        messages=[{"role": "user", "content": prompt}],
+                        options={"temperature": 0.2, "num_predict": 300},
+                        think=False,
+                        _timeout=90,
+                    )
+                    synthesis = resp.message.content or ""
+                    if "<channel|>" in synthesis:
+                        synthesis = synthesis.split("<channel|>", 1)[-1]
+                    import re as _re
+                    synthesis = _re.sub(r"<think>.*?</think>", "", synthesis, flags=_re.DOTALL).strip()
+                except Exception as e:
+                    logger.debug(f"Loop 2e: LLM timeout/errore — {e}")
+                    continue
+
+                if not synthesis or len(synthesis) < 30:
+                    continue
+
+                # 6. Salva memoria consolidata (senza TTL — permanente come memorie utili)
+                mid = self._memory_manager.save_memory(
+                    content=synthesis,
+                    category="consolidato",
+                    tags=["consolidated"],
+                    source="loop2e",
+                    expires_at=None,
+                )
+                # Aggiungi metadato sui sorgenti
+                key = f"euri:memory:{mid}"
+                self._r.json().set(key, "$.consolidated_from", cluster_ids)
+
+                # 7. Marca cluster come processato
+                self._r.sadd(PROCESSED_KEY, fingerprint)
+
+                consolidated += 1
+                logger.info(
+                    f"Loop 2e: consolidate {len(cluster)} memorie → {mid[:8]}… "
+                    f"(dominio: {seed_domain})"
+                )
+
+            if consolidated:
+                logger.info(f"Loop 2e: {consolidated} consolidazioni completate")
+            else:
+                logger.debug("Loop 2e: nessuna consolidazione necessaria in questo ciclo")
+
+        except Exception as e:
+            logger.error(f"Errore Loop 2e consolidation: {e}")
