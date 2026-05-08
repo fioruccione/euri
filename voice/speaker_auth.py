@@ -68,7 +68,8 @@ class SpeakerAuth:
             embedding = self._embed(audio, sample_rate)
             similarity = float(np.dot(embedding, self._voiceprint) /
                                (np.linalg.norm(embedding) * np.linalg.norm(self._voiceprint)))
-            logger.debug(f"SpeakerAuth similarity: {similarity:.3f} (soglia {SIMILARITY_THRESHOLD})")
+            verdict = "OK" if similarity >= SIMILARITY_THRESHOLD else "RIFIUTATO"
+            logger.info(f"SpeakerAuth: similarity={similarity:.3f} soglia={SIMILARITY_THRESHOLD} → {verdict}")
             return similarity >= SIMILARITY_THRESHOLD
         except Exception as e:
             logger.warning(f"SpeakerAuth verify error: {e} — fail-open")

@@ -109,21 +109,60 @@ class MemoryManager:
 
         return mid
 
+    # Identificatori specifici: acronimi (MFI, DCP), codici con trattino (TEST-ALPHA, PPR-738P), decimali (4.7, 0.35)
+    _IDENTIFIER_RE = re.compile(
+        r'\b[A-Z]{2,}(?:-[A-Z0-9]+)*\b|\b\d+[.,]\d+\b'
+    )
+
     def search_memories(self, query: str, limit: int = 5, source_filter: list[str] | None = None) -> list[dict]:
         """
-        Ricerca Domain-Gated: semantica (KNN filtrato per dominio) + fallback al DB intero.
-        Se l'embedder non è disponibile, fallback a keyword-only.
+        Ricerca a tre livelli:
+        1. Identifier-first: acronimi, codici, numeri decimali → keyword search diretta, risultati in cima
+        2. Domain-gated KNN: ricerca semantica nel dominio assegnato alla query
+        3. Hybrid fill: _search_hybrid riempie eventuali slot rimasti
+        Garantisce che fatti specifici (MFI lotto, concentrazioni, codici progetto) non vengano
+        sepolti da memorie semanticamente centrali già consolidate nello stesso dominio.
         """
         if self._embedder and self._embedder.available and query != "*":
-            # Passa a domain_aware_search (che esegue il two-pass KNN)
-            results = domain_aware_search(query, self._embedder, self.r, limit)
-            
-            # Applica il source_filter (es. in DEMO_MODE tiene solo 'campus')
+            merged: list[dict] = []
+            seen_uuids: set[str] = set()
+
+            # Livello 1 — identifier-first keyword search
+            identifiers = self._IDENTIFIER_RE.findall(query)
+            if identifiers:
+                id_query = " | ".join(identifiers)
+                id_results = self._search_keyword(id_query, limit, source_filter=source_filter)
+                for r in id_results:
+                    uid = r.get("id", "")
+                    if uid not in seen_uuids:
+                        merged.append(r)
+                        seen_uuids.add(uid)
+
+            # Livello 2 — domain-gated semantic
+            semantic = domain_aware_search(query, self._embedder, self.r, limit)
             if source_filter is not None:
-                results = [r for r in results if r.get("source") in source_filter]
-                
-            return results
-            
+                semantic = [r for r in semantic if r.get("source") in source_filter]
+            for r in semantic:
+                uid = r["id"].replace("euri:memory:", "")
+                if uid not in seen_uuids:
+                    merged.append(r)
+                    seen_uuids.add(uid)
+
+            # Livello 3 — hybrid fill se ancora sotto il limite
+            if len(merged) < limit:
+                hybrid = self._search_hybrid(query, limit, source_filter=source_filter)
+                for r in hybrid:
+                    uid = r.get("id", "")
+                    if uid not in seen_uuids and len(merged) < limit:
+                        merged.append(r)
+                        seen_uuids.add(uid)
+
+            logger.debug(
+                f"Search 3-livelli: {len(merged)} risultati "
+                f"(id:{len(identifiers)} token, semantic:{len(semantic)}, fill)"
+            )
+            return merged[:limit]
+
         return self._search_keyword(query, limit, source_filter=source_filter)
 
     @staticmethod
