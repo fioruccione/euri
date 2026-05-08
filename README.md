@@ -176,6 +176,12 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 
 ## Changelog
 
+### V2.7 — Ricerca Memoria 3-Livelli + SpeakerAuth Monitoring
+
+- **Ricerca memoria identifier-first:** `search_memories()` ora opera a 3 livelli: (1) estrazione identificatori dalla query (acronimi, codici lotto, numeri decimali) → keyword search diretta in Redis; (2) domain-gated KNN semantico; (3) hybrid fill con `_search_hybrid`. Garantisce che fatti tecnici specifici (MFI lotto, concentrazioni DCP, codici progetto) non vengano sepolti da memorie semanticamente centrali già consolidate nello stesso dominio. Test automatizzato end-to-end: 3/3 storage, recall semantico, pipeline LLM.
+- **SpeakerAuth similarity logging:** similarity score portato da DEBUG a INFO — visibile nel log normale per monitorare la soglia in produzione e calibrarla su voci simili (es. colleghi con timbro analogo).
+- **`test_memory.py`:** script autonomo di test mnemonico che inietta fatti sintetici, verifica storage Redis, recall semantico e pipeline LLM completa, poi pulisce. Rilanciabile in qualsiasi momento.
+
 ### V2.6 — Quality Audit + Numerical Verification + Dream Engine Format
 
 - **Audit qualità memorie passive:** campione 50 memorie valutato da Stefano → 52% accurate, 22% false, 26% generiche. Eliminate 3 memorie pericolose con dosaggi errati (veleno operativo in contesto manifatturiero).
