@@ -7,7 +7,7 @@ Non si limita ad ascoltare e rispondere: memorizza, organizza, riflette sulle tu
 
 ---
 
-## Architettura Cognitiva (V2.4)
+## Architettura Cognitiva (V2.7)
 
 ### 1. Intent Classification — Pipeline a Due Layer
 La classificazione dell'intent è a cascata: il layer veloce esaurisce la maggior parte dei casi, il layer lento interviene solo quando necessario.
@@ -20,9 +20,13 @@ La classificazione dell'intent è a cascata: il layer veloce esaurisce la maggio
 
 > **AdaptiveClassifier (Welford) — sospeso:** con e5-large 1024-dim, il costo di encoding (~400ms) era uguale al LLM fallback, con il rischio aggiuntivo di corruzione dei centroidi per feedback loop su classificazioni errate. Architettura sospesa: il codice è presente ma `ADAPTIVE_CLASSIFIER_ENABLED = False`. Riabilitabile solo con un modello di embedding leggero dedicato all'intent.
 
-### 2. Domain Gating (RAG Autonomo)
-Tutte le memorie estratte dalle conversazioni vengono lette dall'LLM, che assegna loro automaticamente delle "etichette di dominio" (es. *informatica, chimica, business, casa*).  
-Durante il recupero delle informazioni, Euri restringe prima la ricerca al dominio pertinente e poi, se non trova nulla, scala all'intero database vettoriale.
+### 2. Domain Gating + Ricerca 3-Livelli (RAG Autonomo)
+Tutte le memorie estratte dalle conversazioni vengono lette dall'LLM, che assegna loro automaticamente delle "etichette di dominio" (es. *informatica, chimica, business, casa*).
+
+Il recupero avviene a tre livelli in cascata:
+1. **Identifier-first** — estrae dalla query acronimi (MFI, DCP), codici lotto (PPR-738P) e numeri decimali (3.2, 0.35%) e li cerca con keyword search diretta. Garantisce che fatti tecnici specifici vengano restituiti in cima anche quando il dominio è saturo di memorie simili.
+2. **Domain-gated KNN** — ricerca vettoriale filtrata per dominio. Se il dominio ha pochi risultati, scala all'intero DB.
+3. **Hybrid fill** — se i risultati sono ancora sotto il limite, `_search_hybrid` (semantic + safe_keywords) riempie i posti rimanenti.
 
 ### 3. Dream Engine (Sogni Onirici in background)
 Quando non gli parli da almeno 2 ore, Euri "dorme" ed entra nel ciclo onirico.
