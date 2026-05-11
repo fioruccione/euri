@@ -122,7 +122,7 @@ GESTIONE CONOSCENZA E MEMORIA:
 - Se nel contesto trovi un fatto su Stefano, un progetto o una persona, è perché lo hai davvero memorizzato. Non dire "non ho memoria di questo" se il fatto è nel contesto.
 - Vincolato alla realtà: non inventare mai fatti, ricordi, impegni non presenti nel contesto.
 - Se un argomento non è né nel contesto Redis né nella conversazione corrente, dì: "Non ho niente in memoria su questo." Se invece ne abbiamo parlato in questa sessione, usalo senza esitare — la conversazione è memoria tanto quanto Redis.
-- VIETATO fingere di leggere log, file o dati di sistema in CHAT. Se ti chiedono cosa c'è nel log, di' "Dimmi 'leggi il log' e te li mostro." Non inventare contenuti di log, errori o dati di sistema.
+- VIETATO fingere di leggere log, file, clipboard o dati di sistema in CHAT. Se ti chiedono cosa c'è nel log, di' "Dimmi 'leggi il log' e te li mostro." Se ti chiedono la clipboard, di' "Di' 'leggi dagli appunti' e lo faccio." Non inventare mai contenuti di log, clipboard, errori o dati di sistema.
 
 DOMANDA PROATTIVA (solo in CHAT, mai in TASK/EXECUTE/SAVE):
 - Se Stefano menziona en passant un fatto concreto su di sé (nome cliente, progetto, competenza, esperienza) che NON appare nel contesto memorie già iniettato, puoi fare UNA sola domanda naturale per chiarire o confermare.
@@ -140,6 +140,7 @@ TOOL VOCALI (intent EXECUTE — basta chiederlo a voce):
 - evaluate_math: "Calcola 450 per 0.15" / "Quanto fa 1200 meno il 3%?"
 - write_text: "Scrivi: [testo]" — salva su file e copia negli appunti
 - clipboard_read: "Cosa c'è negli appunti?"
+- clipboard_analyze: "Analizza gli appunti" / "Studia dagli appunti" / "Salva dagli appunti" — legge testo o immagine dalla clipboard, lo analizza con il LLM e salva i punti chiave in memoria
 - run_code: "Unisci i CSV" / "Elabora i dati" / "Leggi il file Excel" — genera ed esegue codice Python per manipolare file nella cartella dati (Scrivania/dati_per_Euri). I risultati vanno in Scrivania/scambio_dati.
 - analyze_image: "Analizza la foto" / "Descrivi l'immagine" — usa la visione artificiale per descrivere immagini nella cartella dati.
 - list_data_files: "Cosa c'è nella cartella dati?" / "Elenca i file" — mostra i file disponibili.
@@ -173,8 +174,9 @@ DEFAULT_ALERT_RULES = {
 # INSIGHT_TTL_DAYS: gli Insight evaporano se non vengono mai richiamati in conversazione.
 DREAM_ENGINE_ENABLED = True
 DREAM_ENGINE_IDLE_HOURS = 2
-DREAM_INSIGHT_MIN_CONVERGENCES = 2
+DREAM_INSIGHT_MIN_CONVERGENCES = 3   # era 2 — soglia alzata per ridurre promozioni facili
 INSIGHT_TTL_DAYS = 30
+INSIGHT_DEMOTE_DAYS = 14  # PROMOTED non richiamato entro X giorni → torna CANDIDATE
 # Memorie passive/reflection mai richiamate evaporano dopo 90 giorni.
 # Memorie user/teach/obsidian_vault non scadono mai automaticamente.
 MEMORY_TTL_PASSIVE_DAYS = 90

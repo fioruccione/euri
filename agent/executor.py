@@ -126,7 +126,7 @@ class Executor:
         )
         from agent.tools.log_reader import tool_read_log
         from agent.tools.math_eval import tool_evaluate_math
-        from agent.tools.text_writer import tool_write_text, tool_clipboard_write, tool_clipboard_read
+        from agent.tools.text_writer import tool_write_text, tool_clipboard_write, tool_clipboard_read, tool_clipboard_analyze
 
         tools = [
             ToolSpec(
@@ -202,6 +202,13 @@ class Executor:
                 description="Legge il contenuto degli appunti e lo riporta vocalmente.",
                 parameters_schema={},
                 handler=tool_clipboard_read,
+            ),
+            ToolSpec(
+                name="clipboard_analyze",
+                description="Analizza il testo o l'immagine negli appunti con il LLM e salva i punti chiave in memoria.",
+                parameters_schema={},
+                handler=tool_clipboard_analyze,
+                timeout_seconds=60,
             ),
         ]
 
@@ -361,9 +368,14 @@ class Executor:
             r'\b(log|log\s+di\s+euri|ultime\s+righe\s+del\s+log)\b',
             re.IGNORECASE,
         ), "read_log", {}),
+        # clipboard_analyze — PRIMA di clipboard_read (pattern più specifici)
+        (re.compile(
+            r'\b(analizza|studia|elabora|approfondisci|esamina|riassumi|sintetizza|salva)\s+.*\b(appunti|clipboard)\b',
+            re.IGNORECASE,
+        ), "clipboard_analyze", {}),
         # clipboard_read
         (re.compile(
-            r'\b(appunti|clipboard|cosa\s+c[\'è]\s+negli\s+appunti|leggi\s+gli\s+appunti)\b',
+            r'\b(cosa\s+c[\'è]\s+negli\s+appunti|leggi\s+(dagli|degli|gli)\s+appunti|leggi\s+(dalla|la)\s+clipboard)\b',
             re.IGNORECASE,
         ), "clipboard_read", {}),
         # ── CodeRunner patterns ──
@@ -437,8 +449,12 @@ class Executor:
         # Esecuzione in thread con timeout
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                # Passa stop_event ai tool che lo supportano (es. run_code)
-                future = ex.submit(spec.handler, call.parameters, stop_event=self.stop_event)
+                future = ex.submit(
+                    spec.handler, call.parameters,
+                    stop_event=self.stop_event,
+                    brain=getattr(self, "brain", None),
+                    memory=getattr(self, "memory", None),
+                )
                 result = future.result(timeout=spec.timeout_seconds)
             logger.info(f"Executor: {call.tool_name}({call.parameters}) → {'OK' if result.success else 'FAIL'}")
             return result

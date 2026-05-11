@@ -20,6 +20,7 @@ _TTL_BY_SOURCE: dict[str, int] = {
     "reflection":   90,
     "conversation": 90,
     "episode":       7,
+    "web":          60,   # ricerche web — info può invecchiare
 }
 # Memorie user/teach/obsidian_vault non hanno TTL automatico — non compaiono qui.
 

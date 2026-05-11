@@ -43,11 +43,12 @@ def fetch_page_text(url: str, max_chars: int = 4000) -> str:
         return ""
 
 
-def search(query: str, max_results: int = 3) -> list[dict]:
+def search(query: str, max_results: int = 5) -> list[dict]:
     """
     Cerca con DuckDuckGo (ddgs). Ritorna lista di:
       {title, url, body, date}
     Prova prima in italiano, poi in inglese se non trova nulla.
+    Scarica il testo completo delle prime 2 pagine utili (esclude social/video).
     """
     try:
         from ddgs import DDGS
@@ -71,34 +72,41 @@ def search(query: str, max_results: int = 3) -> list[dict]:
             for r in raw
         ]
 
+    # Domini da saltare per il download completo (contenuto non testuale utile)
+    _SKIP_DOWNLOAD = (
+        "youtube.com", "youtu.be", "threads.com", "instagram.com",
+        "facebook.com", "tiktok.com", "twitter.com", "x.com",
+        "linkedin.com", "reddit.com",
+    )
+
     try:
         results = _run(query)
         if not results:
-            logger.info("Nessun risultato in italiano, riprovo in inglese")
+            logger.info("Nessun risultato, riprovo in inglese")
             results = _run(query + " english")
         if not results:
             return []
 
         logger.info(f"Web search '{query}' → {len(results)} risultati")
 
-        # Scegli la pagina più pertinente da scaricare:
-        # evita Wikipedia e pagine generiche che raramente contengono dati freschi
-        _SKIP_DOMAINS = ("wikipedia.org", "wikimedia.org", "wikidata.org")
-        best_idx = 0
-        for i, r in enumerate(results):
-            url = r.get("url", "")
-            if not any(d in url for d in _SKIP_DOMAINS):
-                best_idx = i
+        # Scarica testo completo delle prime 2 pagine utili
+        downloaded = 0
+        for r in results:
+            if downloaded >= 2:
                 break
-
-        best_url = results[best_idx].get("url", "")
-        if best_url:
-            page_text = fetch_page_text(best_url)
+            url = r.get("url", "")
+            if not url or any(d in url for d in _SKIP_DOWNLOAD):
+                continue
+            page_text = fetch_page_text(url)
             if page_text:
-                results[best_idx]["body"] = page_text
-                logger.info(f"Contenuto pagina scaricato: {len(page_text)} caratteri da {best_url}")
+                r["body"] = page_text
+                logger.info(f"Pagina scaricata ({downloaded+1}/2): {len(page_text)} chars da {url}")
+                downloaded += 1
 
+        # Porta i risultati con contenuto completo in cima
+        results.sort(key=lambda r: len(r.get("body", "")), reverse=True)
         return results
+
     except Exception as e:
         logger.error(f"Errore web search: {e}")
         return []

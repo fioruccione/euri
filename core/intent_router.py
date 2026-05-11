@@ -152,7 +152,10 @@ _PATTERNS: list[tuple[Intent, list[str]]] = [
         r"\bcopia\s+(questo|il\s+testo|negli\s+appunti)\b",
         r"\bmetti\s+(questo\s+)?(negli\s+appunti|in\s+clipboard)\b",
         r"\bcosa\s+c[''è]\s+(negli\s+appunti|in\s+clipboard)\b",
-        r"\bleggi\s+(gli\s+appunti|la\s+clipboard)\b",
+        r"\bleggi\s+((dagli|degli|gli)\s+appunti|(dalla|la)\s+clipboard)\b",
+        r"\b(analizza|studia|elabora|approfondisci|esamina)\s+((dagli?|degli?|gli?|dalla?|la)\s+)?(appunti|clipboard)\b",
+        r"\b(cosa\s+dice|dimmi\s+cosa\s+c[''è]|riassumi|sintetizza)\s+(negli?\s+appunti|in\s+clipboard|dalla\s+clipboard)\b",
+        r"\bsalva\s+(dagli?\s+appunti|dalla\s+clipboard)\b",
         r"\bcopiami\b",
         # CodeRunner — operazioni su file/dati (espansione massiva)
         r"\b(unisci|fondi|combina|merge|raggruppa)\s+.*(csv|file|pdf|excel|dati|document[io]|docx?|txt|json|xml|markdown|md|ods|odt|odp|libreoffice|calc|writer)\b",

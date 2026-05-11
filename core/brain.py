@@ -534,16 +534,20 @@ class Brain:
         """Sintetizza i risultati web in una risposta vocale breve, estraendo i dati."""
         if not results:
             return f"Non ho trovato niente di utile su '{query}'."
-        
-        # Prendi il "succo" dal primo sito scaricato (usiamo 4000 caratteri che vanno benissimo per Gemma 4 in Q4)
-        best_result = results[0]
-        context = f"SITO PRINCIPALE ({best_result['title']}):\n{best_result['body'][:4000]}\n\n"
-        
-        # Aggiungiamo solo i titoli e snippet brevissimi degli altri risultati
-        if len(results) > 1:
-            context += "ALTRI SITI TROVATI:\n"
-            for r in results[1:3]:
-                context += f"- {r['title']}: {r['body'][:150]}\n"
+
+        # I risultati arrivano già ordinati per lunghezza body (pagine complete prima)
+        # Usa fino a 2 pagine complete + snippet degli altri
+        context = ""
+        full_pages = [r for r in results if len(r.get("body", "")) > 500][:2]
+        snippets   = [r for r in results if len(r.get("body", "")) <= 500]
+
+        for i, r in enumerate(full_pages):
+            context += f"FONTE {i+1} ({r['title']}):\n{r['body'][:3000]}\n\n"
+
+        if snippets:
+            context += "ALTRI RISULTATI:\n"
+            for r in snippets[:3]:
+                context += f"- {r['title']}: {r['body'][:200]}\n"
 
         prompt = (
             f"Stefano ha cercato sul web: '{query}'\n\n"

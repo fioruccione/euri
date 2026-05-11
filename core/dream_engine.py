@@ -429,15 +429,32 @@ Rispondi SOLO con SÌ o NO."""
             logger.error(f"Errore valutazione insights: {e}")
 
     def _cleanup_expired_insights(self):
-        """Gli insight non utilizzati (PROMOTED ma con recalled_count=0) evaporano dopo TTL."""
+        """
+        Gate 1 — demotion (14 giorni senza richiamo): PROMOTED → candidate (seconda chance).
+        Gate 2 — evaporazione (30 giorni senza richiamo): elimina definitivamente.
+        """
         try:
-            ttl_sec = config.INSIGHT_TTL_DAYS * 86400
-            cutoff = to_timestamp(now()) - ttl_sec
+            ts_now = to_timestamp(now())
+            demote_cutoff = ts_now - config.INSIGHT_DEMOTE_DAYS * 86400
+            delete_cutoff  = ts_now - config.INSIGHT_TTL_DAYS  * 86400
 
-            q = Query(f"@status:{{promoted}} @recalled_count:[0 0] @created_at:[-inf {cutoff}]")
-            res = self._r.ft("idx:insights").search(q)
+            # Gate 1: tra DEMOTE_DAYS e TTL_DAYS → torna candidate
+            q_demote = Query(
+                f"@status:{{promoted}} @recalled_count:[0 0] "
+                f"@created_at:[{delete_cutoff} {demote_cutoff}]"
+            )
+            res_demote = self._r.ft("idx:insights").search(q_demote)
+            for doc in res_demote.docs:
+                self._r.json().set(doc.id, "$.status", "candidate")
+                logger.info(f"Dream Engine: Insight retrocesso a candidate (ID: {doc.id})")
 
-            for doc in res.docs:
+            # Gate 2: più vecchio di TTL_DAYS → elimina
+            q_delete = Query(
+                f"@status:{{promoted}} @recalled_count:[0 0] "
+                f"@created_at:[-inf {delete_cutoff}]"
+            )
+            res_delete = self._r.ft("idx:insights").search(q_delete)
+            for doc in res_delete.docs:
                 self._r.delete(doc.id)
                 logger.info(f"Dream Engine: Insight evaporato (ID: {doc.id})")
 
@@ -523,8 +540,10 @@ Rispondi SOLO con SÌ o NO."""
                     ttl_days = _TTL_BY_SOURCE[source]
 
                     if recalled >= keep_threshold:
-                        # Abbastanza richiamate — estendi senza LLM
-                        new_exp = to_timestamp(now() + timedelta(days=ttl_days))
+                        # Estendi di almeno 30 giorni — episodi hanno ttl=7 e
+                        # rientrerebbero nella finestra ogni ciclo senza questo floor.
+                        extended_ttl = max(ttl_days, 30)
+                        new_exp = to_timestamp(now() + timedelta(days=extended_ttl))
                         self._r.json().set(key, "$.expires_at", new_exp)
                         extended += 1
                         continue
@@ -595,6 +614,10 @@ Rispondi SOLO con SÌ o NO."""
                 logger.debug("Loop 2e: nessun candidato qualificato")
                 return
 
+            # Indice rapido degli ID qualificati — recalled_count non è nel
+            # schema RediSearch quindi non possiamo filtrare via KNN return_fields.
+            qualified_by_id = {doc.get("id", ""): doc for doc in candidates}
+
             consolidated = 0
 
             for seed in candidates:
@@ -608,6 +631,9 @@ Rispondi SOLO con SÌ o NO."""
                     continue
 
                 # 2. Trova memorie simili nello stesso dominio via KNN
+                # Usiamo una connessione raw (decode_responses=False) perché
+                # passare vec_bytes come query_params fallisce silenziosamente
+                # quando il client principale ha decode_responses=True.
                 try:
                     vec = self._embedder.encode(seed.get("content", ""), mode="query")
                     if vec is None:
@@ -620,44 +646,48 @@ Rispondi SOLO con SÌ o NO."""
                         .return_fields("id", "content", "recalled_count", "requires_verification", "source", "domain")
                         .dialect(2)
                     )
-                    res = self._r.ft("idx:memories").search(q, query_params={"vec": vec_bytes})
+                    import redis as _redis_mod
+                    _raw_r = _redis_mod.Redis(
+                        host=config.REDIS_HOST, port=config.REDIS_PORT,
+                        db=config.REDIS_DB, decode_responses=False,
+                    )
+                    res = _raw_r.ft("idx:memories").search(q, query_params={"vec": vec_bytes})
                 except Exception:
                     continue
 
-                # 3. Filtra: stessi criteri del seed, escludi già processati
+                def _dec(v, default=""):
+                    if v is None:
+                        return default
+                    return v.decode() if isinstance(v, bytes) else str(v)
+
+                # 3. Filtra: mantieni solo vicini KNN presenti in qualified_by_id
+                # (recalled_count non è nel schema RediSearch, filtriamo dall'indice pre-costruito)
                 cluster = []
                 for doc in res.docs:
-                    did = doc.id.replace("euri:memory:", "") if "euri:memory:" in doc.id else doc.id
-                    if did == seed_id:
-                        cluster.append(doc)
-                        continue
-                    if getattr(doc, "source", "") in SKIP_SOURCES:
-                        continue
-                    try:
-                        rc = int(getattr(doc, "recalled_count", 0) or 0)
-                    except (ValueError, TypeError):
-                        rc = 0
-                    if rc < MIN_RECALLED:
-                        continue
-                    rv = getattr(doc, "requires_verification", "false")
-                    if str(rv).lower() in ("true", "1"):
-                        continue
-                    cluster.append(doc)
+                    did = _dec(doc.id).replace("euri:memory:", "")
+                    if did in qualified_by_id:
+                        qd = qualified_by_id[did]
+                        cluster.append({"id": did, "content": qd.get("content", "")})
 
                 if len(cluster) < MIN_CLUSTER:
                     continue
 
                 # 4. Fingerprint cluster — evita ri-consolidare lo stesso gruppo
-                cluster_ids = sorted(
-                    doc.id.replace("euri:memory:", "") for doc in cluster[:5]
-                )
+                cluster_ids = sorted(doc["id"] for doc in cluster[:5])
                 fingerprint = "|".join(cluster_ids)
                 if self._r.sismember(PROCESSED_KEY, fingerprint):
                     continue
 
-                # 5. Chiedi a Qwen di sintetizzare
+                # 5. Deduplicazione semantica — salta se esiste già un nodo loop2e simile
+                if self._loop2e_duplicate_exists(seed_domain, vec):
+                    continue
+
+                # 6. Chiedi a Qwen di sintetizzare
+                import re as _re
+                _TS_PAT = _re.compile(r'\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}\b')
                 memories_text = "\n".join(
-                    f"- {getattr(doc, 'content', '')[:200]}" for doc in cluster[:5]
+                    f"- {_TS_PAT.sub('', doc['content']).strip()[:300]}"
+                    for doc in cluster[:5]
                 )
                 prompt = f"""Hai queste memorie correlate nel dominio "{seed_domain}":
 
@@ -667,8 +697,9 @@ Sintetizzale in un unico blocco di conoscenza strutturata.
 Regole:
 - Mantieni tutti i dati specifici: numeri, nomi propri, valori, misure
 - Elimina ripetizioni e ridondanze
-- Scrivi in italiano, massimo 4 frasi dense
+- Scrivi in italiano, massimo 5 frasi dense
 - Nessuna interpretazione, solo sintesi dei fatti
+- Non includere date o timestamp delle memorie sorgente
 - Se le memorie si contraddicono su un dato numerico, scrivi "dato non certo"
 Rispondi SOLO con la sintesi. Niente intestazioni."""
 
@@ -676,14 +707,13 @@ Rispondi SOLO con la sintesi. Niente intestazioni."""
                     resp = self._ollama_chat(
                         model=config.DREAM_OLLAMA_MODEL,
                         messages=[{"role": "user", "content": prompt}],
-                        options={"temperature": 0.2, "num_predict": 300},
+                        options={"temperature": 0.2, "num_predict": 600},
                         think=False,
                         _timeout=90,
                     )
                     synthesis = resp.message.content or ""
                     if "<channel|>" in synthesis:
                         synthesis = synthesis.split("<channel|>", 1)[-1]
-                    import re as _re
                     synthesis = _re.sub(r"<think>.*?</think>", "", synthesis, flags=_re.DOTALL).strip()
                 except Exception as e:
                     logger.debug(f"Loop 2e: LLM timeout/errore — {e}")
@@ -692,7 +722,7 @@ Rispondi SOLO con la sintesi. Niente intestazioni."""
                 if not synthesis or len(synthesis) < 30:
                     continue
 
-                # 6. Salva memoria consolidata (senza TTL — permanente come memorie utili)
+                # 7. Salva memoria consolidata (senza TTL — permanente come memorie utili)
                 mid = self._memory_manager.save_memory(
                     content=synthesis,
                     category="consolidato",
@@ -700,12 +730,22 @@ Rispondi SOLO con la sintesi. Niente intestazioni."""
                     source="loop2e",
                     expires_at=None,
                 )
-                # Aggiungi metadato sui sorgenti
                 key = f"euri:memory:{mid}"
                 self._r.json().set(key, "$.consolidated_from", cluster_ids)
 
-                # 7. Marca cluster come processato
+                # Eredita requires_verification se almeno una memoria sorgente ce l'ha
+                sources_rv = any(
+                    qualified_by_id.get(cid, {}).get("requires_verification", False)
+                    for cid in cluster_ids
+                )
+                if sources_rv:
+                    self._r.json().set(key, "$.requires_verification", True)
+
+                # 8. Marca cluster come processato
                 self._r.sadd(PROCESSED_KEY, fingerprint)
+
+                # 9. Aggiungi wiki-link sorgenti in Obsidian
+                self._write_obsidian_sources(mid, seed_domain, cluster_ids)
 
                 consolidated += 1
                 logger.info(
@@ -720,3 +760,75 @@ Rispondi SOLO con la sintesi. Niente intestazioni."""
 
         except Exception as e:
             logger.error(f"Errore Loop 2e consolidation: {e}")
+
+    def _write_obsidian_sources(self, mid: str, domain: str, cluster_ids: list[str]):
+        """Appende i wiki-link alle memorie sorgente nel file Obsidian del nodo consolidato."""
+        if not config.OBSIDIAN_SYNC_ENABLED:
+            return
+        try:
+            from pathlib import Path
+            from utils.date_utils import from_timestamp
+
+            vault_path = Path(config.OBSIDIAN_VAULT_PATH)
+
+            # Trova il file Obsidian del nodo consolidato
+            self_doc = self._r.json().get(f"euri:memory:{mid}", "$")
+            if not self_doc:
+                return
+            dt = from_timestamp(self_doc[0]["created_at"])
+            node_file = vault_path / "Memories" / domain / f"Memory_{dt.strftime('%Y%m%d_%H%M%S')}_{mid[:8]}.md"
+            if not node_file.exists():
+                return
+
+            # Costruisce wiki-link per ogni memoria sorgente
+            links = []
+            for cid in cluster_ids:
+                src = self._r.json().get(f"euri:memory:{cid}", "$")
+                if not src:
+                    continue
+                src = src[0]
+                src_dt = from_timestamp(src["created_at"])
+                src_domain = src.get("domain", "generale")
+                src_name = f"Memory_{src_dt.strftime('%Y%m%d_%H%M%S')}_{cid[:8]}"
+                links.append(f"- [[{src_name}]] — {src_domain}")
+
+            if not links:
+                return
+
+            existing = node_file.read_text(encoding="utf-8")
+            section = "\n\n## Fonti consolidate\n" + "\n".join(links)
+            node_file.write_text(existing + section, encoding="utf-8")
+            logger.debug(f"Loop 2e: wiki-link aggiunti in Obsidian per {mid[:8]}")
+        except Exception as e:
+            logger.debug(f"Loop 2e: errore link Obsidian — {e}")
+
+    def _loop2e_duplicate_exists(self, domain: str, vec) -> bool:
+        """
+        Ritorna True se esiste già un nodo loop2e semanticamente quasi identico
+        nello stesso dominio (distanza cosine < 0.15).
+        Previene la proliferazione di nodi ridondanti tra cicli notturni.
+        """
+        try:
+            import redis as _redis_mod
+            _raw_r = _redis_mod.Redis(
+                host=config.REDIS_HOST, port=config.REDIS_PORT,
+                db=config.REDIS_DB, decode_responses=False,
+            )
+            safe_domain = domain.replace(" ", "\\ ")
+            q = (
+                Query(f"(@domain:{{{safe_domain}}} @source:{{loop2e}})=>[KNN 3 @embedding $vec AS dup_score]")
+                .sort_by("dup_score")
+                .return_fields("dup_score")
+                .dialect(2)
+            )
+            res = _raw_r.ft("idx:memories").search(
+                q, query_params={"vec": vec.astype("float32").tobytes()}
+            )
+            for doc in res.docs:
+                raw = getattr(doc, "dup_score", b"1.0")
+                score = float(raw.decode() if isinstance(raw, bytes) else raw)
+                if score < 0.15:
+                    return True
+            return False
+        except Exception:
+            return False

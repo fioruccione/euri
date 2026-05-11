@@ -118,6 +118,8 @@ class VoiceDaemon:
             category="episodio", source="episode"
         )
         self.executor = Executor()
+        self.executor.brain  = self.brain
+        self.executor.memory = self.memory
         self.vad = VAD()
         self.stt = STT()
         self.tts = TTS()
@@ -149,6 +151,7 @@ class VoiceDaemon:
         self._passive_history_len: int = 0     # lunghezza history già analizzata
         self._consolidation_last_run: float = 0.0  # timestamp ultimo Loop 2a
         self._brain_lock = threading.Lock()  # protegge brain tra main loop e mobile worker
+        self._first_visual_activation = True  # True finché il VisualGate non vede l'utente per la prima volta
         self._tts_lock   = threading.Lock()  # protegge il modello TTS da accessi concorrenti
 
     def setup(self):
@@ -188,6 +191,20 @@ class VoiceDaemon:
         logger.info("Euri pronto. In ascolto...")
 
     _URL_RE = re.compile(r'https?://\S+|www\.\S+', re.IGNORECASE)
+
+    def _warmup_model(self):
+        """Carica il modello LLM in VRAM senza produrre output vocale."""
+        try:
+            import ollama
+            ollama.chat(
+                model=config.OLLAMA_MODEL,
+                messages=[{"role": "user", "content": "ok"}],
+                options={"num_predict": 1},
+                keep_alive=-1,
+            )
+            logger.info("Warm-up modello completato.")
+        except Exception as e:
+            logger.warning(f"Warm-up modello fallito: {e}")
 
     def _clean_for_speech(self, text: str) -> str:
         """Rimuove URL e artefatti non leggibili prima del TTS."""
@@ -785,6 +802,15 @@ class VoiceDaemon:
             sections.append("Ricordi/note rilevanti:\n" + "\n".join(mem_lines))
         if insight_lines:
             sections.append("Principi trasversali:\n" + "\n".join(insight_lines))
+
+        # Triade RAG: log dei nodi usati per tracciare l'origine delle risposte
+        if results:
+            node_tags = [
+                f"{r.get('source','?')}:{r.get('domain','?')}({r.get('id','')[:8]})"
+                for r in results[:6]
+            ]
+            logger.info(f"RAG ctx [{len(results)} nodi]: {' | '.join(node_tags)}")
+
         return "\n\n".join(sections)
 
     def _handle_web_search(self, text: str):
@@ -825,8 +851,19 @@ class VoiceDaemon:
         self.memory.log_conversation("Euri", summary)
         self._speak(summary)
 
+        # Salva automaticamente in Redis — la conoscenza web diventa permanente (TTL 60gg)
+        # requires_verification forzato: fonte esterna, non va citata come fatto certo
+        mem_content = f"Ricerca web '{query}':\n{summary}"
+        mid = self.memory.save_memory(
+            content=mem_content,
+            category="web",
+            tags=["web_search"],
+            source="web",
+        )
+        self.memory.r.json().set(f"euri:memory:{mid}", "$.requires_verification", True)
+        logger.info(f"Web search salvata in memoria: {mid[:8]}… (query: '{query[:50]}')")
+
         # Tieni il contesto per eventuali "approfondisci" / "salva quello che hai trovato"
-        # senza entrare in confirm_mode — il salvataggio avviene solo su comando esplicito
         self._web_pending = {"summary": summary, "results": results, "query": query}
 
     def _handle_translate(self, text: str):
@@ -1495,22 +1532,27 @@ class VoiceDaemon:
             while self._running:
                 # Saluto al rientro: VisualGate ha appena rilevato presenza dopo assenza
                 if self.visual_gate.consume_just_activated():
-                    if self._missed_reminders:
-                        missed = self._missed_reminders.copy()
-                        self._missed_reminders.clear()
-                        if len(missed) == 1:
-                            self._speak(f"Bentornato Stefano. Hai perso un promemoria: {missed[0]}.")
-                        else:
-                            elenco = ", ".join(missed)
-                            self._speak(f"Bentornato Stefano. Hai perso {len(missed)} promemoria: {elenco}.")
+                    if self._first_visual_activation:
+                        # Prima rilevazione dall'avvio: silenzio, solo warm-up modello
+                        self._first_visual_activation = False
+                        threading.Thread(target=self._warmup_model, daemon=True).start()
                     else:
-                        self._speak("Bentornato Stefano.")
-                    # Controlla se c'è una sessione TEACH interrotta
-                    snapshot = self.r.get("euri:teach:snapshot")
-                    if snapshot and not self._teach_mode:
-                        self._teach_snapshot_content = snapshot
-                        self._teach_recovery_mode = True
-                        self._speak("Ho trovato una sessione di insegnamento non completata. Vuoi riprendere da dove eravamo?")
+                        if self._missed_reminders:
+                            missed = self._missed_reminders.copy()
+                            self._missed_reminders.clear()
+                            if len(missed) == 1:
+                                self._speak(f"Bentornato Stefano. Hai perso un promemoria: {missed[0]}.")
+                            else:
+                                elenco = ", ".join(missed)
+                                self._speak(f"Bentornato Stefano. Hai perso {len(missed)} promemoria: {elenco}.")
+                        else:
+                            self._speak("Bentornato Stefano.")
+                        # Controlla se c'è una sessione TEACH interrotta
+                        snapshot = self.r.get("euri:teach:snapshot")
+                        if snapshot and not self._teach_mode:
+                            self._teach_snapshot_content = snapshot
+                            self._teach_recovery_mode = True
+                            self._speak("Ho trovato una sessione di insegnamento non completata. Vuoi riprendere da dove eravamo?")
 
                 # Salta se proactive_agent sta parlando
                 if self.r.exists("euri:audio:lock"):
@@ -1552,7 +1594,8 @@ class VoiceDaemon:
                     continue
 
                 # Verifica identità vocale (prima di STT per risparmiare CPU)
-                if not self.speaker_auth.verify(segment):
+                # In modalità interprete le voci esterne sono attese — skip auth
+                if not self._translate_bidir and not self.speaker_auth.verify(segment):
                     logger.info("SpeakerAuth: voce non riconosciuta — comando ignorato")
                     self.vad.reset()
                     continue

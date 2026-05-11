@@ -7,7 +7,7 @@ Non si limita ad ascoltare e rispondere: memorizza, organizza, riflette sulle tu
 
 ---
 
-## Architettura Cognitiva (V2.7)
+## Architettura Cognitiva (V2.9)
 
 ### 1. Intent Classification — Pipeline a Due Layer
 La classificazione dell'intent è a cascata: il layer veloce esaurisce la maggior parte dei casi, il layer lento interviene solo quando necessario.
@@ -35,6 +35,7 @@ Quando non gli parli da almeno 2 ore, Euri "dorme" ed entra nel ciclo onirico.
 - Se l'analogia è forte, genera un **CANDIDATE Insight**.
 - **Loop 2c** — La promozione CANDIDATE→PROMOTED usa un sistema a due livelli: distanza cosine vettoriale (fast path) + **LLM judge con thinking** per la zona grigia (score 0.15–0.40). Il judge valuta se due insight formulati diversamente esprimono lo stesso principio strutturale profondo — un giudizio che il solo vettore cosine non può dare.
 - Se abbastanza sogni indipendenti convergono, l'insight viene **PROMOSSO** e scritto permanentemente in Obsidian.
+- **Loop 2e — Memory Consolidation:** una volta ogni 24h, Euri raggruppa le memorie episodiche più richiamate (recalled_count ≥ 3) per dominio, individua i cluster semanticamente coerenti via KNN, e chiede a Qwen3.6 di sintetizzarle in un unico nodo di conoscenza stabile. Il nodo consolidato preserva tutti i dati specifici (numeri, nomi, misure) eliminando la ridondanza episodica. Ogni cluster viene marcato con fingerprint per evitare ri-consolidazioni. Ispirato al consolidamento ippocampale durante il sonno REM: i frammenti episodici diventano conoscenza semantica a lungo termine. Max 3 consolidazioni per ciclo.
 
 > **Nota tecnica:** Il timer di idle usa `time.time()` (wall-clock) per contare correttamente anche le ore in cui il PC è in sospensione.
 
@@ -156,6 +157,12 @@ cd /home/fio/Euri
 | *"Controlla l'immagine"* / *"Guarda la foto"* | Idem |
 | *"Cosa c'è nella cartella dati?"* | Elenca i file disponibili |
 
+### Traduzione e Interpretariato
+| Comando | Cosa fa |
+|---|---|
+| *"Attiva modalità traduttore"* | Interprete bidirezionale IT↔EN — qualsiasi voce accettata |
+| *"Fine traduzione"* | Chiude l'interprete, riattiva SpeakerAuth |
+
 ### Assistenza Generale
 | Comando | Cosa fa |
 |---|---|
@@ -179,6 +186,23 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 ---
 
 ## Changelog
+
+### V2.9 — Consolidation Quality Gate
+
+- **Deduplicazione semantica nodi loop2e:** prima di salvare un nuovo nodo consolidato, `_loop2e_duplicate_exists()` controlla via KNN se esiste già un nodo loop2e con distanza cosine < 0.15 nello stesso dominio. Previene la proliferazione di nodi quasi identici tra cicli notturni successivi (es. 7 nodi ridondanti su "intelligenza artificiale" → 1 nodo ricco).
+- **Token sintesi 300 → 600:** il limite precedente troncava sistematicamente le sintesi a metà frase. Con 600 token Qwen3.6 può produrre 5 frasi dense invece di 4.
+- **Strip timestamp dalla sintesi:** regex `\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}` rimuove i timestamp raw dalle memorie sorgente prima di passarle al LLM. Elimina artefatti tipo "Le date di riferimento sono 2026-04-28 22:39:49" nelle sintesi.
+- **requires_verification ereditato:** se almeno una memoria sorgente ha `requires_verification=True`, il nodo consolidato lo eredita indipendentemente dal rilevamento automatico sul testo della sintesi.
+- **Web search → memoria persistente:** ogni ricerca web andata a buon fine viene salvata automaticamente in Redis con `source="web"`, TTL 60 giorni (sliding window su recall) e `requires_verification=True` forzato — fonte esterna, citata sempre con cautela. Disponibile immediatamente per il RAG. Esclusa da Loop 2e (non viene consolidata con memorie personali).
+- **SpeakerAuth bypass in modalità interprete:** quando la modalità traduttore bidirezionale è attiva, il controllo identità vocale viene sospeso automaticamente — le voci esterne (clienti, colleghi) sono attese e autorizzate implicitamente dall'utente che ha attivato la modalità. Alla chiusura ("Fine traduzione") il SpeakerAuth torna attivo.
+- **Loop 2d TTL floor 30 giorni:** le memorie con recalled_count ≥ soglia venivano estese di `ttl_days` (7 per gli episodi), rientrando nella finestra di controllo ad ogni ciclo successivo. Fix: `max(ttl_days, 30)` — gli episodi molto richiamati escono dalla finestra per 30 giorni invece di rientrarci ogni ora.
+
+### V2.8 — Loop 2e Memory Consolidation
+
+- **Loop 2e — consolidamento semantico notturno:** implementato in `DreamEngine._consolidation_pass()`. Scansiona le memorie con recalled_count ≥ 3 e requires_verification=False, le raggruppa per dominio via KNN, genera un nodo sintetico con Qwen3.6 (temperatura 0.2, max 300 token, dati numerici preservati). Ogni cluster è identificato da fingerprint SHA (sorted UUIDs) salvata in `euri:loop2e:processed` per evitare ri-consolidazioni. Gira automaticamente nel ciclo onirico max una volta ogni 24h; forzabile con `test_consolidation.py`. Prima esecuzione reale: 6 consolidazioni in domini chimica polimeri, controllo qualità, intelligenza artificiale, produzione industriale, informatica, gestione progetti — cluster da 3 a 6 memorie sorgente ciascuno.
+- **Fix KNN con decode_responses=True:** la query vettoriale FT.SEARCH con `query_params={"vec": bytes}` fallisce silenziosamente quando il client Redis ha `decode_responses=True`. Risolto creando una connessione raw temporanea (`decode_responses=False`) solo per la fase KNN — stesso pattern già usato in `_search_semantic`. Causa radice: il client decodifica automaticamente le chiavi di risposta ma non tollera bytes nei parametri di input.
+- **Fix filtro cluster:** `recalled_count` non è nel schema RediSearch, quindi `return_fields` tornava sempre 0. Risolto con un dict `qualified_by_id` pre-costruito dalla scan JSON (step 1) usato per filtrare i vicini KNN — nessuna modifica all'indice richiesta.
+- **`test_consolidation.py`:** script autonomo che forza `_consolidation_pass()` bypassando il timer idle, mostra before/after e il contenuto dei nodi sintetici generati.
 
 ### V2.7 — Ricerca Memoria 3-Livelli + SpeakerAuth Monitoring
 

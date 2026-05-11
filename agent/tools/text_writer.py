@@ -4,8 +4,11 @@ Tool di scrittura e clipboard per l'Executor sandbox di Euri.
 - write_text: salva testo dettato su file + lo copia negli appunti
 - clipboard_write: copia testo negli appunti (senza salvare su file)
 - clipboard_read: legge il contenuto degli appunti
+- clipboard_analyze: analizza il contenuto degli appunti (testo o immagine) e lo salva in memoria
 """
 import re
+import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from agent.executor import ToolResult
@@ -117,3 +120,107 @@ def tool_clipboard_read(params: dict, **kwargs) -> ToolResult:
         )
     except Exception as e:
         return ToolResult(success=False, output="Non riesco a leggere gli appunti.", error=str(e))
+
+
+def tool_clipboard_analyze(params: dict, **kwargs) -> ToolResult:
+    """
+    Analizza il contenuto degli appunti (testo lungo o immagine PNG/JPG) con il LLM,
+    estrae i fatti rilevanti e li salva in Redis come memoria teach.
+
+    kwargs attesi: brain (Brain), memory (MemoryManager)
+    """
+    brain   = kwargs.get("brain")
+    memory  = kwargs.get("memory")
+    if not brain or not memory:
+        return ToolResult(success=False, output="Componenti interni non disponibili.", error="missing brain/memory")
+
+    # ── Branch immagine: cerca PNG nella clipboard X11 ──────────────────────
+    img_path = _clipboard_image()
+    if img_path:
+        try:
+            description = brain.analyze_image(img_path, question=(
+                "Descrivi questa immagine in dettaglio in italiano. "
+                "Se contiene dati tecnici, tabelle o specifiche, riportali fedelmente. "
+                "Usa frasi complete, niente elenchi puntati."
+            ))
+            mid = memory.save_memory(
+                content=f"Immagine analizzata dagli appunti:\n{description}",
+                category="conoscenza",
+                source="teach",
+                tags=["clipboard", "immagine"],
+            )
+            return ToolResult(
+                success=True,
+                output=f"Ho analizzato l'immagine e salvato i dettagli in memoria. {description[:200]}",
+                raw_data={"memory_id": mid, "type": "image"},
+            )
+        except Exception as e:
+            return ToolResult(success=False, output="Errore nell'analisi dell'immagine.", error=str(e))
+        finally:
+            try:
+                Path(img_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    # ── Branch testo ─────────────────────────────────────────────────────────
+    try:
+        import pyperclip
+        text = pyperclip.paste().strip()
+    except Exception as e:
+        return ToolResult(success=False, output="Non riesco ad accedere agli appunti.", error=str(e))
+
+    if not text:
+        return ToolResult(success=True, output="Gli appunti sono vuoti, niente da analizzare.")
+
+    try:
+        import ollama, config as cfg
+        prompt = (
+            f"Hai ricevuto questo testo dagli appunti dell'utente:\n\n{text[:6000]}\n\n"
+            "Sintetizza i punti chiave in 3-6 frasi concise in italiano. "
+            "Estrai fatti concreti: nomi, date, dati tecnici, decisioni. "
+            "Niente commenti sul testo stesso, solo i contenuti."
+        )
+        response = ollama.chat(
+            model=cfg.OLLAMA_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0.2, "num_predict": 400},
+            think=False,
+        )
+        summary = brain._clean(response.message.content or "")
+        if not summary:
+            return ToolResult(success=False, output="Non sono riuscito a sintetizzare il testo.")
+
+        mid = memory.save_memory(
+            content=f"Testo analizzato dagli appunti:\n{summary}",
+            category="conoscenza",
+            source="teach",
+            tags=["clipboard", "testo"],
+        )
+        char_info = f"{len(text)} caratteri" + (" (troncato a 6000)" if len(text) > 6000 else "")
+        return ToolResult(
+            success=True,
+            output=f"Ho letto {char_info} e salvato i punti chiave. {summary[:180]}",
+            raw_data={"memory_id": mid, "type": "text", "original_length": len(text)},
+        )
+    except Exception as e:
+        return ToolResult(success=False, output="Errore nell'analisi del testo.", error=str(e))
+
+
+def _clipboard_image() -> str | None:
+    """
+    Prova a estrarre un'immagine PNG dalla clipboard X11 via xclip.
+    Ritorna il path del file temporaneo, o None se la clipboard non contiene un'immagine.
+    """
+    try:
+        result = subprocess.run(
+            ["xclip", "-o", "-selection", "clipboard", "-t", "image/png"],
+            capture_output=True, timeout=3,
+        )
+        if result.returncode == 0 and result.stdout:
+            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+            tmp.write(result.stdout)
+            tmp.close()
+            return tmp.name
+    except Exception:
+        pass
+    return None
