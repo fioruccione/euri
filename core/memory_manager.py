@@ -476,14 +476,19 @@ class MemoryManager:
                         logger.info(f"Duplicato memory (cosine={similarity:.2f}): '{content[:50]}' ~ '{cand['content'][:50]}'")
                         return True
                     elif similarity >= 0.70:
-                        # Zona grigia: prova LLM
+                        # Zona grigia: chiedi se A aggiunge fatti nuovi rispetto a B
                         if llm_probe_fn is not None:
-                            question = f"Queste due frasi dicono la stessa cosa?\nA: {content}\nB: {cand['content']}"
+                            question = (
+                                f"La frase A contiene informazioni concrete non già presenti in B? "
+                                f"(numeri diversi, componenti diversi, processi diversi, date, misure specifiche)\n"
+                                f"A: {content}\nB: {cand['content']}\n"
+                                f"Rispondi SÌ se A aggiunge qualcosa di nuovo, NO se A non aggiunge nulla di nuovo rispetto a B."
+                            )
                             answer = llm_probe_fn(question)
-                            same = answer.strip().upper().startswith(("SÌ", "SI", "YES"))
+                            adds_new = answer.strip().upper().startswith(("SÌ", "SI", "YES"))
                         else:
-                            same = self._llm_is_same_content(content, cand["content"])
-                        if same:
+                            adds_new = not self._llm_is_same_content(content, cand["content"])
+                        if not adds_new:
                             logger.info(f"Duplicato memory (cosine={similarity:.2f}+LLM): '{content[:50]}' ~ '{cand['content'][:50]}'")
                             return True
                 return False  # nessun duplicato trovato via embedding
@@ -511,24 +516,30 @@ class MemoryManager:
                 return True
             elif ratio >= 0.2:
                 if llm_probe_fn is not None:
-                    question = f"Queste due frasi dicono la stessa cosa?\nA: {content}\nB: {r['content']}"
+                    question = (
+                        f"La frase A contiene informazioni concrete non già presenti in B? "
+                        f"(numeri diversi, componenti diversi, processi diversi, date, misure specifiche)\n"
+                        f"A: {content}\nB: {r['content']}\n"
+                        f"Rispondi SÌ se A aggiunge qualcosa di nuovo, NO se A non aggiunge nulla di nuovo rispetto a B."
+                    )
                     answer = llm_probe_fn(question)
-                    same = answer.strip().upper().startswith(("SÌ", "SI", "YES"))
+                    adds_new = answer.strip().upper().startswith(("SÌ", "SI", "YES"))
                 else:
-                    same = self._llm_is_same_content(content, r["content"])
-                if same:
+                    adds_new = not self._llm_is_same_content(content, r["content"])
+                if not adds_new:
                     logger.info(f"Duplicato memory (Jaccard+LLM): '{content[:50]}' ~ '{r['content'][:50]}'")
                     return True
         return False
 
     @staticmethod
     def _llm_is_same_content(a: str, b: str) -> bool:
-        """Verifica semanticamente se due frasi trasmettono la stessa informazione."""
+        """True se A non aggiunge informazioni concrete rispetto a B (= è un duplicato)."""
         try:
             import ollama
             import config
             prompt = (
-                f"Queste due frasi trasmettono la stessa informazione?\n"
+                f"La frase A contiene informazioni concrete non già presenti in B? "
+                f"(numeri diversi, componenti diversi, processi diversi, date, misure specifiche)\n"
                 f"A: {a}\n"
                 f"B: {b}\n"
                 f"Rispondi solo SÌ o NO."
@@ -540,7 +551,8 @@ class MemoryManager:
                 think=False,
             )
             result = (response.message.content or "").strip().upper()
-            return result.startswith("SÌ") or result.startswith("SI") or result.startswith("YES")
+            adds_new = result.startswith("SÌ") or result.startswith("SI") or result.startswith("YES")
+            return not adds_new  # True = duplicato (non aggiunge nulla)
         except Exception:
             return False  # In caso di errore, lascia passare
 
