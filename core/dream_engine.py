@@ -346,7 +346,7 @@ Rispondi SOLO con SÌ o NO."""
         """Valuta i candidate insights per la promozione (convergenza)."""
         try:
             # Cerca tutti i CANDIDATE
-            q = Query("@status:{candidate}").return_fields("id", "content", "embedding", "convergence_count").paging(0, 100)
+            q = Query("@status:{candidate}").return_fields("id", "content", "embedding", "convergence_count").paging(0, 500)
             res = self._r.ft("idx:insights").search(q)
             
             if not res.docs:
@@ -459,6 +459,15 @@ Rispondi SOLO con SÌ o NO."""
             for doc in res_delete.docs:
                 self._r.delete(doc.id)
                 logger.info(f"Dream Engine: Insight evaporato (ID: {doc.id})")
+
+            # Gate 3: candidate mai promossi oltre TTL_DAYS → elimina
+            q_stale = Query(
+                f"@status:{{candidate}} @created_at:[-inf {delete_cutoff}]"
+            )
+            res_stale = self._r.ft("idx:insights").search(q_stale)
+            for doc in res_stale.docs:
+                self._r.delete(doc.id)
+                logger.info(f"Dream Engine: Candidate scaduto eliminato (ID: {doc.id})")
 
         except Exception as e:
             logger.error(f"Errore pulizia insights: {e}")
@@ -743,8 +752,9 @@ Rispondi SOLO con la sintesi. Niente intestazioni."""
                 if sources_rv:
                     self._r.json().set(key, "$.requires_verification", True)
 
-                # 8. Marca cluster come processato
+                # 8. Marca cluster come processato (TTL 180 giorni sliding)
                 self._r.sadd(PROCESSED_KEY, fingerprint)
+                self._r.expire(PROCESSED_KEY, 180 * 86400)
 
                 # 9. Aggiungi wiki-link sorgenti in Obsidian
                 self._write_obsidian_sources(mid, seed_domain, cluster_ids)

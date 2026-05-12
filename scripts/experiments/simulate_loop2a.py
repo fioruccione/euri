@@ -109,7 +109,7 @@ def group_into_sessions(memories: list[dict], window_minutes: int) -> list[list[
 
 def get_stored_embedding(mem: dict) -> np.ndarray | None:
     emb = mem.get("embedding")
-    if isinstance(emb, list) and len(emb) == 384:
+    if isinstance(emb, list) and len(emb) > 0:
         return np.array(emb, dtype=np.float32)
     return None
 

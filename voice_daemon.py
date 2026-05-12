@@ -255,13 +255,16 @@ class VoiceDaemon:
                 stop_event.set()
                 listener.join(timeout=2)
         except Exception as e:
-            logger.error(f"Audio hardware irrecuperabile, fallback say: {e}")
-            import subprocess
-            voice = "Paola" if lang == "it" else "Samantha"
+            logger.error(f"Audio hardware irrecuperabile, fallback TTS: {e}")
+            import subprocess, sys
             try:
-                subprocess.run(["say", "-v", voice, text], timeout=300)
-            except Exception as say_err:
-                logger.critical(f"say fallback fallito: {say_err} — Euri muto")
+                if sys.platform == "darwin":
+                    voice = "Paola" if lang == "it" else "Samantha"
+                    subprocess.run(["say", "-v", voice, text], timeout=300)
+                else:
+                    subprocess.run(["spd-say", "-l", lang, text], timeout=300)
+            except Exception as tts_err:
+                logger.critical(f"Fallback TTS fallito: {tts_err} — Euri muto")
         finally:
             self.r.delete("euri:audio:lock")
         if interrupted:

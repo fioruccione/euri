@@ -221,10 +221,6 @@ class AdaptiveClassifier:
             n = len(vecs)
             mean = np.mean(vecs, axis=0).astype(np.float32)
             M = np.zeros_like(mean)
-            for vec in vecs:
-                # Ricalcola M per Welford corretto
-                pass
-            # Calcola M dalla varianza campionaria
             if n >= 2:
                 M = np.var(np.array(vecs), axis=0, ddof=1) * (n - 1)
                 M = M.astype(np.float32)
