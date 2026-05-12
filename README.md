@@ -187,6 +187,11 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 
 ## Changelog
 
+### V2.11 — Dedup Intelligente + Passive Learner Scadenze
+
+- **Dedup zona grigia riformulato:** il probe LLM in `is_duplicate_memory` ora chiede *"A aggiunge informazioni concrete non presenti in B?"* invece di *"dicono la stessa cosa?"*. Logica invertita: salva se risponde SÌ (fatti nuovi), blocca se NO. Risolve il caso in cui due memorie sullo stesso progetto (es. Regrado PP) venivano trattate come duplicati anche quando la nuova conteneva dati specifici genuinamente diversi — numeri, componenti, processi, date, misure. Fix applicato in cosine zone grigia (0.70–0.92), Jaccard zone grigia e `_llm_is_same_content`.
+- **Passive Learner cattura scadenze:** aggiunto bullet point al prompt di `extract_passive_memories` per riconoscere impegni temporali concreti menzionati in conversazione (materiali attesi, prove pianificate, consegne, appuntamenti). Il LLM ora include la data esatta o approssimativa nel fatto estratto invece di ignorare i milestone di progetto.
+
 ### V2.10 — Implicit Actions + Vision Routing
 
 - **Routing immagini corretto:** `analyze_image` precede ora `run_code` nella lista pattern dell'Executor. Prima, frasi come "analizza le immagini nella cartella dati" finivano in CodeRunner perché "dati" matchava il pattern documenti — nonostante "analizza" + "immagini" fosse presente. Pattern esteso con `visualizza | mostra | esamina`.
