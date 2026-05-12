@@ -187,6 +187,15 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 
 ## Changelog
 
+### V2.12 — Bug Fix da Code Review
+
+- **Fix critico Dream Engine — convergence_count:** `getattr(doc, "convergence_count", 1)` leggeva sempre il default 1 perché `return_fields` non includeva il campo. Sostituito con `r.json().get(doc.id, "$.convergence_count")` — il ciclo onirico ora accumula correttamente le convergenze tra cicli successivi.
+- **Fix critico RAG dedup — ID format:** `domain_aware_search` restituiva `"id": doc.id` (chiave Redis completa `euri:memory:UUID`) mentre il resto del codice lavora con UUID puri. Il dedup in `_build_context` non matchava mai → la stessa memoria poteva apparire due volte nel contesto LLM. Fix: normalizzazione `doc.id.replace("euri:memory:", "")` in `domain_gater.py`.
+- **Fix crash — `search_insights` senza embedder:** chiamata a `self._embedder.encode()` senza guard su `None`. Aggiunto `if not self._embedder or not self._embedder.available: return []` in cima al metodo.
+- **Fix race condition — `_compress_episode`:** la history veniva letta sotto `_compress_lock` ma senza `history_lock`. Con ThreadPoolExecutor attivo, un altro thread poteva modificare la lista in contemporanea. Fix: `history_lock` acquisito prima di leggere il chunk.
+- **Fix idle tracking dopo suspend — `time.monotonic()` → `time.time()`:** `monotonic()` si ferma durante la sospensione del PC, `time.time()` no. Sostituito su tutti i timestamp di idle tracking (`_last_activity_ts`, `_consolidation_last_run`) in `voice_daemon.py`. I timer brevi del loop TTS restano con `monotonic()`.
+- **Fix crash UI — `ADAPTIVE_CLASSIFIER_VARIANCE_WEIGHT`:** la costante in `config.py` si chiama `ADAPTIVE_CLASSIFIER_VARIANCE_BETA`. Il riferimento errato in `ui/app.py` causava crash deterministico sulla pagina Telemetria Welford.
+
 ### V2.11 — Dedup Intelligente + Passive Learner Scadenze
 
 - **Dedup zona grigia riformulato:** il probe LLM in `is_duplicate_memory` ora chiede *"A aggiunge informazioni concrete non presenti in B?"* invece di *"dicono la stessa cosa?"*. Logica invertita: salva se risponde SÌ (fatti nuovi), blocca se NO. Risolve il caso in cui due memorie sullo stesso progetto (es. Regrado PP) venivano trattate come duplicati anche quando la nuova conteneva dati specifici genuinamente diversi — numeri, componenti, processi, date, misure. Fix applicato in cosine zone grigia (0.70–0.92), Jaccard zone grigia e `_llm_is_same_content`.
