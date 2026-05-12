@@ -187,6 +187,16 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 
 ## Changelog
 
+### V2.13 — Bug Fix da Code Review (parte 2)
+
+- **Dream Engine — loop2e:processed TTL:** il set dei cluster processati cresceva per sempre. Aggiunto `EXPIRE` a 180 giorni sliding dopo ogni `SADD`.
+- **Dream Engine — Gate 3 candidate scaduti:** `_cleanup_expired_insights` gestiva solo gli insight `promoted`. I `candidate` mai promossi si accumulavano indefinitamente. Aggiunto Gate 3 che li elimina dopo `INSIGHT_TTL_DAYS`.
+- **Dream Engine — paging cap:** `_evaluate_insights` si fermava a 100 candidati. Portato a 500.
+- **simulate_loop2a.py — embedding dim hardcoded:** `len(emb) == 384` rendeva `get_stored_embedding` sempre `None` con e5-large (1024-dim). Sostituito con `len(emb) > 0`.
+- **Fallback TTS platform-aware:** il fallback hardware usava `say` (comando macOS). Su Linux dà `FileNotFoundError` silenzioso — Euri diventava muta senza log critico utile. Sostituito con branch `sys.platform`: `say` su macOS, `spd-say` su Linux.
+- **`core/embedding_classifier.py` rimosso:** dead code, non importato da nessun modulo attivo. Residuo di una versione precedente.
+- **`adaptive_classifier.py` — loop no-op rimosso:** `for vec in vecs: pass` prima del `np.var()` corretto era codice fuorviante senza effetto.
+
 ### V2.12 — Bug Fix da Code Review
 
 - **Fix critico Dream Engine — convergence_count:** `getattr(doc, "convergence_count", 1)` leggeva sempre il default 1 perché `return_fields` non includeva il campo. Sostituito con `r.json().get(doc.id, "$.convergence_count")` — il ciclo onirico ora accumula correttamente le convergenze tra cicli successivi.
