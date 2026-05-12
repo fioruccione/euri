@@ -446,6 +446,7 @@ Rispondi SOLO con SÌ o NO."""
             res_demote = self._r.ft("idx:insights").search(q_demote)
             for doc in res_demote.docs:
                 self._r.json().set(doc.id, "$.status", "candidate")
+                self._r.json().set(doc.id, "$.convergence_count", 1)
                 logger.info(f"Dream Engine: Insight retrocesso a candidate (ID: {doc.id})")
 
             # Gate 2: più vecchio di TTL_DAYS → elimina

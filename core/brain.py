@@ -95,6 +95,12 @@ class Brain:
             logger.error(f"Errore Ollama: {e}")
             return "Scusa, ho avuto un problema. Riprova."
 
+    def inject_tool_result(self, user_text: str, result_text: str):
+        """Inietta uno scambio tool nella history LLM — visibile ai turn CHAT successivi."""
+        with self.history_lock:
+            self._conversation_history.append({"role": "user", "content": user_text, "trusted": False})
+            self._conversation_history.append({"role": "assistant", "content": result_text, "trusted": False})
+
     def _compress_episode(self):
         """Comprime i messaggi più vecchi in un episodio — gira in background."""
         with self._compress_lock:
@@ -378,6 +384,35 @@ class Brain:
         except Exception as e:
             logger.error(f"Errore probe_same_meaning: {e}")
             return "NO"
+
+    def extract_knowledge_from_turn(self, context: str) -> str:
+        """Estrae i fatti tecnici/fattuali concreti da un exchange recente per la memoria.
+
+        Restituisce una stringa densa e auto-contenuta, pronta per save_memory().
+        Tutti i numeri, nomi di prodotti, misure e vincoli tecnici vengono preservati.
+        """
+        prompt = (
+            "Dal seguente scambio conversazionale, estrai le informazioni tecniche o fattuali "
+            "concrete che vale la pena memorizzare a lungo termine.\n"
+            "Regole:\n"
+            "- Includi tutti i numeri, percentuali, temperature, nomi di prodotti e misure.\n"
+            "- Scrivi in terza persona come nota oggettiva, non come dialogo.\n"
+            "- Massimo 4 frasi dense. Niente commenti meta-conversazionali.\n"
+            "- Se non ci sono fatti concreti da memorizzare, rispondi esattamente: NULLA\n\n"
+            f"Scambio:\n{context}"
+        )
+        try:
+            response = ollama.chat(
+                model=config.OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.2, "num_predict": 500},
+                think=True,
+            )
+            result = self._clean(response.message.content or "").strip()
+            return "" if result.upper().startswith("NULLA") else result
+        except Exception as e:
+            logger.error(f"Errore extract_knowledge_from_turn: {e}")
+            return ""
 
     def decide_tool_call(self, user_text: str, tools_description: str) -> str:
         """

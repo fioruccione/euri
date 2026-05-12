@@ -268,7 +268,7 @@ class Executor:
                 # Analizza la più recente
                 latest = max(images, key=lambda p: p.stat().st_mtime)
                 result = brain.analyze_image(str(latest), question)
-                prefix = f"Ho trovato {len(images)} immagini. Analizzo la più recente, {latest.name}. "
+                prefix = f"Ho trovato {len(images)} immagini. Analizzo la più recente. "
                 return ToolResult(success=True, output=prefix + result)
 
         def _tool_list_data_files(params: dict, **kwargs) -> ToolResult:
@@ -276,11 +276,20 @@ class Executor:
             files = self._code_runner.list_input_files()
             if not files:
                 return ToolResult(success=True, output="La cartella dati è vuota.")
-            file_list = ", ".join(files[:10])
-            extra = f" e altri {len(files) - 10}" if len(files) > 10 else ""
+            IMAGE_EXT = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff"}
+            from pathlib import Path
+            img_count = sum(1 for f in files if Path(f).suffix.lower() in IMAGE_EXT)
+            other_count = len(files) - img_count
+            parts = []
+            if img_count:
+                parts.append(f"{img_count} immagini")
+            if other_count:
+                parts.append(f"{other_count} altri file")
+            summary = " e ".join(parts)
+            hint = " Posso analizzarle con 'analizza immagine'." if img_count and not other_count else ""
             return ToolResult(
                 success=True,
-                output=f"Nella cartella dati ci sono {len(files)} file: {file_list}{extra}.",
+                output=f"Nella cartella dati ci sono {summary}.{hint}",
             )
 
         code_tools = [
@@ -379,7 +388,14 @@ class Executor:
             re.IGNORECASE,
         ), "clipboard_read", {}),
         # ── CodeRunner patterns ──
-        # PRIMA: Elaborazione documenti/dati (run_code) — ha la precedenza su analisi immagini
+        # PRIMA: Analisi immagine diretta con Gemma Vision — deve precedere run_code
+        # per evitare che "analizza le immagini nella cartella dati" finisca in run_code via "dati"
+        (re.compile(
+            r'\b(descrivi|guarda|analizza|controlla|visualizza|mostra|esamina)\s+.*(foto|immagin[ei]|screenshot|fotografia)\b'
+            r'|\b(cosa\s+vedi|cosa\s+c[\'\`è])\s+.*(foto|immagin[ei]|screenshot)\b',
+            re.IGNORECASE,
+        ), "analyze_image", {}),
+        # DOPO: Elaborazione documenti/dati (run_code)
         (re.compile(
             r'\b(unisci|fondi|combina|merge|raggruppa)\s+.*(csv|file|pdf|excel|dati|document[io]|ods|odt|txt|json)\b'
             r'|\b(leggi|apri|elabora|processa|converti|trasforma|analizza|controlla|riassumi|estrai)\s+.*(csv|pdf|excel|dati|document[io]|ods|odt|txt|json|presentazion[ei])\b'
@@ -388,12 +404,6 @@ class Executor:
             r'|\b(ridimensiona|comprimi|ruota|taglia|converti)\s+.*(foto|immagin[ei])\b',
             re.IGNORECASE,
         ), "run_code", {"task": "__USER_TEXT__"}),   # __USER_TEXT__ sarà sostituito dal voice_daemon
-        # DOPO: Analisi immagine diretta con Gemma Vision (solo se non è un documento testo)
-        (re.compile(
-            r'\b(descrivi|guarda|analizza|controlla)\s+.*(foto|immagin[ei]|screenshot|fotografia)\b'
-            r'|\b(cosa\s+vedi|cosa\s+c[\'\`è])\s+.*(foto|immagin[ei]|screenshot)\b',
-            re.IGNORECASE,
-        ), "analyze_image", {}),
         # Lista file nella cartella dati
         (re.compile(
             r'\b(cosa|quali|quanti)\s+.*(file|document[io]|dati)\s+.*(ci\s+sono|hai|ho|nella|cartella)\b'

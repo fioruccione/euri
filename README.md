@@ -153,9 +153,9 @@ cd /home/fio/Euri
 ### Visione e Immagini
 | Comando | Cosa fa |
 |---|---|
-| *"Analizza la foto nella cartella dati"* | Gemma 4 Vision descrive l'immagine |
+| *"Analizza / Visualizza / Mostra le immagini"* | Gemma 4 Vision descrive l'immagine |
 | *"Controlla l'immagine"* / *"Guarda la foto"* | Idem |
-| *"Cosa c'è nella cartella dati?"* | Elenca i file disponibili |
+| *"Cosa c'è nella cartella dati?"* | Elenca il numero di file (senza leggere nomi UUID) |
 
 ### Traduzione e Interpretariato
 | Comando | Cosa fa |
@@ -186,6 +186,14 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 ---
 
 ## Changelog
+
+### V2.10 — Implicit Actions + Vision Routing
+
+- **Routing immagini corretto:** `analyze_image` precede ora `run_code` nella lista pattern dell'Executor. Prima, frasi come "analizza le immagini nella cartella dati" finivano in CodeRunner perché "dati" matchava il pattern documenti — nonostante "analizza" + "immagini" fosse presente. Pattern esteso con `visualizza | mostra | esamina`.
+- **TTS trim per analisi visiva:** dopo `analyze_image` (e `clipboard_analyze`), Euri parla solo i primi ~400 caratteri fino al confine di frase e aggiunge "Dimmi se vuoi i dettagli." Il testo completo è già iniettato nella history LLM prima del parlato — i turn CHAT successivi hanno il contesto integrale.
+- **Implicit Actions — save reale:** quando Euri dice in CHAT "ho salvato / tutto salvato / ho preso nota / ho aggiornato", esegue davvero il salvataggio. `_save_turn_knowledge()` prende gli ultimi 3 scambi dalla history (incluso il risultato `analyze_image` iniettato), chiama `brain.extract_knowledge_from_turn()` per estrarre i fatti tecnici concreti (numeri, misure, nomi di prodotto), poi salva via il pipeline normale `save_memory()` — domain assignment automatico, `requires_verification` automatico sui valori numerici, dedup semantico prima di scrivere. Le lambda di `_IMPLICIT_ACTIONS` ora ricevono `(text, reply)` per avere il contesto del turno corrente.
+- **`brain.extract_knowledge_from_turn(context)`:** nuovo metodo LLM con `think=True`. Riceve un exchange recente e produce una nota tecnica densa auto-contenuta. Risponde `NULLA` se non ci sono fatti concreti da memorizzare.
+- **Fix Dream Engine demotion:** quando un insight viene retrocesso a `candidate`, il `convergence_count` viene resettato a 1 — evita che un insight demotivato riparta con un conteggio gonfiato.
 
 ### V2.9 — Consolidation Quality Gate
 

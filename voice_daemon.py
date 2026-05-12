@@ -93,6 +93,18 @@ logger.add(sys.stderr, level="INFO", format="<green>{time:HH:mm:ss}</green> | <l
 logger.add("logs/voice_daemon.log", rotation="10 MB", retention="7 days", level="DEBUG", enqueue=True)
 
 
+def _tts_trim(text: str, max_chars: int = 400) -> str:
+    """Tronca testo lungo a max_chars (al confine di frase) per output vocale."""
+    if len(text) <= max_chars:
+        return text
+    cut = text.rfind(". ", 0, max_chars)
+    if cut == -1:
+        cut = max_chars
+    else:
+        cut += 1
+    return text[:cut].strip() + " Dimmi se vuoi i dettagli."
+
+
 class _PendingState:
     """Stato temporaneo con timeout — sostituisce le coppie (dict, float) sparse in __init__."""
     __slots__ = ("data", "_ts", "_timeout")
@@ -153,6 +165,21 @@ class VoiceDaemon:
         self._brain_lock = threading.Lock()  # protegge brain tra main loop e mobile worker
         self._first_visual_activation = True  # True finché il VisualGate non vede l'utente per la prima volta
         self._tts_lock   = threading.Lock()  # protegge il modello TTS da accessi concorrenti
+
+        # Impegni verbali → azioni reali: (pattern sulla risposta di Euri, callable(text, reply))
+        self._IMPLICIT_ACTIONS = [
+            (re.compile(r'\b(controllo|verifico|guardo)\b.{0,30}\b(todo|task|scadenz)', re.IGNORECASE),
+             lambda t, r: self._handle_list_today("controlla i todo")),
+            (re.compile(r'\b(leggo|guardo|controllo)\b.{0,20}\blog\b', re.IGNORECASE),
+             lambda t, r: self._handle_execute("leggi il log")),
+            (re.compile(r'\b(controllo|verifico)\b.{0,20}\b(cpu|ram|disco|spazio)\b', re.IGNORECASE),
+             lambda t, r: self._handle_execute("controlla la cpu")),
+            # Quando Euri dice "ho salvato / memorizzato / aggiornato": salva davvero i fatti del turno
+            (re.compile(
+                r'\b(tutto\s+salvato|ho\s+salvato|salvato\s+nel|ho\s+memorizzato|ho\s+preso\s+nota|ho\s+aggiornato)\b',
+                re.IGNORECASE,
+            ), lambda t, r: self._save_turn_knowledge(t, r)),
+        ]
 
     def setup(self):
         logger.info("Inizializzazione Euri...")
@@ -611,7 +638,14 @@ class VoiceDaemon:
 
         result = self.executor.execute_safe(call)
         self.memory.log_conversation("Euri", result)
-        self._speak(result)
+
+        # Per analyze_image: inietta il testo completo nella history prima di parlare,
+        # poi parla solo un riassunto breve (evita 2+ minuti di UUID/descrizioni parlate)
+        if call.tool_name in ("analyze_image", "clipboard_analyze"):
+            self.brain.inject_tool_result(text, result)
+            self._speak(_tts_trim(result, max_chars=400))
+        else:
+            self._speak(result)
 
 
     def _handle_audit_memory(self, text: str):
@@ -981,6 +1015,40 @@ class VoiceDaemon:
         self.memory.log_conversation("Euri", f"[Conversazione salvata]")
         self._speak("Salvato. Ho riassunto e memorizzato quello di cui abbiamo parlato.")
 
+    def _save_turn_knowledge(self, user_text: str, euri_reply: str):
+        """Estrae e salva i fatti concreti del turno corrente — chiamata da implicit actions.
+
+        Usa gli ultimi scambi dalla history (inclusi i risultati di analyze_image iniettati)
+        per dare al LLM il contesto completo, poi salva via il normale pipeline save_memory()
+        che gestisce domain assignment e requires_verification automaticamente.
+        """
+        with self.brain.history_lock:
+            history = list(self.brain._conversation_history)
+
+        # Prendi gli ultimi 6 messaggi (3 scambi) — cattura il risultato dell'analisi immagine
+        recent = history[-6:] if len(history) >= 6 else history
+        lines = [
+            f"{'Stefano' if m['role'] == 'user' else 'Euri'}: {m['content']}"
+            for m in recent
+        ]
+        # Aggiungi il turno corrente se non è già in history
+        lines += [f"Stefano: {user_text}", f"Euri: {euri_reply}"]
+        context = "\n".join(lines)
+
+        extracted = self.brain.extract_knowledge_from_turn(context)
+        if not extracted:
+            logger.info("Implicit action save: nessun fatto concreto estratto, skip.")
+            return
+
+        if self.memory.is_duplicate_memory(extracted, llm_probe_fn=self.brain.probe_same_meaning):
+            logger.info("Implicit action save: fatto già in memoria, skip.")
+            return
+
+        self.memory.save_memory(extracted, source="conversation")
+        self.memory.log_conversation("Euri", f"[Conoscenza salvata — implicit action: '{extracted[:60]}...']")
+        logger.info(f"Implicit action: salvato — '{extracted[:80]}'")
+
+
     def _handle_chat(self, text: str):
         self.memory.log_conversation("Stefano", text)
 
@@ -1000,6 +1068,16 @@ class VoiceDaemon:
             self._last_speech_ts = time.time()
         self._speak(reply)
 
+        # Se Euri ha promesso un'azione, eseguila subito
+        for pattern, action in self._IMPLICIT_ACTIONS:
+            if pattern.search(reply):
+                logger.info(f"Implicit action rilevata dalla risposta CHAT")
+                try:
+                    action(text, reply)
+                except Exception as e:
+                    logger.warning(f"Implicit action fallita: {e}")
+                break
+
     def _handle_teach(self, text: str):
         """Avvia la modalità insegnamento: Euri ascolta e fa domande di approfondimento."""
         self._teach_mode = True
@@ -1010,6 +1088,9 @@ class VoiceDaemon:
         self._teach_pending_save = ""
         self.memory.log_conversation("Stefano", text)
         self._speak("Dimmi, ti ascolto.")
+
+    # Impegni di Euri in CHAT che devono tradursi in azioni reali
+    _IMPLICIT_ACTIONS: list[tuple] = []  # popolato in __init__ dopo che i metodi esistono
 
     _FAREWELL = re.compile(
         r'\b(ciao|arrivederci|ci\s+sentiamo|buonanotte|buonasera|a\s+dopo|a\s+presto|ci\s+vediamo|a\s+domani|saluti)\b',
