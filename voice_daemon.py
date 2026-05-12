@@ -174,11 +174,6 @@ class VoiceDaemon:
              lambda t, r: self._handle_execute("leggi il log")),
             (re.compile(r'\b(controllo|verifico)\b.{0,20}\b(cpu|ram|disco|spazio)\b', re.IGNORECASE),
              lambda t, r: self._handle_execute("controlla la cpu")),
-            # Quando Euri dice "ho salvato / memorizzato / aggiornato": salva davvero i fatti del turno
-            (re.compile(
-                r'\b(tutto\s+salvato|ho\s+salvato|salvato\s+nel|ho\s+memorizzato|ho\s+preso\s+nota|ho\s+aggiornato)\b',
-                re.IGNORECASE,
-            ), lambda t, r: self._save_turn_knowledge(t, r)),
         ]
 
     def setup(self):
@@ -1015,38 +1010,6 @@ class VoiceDaemon:
         self.memory.log_conversation("Euri", f"[Conversazione salvata]")
         self._speak("Salvato. Ho riassunto e memorizzato quello di cui abbiamo parlato.")
 
-    def _save_turn_knowledge(self, user_text: str, euri_reply: str):
-        """Estrae e salva i fatti concreti del turno corrente — chiamata da implicit actions.
-
-        Usa gli ultimi scambi dalla history (inclusi i risultati di analyze_image iniettati)
-        per dare al LLM il contesto completo, poi salva via il normale pipeline save_memory()
-        che gestisce domain assignment e requires_verification automaticamente.
-        """
-        with self.brain.history_lock:
-            history = list(self.brain._conversation_history)
-
-        # Prendi gli ultimi 6 messaggi (3 scambi) — cattura il risultato dell'analisi immagine
-        recent = history[-6:] if len(history) >= 6 else history
-        lines = [
-            f"{'Stefano' if m['role'] == 'user' else 'Euri'}: {m['content']}"
-            for m in recent
-        ]
-        # Aggiungi il turno corrente se non è già in history
-        lines += [f"Stefano: {user_text}", f"Euri: {euri_reply}"]
-        context = "\n".join(lines)
-
-        extracted = self.brain.extract_knowledge_from_turn(context)
-        if not extracted:
-            logger.info("Implicit action save: nessun fatto concreto estratto, skip.")
-            return
-
-        if self.memory.is_duplicate_memory(extracted, llm_probe_fn=self.brain.probe_same_meaning):
-            logger.info("Implicit action save: fatto già in memoria, skip.")
-            return
-
-        self.memory.save_memory(extracted, source="conversation")
-        self.memory.log_conversation("Euri", f"[Conoscenza salvata — implicit action: '{extracted[:60]}...']")
-        logger.info(f"Implicit action: salvato — '{extracted[:80]}'")
 
 
     def _handle_chat(self, text: str):
