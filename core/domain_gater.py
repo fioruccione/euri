@@ -87,7 +87,7 @@ def domain_aware_search(query: str, embedder, r, limit: int = 5) -> list[dict]:
             
             for doc in res_domain.docs:
                 item = {
-                    "id": doc.id,
+                    "id": doc.id.replace("euri:memory:", ""),
                     "content": doc.content,
                     "score": float(doc.score),
                     "source": doc.source,
@@ -116,9 +116,9 @@ def domain_aware_search(query: str, embedder, r, limit: int = 5) -> list[dict]:
         existing_ids = {r["id"] for r in results}
         
         for doc in res_all.docs:
-            if doc.id not in existing_ids:
+            if doc.id.replace("euri:memory:", "") not in existing_ids:
                 item = {
-                    "id": doc.id,
+                    "id": doc.id.replace("euri:memory:", ""),
                     "content": doc.content,
                     "score": float(doc.score),
                     "source": doc.source,

@@ -237,7 +237,7 @@ class VoiceDaemon:
         text = self._clean_for_speech(text)
         if not text:
             return
-        self._last_activity_ts = time.monotonic()
+        self._last_activity_ts = time.time()
         logger.info(f"Euri: {text}")
         self.visual_gate.notify_activity()
         self.r.set("euri:audio:lock", "1", ex=300)
@@ -1310,7 +1310,7 @@ class VoiceDaemon:
                 # Solo se c'è stata attività recente che ora è ferma
                 if self._last_activity_ts == 0:
                     continue
-                idle = time.monotonic() - self._last_activity_ts
+                idle = time.time() - self._last_activity_ts
                 if idle < IDLE_TRIGGER:
                     continue
 
@@ -1370,10 +1370,10 @@ class VoiceDaemon:
             try:
                 if self._last_activity_ts == 0:
                     continue
-                idle = time.monotonic() - self._last_activity_ts
+                idle = time.time() - self._last_activity_ts
                 if idle < IDLE_TRIGGER:
                     continue
-                if (time.monotonic() - self._consolidation_last_run) < MIN_RUN_INTERVAL:
+                if (time.time() - self._consolidation_last_run) < MIN_RUN_INTERVAL:
                     continue
 
                 # Raccogli memorie recenti (ultime 4h, escluso campus/web/reflection)
@@ -1399,7 +1399,7 @@ class VoiceDaemon:
                     and m.get("source") not in EXCLUDE_SOURCES
                 ]
                 if len(session_mems) < MIN_MEMORIES:
-                    self._consolidation_last_run = time.monotonic()
+                    self._consolidation_last_run = time.time()
                     continue
 
                 # Memorie correlate via ricerca semantica sul testo della sessione
@@ -1414,7 +1414,7 @@ class VoiceDaemon:
 
                 reflection = self.brain.generate_reflection(session_mems, related)
                 if not reflection:
-                    self._consolidation_last_run = time.monotonic()
+                    self._consolidation_last_run = time.time()
                     continue
 
                 expires = _now() + timedelta(days=7)
@@ -1425,7 +1425,7 @@ class VoiceDaemon:
                     expires_at=expires,
                 )
                 logger.info("Loop 2a: reflection salvata silenziosamente")
-                self._consolidation_last_run = time.monotonic()
+                self._consolidation_last_run = time.time()
 
                 # Cleanup memorie scadute (safety net per memorie mai richiamate)
                 try:
@@ -1652,7 +1652,7 @@ class VoiceDaemon:
                 self.visual_gate.notify_activity()
                 if hasattr(self, 'dream_engine'):
                     self.dream_engine.notify_activity()
-                self._last_activity_ts = time.monotonic()
+                self._last_activity_ts = time.time()
                 self.vad.reset()
 
                 if not text:
@@ -1684,7 +1684,7 @@ class VoiceDaemon:
                 # Eccezione: modalità traduzione/interprete (parla anche l'interlocutore)
                 has_wake_word = bool(_WAKE_WORD_RE.search(text))
                 if not (self._translate_bidir or self._dictation_mode):
-                    since_last = time.monotonic() - self._last_activity_ts
+                    since_last = time.time() - self._last_activity_ts
                     in_conversation = since_last < _CONVERSATION_WINDOW_SEC
                     if not has_wake_word and not in_conversation:
                         logger.debug(f"Wake word assente e fuori finestra ({since_last:.0f}s) — ignorato: '{text[:40]}'")
@@ -1756,7 +1756,7 @@ class VoiceDaemon:
                             }, maxlen=20)
                             continue
 
-                        self._last_activity_ts = time.monotonic()
+                        self._last_activity_ts = time.time()
                         self.memory.log_conversation("Stefano", text)
 
                         context = self._build_context(text)

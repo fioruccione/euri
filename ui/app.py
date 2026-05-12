@@ -451,7 +451,7 @@ with main_col:
                             "Intent": intent_name,
                             "Campioni (n)": state.get("n", 0),
                             "Deviazione Standard (σ)": round(state.get("std", 0.0), 4),
-                            "Soglia Adattiva (est.)": round(config.ADAPTIVE_CLASSIFIER_BASE_THRESHOLD * (1 + config.ADAPTIVE_CLASSIFIER_VARIANCE_WEIGHT * state.get("std", 0.0)), 3)
+                            "Soglia Adattiva (est.)": round(config.ADAPTIVE_CLASSIFIER_BASE_THRESHOLD * (1 + config.ADAPTIVE_CLASSIFIER_VARIANCE_BETA * state.get("std", 0.0)), 3)
                         })
                     except Exception:
                         pass

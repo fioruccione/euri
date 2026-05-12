@@ -387,7 +387,8 @@ Rispondi SOLO con SÌ o NO."""
                 # < 0.15 → convergenza certa (vettori quasi identici)
                 # 0.15–0.40 → zona grigia: il vettore MiniLM è superficiale,
                 #              chiediamo al LLM se il principio profondo è lo stesso
-                convergences = int(getattr(doc, "convergence_count", 1))
+                stored_cc = self._r.json().get(doc.id, "$.convergence_count")
+                convergences = int(stored_cc[0]) if stored_cc else 1
                 similar_ids = []
 
                 for sim in res_sim.docs:

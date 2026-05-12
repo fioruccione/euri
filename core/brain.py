@@ -104,9 +104,10 @@ class Brain:
     def _compress_episode(self):
         """Comprime i messaggi più vecchi in un episodio — gira in background."""
         with self._compress_lock:
-            if len(self._conversation_history) < config.EPISODE_COMPRESSION_THRESHOLD:
-                return  # un altro thread ha già compresso
-            chunk = self._conversation_history[:config.EPISODE_COMPRESSION_CHUNK]
+            with self.history_lock:
+                if len(self._conversation_history) < config.EPISODE_COMPRESSION_THRESHOLD:
+                    return  # un altro thread ha già compresso
+                chunk = self._conversation_history[:config.EPISODE_COMPRESSION_CHUNK]
             lines = []
             for m in chunk:
                 role = "Stefano" if m["role"] == "user" else "Euri"

@@ -607,6 +607,8 @@ class MemoryManager:
 
     def search_insights(self, query: str, limit: int = 2) -> list[dict]:
         """KNN search su idx:insights filtrato per status=promoted. Aggiorna recalled_count."""
+        if not self._embedder or not self._embedder.available:
+            return []
         vec = self._embedder.encode(query, mode="query")
         if vec is None:
             return []
