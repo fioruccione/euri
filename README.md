@@ -7,7 +7,7 @@ Non si limita ad ascoltare e rispondere: memorizza, organizza, riflette sulle tu
 
 ---
 
-## Architettura Cognitiva (V2.9)
+## Architettura Cognitiva (V2.10)
 
 ### 1. Intent Classification — Pipeline a Due Layer
 La classificazione dell'intent è a cascata: il layer veloce esaurisce la maggior parte dei casi, il layer lento interviene solo quando necessario.
@@ -187,6 +187,12 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 
 ## Changelog
 
+### V2.10 — Dream Engine Promote-then-Demote Fix + Validazione Antropic
+
+- **Fix bug promote-then-demote:** un insight promosso da `_evaluate_insights` veniva immediatamente retrocesso a candidate da `_cleanup_expired_insights` nello stesso ciclo onirico, perché Gate 1 valutava `created_at` (che risaliva alla creazione del candidate, settimane prima) invece di quando era avvenuta la promozione. Fix: al momento della promozione viene salvato un campo `promoted_at = time.time()`. Gate 1 ora controlla `promoted_at`: se l'insight è stato promosso nelle ultime 24h, la demotion viene saltata silenziosamente.
+- **Timeout LLM 150s → 200s:** aumentato il timeout di default del wrapper `_ollama_chat()` per dare più margine a Qwen3.6 35B sotto carico moderato, senza rischiare che cicli legittimi vengano abortiti.
+- **Paper §7e — Validazione concorrente Anthropic:** aggiunta sezione al paper dopo l'annuncio pubblico di "Claude Dreaming" da parte di Anthropic (2026-05-13) — stesso paradigma di consolidamento offline in idle sviluppato indipendentemente. Citato come *concurrent independent validation* con differenziazione tecnica: convergence counting, multi-level lifecycle e LLM judge per la zona grigia non hanno equivalenti descritti in Claude Dreaming.
+
 ### V2.13 — Bug Fix da Code Review (parte 2)
 
 - **Dream Engine — loop2e:processed TTL:** il set dei cluster processati cresceva per sempre. Aggiunto `EXPIRE` a 180 giorni sliding dopo ogni `SADD`.
@@ -283,7 +289,7 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 ### V2.2 — Thinking nei Loop Cognitivi + Qwen3.6 Dream Engine
 - **Architettura dual-model**: `DREAM_OLLAMA_MODEL = "qwen3.6:35b"` separato da `OLLAMA_MODEL`. Gemma4 26B per la conversazione vocale (latenza < 2s), Qwen3.6 35B per i cicli onirici notturni (nessun vincolo di latenza, ragionamento astratto superiore).
 - **Prompt analogico in 3 passi** (`_generate_dream`): astrazione logica → ricerca della dinamica condivisa → formulazione del principio generale. Evita connessioni superficiali senza forzare un dominio specifico.
-- **Timeout LLM alzato a 150s** nel Dream Engine (Qwen3.6 impiega ~85s per il judge; il precedente 90s era troppo vicino al limite).
+- **Timeout LLM alzato a 200s** nel Dream Engine (Qwen3.6 impiega ~85-150s per il judge; il precedente 90s era troppo vicino al limite).
 - **Contesto temporale relativo nelle memorie**: ogni memoria iniettata nel contesto ora include l'età relativa — `[chimica polimeri | 3 settimane fa]` invece di `[chimica polimeri]`. Euri sa quando ha imparato ogni cosa e può ragionarci sopra spontaneamente. Stesso meccanismo nel Dream Engine: le memorie portano il loro `created_at` nel prompt del sogno, abilitando insight evolutivi oltre agli isomorfismi strutturali.
 - **Silent Chat integrata nel Passive Learner**: la chat testuale ora chiama `log_conversation()` e trigger l'estrazione passiva ogni 6 messaggi — stessa pipeline del voice daemon.
 - **Fix Dream Engine hang notturno**: wrapper `_ollama_chat()` con `ThreadPoolExecutor` — se Ollama non risponde entro il timeout il ciclo viene abortito pulitamente.
