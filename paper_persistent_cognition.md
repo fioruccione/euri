@@ -579,16 +579,19 @@ because "obvious" is a property of human context, not of instruction sets.
 
 ---
 
-## 7e — Concurrent Validation: Anthropic's "Claude Dreaming" (May 2026)
+## 7e — Concurrent Validation: Reported "Claude Dreaming" Feature (May 2026)
 
-On 2026-05-13, Anthropic publicly announced **"Claude Dreaming"** —
-a feature that enables Claude agents to enter an offline processing phase after work,
+On 2026-05-13, Italian technology outlet SmartWorld reported that Anthropic is developing
+a feature referred to as **"Claude Dreaming"** —
+described as enabling Claude agents to enter an offline processing phase after work,
 reviewing accumulated experience, identifying recurring patterns and errors,
 and generating a restructured, consolidated memory for subsequent sessions.
-The biological analogy cited in the announcement is identical to the one used here:
+The biological analogy cited in the report is identical to the one used here:
 the sleep cycle as a model for memory consolidation in artificial agents.
+*(Note: as of the writing of this section, no official announcement was found on anthropic.com/news.
+The report may reference an unannounced or unreleased feature.)*
 
-This development is cited not as prior art, but as **independent convergent validation**.
+This development — if confirmed — is cited not as prior art, but as **independent convergent validation**.
 
 The two systems were designed without knowledge of each other.
 The overlap in architectural intuition — idle-time offline cognition, pattern consolidation,
@@ -698,5 +701,5 @@ Stiamo insegnando al mondo a ricordarci.
 - Chhikara et al., 2025 — *Mem0: Production-Ready AI Agents with Scalable Memory*
 - Fiorucci, S., 2026 — *Multi-Phase Memory Architecture for Local AI Assistants*,
   GitHub: [persistent-cognition](https://github.com/fioruccione/multi-phase-memory-architecture)
-- Anthropic, 2026 — *Claude Dreaming: Offline Memory Consolidation for AI Agents*,
-  announced 2026-05-13 (concurrent independent development of the idle-time consolidation paradigm)
+- SmartWorld, 2026 — *"Claude Dreaming": Anthropic, memoria e agenti AI*,
+  smartworld.it, 2026-05-13 (report su feature non ancora confermata ufficialmente da Anthropic)
