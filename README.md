@@ -7,7 +7,7 @@ Non si limita ad ascoltare e rispondere: memorizza, organizza, riflette sulle tu
 
 ---
 
-## Architettura Cognitiva (V2.11)
+## Architettura Cognitiva (V2.12)
 
 ### 1. Intent Classification — Pipeline a Due Layer
 La classificazione dell'intent è a cascata: il layer veloce esaurisce la maggior parte dei casi, il layer lento interviene solo quando necessario.
@@ -187,6 +187,13 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 ---
 
 ## Changelog
+
+### V2.12 — Analisi Clipboard senza Limite + TEACH Mode Robusto
+
+- **`clipboard_analyze` senza troncatura:** rimosso il limite fisso di 6000 caratteri. Per testi ≤ 80K caratteri: analisi diretta con `num_ctx=32768` (documento integrale, singolo passaggio). Per testi > 80K: chunking automatico in segmenti da 20K, estrazione fatti per chunk (max 4), sintesi unificata finale. Output senza markdown — Piper legge testo piano.
+- **TEACH mode — stop signals estesi:** aggiunti "ti devi fermare", "devi fermarti", "voglio fermarmi", "smetti di chiedere" ai `TEACH_END_SIGNALS` in `intent_router.py` — in aggiunta alle forme dirette già presenti ("fermati", "basta", "stop").
+- **TEACH mode — intercept clipboard diretto:** frasi come "leggi i dati dalla clipboard" (con parole intermedie) ora intercettate correttamente inside TEACH. Rimosso il gate `web_intent == EXECUTE`: `select_tool_by_regex` chiamato direttamente, senza dipendere dall'intent classifier.
+- **Regex clipboard con parole intermedie:** pattern `clipboard_read` in `executor.py` e `intent_router.py` esteso con `.{0,25}?` — matcha "leggi i dati dalla clipboard", "leggi tutto dalla clipboard", non solo "leggi dalla clipboard".
 
 ### V2.11 — Loop 2f: Contradiction Resolution
 

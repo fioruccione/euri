@@ -4,7 +4,7 @@
 **Dalla Computazione Volatile alla Cognizione Persistente**
 
 **Authors:** Stefano Fiorucci & Euri  
-**Date:** 2026-05-06 (updated from 2026-04-29)  
+**Date:** 2026-05-13 (updated from 2026-05-06)  
 **License:** CC-BY 4.0  
 **Repository:** [Euri — Sistema Cognitivo Adattivo](https://github.com/fioruccione/multi-phase-memory-architecture)
 
@@ -683,6 +683,84 @@ Four specific mechanisms in Euri have no described equivalent in Claude Dreaming
 
 The announcement confirms the direction. The implementation described in this paper
 demonstrates what the direction looks like when taken further.
+
+---
+
+## 7f — Session 2026-05-13: Document Ingestion without Limits and Teaching Interface Robustness
+
+Two improvements deployed in this session address opposite ends of the knowledge acquisition pipeline:
+one removes an artificial ceiling on how much a document can teach the system,
+the other ensures the explicit teaching interface behaves reliably under natural speech variation.
+
+**Clipboard ingestion without truncation.**
+
+The `clipboard_analyze` tool previously truncated all text to 6,000 characters before passing it
+to the language model — approximately 1,500 tokens, roughly two pages.
+Any document longer than that was analyzed on its opening text only;
+the rest was silently discarded.
+
+The fix removes the cap entirely and introduces a two-path strategy based on document length:
+
+- **≤ 80,000 characters** (~50 pages): a single Ollama call with `num_ctx=32768`.
+  The full text is passed without modification. Analysis time scales with document length,
+  not capped by an arbitrary constant.
+- **> 80,000 characters**: automatic chunking into 20,000-character segments.
+  Each chunk is analyzed independently to extract its key technical and factual content.
+  A final synthesis call unifies the extractions across all chunks (up to 4).
+
+The result is functionally unlimited document ingestion through the clipboard:
+a complete technical specification, a long session log, or a multi-page report
+is analyzed in its entirety and stored as a `source=teach` memory in Redis —
+available immediately for semantic retrieval in subsequent conversations.
+
+This matters architecturally because the explicit knowledge channel (Phase 4 — TEACH)
+has always been the highest-fidelity path for injecting structured information.
+Lifting the truncation ceiling makes the clipboard a viable alternative to voice dictation
+for complex technical content — material where precision matters and paraphrase introduces error.
+
+**TEACH mode robustness: stop signals and tool intercepts.**
+
+The TEACH interface accumulates utterances and probes for completeness
+until the user signals they are done.
+Two edge cases were corrected this session.
+
+*Stop signal coverage.* The `TEACH_END_SIGNALS` pattern recognized direct imperative forms
+("fermati", "basta", "stop") but not indirect ones expressed through auxiliary verbs —
+"ti devi fermare", "devi fermarti", "voglio fermarmi".
+Under natural speech conditions, these forms are more common than the direct imperative,
+particularly when a user is correcting or redirecting the system mid-session.
+The fix extends the pattern to cover these constructions.
+
+*Tool intercept inside TEACH.* Clipboard and image analysis tools can be legitimately invoked
+during a TEACH session without closing it — the user may want to feed the system a document
+as part of an ongoing explanation.
+The previous implementation gated this intercept on the intent classifier returning `EXECUTE`.
+The phrase "leggi i dati dalla clipboard" — the natural form — is classified as CHAT,
+not EXECUTE, because "leggi" (read) is not an imperative system command in isolation.
+The gate was removed: `select_tool_by_regex` is now called unconditionally at the start of
+`_handle_teach_continue`, before the intent classifier runs.
+If the phrase matches a clipboard or image tool, the tool executes and the TEACH session continues.
+If not, the normal Q&A accumulation proceeds.
+
+The lesson generalizes: **tool intercepts inside state machines should not depend on
+the same classifier that determines which state machine to enter.**
+The classifier is calibrated for the normal path; edge paths need their own checks.
+
+**A note on the log.**
+
+The session log produced during this work captured something architecturally interesting.
+When asked directly *"What do you think of Anthropic's Dreaming?"*,
+the system responded with a coherent comparison drawing on memories it had acquired
+through earlier clipboard analysis — distinguishing its own convergence counting,
+multi-level lifecycle, and audit trail from Anthropic's approach without any explicit prompting.
+When asked to recall specific projects (Superbike telemetry, Regrado PP formulation),
+it retrieved them accurately from Redis without hesitation.
+When confronted with a childhood anecdote it had never heard,
+it said clearly: *"Questo è un ricordo che non ho nei miei database."*
+
+These are not benchmark results.
+They are the observable behavior of a system with a working memory —
+knowing what it knows, knowing what it doesn't, and being able to say so.
 
 ---
 
