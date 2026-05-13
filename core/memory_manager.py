@@ -141,6 +141,7 @@ class MemoryManager:
 
             # Livello 2 — domain-gated semantic
             semantic = domain_aware_search(query, self._embedder, self.r, limit)
+            semantic = [r for r in semantic if not r.get("superseded_by")]
             if source_filter is not None:
                 semantic = [r for r in semantic if r.get("source") in source_filter]
             for r in semantic:
@@ -240,6 +241,8 @@ class MemoryManager:
                 data = self.r.json().get(doc_id, "$")
                 if data:
                     item = data[0]
+                    if item.get("superseded_by"):  # soft-deleted da Loop 2f
+                        continue
                     item["_created_at"] = from_timestamp(item.get("created_at"))
                     item["_vec_score"] = score
                     docs.append(item)
@@ -306,6 +309,8 @@ class MemoryManager:
             data = self.r.json().get(doc.id, "$")
             if data:
                 item = data[0]
+                if item.get("superseded_by"):  # soft-deleted da Loop 2f — escludi dalla ricerca
+                    continue
                 item["_created_at"] = from_timestamp(item.get("created_at"))
                 docs.append(item)
                 self.r.json().numincrby(doc.id, "$.recalled_count", 1)

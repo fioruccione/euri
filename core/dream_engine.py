@@ -113,16 +113,19 @@ class DreamEngine:
             # I candidati accumulati nei cicli precedenti vanno valutati indipendentemente.
             self._evaluate_insights()
                 
-            # 4. Pulizia Insight scaduti
+            # 4. Loop 2f: Contradiction resolution — soft-delete valori numerici obsoleti
+            self._contradiction_resolution_pass()
+
+            # 5. Pulizia Insight scaduti
             self._cleanup_expired_insights()
 
-            # 5. Pulizia Memorie stantie (passive/reflection mai richiamate)
+            # 6. Pulizia Memorie stantie (passive/reflection mai richiamate)
             self._cleanup_stale_memories()
 
-            # 6. Loop 2d: Death-row gate per memorie in scadenza entro 7 giorni
+            # 7. Loop 2d: Death-row gate per memorie in scadenza entro 7 giorni
             self._pruning_pass()
 
-            # 7. Loop 2e: Memory Consolidation — max una volta ogni 24h
+            # 8. Loop 2e: Memory Consolidation — max una volta ogni 24h
             if time.time() - self._consolidation_last_run >= 86400:
                 self._consolidation_pass()
                 self._consolidation_last_run = time.time()
@@ -429,6 +432,169 @@ Rispondi SOLO con SÌ o NO."""
                         
         except Exception as e:
             logger.error(f"Errore valutazione insights: {e}")
+
+    def _llm_check_contradiction(self, content_a: str, content_b: str) -> bool:
+        """True se A e B esprimono claims fattuali/numerici in conflitto sullo stesso soggetto."""
+        prompt = f"""\
+Memoria A: "{content_a[:400]}"
+Memoria B: "{content_b[:400]}"
+
+Queste due memorie contengono valori fattuali o numerici in conflitto sullo STESSO soggetto specifico?
+Esempi di conflitto reale: "MFI=6" vs "MFI=4", "concentrazione 3%" vs "concentrazione 5%", "scade il 10 maggio" vs "scade il 15 maggio".
+Non è conflitto se parlano di soggetti diversi, di aspetti complementari, o se i valori non si escludono a vicenda.
+
+Rispondi SOLO: SÌ o NO."""
+        try:
+            response = self._ollama_chat(
+                model=config.DREAM_OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0, "num_predict": 10},
+                think=False,
+                _timeout=60,
+            )
+            text = (response.message.content or "").strip().upper()
+            return text.startswith(("SÌ", "SI", "YES"))
+        except Exception as e:
+            logger.debug(f"Loop 2f: errore LLM contradiction check — {e}")
+            return False
+
+    def _contradiction_resolution_pass(self):
+        """
+        Loop 2f — Contradiction resolution.
+        Individua coppie di memorie con claims numerici/fattuali in conflitto sullo stesso dominio.
+        Mantiene la più recente, soft-delete la più vecchia settando superseded_by=[ID_vincitore].
+        Focus su requires_verification=True — già flaggate come contenenti valori numerici/fattuali.
+        Max 15 coppie per ciclo; le coppie già analizzate vengono saltate (CHECKED set con TTL 180gg).
+        """
+        CHECKED_KEY = "euri:loop2f:checked"
+        MIN_CONFLICT_SCORE = 0.28  # cosine distance < 0.28 → similarity > 0.72 (stesso argomento)
+        MAX_PAIRS_PER_CYCLE = 15
+        SKIP_SOURCES = {"web", "loop2e"}
+
+        try:
+            # 1. Candidati: requires_verification=True, non già superseded
+            candidates = []
+            for key in self._r.scan_iter("euri:memory:*"):
+                try:
+                    d = self._r.json().get(key, "$")
+                    if not d:
+                        continue
+                    doc = d[0]
+                    if not doc.get("requires_verification"):
+                        continue
+                    if doc.get("superseded_by"):
+                        continue
+                    if doc.get("source") in SKIP_SOURCES:
+                        continue
+                    candidates.append(doc)
+                except Exception:
+                    continue
+
+            if len(candidates) < 2:
+                logger.debug("Loop 2f: candidati insufficienti per contradiction check")
+                return
+
+            import redis as _redis_mod
+            _raw_r = _redis_mod.Redis(
+                host=config.REDIS_HOST, port=config.REDIS_PORT,
+                db=config.REDIS_DB, decode_responses=False,
+            )
+
+            def _dec(v, default=""):
+                if v is None:
+                    return default
+                return v.decode() if isinstance(v, bytes) else str(v)
+
+            pairs_checked = 0
+            resolved = 0
+
+            for seed in candidates:
+                if pairs_checked >= MAX_PAIRS_PER_CYCLE:
+                    break
+                seed_id = seed.get("id", "")
+                if seed.get("superseded_by"):  # potrebbe essere stato superseded in questo ciclo
+                    continue
+                seed_emb = seed.get("embedding")
+                seed_domain = seed.get("domain", "generale")
+                if not seed_emb:
+                    continue
+
+                # 2. KNN nello stesso dominio
+                try:
+                    vec_bytes = np.array(seed_emb, dtype=np.float32).tobytes()
+                    safe_domain = seed_domain.replace(" ", "\\ ")
+                    q = (
+                        Query(f"(@domain:{{{safe_domain}}})=>[KNN 6 @embedding $vec AS score]")
+                        .sort_by("score")
+                        .return_fields("id", "score")
+                        .dialect(2)
+                    )
+                    res = _raw_r.ft("idx:memories").search(q, query_params={"vec": vec_bytes})
+                except Exception:
+                    continue
+
+                for neighbor in res.docs:
+                    n_id = _dec(neighbor.id).replace("euri:memory:", "")
+                    if n_id == seed_id:
+                        continue
+
+                    score = float(_dec(getattr(neighbor, "score", b"1.0")) or "1.0")
+                    if score >= MIN_CONFLICT_SCORE:
+                        continue  # troppo distanti semanticamente
+
+                    pair_key = "|".join(sorted([seed_id, n_id]))
+                    if self._r.sismember(CHECKED_KEY, pair_key):
+                        continue
+
+                    # 3. Carica il neighbor completo
+                    n_raw = self._r.json().get(f"euri:memory:{n_id}", "$")
+                    if not n_raw:
+                        continue
+                    n_doc = n_raw[0]
+                    if not n_doc.get("requires_verification"):
+                        continue
+                    if n_doc.get("superseded_by"):
+                        continue
+
+                    # 4. LLM contradiction check
+                    is_conflict = self._llm_check_contradiction(
+                        seed.get("content", ""), n_doc.get("content", "")
+                    )
+
+                    self._r.sadd(CHECKED_KEY, pair_key)
+                    self._r.expire(CHECKED_KEY, 180 * 86400)
+                    pairs_checked += 1
+
+                    if not is_conflict:
+                        continue
+
+                    # 5. Soft-delete il più vecchio (created_at minore)
+                    seed_ts = float(seed.get("created_at") or 0)
+                    n_ts = float(n_doc.get("created_at") or 0)
+
+                    if seed_ts >= n_ts:
+                        self._r.json().set(f"euri:memory:{n_id}", "$.superseded_by", seed_id)
+                        logger.info(
+                            f"Loop 2f: {n_id[:8]}… superseded by {seed_id[:8]}… "
+                            f"(conflitto risolto, tenuto il più recente)"
+                        )
+                    else:
+                        self._r.json().set(f"euri:memory:{seed_id}", "$.superseded_by", n_id)
+                        logger.info(
+                            f"Loop 2f: {seed_id[:8]}… superseded by {n_id[:8]}… "
+                            f"(conflitto risolto, tenuto il più recente)"
+                        )
+                        break  # seed è stato superseded, inutile continuare con i suoi vicini
+
+                    resolved += 1
+
+            if resolved:
+                logger.info(f"Loop 2f: {resolved} contraddizioni risolte ({pairs_checked} coppie analizzate)")
+            else:
+                logger.debug(f"Loop 2f: nessuna contraddizione ({pairs_checked} coppie analizzate)")
+
+        except Exception as e:
+            logger.error(f"Errore Loop 2f contradiction resolution: {e}")
 
     def _cleanup_expired_insights(self):
         """
