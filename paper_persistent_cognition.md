@@ -244,6 +244,52 @@ The cleanup runs inside the Dream Engine cycle,
 during the same idle hours when insights are generated and validated.
 The system prunes and grows at the same time, in the same silence.
 
+### Phase 5c — Contradiction Resolution: Loop 2f
+
+Selective reinforcement handles the *absence* of use — memories that are never recalled fade.
+But it does not handle the *presence* of conflict — two memories that actively contradict each other
+on the same factual claim, both recalled equally, both permanent.
+
+A memory recorded in March stating "MFI = 6.2 g/10min" and a memory recorded in May
+stating "MFI = 4.1 g/10min" for the same batch will both survive selective reinforcement
+indefinitely. The model, retrieving both, has no principled way to choose.
+
+Loop 2f addresses this directly.
+
+**Mechanism.** During each Dream Engine cycle, the system scans all memories flagged
+`requires_verification = True` — the subset already identified as containing numerical
+or measurable claims. For each memory, a KNN search within the same semantic domain
+finds neighbors with cosine similarity above 0.72 (distance < 0.28).
+For each candidate pair, a dedicated LLM call (`_llm_check_contradiction`) asks whether
+the two memories express conflicting factual values about the *same specific entity*:
+
+> *"Do A and B contain numerical or factual values in conflict on the same specific subject?
+> Answer only: SÌ or NO."*
+
+The temperature is 0, the output is capped at 10 tokens.
+If the answer is SÌ, the resolution is deterministic: the memory with the lower `created_at`
+timestamp receives the field `superseded_by = [UUID of the newer memory]`.
+
+**Soft-delete, not hard-delete.**
+The older memory is never removed from Redis.
+It is excluded silently from all retrieval paths (`_hydrate`, `_search_semantic`,
+`domain_aware_search`) by checking `superseded_by` in the already-loaded JSON —
+zero additional round-trips per query.
+The record remains readable by ID for audit purposes:
+if the LLM judge ever misclassifies a genuine non-conflict as a contradiction,
+the "overwritten" memory can be recovered and the `superseded_by` field cleared manually.
+
+This is the same operation that Anthropic's *Dreaming* performs under the description
+"stale or contradicted entries replaced with the latest value" — but with an
+architectural difference: Anthropic's pipeline produces a new, reorganized store and
+discards the old one. Loop 2f retains the full history with an explicit provenance link.
+The distinction matters in a domain where LLMs hallucinate:
+a system that can be wrong must be auditable.
+
+Analyzed pairs are recorded in a Redis set (`euri:loop2f:checked`, TTL 180 days)
+to avoid re-examining the same pair across cycles.
+The pass is capped at 15 pairs per cycle to bound its latency contribution.
+
 ---
 
 ## 5 — Extended Reasoning as a Cognitive Multiplier
@@ -611,7 +657,7 @@ Euri's Dream Engine operates on a personal semantic memory graph and optimizes
 for **cross-domain analogical insight** — knowledge that was not implicit in any single input.
 Where Claude Dreaming consolidates, Euri synthesizes.
 
-Three specific mechanisms in Euri have no described equivalent in Claude Dreaming:
+Four specific mechanisms in Euri have no described equivalent in Claude Dreaming:
 
 - **Convergence counting**: an insight is only promoted to permanent knowledge
   when the same structural principle has emerged independently from multiple dream cycles.
@@ -627,6 +673,13 @@ Three specific mechanisms in Euri have no described equivalent in Claude Dreamin
   A dedicated LLM call with extended reasoning evaluates the grey zone (cosine 0.15–0.40)
   before convergence is counted. The embedding sees surface form;
   the judge reasons about structural meaning.
+
+- **Contradiction resolution with audit trail (Loop 2f)**: where Anthropic Dreaming
+  replaces contradicted entries by producing a new reorganized store (discarding the old),
+  Loop 2f uses a soft-delete: the superseded memory receives `superseded_by = [UUID]`
+  and is excluded from retrieval without being removed.
+  The full history is preserved and recoverable.
+  In a system where LLM judgment is fallible, auditability is not optional.
 
 The announcement confirms the direction. The implementation described in this paper
 demonstrates what the direction looks like when taken further.
