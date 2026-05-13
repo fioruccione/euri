@@ -707,8 +707,13 @@ Stiamo insegnando al mondo a ricordarci.
 - Chhikara et al., 2025 — *Mem0: Production-Ready AI Agents with Scalable Memory*
 - Fiorucci, S., 2026 — *Multi-Phase Memory Architecture for Local AI Assistants*,
   GitHub: [persistent-cognition](https://github.com/fioruccione/multi-phase-memory-architecture)
-- Anthropic, 2026 — *Introducing Dreaming for Claude Managed Agents* (research preview),
-  announced at Code with Claude, San Francisco, 2026-05-06
-- Wired, 2026 — Coverage of Anthropic Dreaming feature; critique of anthropomorphic naming
-- Ars Technica, 2026 — *Claude Managed Agents can "sort of" dream*
-- VentureBeat / Business Insider, 2026 — Confirmation of research preview launch
+- Anthropic, 2026 — *Dreams*, Claude API Docs (official technical reference),
+  https://platform.claude.com/docs/en/managed-agents/dreams
+- VentureBeat, 2026 — *Anthropic introduces "dreaming," a system that lets AI agents learn from their own mistakes*,
+  https://venturebeat.com/technology/anthropic-introduces-dreaming-a-system-that-lets-ai-agents-learn-from-their-own-mistakes
+- Techzine, 2026 — *Anthropic introduces "dreaming" for Claude Managed Agents*,
+  https://www.techzine.eu/news/devops/141125/anthropic-introduces-dreaming-for-claude-managed-agents/
+- The New Stack, 2026 — *Anthropic will let its managed agents dream*,
+  https://thenewstack.io/anthropic-managed-agents-dreaming-outcomes/
+- SiliconANGLE, 2026 — *Anthropic is letting Claude agents 'dream' so they don't sleep on the job*,
+  https://siliconangle.com/2026/05/06/anthropic-letting-claude-agents-dream-dont-sleep-job/
