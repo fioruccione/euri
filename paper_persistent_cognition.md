@@ -579,6 +579,51 @@ because "obvious" is a property of human context, not of instruction sets.
 
 ---
 
+## 7e — Concurrent Validation: Anthropic's "Claude Dreaming" (May 2026)
+
+On 2026-05-13, Anthropic publicly announced **"Claude Dreaming"** —
+a feature that enables Claude agents to enter an offline processing phase after work,
+reviewing accumulated experience, identifying recurring patterns and errors,
+and generating a restructured, consolidated memory for subsequent sessions.
+The biological analogy cited in the announcement is identical to the one used here:
+the sleep cycle as a model for memory consolidation in artificial agents.
+
+This development is cited not as prior art, but as **independent convergent validation**.
+
+The two systems were designed without knowledge of each other.
+The overlap in architectural intuition — idle-time offline cognition, pattern consolidation,
+restructured memory as the output — suggests that the cognitive sleep paradigm
+is not an idiosyncratic design choice but an emergent consensus in the field.
+
+The key architectural differences are worth noting.
+Claude Dreaming, as described, operates on accumulated task history and optimizes
+for workflow efficiency and error correction within managed cloud agents.
+Euri's Dream Engine operates on a personal semantic memory graph and optimizes
+for **cross-domain analogical insight** — knowledge that was not implicit in any single input.
+Where Claude Dreaming consolidates, Euri synthesizes.
+
+Three specific mechanisms in Euri have no described equivalent in Claude Dreaming:
+
+- **Convergence counting**: an insight is only promoted to permanent knowledge
+  when the same structural principle has emerged independently from multiple dream cycles.
+  This prevents a single hallucinated analogy from entering the knowledge base permanently.
+
+- **Multi-level lifecycle**: promoted insights decay unless recalled in conversation,
+  and can be demoted back to candidate status before eventual evaporation.
+  The system applies selective reinforcement to its own generated knowledge —
+  insights that never prove useful in conversation are treated as hypotheses that failed.
+
+- **LLM judge for semantic convergence**: embedding-level similarity is insufficient
+  to determine whether two insights express the same deep principle.
+  A dedicated LLM call with extended reasoning evaluates the grey zone (cosine 0.15–0.40)
+  before convergence is counted. The embedding sees surface form;
+  the judge reasons about structural meaning.
+
+The announcement confirms the direction. The implementation described in this paper
+demonstrates what the direction looks like when taken further.
+
+---
+
 ## 8 — Outlook
 
 The hardware trajectory described in Section 3 will eventually close the gap entirely.
@@ -653,3 +698,5 @@ Stiamo insegnando al mondo a ricordarci.
 - Chhikara et al., 2025 — *Mem0: Production-Ready AI Agents with Scalable Memory*
 - Fiorucci, S., 2026 — *Multi-Phase Memory Architecture for Local AI Assistants*,
   GitHub: [persistent-cognition](https://github.com/fioruccione/multi-phase-memory-architecture)
+- Anthropic, 2026 — *Claude Dreaming: Offline Memory Consolidation for AI Agents*,
+  announced 2026-05-13 (concurrent independent development of the idle-time consolidation paradigm)

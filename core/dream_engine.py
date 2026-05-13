@@ -67,8 +67,8 @@ class DreamEngine:
         return elapsed_hours >= config.DREAM_ENGINE_IDLE_HOURS
 
     def _ollama_chat(self, **kwargs) -> ollama.ChatResponse:
-        """Wrapper con timeout (default 150s) attorno a ollama.chat — evita hang notturni."""
-        timeout = kwargs.pop("_timeout", 150)
+        """Wrapper con timeout (default 200s) attorno a ollama.chat — evita hang notturni."""
+        timeout = kwargs.pop("_timeout", 200)
         with ThreadPoolExecutor(max_workers=1) as ex:
             future = ex.submit(ollama.chat, **kwargs)
             try:
@@ -410,6 +410,7 @@ Rispondi SOLO con SÌ o NO."""
                     # Promuovi questo a PROMOTED
                     self._r.json().set(doc.id, "$.status", "promoted")
                     self._r.json().set(doc.id, "$.convergence_count", convergences)
+                    self._r.json().set(doc.id, "$.promoted_at", time.time())
                     
                     # Rimuovi i duplicati assorbiti
                     for sid in similar_ids:
@@ -440,12 +441,19 @@ Rispondi SOLO con SÌ o NO."""
             delete_cutoff  = ts_now - config.INSIGHT_TTL_DAYS  * 86400
 
             # Gate 1: tra DEMOTE_DAYS e TTL_DAYS → torna candidate
+            # Esclude insight promossi nelle ultime 24h (promoted_at recente)
+            # per evitare il bug promote-then-demote nello stesso ciclo.
             q_demote = Query(
                 f"@status:{{promoted}} @recalled_count:[0 0] "
                 f"@created_at:[{delete_cutoff} {demote_cutoff}]"
             )
             res_demote = self._r.ft("idx:insights").search(q_demote)
             for doc in res_demote.docs:
+                promoted_at_val = self._r.json().get(doc.id, "$.promoted_at")
+                promoted_ts = promoted_at_val[0] if promoted_at_val else 0
+                if promoted_ts and (ts_now - promoted_ts) < 86400:
+                    logger.debug(f"Dream Engine: skip demotion — promosso da meno di 24h ({doc.id[-8:]})")
+                    continue
                 self._r.json().set(doc.id, "$.status", "candidate")
                 self._r.json().set(doc.id, "$.convergence_count", 1)
                 logger.info(f"Dream Engine: Insight retrocesso a candidate (ID: {doc.id})")
