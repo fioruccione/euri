@@ -188,6 +188,8 @@ def _analyze_text_full(text: str, cfg, brain) -> str:
         )
         return brain._clean(r.message.content or "")
 
+    _NO_MD = "Testo semplice, zero markdown: niente asterischi, niente #, niente backtick."
+
     if len(text) <= _SINGLE_PASS_MAX:
         prompt = (
             f"Testo ricevuto dagli appunti:\n\n{text}\n\n"
@@ -195,7 +197,7 @@ def _analyze_text_full(text: str, cfg, brain) -> str:
             "1. Di cosa si tratta (1-2 frasi)\n"
             "2. I punti tecnici o fattuali più rilevanti (dati, nomi, decisioni, misure)\n"
             "3. Osservazioni o connessioni utili\n"
-            "Denso e diretto. Nessun preambolo."
+            f"Denso e diretto. Nessun preambolo. {_NO_MD}"
         )
         return _chat(prompt, _OPTS_SINGLE)
 
@@ -223,7 +225,7 @@ def _analyze_text_full(text: str, cfg, brain) -> str:
         "1. Di cosa tratta il documento complessivo\n"
         "2. I dati e fatti più importanti\n"
         "3. Eventuali conclusioni o connessioni utili\n"
-        "Denso e diretto. Nessun preambolo."
+        f"Denso e diretto. Nessun preambolo. {_NO_MD}"
     )
     return _chat(synth_prompt, _OPTS_SYNTH)
 

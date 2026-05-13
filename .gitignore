@@ -45,3 +45,6 @@ codice aggiornato/
 
 # CodeRunner sandbox
 sandbox/
+
+# SSL certificates
+ssl/
