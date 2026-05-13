@@ -152,7 +152,7 @@ _PATTERNS: list[tuple[Intent, list[str]]] = [
         r"\bcopia\s+(questo|il\s+testo|negli\s+appunti)\b",
         r"\bmetti\s+(questo\s+)?(negli\s+appunti|in\s+clipboard)\b",
         r"\bcosa\s+c[''è]\s+(negli\s+appunti|in\s+clipboard)\b",
-        r"\bleggi\s+((dagli|degli|gli)\s+appunti|(dalla|la)\s+clipboard)\b",
+        r"\bleggi\s+.{0,25}?((dagli|degli|gli)\s+appunti|(dalla|la)\s+clipboard)\b",
         r"\b(analizza|studia|elabora|approfondisci|esamina)\s+((dagli?|degli?|gli?|dalla?|la)\s+)?(appunti|clipboard)\b",
         r"\b(cosa\s+dice|dimmi\s+cosa\s+c[''è]|riassumi|sintetizza)\s+(negli?\s+appunti|in\s+clipboard|dalla\s+clipboard)\b",
         r"\bsalva\s+(dagli?\s+appunti|dalla\s+clipboard)\b",
@@ -364,6 +364,7 @@ TEACH_END_SIGNALS = re.compile(
     r'\b(basta(?!\s+che\b)|stop|finiamo|finita|finito|basta\s+così|ok\s+basta|ho\s+finito'
     r'|è\s+tutto|tutto\s+qui|per\s+ora\s+basta|finiamola|smettila'
     r'|fermati|fermiamoci|interrompi|ok\s+fermati|adesso\s+fermati|ora\s+fermati'
+    r'|ti\s+devi\s+fermare|devi\s+fermarti|voglio\s+fermarmi|smetti\s+di\s+chiedere'
     r'|finiamo\s+(qui|per\s+ora|con\s+questo|la\s+discussione|il\s+discorso)'
     r'|chiudiamo\s+(qui|il\s+discorso|la\s+discussione)'
     r'|lascia\s+perdere|lasciamo\s+perdere)\b',

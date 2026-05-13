@@ -382,9 +382,11 @@ class Executor:
             r'\b(analizza|studia|elabora|approfondisci|esamina|riassumi|sintetizza|salva)\s+.*\b(appunti|clipboard)\b',
             re.IGNORECASE,
         ), "clipboard_analyze", {}),
-        # clipboard_read
+        # clipboard_read — consente parole intermedie tra "leggi" e "clipboard/appunti"
         (re.compile(
-            r'\b(cosa\s+c[\'è]\s+negli\s+appunti|leggi\s+(dagli|degli|gli)\s+appunti|leggi\s+(dalla|la)\s+clipboard)\b',
+            r'\b(cosa\s+c[\'è]\s+negli\s+appunti'
+            r'|leggi\s+.{0,25}?(dagli|degli|gli)\s+appunti'
+            r'|leggi\s+.{0,25}?(dalla|la)\s+clipboard)\b',
             re.IGNORECASE,
         ), "clipboard_read", {}),
         # ── CodeRunner patterns ──

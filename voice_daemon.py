@@ -1114,15 +1114,15 @@ class VoiceDaemon:
         self.memory.log_conversation("Stefano", text)
 
         # Azioni eseguibili dentro TEACH senza uscire dalla sessione
+        # Clipboard e immagini: intercetta direttamente senza dipendere dall'intent
+        call = self.executor.select_tool_by_regex(text)
+        if call and call.tool_name in ("clipboard_analyze", "analyze_image", "clipboard_read"):
+            self._handle_execute(text)
+            return
         web_intent, _ = classify(text)
         if web_intent == Intent.WEB_SEARCH:
             self._handle_web_search(text)
             return
-        if web_intent == Intent.EXECUTE:
-            call = self.executor.select_tool_by_regex(text)
-            if call and call.tool_name in ("clipboard_analyze", "analyze_image", "clipboard_read"):
-                self._handle_execute(text)
-                return
 
         # Aggiungi sempre l'utterance al buffer prima di decidere
         self._teach_buffer.append(text)
