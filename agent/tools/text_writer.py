@@ -6,12 +6,53 @@ Tool di scrittura e clipboard per l'Executor sandbox di Euri.
 - clipboard_read: legge il contenuto degli appunti
 - clipboard_analyze: analizza il contenuto degli appunti (testo o immagine) e lo salva in memoria
 """
+import os
 import re
 import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
 from agent.executor import ToolResult
+
+
+def _read_clipboard_text() -> str:
+    """
+    Legge il testo dalla clipboard con fallback multi-backend.
+    Ordine: wl-paste (Wayland) → xclip (X11) → pyperclip.
+    Necessario perché su Wayland pyperclip legge la clipboard X11 (XWayland)
+    mentre le app native scrivono sulla clipboard Wayland.
+    """
+    # 1. Wayland nativo (wl-clipboard)
+    if os.environ.get("WAYLAND_DISPLAY"):
+        try:
+            result = subprocess.run(
+                ["wl-paste", "--no-newline"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if result.returncode == 0:
+                return result.stdout
+        except FileNotFoundError:
+            pass  # wl-paste non installato — prosegui con fallback
+        except Exception:
+            pass
+
+    # 2. X11 / XWayland
+    try:
+        result = subprocess.run(
+            ["xclip", "-o", "-selection", "clipboard"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if result.returncode == 0:
+            return result.stdout
+    except Exception:
+        pass
+
+    # 3. pyperclip (ultimo tentativo)
+    try:
+        import pyperclip
+        return pyperclip.paste()
+    except Exception:
+        return ""
 
 
 # Cartella di output — documenti Euri in Documenti utente
@@ -105,8 +146,7 @@ def tool_clipboard_read(params: dict, **kwargs) -> ToolResult:
     Legge il contenuto degli appunti e lo riporta vocalmente (max 200 caratteri).
     """
     try:
-        import pyperclip
-        text = pyperclip.paste().strip()
+        text = _read_clipboard_text().strip()
         if not text:
             return ToolResult(success=True, output="Gli appunti sono vuoti.")
 
@@ -164,8 +204,7 @@ def tool_clipboard_analyze(params: dict, **kwargs) -> ToolResult:
 
     # ── Branch testo ─────────────────────────────────────────────────────────
     try:
-        import pyperclip
-        text = pyperclip.paste().strip()
+        text = _read_clipboard_text().strip()
     except Exception as e:
         return ToolResult(success=False, output="Non riesco ad accedere agli appunti.", error=str(e))
 
