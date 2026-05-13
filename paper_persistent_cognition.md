@@ -579,19 +579,25 @@ because "obvious" is a property of human context, not of instruction sets.
 
 ---
 
-## 7e — Concurrent Validation: Reported "Claude Dreaming" Feature (May 2026)
+## 7e — Concurrent Validation: Anthropic's "Dreaming" for Claude Managed Agents (May 2026)
 
-On 2026-05-13, Italian technology outlet SmartWorld reported that Anthropic is developing
-a feature referred to as **"Claude Dreaming"** —
-described as enabling Claude agents to enter an offline processing phase after work,
-reviewing accumulated experience, identifying recurring patterns and errors,
-and generating a restructured, consolidated memory for subsequent sessions.
-The biological analogy cited in the report is identical to the one used here:
-the sleep cycle as a model for memory consolidation in artificial agents.
-*(Note: as of the writing of this section, no official announcement was found on anthropic.com/news.
-The report may reference an unannounced or unreleased feature.)*
+On 2026-05-06, Anthropic officially announced **"Dreaming"** for Claude Managed Agents,
+introduced at the "Code with Claude" developer event in San Francisco.
+The feature is available as a research preview for selected developers via specific beta headers
+on the Managed Agents platform, currently limited to Claude Opus 4.7 and Claude Sonnet 4.6.
 
-This development — if confirmed — is cited not as prior art, but as **independent convergent validation**.
+Technically, Dreaming is described as a **scheduled, asynchronous process** that reviews past
+agent sessions and the existing memory store to merge duplicate information,
+discard obsolete data, and surface recurring patterns.
+Coverage from Wired, Ars Technica, VentureBeat, and Business Insider confirmed the announcement,
+with Wired specifically noting that the term "dreaming" anthropomorphizes what is fundamentally
+a scheduled memory curation task — a distinction worth preserving.
+
+Crucially: this is **not** a feature of standard Claude chat,
+does not modify model weights, and is not autonomous learning in any biological sense.
+It is memory store management, scheduled and asynchronous.
+
+This development is cited not as prior art, but as **independent convergent validation**.
 
 The two systems were designed without knowledge of each other.
 The overlap in architectural intuition — idle-time offline cognition, pattern consolidation,
@@ -701,5 +707,8 @@ Stiamo insegnando al mondo a ricordarci.
 - Chhikara et al., 2025 — *Mem0: Production-Ready AI Agents with Scalable Memory*
 - Fiorucci, S., 2026 — *Multi-Phase Memory Architecture for Local AI Assistants*,
   GitHub: [persistent-cognition](https://github.com/fioruccione/multi-phase-memory-architecture)
-- SmartWorld, 2026 — *"Claude Dreaming": Anthropic, memoria e agenti AI*,
-  smartworld.it, 2026-05-13 (report su feature non ancora confermata ufficialmente da Anthropic)
+- Anthropic, 2026 — *Introducing Dreaming for Claude Managed Agents* (research preview),
+  announced at Code with Claude, San Francisco, 2026-05-06
+- Wired, 2026 — Coverage of Anthropic Dreaming feature; critique of anthropomorphic naming
+- Ars Technica, 2026 — *Claude Managed Agents can "sort of" dream*
+- VentureBeat / Business Insider, 2026 — Confirmation of research preview launch
