@@ -215,19 +215,22 @@ def tool_clipboard_analyze(params: dict, **kwargs) -> ToolResult:
         import ollama, config as cfg
         prompt = (
             f"Hai ricevuto questo testo dagli appunti dell'utente:\n\n{text[:6000]}\n\n"
-            "Sintetizza i punti chiave in 3-6 frasi concise in italiano. "
-            "Estrai fatti concreti: nomi, date, dati tecnici, decisioni. "
-            "Niente commenti sul testo stesso, solo i contenuti."
+            "Analizza il contenuto e rispondi in italiano con una valutazione completa. "
+            "Struttura la risposta così:\n"
+            "1. Di cosa si tratta (1-2 frasi)\n"
+            "2. I punti tecnici o fattuali più rilevanti (dati, nomi, decisioni, misure)\n"
+            "3. Eventuali connessioni con contesti che conosci o osservazioni personali\n"
+            "Scrivi in modo denso e diretto. Nessun preambolo tipo 'Ecco l'analisi:'."
         )
         response = ollama.chat(
             model=cfg.OLLAMA_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0.2, "num_predict": 400},
+            options={"temperature": 0.3, "num_predict": 800},
             think=False,
         )
         summary = brain._clean(response.message.content or "")
         if not summary:
-            return ToolResult(success=False, output="Non sono riuscito a sintetizzare il testo.")
+            return ToolResult(success=False, output="Non sono riuscito ad analizzare il testo.")
 
         mid = memory.save_memory(
             content=f"Testo analizzato dagli appunti:\n{summary}",
@@ -238,7 +241,7 @@ def tool_clipboard_analyze(params: dict, **kwargs) -> ToolResult:
         char_info = f"{len(text)} caratteri" + (" (troncato a 6000)" if len(text) > 6000 else "")
         return ToolResult(
             success=True,
-            output=f"Ho letto {char_info} e salvato i punti chiave. {summary[:180]}",
+            output=f"Ho letto {char_info}. {summary}",
             raw_data={"memory_id": mid, "type": "text", "original_length": len(text)},
         )
     except Exception as e:
