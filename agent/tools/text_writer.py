@@ -247,19 +247,25 @@ def tool_clipboard_analyze(params: dict, **kwargs) -> ToolResult:
 
 def _clipboard_image() -> str | None:
     """
-    Prova a estrarre un'immagine PNG dalla clipboard X11 via xclip.
+    Prova a estrarre un'immagine PNG dalla clipboard.
+    Fallback: wl-paste (Wayland) → xclip (X11).
     Ritorna il path del file temporaneo, o None se la clipboard non contiene un'immagine.
     """
-    try:
-        result = subprocess.run(
-            ["xclip", "-o", "-selection", "clipboard", "-t", "image/png"],
-            capture_output=True, timeout=3,
-        )
-        if result.returncode == 0 and result.stdout:
-            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-            tmp.write(result.stdout)
-            tmp.close()
-            return tmp.name
-    except Exception:
-        pass
+    backends = []
+    if os.environ.get("WAYLAND_DISPLAY"):
+        backends.append(["wl-paste", "--no-newline", "--type", "image/png"])
+    backends.append(["xclip", "-o", "-selection", "clipboard", "-t", "image/png"])
+
+    for cmd in backends:
+        try:
+            result = subprocess.run(cmd, capture_output=True, timeout=3)
+            if result.returncode == 0 and result.stdout:
+                tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                tmp.write(result.stdout)
+                tmp.close()
+                return tmp.name
+        except FileNotFoundError:
+            continue
+        except Exception:
+            continue
     return None
