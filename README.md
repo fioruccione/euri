@@ -7,7 +7,7 @@ Non si limita ad ascoltare e rispondere: memorizza, organizza, riflette sulle tu
 
 ---
 
-## Architettura Cognitiva (V2.10)
+## Architettura Cognitiva (V2.11)
 
 ### 1. Intent Classification — Pipeline a Due Layer
 La classificazione dell'intent è a cascata: il layer veloce esaurisce la maggior parte dei casi, il layer lento interviene solo quando necessario.
@@ -36,6 +36,7 @@ Quando non gli parli da almeno 2 ore, Euri "dorme" ed entra nel ciclo onirico.
 - **Loop 2c** — La promozione CANDIDATE→PROMOTED usa un sistema a due livelli: distanza cosine vettoriale (fast path) + **LLM judge con thinking** per la zona grigia (score 0.15–0.40). Il judge valuta se due insight formulati diversamente esprimono lo stesso principio strutturale profondo — un giudizio che il solo vettore cosine non può dare.
 - Se abbastanza sogni indipendenti convergono, l'insight viene **PROMOSSO** e scritto permanentemente in Obsidian.
 - **Loop 2e — Memory Consolidation:** una volta ogni 24h, Euri raggruppa le memorie episodiche più richiamate (recalled_count ≥ 3) per dominio, individua i cluster semanticamente coerenti via KNN, e chiede a Qwen3.6 di sintetizzarle in un unico nodo di conoscenza stabile. Il nodo consolidato preserva tutti i dati specifici (numeri, nomi, misure) eliminando la ridondanza episodica. Ogni cluster viene marcato con fingerprint per evitare ri-consolidazioni. Ispirato al consolidamento ippocampale durante il sonno REM: i frammenti episodici diventano conoscenza semantica a lungo termine. Max 3 consolidazioni per ciclo.
+- **Loop 2f — Contradiction Resolution:** ogni ciclo onirico, Euri cerca coppie di memorie `requires_verification=True` (contenenti valori numerici o fattuali) con similarità cosine > 0.72 all'interno dello stesso dominio. Per ogni coppia, `_llm_check_contradiction` chiede a Qwen3.6 se i due contenuti esprimono un conflitto fattuale reale sullo stesso soggetto (es. "MFI=6" vs "MFI=4"). In caso di conflitto confermato, la memoria più vecchia riceve il tag `superseded_by = [UUID_vincitore]` — **soft-delete**: non viene mai cancellata (audit trail preservato), ma viene esclusa silenziosamente da tutti i path di retrieval (`_hydrate`, `_search_semantic`, `domain_aware_search`). Le coppie già analizzate vengono tracciate in un set Redis con TTL 180 giorni. Max 15 coppie per ciclo.
 
 > **Nota tecnica:** Il timer di idle usa `time.time()` (wall-clock) per contare correttamente anche le ore in cui il PC è in sospensione.
 
@@ -186,6 +187,12 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 ---
 
 ## Changelog
+
+### V2.11 — Loop 2f: Contradiction Resolution
+
+- **Loop 2f — soft-delete contraddizioni fattuali:** il Dream Engine ora individua coppie di memorie `requires_verification=True` con alta similarità semantica (cosine > 0.72) all'interno dello stesso dominio. `_llm_check_contradiction` chiede a Qwen3.6 se i valori sono in conflitto reale sullo stesso soggetto (es. "MFI=6" vs "MFI=4", concentrazioni, scadenze). In caso di conflitto: la memoria più vecchia riceve `superseded_by = UUID_vincitore` — esclusa dal retrieval ma mai cancellata. Colma il gap con Anthropic Dreaming che risolve le contraddizioni in modo distruttivo; Euri mantiene l'audit trail completo.
+- **Filtro superseded_by nel retrieval:** `_hydrate`, `_search_semantic` e `domain_aware_search` escludono silenziosamente le memorie soft-deleted. Zero round-trip Redis extra: il flag è nel JSON già caricato.
+- **CHECKED set con TTL 180gg:** ogni coppia analizzata viene marcata in `euri:loop2f:checked` — evita ri-analisi nei cicli successivi. Max 15 coppie per ciclo.
 
 ### V2.10 — Dream Engine Promote-then-Demote Fix + Validazione Antropic
 
