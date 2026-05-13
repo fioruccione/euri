@@ -162,6 +162,72 @@ def tool_clipboard_read(params: dict, **kwargs) -> ToolResult:
         return ToolResult(success=False, output="Non riesco a leggere gli appunti.", error=str(e))
 
 
+_SINGLE_PASS_MAX = 80_000   # chars — sotto questa soglia: analisi diretta
+_CHUNK_SIZE      = 20_000   # chars per chunk quando il testo è più lungo
+_MAX_CHUNKS      = 4        # max chunk elaborati (= 80K chars totali)
+
+
+def _analyze_text_full(text: str, cfg, brain) -> str:
+    """
+    Analizza testo di qualsiasi lunghezza senza troncarlo.
+    ≤ 80K chars → singolo passaggio con num_ctx=32768.
+    > 80K chars → estrae fatti da ogni chunk (max 4×20K), poi sintesi finale.
+    """
+    import ollama
+
+    _OPTS_SINGLE = {"temperature": 0.3, "num_predict": 1200, "num_ctx": 32768}
+    _OPTS_CHUNK  = {"temperature": 0.2, "num_predict": 600,  "num_ctx": 32768}
+    _OPTS_SYNTH  = {"temperature": 0.3, "num_predict": 1000, "num_ctx": 16384}
+
+    def _chat(prompt: str, opts: dict) -> str:
+        r = ollama.chat(
+            model=cfg.OLLAMA_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            options=opts,
+            think=False,
+        )
+        return brain._clean(r.message.content or "")
+
+    if len(text) <= _SINGLE_PASS_MAX:
+        prompt = (
+            f"Testo ricevuto dagli appunti:\n\n{text}\n\n"
+            "Analizza e rispondi in italiano:\n"
+            "1. Di cosa si tratta (1-2 frasi)\n"
+            "2. I punti tecnici o fattuali più rilevanti (dati, nomi, decisioni, misure)\n"
+            "3. Osservazioni o connessioni utili\n"
+            "Denso e diretto. Nessun preambolo."
+        )
+        return _chat(prompt, _OPTS_SINGLE)
+
+    # testo lungo: chunking
+    chunks = [text[i:i + _CHUNK_SIZE] for i in range(0, len(text), _CHUNK_SIZE)][:_MAX_CHUNKS]
+    facts = []
+    for i, chunk in enumerate(chunks):
+        prompt = (
+            f"Segmento {i + 1}/{len(chunks)} di un documento lungo.\n\n{chunk}\n\n"
+            "Estrai i fatti tecnici e numerici più rilevanti di questo segmento. "
+            "Elenco breve, niente frasi introduttive."
+        )
+        f = _chat(prompt, _OPTS_CHUNK)
+        if f:
+            facts.append(f"[Parte {i + 1}]\n{f}")
+
+    if not facts:
+        return ""
+
+    combined = "\n\n".join(facts)
+    synth_prompt = (
+        f"Questi sono i punti chiave estratti dalle {len(chunks)} parti di un documento lungo:\n\n"
+        f"{combined}\n\n"
+        "Scrivi una sintesi coerente in italiano:\n"
+        "1. Di cosa tratta il documento complessivo\n"
+        "2. I dati e fatti più importanti\n"
+        "3. Eventuali conclusioni o connessioni utili\n"
+        "Denso e diretto. Nessun preambolo."
+    )
+    return _chat(synth_prompt, _OPTS_SYNTH)
+
+
 def tool_clipboard_analyze(params: dict, **kwargs) -> ToolResult:
     """
     Analizza il contenuto degli appunti (testo lungo o immagine PNG/JPG) con il LLM,
@@ -213,22 +279,7 @@ def tool_clipboard_analyze(params: dict, **kwargs) -> ToolResult:
 
     try:
         import ollama, config as cfg
-        prompt = (
-            f"Hai ricevuto questo testo dagli appunti dell'utente:\n\n{text[:6000]}\n\n"
-            "Analizza il contenuto e rispondi in italiano con una valutazione completa. "
-            "Struttura la risposta così:\n"
-            "1. Di cosa si tratta (1-2 frasi)\n"
-            "2. I punti tecnici o fattuali più rilevanti (dati, nomi, decisioni, misure)\n"
-            "3. Eventuali connessioni con contesti che conosci o osservazioni personali\n"
-            "Scrivi in modo denso e diretto. Nessun preambolo tipo 'Ecco l'analisi:'."
-        )
-        response = ollama.chat(
-            model=cfg.OLLAMA_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0.3, "num_predict": 800},
-            think=False,
-        )
-        summary = brain._clean(response.message.content or "")
+        summary = _analyze_text_full(text, cfg, brain)
         if not summary:
             return ToolResult(success=False, output="Non sono riuscito ad analizzare il testo.")
 
@@ -238,10 +289,9 @@ def tool_clipboard_analyze(params: dict, **kwargs) -> ToolResult:
             source="teach",
             tags=["clipboard", "testo"],
         )
-        char_info = f"{len(text)} caratteri" + (" (troncato a 6000)" if len(text) > 6000 else "")
         return ToolResult(
             success=True,
-            output=f"Ho letto {char_info}. {summary}",
+            output=f"Ho letto {len(text)} caratteri. {summary}",
             raw_data={"memory_id": mid, "type": "text", "original_length": len(text)},
         )
     except Exception as e:
