@@ -469,7 +469,11 @@ Rispondi SOLO: SÌ o NO."""
         CHECKED_KEY = "euri:loop2f:checked"
         MIN_CONFLICT_SCORE = 0.28  # cosine distance < 0.28 → similarity > 0.72 (stesso argomento)
         MAX_PAIRS_PER_CYCLE = 15
-        SKIP_SOURCES = {"web", "loop2e"}
+        # web escluso: fonte esterna, citata sempre con cautela, non è in conflitto coi fatti interni.
+        # loop2e NON è più escluso: le memorie consolidate sono nel RAG con alta priorità e devono
+        # poter essere corrette dalle contraddizioni. Il soft-delete via superseded_by rende il rischio
+        # reversibile — il dato sopravvive in Redis anche se la memoria viene esclusa dal retrieval.
+        SKIP_SOURCES = {"web"}
 
         try:
             # 1. Candidati: requires_verification=True, non già superseded
