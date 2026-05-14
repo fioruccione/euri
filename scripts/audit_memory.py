@@ -52,14 +52,29 @@ def scan_memories(r: redis.Redis, source_filter: str = None) -> list[dict]:
 
 def llm_judge(content: str) -> tuple[str, str]:
     """
-    Chiede al LLM se il contenuto è un fatto utile su Stefano o rumore.
+    Chiede al LLM se la memoria merita di essere conservata nel contesto
+    operativo di Stefano (lavoro + vita), non solo se parla di lui come soggetto.
     Ritorna (verdetto, motivazione): verdetto = "UTILE" o "RUMORE"
     """
     prompt = (
-        f"Sei un sistema di controllo qualità per una memoria personale.\n"
-        f"Valuta se questo testo è un FATTO UTILE da ricordare su Stefano (l'utente) "
-        f"oppure è RUMORE (conversazione ambient, frase troncata, dato generico non personale, "
-        f"informazione su terzi irrilevanti, frase senza contesto).\n\n"
+        f"Sei un quality control per la memoria di Euri, assistente personale "
+        f"di Stefano — ingegnere in azienda chimica polimeri, sviluppatore software, "
+        f"appassionato di motorsport.\n\n"
+        f"Valuta se questa memoria merita di essere conservata.\n\n"
+        f"UTILE: qualunque fatto verificabile o operativo nel contesto del lavoro o "
+        f"della vita di Stefano. Include:\n"
+        f"- Conoscenza tecnica oggettiva (additivi, materiali, formulazioni, parametri, MFI, dosaggi)\n"
+        f"- Persone, clienti, fornitori, progetti, codici lotto\n"
+        f"- Strumenti, sistemi, configurazioni hardware/software\n"
+        f"- Decisioni, preferenze, esperienze, competenze\n"
+        f"- Riferimenti diretti a Stefano come soggetto\n\n"
+        f"RUMORE: solo questi casi:\n"
+        f"- Frase troncata, incompleta, priva di senso\n"
+        f"- Saluto/riempitivo senza contenuto informativo\n"
+        f"- Duplicato palese di un concetto banale\n"
+        f"- Errore evidente o contraddizione interna\n\n"
+        f"Regola: in dubbio → UTILE. Un fatto tecnico oggettivo è SEMPRE utile, "
+        f"anche se non parla di Stefano direttamente — è la sua knowledge base.\n\n"
         f"Memoria: \"{content}\"\n\n"
         f"Rispondi ESATTAMENTE in questo formato:\n"
         f"VERDETTO: UTILE oppure RUMORE\n"
