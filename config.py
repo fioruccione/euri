@@ -178,6 +178,20 @@ DREAM_ENGINE_IDLE_HOURS = 2
 DREAM_INSIGHT_MIN_CONVERGENCES = 3   # era 2 — soglia alzata per ridurre promozioni facili
 INSIGHT_TTL_DAYS = 30
 INSIGHT_DEMOTE_DAYS = 14  # PROMOTED non richiamato entro X giorni → torna CANDIDATE
+
+# Filtro del Risveglio (re-rank insight in retrieval) — il sogno resta libero
+# e atemporale (Loop 2b), il filtro di rilevanza opera solo al recupero RAG.
+# Un insight i cui due domini non sono apparsi nelle memorie operative degli
+# ultimi N giorni riceve una penalty moltiplicativa sulla cosine distance:
+# non viene soppresso, solo deprioritizzato. Emerge se il contesto lo richiama.
+INSIGHT_ACTIVE_DAYS = 30          # finestra del "presente operativo"
+INSIGHT_ARCHIVE_PENALTY = 1.5     # ×1.5 sulla cosine distance per insight archivio
+INSIGHT_OVERSAMPLE_FACTOR = 3     # chiedi 3× a Redis per avere margine al re-rank
+# Sorgenti che definiscono cosa Stefano sta davvero curando — passive/conversation
+# escluse perché spugne ambient: ogni nome di passaggio fa entrare un dominio negli
+# attivi, neutralizzando il filtro (vedi dry-run: 30gg + tutti i source → 0% archivio).
+# teach/user = scelta esplicita; reflection = sintesi consolidata (Loop 2a).
+INSIGHT_ACTIVE_SOURCES = {"teach", "user", "reflection"}
 # Memorie passive/reflection mai richiamate evaporano dopo 90 giorni.
 # Memorie user/teach/obsidian_vault non scadono mai automaticamente.
 MEMORY_TTL_PASSIVE_DAYS = 90

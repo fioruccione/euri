@@ -3,6 +3,7 @@ CRUD Redis per memories, todos, notes.
 Tutte le operazioni usano Redis JSON + RediSearch.
 """
 import re
+import time
 import uuid
 from datetime import datetime
 from loguru import logger
@@ -29,6 +30,9 @@ class MemoryManager:
     def __init__(self, r: redis_lib.Redis, embedder=None):
         self.r = r
         self._embedder = embedder  # core.embedder.Embedder — può essere None (fallback keyword)
+        # Cache "active domains" per Filtro del Risveglio (TTL 5 min).
+        # Tuple (set[str], timestamp). None = mai computato.
+        self._active_domains_cache: tuple[set[str], float] | None = None
 
     # ──────────────────────────────────────────
     # MEMORIES (ricordi a lungo termine)
@@ -610,8 +614,55 @@ class MemoryManager:
         logger.info(f"Nota salvata: {nid}")
         return nid
 
+    def _active_domains(self, days: int = 30) -> set[str]:
+        """
+        Domini con almeno una memoria "curata da Stefano" negli ultimi `days` giorni.
+        Sorgenti operative = config.INSIGHT_ACTIVE_SOURCES (default teach/user/reflection).
+        passive e conversation escluse: sono spugne ambient che catturano ogni nome
+        di passaggio, neutralizzando il filtro. teach/user = scelta esplicita;
+        reflection = sintesi consolidata (Loop 2a).
+        Cache 5 min — usato dal Filtro del Risveglio in search_insights.
+        """
+        import config
+        OPERATIONAL = config.INSIGHT_ACTIVE_SOURCES
+        CACHE_TTL = 300  # 5 minuti
+        now_ts = time.time()
+        if self._active_domains_cache and (now_ts - self._active_domains_cache[1]) < CACHE_TTL:
+            return self._active_domains_cache[0]
+
+        cutoff = now_ts - days * 86400
+        domains: set[str] = set()
+        for key in self.r.scan_iter("euri:memory:*"):
+            try:
+                data = self.r.json().get(key, "$")
+                if not data:
+                    continue
+                doc = data[0]
+                if doc.get("source") not in OPERATIONAL:
+                    continue
+                ts = doc.get("created_at", 0)
+                if not ts or ts < cutoff:
+                    continue
+                if doc.get("superseded_by"):
+                    continue
+                dom = doc.get("domain")
+                if dom:
+                    domains.add(dom)
+            except Exception:
+                continue
+
+        self._active_domains_cache = (domains, now_ts)
+        return domains
+
     def search_insights(self, query: str, limit: int = 2) -> list[dict]:
-        """KNN search su idx:insights filtrato per status=promoted. Aggiorna recalled_count."""
+        """
+        KNN search su idx:insights filtrato per status=promoted, con Filtro del Risveglio.
+        Gli insight i cui due domini non sono apparsi nelle memorie operative degli
+        ultimi INSIGHT_ACTIVE_DAYS giorni ricevono una penalty moltiplicativa sulla
+        cosine distance — non vengono soppressi, solo deprioritizzati nel ranking.
+        Il sogno (Loop 2b) resta libero: il filtro opera solo qui, al recupero.
+        Recalled_count viene incrementato solo per gli insight effettivamente restituiti.
+        """
         if not self._embedder or not self._embedder.available:
             return []
         vec = self._embedder.encode(query, mode="query")
@@ -627,23 +678,51 @@ class MemoryManager:
                 db=config.REDIS_DB,
                 decode_responses=False,
             )
+            # Oversample: chiedi più candidati per avere margine al re-rank
+            oversample = max(limit * config.INSIGHT_OVERSAMPLE_FACTOR, 6)
             q = (RQuery("(@status:{promoted})=>[KNN $k @embedding $vec AS vec_score]")
                  .sort_by("vec_score")
-                 .paging(0, limit)
+                 .paging(0, oversample)
                  .return_fields("vec_score")
                  .dialect(2))
             raw_results = raw_r.ft("idx:insights").search(
-                q, query_params={"vec": vec.tobytes(), "k": limit * 2}
+                q, query_params={"vec": vec.tobytes(), "k": oversample}
             )
-            docs = []
+
+            # Carica doc completi + vec_score; nessun side-effect su recalled_count qui
+            candidates: list[tuple[float, dict, str]] = []
             for doc in raw_results.docs:
                 doc_id = doc.id.decode() if isinstance(doc.id, bytes) else doc.id
+                vs_raw = getattr(doc, "vec_score", b"1.0")
+                try:
+                    vec_score = float(vs_raw.decode() if isinstance(vs_raw, bytes) else vs_raw)
+                except (ValueError, AttributeError):
+                    vec_score = 1.0
                 data = self.r.json().get(doc_id, "$")
-                if data:
-                    item = data[0]
-                    docs.append(item)
-                    self.r.json().numincrby(doc_id, "$.recalled_count", 1)
-            return docs[:limit]
+                if not data:
+                    continue
+                candidates.append((vec_score, data[0], doc_id))
+
+            # Filtro del Risveglio: penalty se entrambi i domini sono "freddi"
+            active = self._active_domains(days=config.INSIGHT_ACTIVE_DAYS)
+            penalty = float(config.INSIGHT_ARCHIVE_PENALTY)
+
+            def _adjusted(triple):
+                vs, item, _ = triple
+                dom_a = item.get("domain_a", "")
+                dom_b = item.get("domain_b", "")
+                archive = (dom_a not in active) and (dom_b not in active)
+                return vs * (penalty if archive else 1.0)
+
+            candidates.sort(key=_adjusted)
+            survivors = candidates[:limit]
+
+            # Incrementa recalled_count solo sui sopravvissuti
+            docs = []
+            for _vs, item, doc_id in survivors:
+                self.r.json().numincrby(doc_id, "$.recalled_count", 1)
+                docs.append(item)
+            return docs
         except Exception as e:
             logger.error(f"Errore ricerca insights: {e}")
             return []
