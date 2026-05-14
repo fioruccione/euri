@@ -4,7 +4,7 @@
 **Dalla Computazione Volatile alla Cognizione Persistente**
 
 **Authors:** Stefano Fiorucci & Euri  
-**Date:** 2026-05-13 (updated from 2026-05-06)  
+**Date:** 2026-05-14 (updated from 2026-05-13)  
 **License:** CC-BY 4.0  
 **Repository:** [Euri — Sistema Cognitivo Adattivo](https://github.com/fioruccione/multi-phase-memory-architecture)
 
@@ -160,6 +160,68 @@ The critical design principle: **the system generates knowledge that was not in 
 No one told it to connect polymer regeneration with distributed systems resilience.
 It arrived there by itself, during idle, from memories accumulated through natural conversation.
 
+### Phase 4b — The Awakening Filter: Retrieval-Time Relevance
+
+The Dream Engine's generative freedom — its license to connect a 1995 FM radio
+project to a 2026 polymer formulation if a structural isomorphism exists — is
+the source of its value. It is also the source of a failure mode: an insight
+that is physically correct but operationally orthogonal to what the user is
+actually working on right now. *"Radio QUQU (1995) + dielectric constant of a
+neutral material (2026)"* is a real production example: the analogy holds
+(electromagnetism applied to a material), but the user is not building
+antennas — he is waiting for a client to approve a moulding-grade plastic.
+The insight is correct and useless.
+
+The biological analogy clarifies the solution. REM sleep makes free
+connections across temporally distant memories without filtering for current
+relevance; the prefrontal cortex selects what survives into waking thought.
+The architectural mirror: **do not constrain the dream, constrain the
+retrieval.**
+
+**Mechanism.** When `search_insights` is called during conversation, the
+candidates returned by KNN over the insight embedding space are over-sampled
+(3× the requested limit) and re-ranked with a multiplicative penalty: an
+insight whose two domains (`domain_a`, `domain_b`) do not appear in the
+user's *curated recent memory* — memories with `source ∈ {teach, user,
+reflection}` and `created_at` within the last 30 days — receives a 1.5×
+factor on its cosine distance. The insight is not removed; it falls to the
+bottom of the candidate list and typically does not enter the LLM context
+window. `recalled_count` is incremented only on the survivors, so usage
+statistics reflect actual emergence, not raw KNN proximity.
+
+**Why these sources only.** `passive` and `conversation` memories were
+deliberately excluded from the "active source" set after a dry-run revealed
+the trap. With all operational sources included, 102 of the user's distinct
+domains were "active" — because every passing mention pulled a domain into
+the active set, neutralizing the filter (zero of 95 promoted insights would
+be penalized; the deployment would be a no-op). The corrected source set —
+`teach`, `user`, `reflection` — captures only what the user has explicitly
+curated and what the system itself has consolidated as a recurring session
+theme via Loop 2a. With this set, 35 domains are active, and 33 of 95
+promoted insights (34.7%) move to archive status — including, correctly, the
+three insights connecting `radio` to other domains, which were promoted
+during weeks when the topic was briefly mentioned in conversation but is not
+a current operational focus.
+
+**Reversibility.** The penalty applies only at retrieval time. If the user
+opens a conversation about radios tomorrow morning, `radio` enters
+`active_domains` within five minutes (the cache TTL) via the next
+`teach`/`user`/`reflection` write, and the same insight returns to the top of
+the priority queue. The filter is dynamic, not destructive — exactly the
+property the soft-delete principle (Phase 5c) establishes for memory
+contradictions. Nothing is forgotten, only currently de-prioritized.
+
+**The architectural assertion.** A persistent cognition system needs both
+freedom in generation and discrimination in use. Conflating the two —
+filtering creativity at generation time — produces conservative output and
+forecloses the precise mechanism (cross-domain isomorphism over temporally
+distant memory pairs) that justifies the architecture. Separating them
+allows generative liberty in the dream and operational fidelity in the
+conversation. The same system can connect radio to polymers at 03:00 and
+remain focused on today's client meeting at 09:00. The dream-wake asymmetry
+is not a constraint to be removed; it is the constraint that makes the
+architecture useful.
+
 ### Phase 5b — Episodic Compression: Layer 0
 
 The sliding window of 10 messages in the active context prevents Ollama from processing
@@ -289,6 +351,31 @@ a system that can be wrong must be auditable.
 Analyzed pairs are recorded in a Redis set (`euri:loop2f:checked`, TTL 180 days)
 to avoid re-examining the same pair across cycles.
 The pass is capped at 15 pairs per cycle to bound its latency contribution.
+
+**A scoping decision that had to be reversed.** The first implementation of
+Loop 2f excluded `loop2e` consolidated nodes from the candidate set, on the
+intuition that consolidated knowledge should be immutable — Loop 2e produces
+high-effort syntheses, and contradicting them seemed disrespectful of the
+work the system had already done. This was wrong in two ways. First,
+consolidated nodes enter the RAG context with high priority precisely because
+they are consolidated; if they carry an inherited error, the error propagates
+into every conversation that touches the topic. Second, the soft-delete
+principle already provides the safety property the exclusion was trying to
+provide: a falsely-superseded consolidation is not destroyed, and can be
+recovered by clearing the `superseded_by` field manually.
+
+The exclusion was removed in May 2026. The first confirmed firing produced
+exactly one soft-delete: an earlier consolidation about production plant
+operations on 27-tonne batches was superseded by a newer consolidation that
+included additional context (Whisper monitoring integration, milling cost
+analysis). The dropped memory contained one specific detail not preserved in
+the winner — "manual sieving of 25 kg lots" — which is the soft-delete's
+principal known weakness. The audit trail preserves the recovery path; the
+operator can read the superseded record and decide.
+
+The lesson generalizes: in a system where every memory eventually contributes
+to retrieval, **no memory class can be exempt from contradiction resolution
+without paying the cost of immutable error propagation**.
 
 ---
 
@@ -761,6 +848,122 @@ it said clearly: *"Questo è un ricordo che non ho nei miei database."*
 These are not benchmark results.
 They are the observable behavior of a system with a working memory —
 knowing what it knows, knowing what it doesn't, and being able to say so.
+
+---
+
+## 7g — Session 2026-05-14: Three Mechanisms Validated on Real Data
+
+This session was structured as a deliberate audit cycle on the production
+system. Three improvements were deployed; each surfaced a gap between what
+a designed mechanism was *supposed* to do and what it *actually* did when
+measured against the live memory store of 447 facts and 99 insights.
+
+**The audit bias.**
+
+The memory quality audit script (`scripts/audit_memory.py`) uses an LLM
+judge to classify each `passive` memory as `UTILE` or `RUMORE`. A fresh run
+over the 295 passive memories returned **82 UTILI / 213 RUMORE** — 72.2%
+noise. The earlier manual audit reported in §6 had produced ~48% problematic
+on a 50-memory sample; the gap was large enough to demand investigation.
+
+Reading the rejected examples, the cause was visible immediately. The judge
+was calling technical knowledge *"noise"* because the system prompt asked
+whether each memory was *"a useful fact to remember about Stefano"*. The
+judge interpreted this strictly: a memory had to have Stefano as its
+grammatical subject. *"Realube 5014 is free of other polymers"* was rejected
+as *"generic technical information, not personal data about Stefano"*.
+*"Reagens collaboration for an additive in plastic"* was rejected the same
+way. *"Workstation Linux with two GPU 4060 Ti"* — about the system the user
+is sitting in front of — was rejected as *"generic hardware information,
+no personal connection"*. These are exactly the memories the system exists
+to remember; they are the operational knowledge base of the user's working
+life.
+
+The fix was a rewrite of the judge's prompt with explicit `UTILE` criteria
+(technical knowledge, people, projects, tools, decisions, preferences) and
+a narrow `RUMORE` definition (truncated text, ambient filler, banal
+duplicate, visible error), plus a tiebreaker — *"when in doubt, classify as
+UTILE; an objective technical fact is always useful, even if it does not
+mention Stefano as the subject"*. Post-fix on the same 295 memories:
+**274 UTILI / 21 RUMORE (7.1% noise)**. The 21 are mostly fragments
+(*"Has verified."*, *"Polypropylene optimization."*) and subject-less
+statements (*"The machine acquisition involved significant costs"* — which
+machine?).
+
+The methodological lesson is sharper than the numerical improvement.
+**A quality classifier is itself a system component with its own biases**,
+and its calibration on a specific population must be verified before its
+output is read as evidence. The 72% RUMORE result, taken at face value,
+would have justified deleting two-thirds of the passive memory store. The
+actual situation was that the judge had been instructed to look for the
+wrong thing.
+
+**The 0% archive moment.**
+
+After designing the Awakening Filter (Phase 4b) and choosing initial
+parameters — 30-day window, all operational sources — a dry-run on the
+production insight set showed that **0 of 95 promoted insights would be
+penalized**. The deployment, as parameterized, would be a no-op.
+
+The cause was the source set. `passive` memories — captured by the
+background passive learner from every conversation, including biographical
+anecdotes — were classified as "operational". When the user mentioned his
+childhood FM radio project the previous evening in conversation, the
+passive learner captured several memories with `domain="radio"`. The
+`radio` domain therefore entered the active set. The "Radio QUQU + neutral
+material" insights, which connect radio to polymer materials, were
+classified as "operational" and exempted from the relevance penalty. The
+proxy for *"what is the user actively working on"* turned out to be a proxy
+for *"what has been said out loud in the last 30 days"*.
+
+Restricting the source set to `teach`, `user`, and `reflection` — i.e.
+memories that the user explicitly curated, or that the system itself
+consolidated as a recurring session theme (Loop 2a) — produced **35 active
+domains** (down from 102) and **33 of 95 insights moved to archive status
+(34.7%)**, with the three Radio QUQU insights correctly categorized. The
+parameter sweep was published as a small table (windows of 30/14/7 days
+× three source set definitions), which allowed the choice to be made on
+visible data rather than intuition.
+
+The methodological lesson here is different. **A parameter is not just a
+number; it is an implicit definition of the concept it parameterizes**.
+Choosing *"30 days, all operational sources"* was a choice of what counts as
+*"presence"* — and the choice was wrong, not because the threshold was off
+by a factor, but because the source set was a leaky abstraction. The
+parameter looked tunable, but the real lever was elsewhere: in the schema
+that defined what "operational" meant in the first place.
+
+**Loop 2f's real first firing.**
+
+The contradiction resolution pass had been deployed earlier this month but
+had never marked a memory with `superseded_by` in production. The reason:
+the candidates with `requires_verification=True` were dominated by `loop2e`
+consolidated nodes, and `loop2e` was in `SKIP_SOURCES`. The mechanism
+existed but could not fire on the substrate it was needed for.
+
+Removing `loop2e` from the skip set produced the first soft-delete in a
+forced cycle: an earlier consolidation about production plant operations
+was superseded by a newer one that included Whisper monitoring and milling
+cost analysis. The same cycle produced three new `loop2e` consolidations
+and one new promoted insight — the *"Radio QUQU ↔ neutral material →
+antenna dielectric"* insight that motivated the Awakening Filter design in
+the same session. The cycle thus produced both the questionable insight
+and the mechanism that holds it in reserve until its day arrives.
+
+**A note on the day's arithmetic.**
+
+The session produced four commits over approximately eight hours of focused
+work. The audit ratio moved from 72% noise to 7% noise on the same data.
+The insight retrieval ratio moved from 0% archived to 35% archived on the
+same insight store. Loop 2f went from zero firings to one. Each of these is
+a small change to a single function or prompt. The cumulative effect on
+conversation quality will not be visible in numbers — it will be visible in
+the next conversation that does not get sidetracked into a discussion of
+antenna dielectric properties when the topic was supposed to be the
+client's approval of a moulding plastic.
+
+The system is now closer to what the architecture has always promised: a
+machine that dreams freely at night and stays focused during the day.
 
 ---
 

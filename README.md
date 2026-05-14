@@ -7,7 +7,7 @@ Non si limita ad ascoltare e rispondere: memorizza, organizza, riflette sulle tu
 
 ---
 
-## Architettura Cognitiva (V2.12)
+## Architettura Cognitiva (V2.13)
 
 ### 1. Intent Classification — Pipeline a Due Layer
 La classificazione dell'intent è a cascata: il layer veloce esaurisce la maggior parte dei casi, il layer lento interviene solo quando necessario.
@@ -36,7 +36,8 @@ Quando non gli parli da almeno 2 ore, Euri "dorme" ed entra nel ciclo onirico.
 - **Loop 2c** — La promozione CANDIDATE→PROMOTED usa un sistema a due livelli: distanza cosine vettoriale (fast path) + **LLM judge con thinking** per la zona grigia (score 0.15–0.40). Il judge valuta se due insight formulati diversamente esprimono lo stesso principio strutturale profondo — un giudizio che il solo vettore cosine non può dare.
 - Se abbastanza sogni indipendenti convergono, l'insight viene **PROMOSSO** e scritto permanentemente in Obsidian.
 - **Loop 2e — Memory Consolidation:** una volta ogni 24h, Euri raggruppa le memorie episodiche più richiamate (recalled_count ≥ 3) per dominio, individua i cluster semanticamente coerenti via KNN, e chiede a Qwen3.6 di sintetizzarle in un unico nodo di conoscenza stabile. Il nodo consolidato preserva tutti i dati specifici (numeri, nomi, misure) eliminando la ridondanza episodica. Ogni cluster viene marcato con fingerprint per evitare ri-consolidazioni. Ispirato al consolidamento ippocampale durante il sonno REM: i frammenti episodici diventano conoscenza semantica a lungo termine. Max 3 consolidazioni per ciclo.
-- **Loop 2f — Contradiction Resolution:** ogni ciclo onirico, Euri cerca coppie di memorie `requires_verification=True` (contenenti valori numerici o fattuali) con similarità cosine > 0.72 all'interno dello stesso dominio. Per ogni coppia, `_llm_check_contradiction` chiede a Qwen3.6 se i due contenuti esprimono un conflitto fattuale reale sullo stesso soggetto (es. "MFI=6" vs "MFI=4"). In caso di conflitto confermato, la memoria più vecchia riceve il tag `superseded_by = [UUID_vincitore]` — **soft-delete**: non viene mai cancellata (audit trail preservato), ma viene esclusa silenziosamente da tutti i path di retrieval (`_hydrate`, `_search_semantic`, `domain_aware_search`). Le coppie già analizzate vengono tracciate in un set Redis con TTL 180 giorni. Max 15 coppie per ciclo.
+- **Loop 2f — Contradiction Resolution:** ogni ciclo onirico, Euri cerca coppie di memorie `requires_verification=True` (contenenti valori numerici o fattuali) con similarità cosine > 0.72 all'interno dello stesso dominio. Per ogni coppia, `_llm_check_contradiction` chiede a Qwen3.6 se i due contenuti esprimono un conflitto fattuale reale sullo stesso soggetto (es. "MFI=6" vs "MFI=4"). In caso di conflitto confermato, la memoria più vecchia riceve il tag `superseded_by = [UUID_vincitore]` — **soft-delete**: non viene mai cancellata (audit trail preservato), ma viene esclusa silenziosamente da tutti i path di retrieval (`_hydrate`, `_search_semantic`, `domain_aware_search`). Le coppie già analizzate vengono tracciate in un set Redis con TTL 180 giorni. Max 15 coppie per ciclo. `SKIP_SOURCES = {"web"}` — i nodi consolidati `loop2e` sono **inclusi** (V2.13): entrano nel RAG con priorità alta e devono poter essere corretti, il soft-delete rende il rischio reversibile.
+- **Filtro del Risveglio (re-rank insight in retrieval):** complementare al Dream Engine. Il sogno (Loop 2b) resta libero e atemporale per design — il filtro di rilevanza opera solo al recupero conversazionale. `search_insights` applica una penalty moltiplicativa (×1.5 default) sulla cosine distance per gli insight i cui due domini non sono apparsi nelle memorie *curate* di Stefano (`teach/user/reflection`) negli ultimi 30 giorni. Non sopprime: deprioritizza. Se domani Stefano riapre un dominio archivio, l'insight risale automaticamente. `passive` e `conversation` escluse dal set `INSIGHT_ACTIVE_SOURCES` perché spugne ambient — dry-run aveva mostrato 0% archivio con tutti i source operativi (no-op). Con `teach/user/reflection` → 35% archivio sui 95 insight promossi, caso "Radio QUQU ↔ materiali" correttamente penalizzato. Cache `_active_domains` 5 min.
 
 > **Nota tecnica:** Il timer di idle usa `time.time()` (wall-clock) per contare correttamente anche le ore in cui il PC è in sospensione.
 
@@ -187,6 +188,19 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 ---
 
 ## Changelog
+
+### V2.13 — Filtro del Risveglio + Loop 2f sui Consolidati + Audit Ricalibrato
+
+- **Filtro del Risveglio (re-rank retrieval insight):** `search_insights` ora applica una penalty moltiplicativa (×1.5 default) sulla cosine distance per gli insight i cui due domini non sono apparsi nelle memorie curate da Stefano (`teach/user/reflection`) negli ultimi 30 giorni. Il Dream Engine resta libero e atemporale: il filtro opera solo al retrieval. Non sopprime, deprioritizza. Caso test: gli insight "Radio QUQU + materiale neutro" (isomorfismi fisicamente corretti ma operativamente fuori contesto) ora finiscono in fondo alla coda di priorità. Se Stefano riapre attivamente il dominio `radio`, l'insight risale automaticamente entro 5 min (TTL cache `_active_domains`).
+  - **Scelta source critica:** `passive` e `conversation` escluse perché spugne ambient — ogni nome di passaggio fa entrare un dominio negli attivi, neutralizzando il filtro. Dry-run: con tutti i source operativi → 0% archive (no-op totale). Con `teach/user/reflection` → 35% archive sui 95 insight promossi attuali (caso Radio QUQU correttamente penalizzato).
+  - Config: `INSIGHT_ACTIVE_DAYS=30`, `INSIGHT_ARCHIVE_PENALTY=1.5`, `INSIGHT_OVERSAMPLE_FACTOR=3`, `INSIGHT_ACTIVE_SOURCES={teach,user,reflection}`.
+  - `recalled_count` incrementato solo sui sopravvissuti al re-rank (non più su tutti i candidati KNN).
+
+- **Loop 2f esteso ai nodi consolidati `loop2e`:** rimosso `loop2e` da `SKIP_SOURCES`. Era escluso per "non far contraddire i nodi consolidati", ma i `loop2e` entrano nel RAG con priorità alta e ereditano claim dalle sorgenti — se la fonte era errata o evolve, l'errore si amplifica. Soft-delete via `superseded_by` rende il rischio reversibile. **Prima firing reale del Loop 2f nella storia di Euri:** una memoria `loop2e` su "secchi vernici / lotti 25kg / carichi 27t" è stata superseded dalla versione più recente che include monitoraggio Whisper e analisi costi vagliatura. `SKIP_SOURCES` ora solo `{"web"}`.
+
+- **Audit `scripts/audit_memory.py` ricalibrato:** il giudice LLM scartava conoscenza tecnica oggettiva (Realube 5014, Reagens, parametri stampaggio) come "dato generico non personale". Su 295 memorie passive: 82 UTILI / 213 RUMORE (72% RUMORE falsi negativi). Prompt riscritto con criteri UTILE espliciti (conoscenza tecnica, persone, progetti, strumenti) e RUMORE ristretto (frase troncata/riempitivo/duplicato banale/errore). Risultato post-fix: 274 UTILI / 21 RUMORE (7.1%). Le 21 RUMORE sono frammenti veri e affermazioni senza soggetto.
+
+- **`force_full_cycle.py`:** nuovo script per forzare un ciclo Dream Engine completo (Loop 2b/2c/2f + cleanup expired/stale + Loop 2d + Loop 2e) senza aspettare l'idle notturno. Stampa snapshot before/after: nuovi loop2e, `superseded_by` aggiunti, nuovi candidate e promoted. Tempo tipico 5-7 min su Qwen3.6 35B.
 
 ### V2.12 — Analisi Clipboard senza Limite + TEACH Mode Robusto
 
