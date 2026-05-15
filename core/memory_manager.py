@@ -778,3 +778,82 @@ class MemoryManager:
     def get_today_conversation(self) -> list[str]:
         date_key = now().strftime("%Y-%m-%d")
         return self.r.lrange(f"euri:conversation:{date_key}", 0, -1)
+
+    # ──────────────────────────────────────────
+    # AUDIT DI COERENZA — Correction signals
+    # ──────────────────────────────────────────
+
+    # Pattern di correzione: solo segnali forti, falsi positivi vengono filtrati
+    # dal Loop 2g (classificati come "ambiguous").
+    _CORRECTION_PATTERNS = [
+        re.compile(p, re.IGNORECASE) for p in [
+            r'\bhai\s+(fatto\s+)?confusione\b',
+            r'\bstai\s+(miscelando|confondendo|sbagliando)\b',
+            r'\bnon\s+(è\s+(corretto|esatto|cos[iì])|hai\s+capito)\b',
+            r'\bti\s+sbagli\b',
+            r'\bhai\s+sbagliato\b',
+            r'\bcorre(g)?gimi\b',
+            r'\bno\s*,?\s+(non|sbagli|stai|hai|in\s+realt[aà])\b',
+            r'\bnon\s+era\b.*\bma\s+(era|erano)\b',
+        ]
+    ]
+
+    @classmethod
+    def detect_correction(cls, text: str) -> bool:
+        """True se il prompt utente assomiglia a una correzione di un turno precedente."""
+        if not text:
+            return False
+        return any(p.search(text) for p in cls._CORRECTION_PATTERNS)
+
+    def set_last_rag_ctx(self, ids: list[str]) -> None:
+        """
+        Memorizza gli ID delle memorie iniettate nel turno corrente.
+        Usato dal Loop 2g per ricostruire il contesto del turno che ha generato l'errore.
+        TTL 1h: oltre quel limite, la correzione non è più associabile in modo affidabile.
+        """
+        key = "euri:last_rag_ctx"
+        self.r.delete(key)
+        if ids:
+            self.r.rpush(key, *ids)
+            self.r.expire(key, 3600)
+
+    def get_last_rag_ctx(self) -> list[str]:
+        """Recupera gli ID del RAG context del turno precedente (può essere vuoto)."""
+        return self.r.lrange("euri:last_rag_ctx", 0, -1) or []
+
+    def get_last_euri_turn(self) -> str:
+        """Ultimo turno di Euri nella conversazione di oggi (stringa vuota se assente)."""
+        convs = self.get_today_conversation()
+        for entry in reversed(convs):
+            if "] Euri: " in entry:
+                return entry.split("] Euri: ", 1)[1]
+        return ""
+
+    def save_correction_signal(
+        self,
+        prompt_originale: str,
+        risposta_euri: str,
+        correzione_user: str,
+        rag_ctx_ids: list[str],
+    ) -> str:
+        """
+        Salva un correction signal per analisi notturna del Loop 2g.
+        TTL 30gg: oltre quel limite il signal non analizzato evapora.
+        """
+        sid = str(uuid.uuid4())
+        key = f"euri:correction:{sid}"
+        doc = {
+            "id": sid,
+            "prompt_original": prompt_originale,
+            "risposta_euri": risposta_euri,
+            "correzione_user": correzione_user,
+            "rag_ctx_ids": rag_ctx_ids or [],
+            "status": "pending",
+            "verdict": None,
+            "created_at": to_timestamp(now()),
+            "analyzed_at": None,
+        }
+        self.r.json().set(key, "$", doc)
+        self.r.expire(key, 30 * 86400)
+        logger.info(f"Correction signal salvato: {sid[:8]} — '{correzione_user[:60]}'")
+        return sid

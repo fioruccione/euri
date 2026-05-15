@@ -26,6 +26,7 @@ from core.dream_engine import DreamEngine
 def snapshot(r):
     by_source = Counter()
     superseded = 0
+    audit_flagged = 0
     for key in r.scan_iter("euri:memory:*"):
         try:
             data = r.json().get(key, "$")
@@ -35,6 +36,8 @@ def snapshot(r):
             by_source[doc.get("source", "?")] += 1
             if doc.get("superseded_by"):
                 superseded += 1
+            if doc.get("audit_flag", 0) > 0:
+                audit_flagged += 1
         except Exception:
             pass
 
@@ -52,15 +55,32 @@ def snapshot(r):
         except Exception:
             pass
 
-    return dict(by_source), superseded, candidates, promoted
+    corr = Counter()
+    for key in r.scan_iter("euri:correction:*"):
+        try:
+            data = r.json().get(key, "$")
+            if not data:
+                continue
+            doc = data[0]
+            if doc.get("status") == "pending":
+                corr["pending"] += 1
+            else:
+                corr[doc.get("verdict") or "analyzed"] += 1
+        except Exception:
+            pass
+
+    return dict(by_source), superseded, candidates, promoted, audit_flagged, dict(corr)
 
 
-def _print_state(by_src, sup, cand, prom):
+def _print_state(by_src, sup, cand, prom, audit_flagged, corr):
     for src, n in sorted(by_src.items(), key=lambda x: -x[1]):
         print(f"  {src:<18} {n:>4}")
     print(f"  superseded_by:     {sup}")
+    print(f"  audit_flagged:     {audit_flagged}")
     print(f"  insight candidate: {cand}")
     print(f"  insight promoted:  {prom}")
+    if corr:
+        print(f"  correction signals: {dict(corr)}")
 
 
 def _delta(a, b):
@@ -68,9 +88,26 @@ def _delta(a, b):
     return f"+{d}" if d > 0 else (str(d) if d < 0 else " 0")
 
 
+def _inject_test_correction(mem):
+    """Inietta un correction signal sintetico per testare il Loop 2g end-to-end."""
+    sid = mem.save_correction_signal(
+        prompt_originale="Quanto pesava il campione ICS che dovevamo consegnare?",
+        risposta_euri="Era da 25 chili, grado 15.",
+        correzione_user="No, sbagli, il campione ICS era 15 chili e grado 25, hai invertito i valori.",
+        rag_ctx_ids=[],
+    )
+    print(f"✓ Iniettato correction signal di test: {sid[:8]}")
+    return sid
+
+
 def main():
+    import sys as _sys
+    inject = "--inject" in _sys.argv
+
     print("\n══════════════════════════════════════════")
     print("  DREAM ENGINE — Ciclo completo forzato")
+    if inject:
+        print("  [modalità test: inietto correction signal]")
     print("══════════════════════════════════════════\n")
 
     r = redis_lib.Redis(host=config.REDIS_HOST, port=config.REDIS_PORT,
@@ -86,9 +123,13 @@ def main():
     engine = DreamEngine(r, emb, memory=mem)
     print("✓ DreamEngine costruito\n")
 
+    if inject:
+        _inject_test_correction(mem)
+        print()
+
     print("── Stato PRIMA ─────────────────────────────")
-    by_src_b, sup_b, cand_b, prom_b = snapshot(r)
-    _print_state(by_src_b, sup_b, cand_b, prom_b)
+    by_src_b, sup_b, cand_b, prom_b, af_b, corr_b = snapshot(r)
+    _print_state(by_src_b, sup_b, cand_b, prom_b, af_b, corr_b)
 
     print("\n── Esecuzione ciclo completo ───────────────")
     t0 = time.time()
@@ -97,7 +138,7 @@ def main():
     print(f"\n✓ Ciclo completato in {elapsed:.1f}s")
 
     print("\n── Stato DOPO ──────────────────────────────")
-    by_src_a, sup_a, cand_a, prom_a = snapshot(r)
+    by_src_a, sup_a, cand_a, prom_a, af_a, corr_a = snapshot(r)
     all_sources = sorted(set(by_src_b) | set(by_src_a),
                          key=lambda s: -by_src_a.get(s, 0))
     for src in all_sources:
@@ -105,8 +146,11 @@ def main():
         a = by_src_a.get(src, 0)
         print(f"  {src:<18} {a:>4}  ({_delta(a, b)})")
     print(f"  superseded_by:     {sup_a}  ({_delta(sup_a, sup_b)})")
+    print(f"  audit_flagged:     {af_a}  ({_delta(af_a, af_b)})")
     print(f"  insight candidate: {cand_a}  ({_delta(cand_a, cand_b)})")
     print(f"  insight promoted:  {prom_a}  ({_delta(prom_a, prom_b)})")
+    if corr_a or corr_b:
+        print(f"  correction signals: {corr_b} → {corr_a}")
 
 
 if __name__ == "__main__":

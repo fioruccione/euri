@@ -479,6 +479,23 @@ with main_col:
 
         # Input utente
         if prompt := st.chat_input("Scrivi a Euri..."):
+            # ── Audit di Coerenza: capture correction signal ─────────────
+            # Se il prompt è una correzione, salva il signal PRIMA del retrieval
+            # del turno corrente (last_rag_ctx contiene ancora il ctx del turno corretto).
+            if memory_manager.detect_correction(prompt):
+                prev_user_turn = ""
+                for m in reversed(st.session_state.messages):
+                    if m["role"] == "user":
+                        prev_user_turn = m["content"]
+                        break
+                prev_euri_turn = memory_manager.get_last_euri_turn()
+                memory_manager.save_correction_signal(
+                    prompt_originale=prev_user_turn,
+                    risposta_euri=prev_euri_turn,
+                    correzione_user=prompt,
+                    rag_ctx_ids=memory_manager.get_last_rag_ctx(),
+                )
+
             # Mostra utente
             st.session_state.messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
@@ -514,6 +531,11 @@ with main_col:
                             if r.get("id") not in recent_ids]
 
                 insights = memory_manager.search_insights(prompt, limit=2)
+
+                # Audit di Coerenza: registra ID iniettati per eventuale correzione al prossimo turno
+                ctx_ids_now = [r.get("id") for r in recent if r.get("id")]
+                ctx_ids_now += [r.get("id") for r in semantic if r.get("id")]
+                memory_manager.set_last_rag_ctx(ctx_ids_now)
 
                 context = ""
                 if recent:

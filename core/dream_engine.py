@@ -116,6 +116,9 @@ class DreamEngine:
             # 4. Loop 2f: Contradiction resolution — soft-delete valori numerici obsoleti
             self._contradiction_resolution_pass()
 
+            # 4b. Loop 2g: Audit di Coerenza — analizza le correzioni ricevute durante il giorno
+            self._audit_corrections_pass()
+
             # 5. Pulizia Insight scaduti
             self._cleanup_expired_insights()
 
@@ -599,6 +602,162 @@ Rispondi SOLO: SÌ o NO."""
 
         except Exception as e:
             logger.error(f"Errore Loop 2f contradiction resolution: {e}")
+
+    # ── Loop 2g: Audit di Coerenza ────────────────────────────────────────
+
+    def _llm_classify_correction(
+        self, prompt_orig: str, risposta_euri: str, correzione: str, ctx_memories: list[str]
+    ) -> str:
+        """
+        LLM-as-judge: classifica una correzione come bad_memory / bad_reasoning / ambiguous.
+        - bad_memory: l'errore deriva da una memoria iniettata sbagliata o obsoleta.
+        - bad_reasoning: le memorie erano OK, l'errore è di ragionamento al volo.
+        - ambiguous: non è chiaro o la "correzione" non è davvero una correzione.
+        """
+        ctx_block = "\n".join(f"- {m}" for m in ctx_memories) if ctx_memories else "(nessuna memoria iniettata)"
+        prompt = f"""\
+Devi analizzare una correzione che un utente ha fatto a un assistente.
+
+DOMANDA UTENTE:
+"{prompt_orig[:500]}"
+
+MEMORIE INIETTATE NEL CONTESTO DELL'ASSISTENTE (la base su cui ha risposto):
+{ctx_block}
+
+RISPOSTA DELL'ASSISTENTE (che l'utente ha corretto):
+"{risposta_euri[:500]}"
+
+CORREZIONE DELL'UTENTE:
+"{correzione[:500]}"
+
+Classifica l'origine dell'errore in UNA di queste tre categorie:
+- BAD_MEMORY: la risposta sbagliata deriva da una memoria iniettata che era essa stessa sbagliata, obsoleta, o riferita a un soggetto diverso da quello chiesto.
+- BAD_REASONING: le memorie erano corrette e pertinenti, ma l'assistente ha ragionato male, confuso concetti, o tratto la conclusione sbagliata.
+- AMBIGUOUS: non è chiaro dove sia l'errore, oppure il messaggio dell'utente non è davvero una correzione (es. cambio di argomento, scherzo, sfumatura).
+
+Rispondi SOLO con una di queste tre parole: BAD_MEMORY, BAD_REASONING, AMBIGUOUS."""
+        try:
+            response = self._ollama_chat(
+                model=config.DREAM_OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0, "num_predict": 800},
+                think=False,
+                _timeout=90,
+            )
+            text = (response.message.content or "").strip().upper()
+            if "<channel|>" in text:
+                text = text.split("<channel|>", 1)[-1].strip()
+            import re as _re
+            text = _re.sub(r"<THINK>.*?</THINK>", "", text, flags=_re.DOTALL).strip()
+            for verdict in ("BAD_MEMORY", "BAD_REASONING", "AMBIGUOUS"):
+                if verdict in text:
+                    return verdict.lower()
+            return "ambiguous"
+        except Exception as e:
+            logger.debug(f"Loop 2g: errore LLM classify — {e}")
+            return "ambiguous"
+
+    def _audit_corrections_pass(self):
+        """
+        Loop 2g — Audit di Coerenza.
+        Per ogni correction_signal pending del giorno:
+        1. Recupera contenuti delle memorie iniettate.
+        2. Chiede al LLM-judge se l'errore è bad_memory o bad_reasoning.
+        3. Azioni differenziate:
+           - bad_memory: incrementa audit_flag sulle memorie nel rag_ctx (segnale debole, niente azione automatica per ora).
+           - bad_reasoning: salva la correzione come passive memory di tipo 'lesson' (nutrimento per il futuro).
+           - ambiguous: nessuna azione, solo marca lo status.
+        Max 10 correzioni per ciclo per evitare cicli lunghi.
+        """
+        MAX_PER_CYCLE = 10
+
+        try:
+            pending = []
+            for key in self._r.scan_iter("euri:correction:*"):
+                try:
+                    d = self._r.json().get(key, "$")
+                    if not d:
+                        continue
+                    doc = d[0]
+                    if doc.get("status") != "pending":
+                        continue
+                    pending.append((key, doc))
+                except Exception:
+                    continue
+
+            if not pending:
+                logger.debug("Loop 2g: nessuna correzione pending")
+                return
+
+            pending.sort(key=lambda x: x[1].get("created_at", 0))
+            pending = pending[:MAX_PER_CYCLE]
+
+            counts = {"bad_memory": 0, "bad_reasoning": 0, "ambiguous": 0}
+
+            for key, doc in pending:
+                # Recupera contenuti delle memorie iniettate
+                ctx_memories = []
+                for mid in doc.get("rag_ctx_ids", []):
+                    if not mid:
+                        continue
+                    mkey = mid if mid.startswith("euri:memory:") else f"euri:memory:{mid}"
+                    try:
+                        m = self._r.json().get(mkey, "$")
+                        if m and m[0].get("content"):
+                            ctx_memories.append(m[0]["content"][:200])
+                    except Exception:
+                        continue
+
+                verdict = self._llm_classify_correction(
+                    doc.get("prompt_original", ""),
+                    doc.get("risposta_euri", ""),
+                    doc.get("correzione_user", ""),
+                    ctx_memories,
+                )
+
+                counts[verdict] = counts.get(verdict, 0) + 1
+
+                # Aggiorna lo status del signal
+                self._r.json().set(key, "$.status", "analyzed")
+                self._r.json().set(key, "$.verdict", verdict)
+                self._r.json().set(key, "$.analyzed_at", time.time())
+
+                # Azioni differenziate
+                if verdict == "bad_memory":
+                    for mid in doc.get("rag_ctx_ids", []):
+                        if not mid:
+                            continue
+                        mkey = mid if mid.startswith("euri:memory:") else f"euri:memory:{mid}"
+                        try:
+                            current = self._r.json().get(mkey, "$.audit_flag")
+                            cur_val = int(current[0]) if current else 0
+                            self._r.json().set(mkey, "$.audit_flag", cur_val + 1)
+                        except Exception:
+                            continue
+
+                elif verdict == "bad_reasoning" and self._memory_manager:
+                    # La correzione utente diventa una lesson — passive memory.
+                    lesson_text = doc.get("correzione_user", "").strip()
+                    if lesson_text and len(lesson_text) > 10:
+                        try:
+                            self._memory_manager.save_memory(
+                                content=lesson_text,
+                                category="lesson",
+                                tags=["lesson", "from_correction"],
+                                source="passive",
+                            )
+                        except Exception as e:
+                            logger.debug(f"Loop 2g: errore salvataggio lesson — {e}")
+
+                logger.info(f"Loop 2g: {key[-8:]} → {verdict}")
+
+            logger.info(
+                f"Loop 2g: {len(pending)} correzioni analizzate "
+                f"({counts['bad_memory']} bad_memory, {counts['bad_reasoning']} bad_reasoning, {counts['ambiguous']} ambiguous)"
+            )
+
+        except Exception as e:
+            logger.error(f"Errore Loop 2g audit corrections: {e}")
 
     def _cleanup_expired_insights(self):
         """

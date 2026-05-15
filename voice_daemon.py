@@ -154,6 +154,7 @@ class VoiceDaemon:
         self._pending_write: _PendingState | None = None  # richiesta scrittura file in attesa (timeout 120s)
         self._last_speech_content: str = ""      # ultima risposta lunga di Euri (per "scrivilo")
         self._last_speech_ts: float = 0.0        # timestamp di _last_speech_content (TTL 300s)
+        self._last_user_text: str = ""           # ultimo prompt utente (Audit di Coerenza)
         self._translate_bidir = False       # modalità interprete bidirezionale IT↔EN
         self._dictation_mode = False
         self._dictation_buffer: list[str] = []
@@ -843,6 +844,12 @@ class VoiceDaemon:
             ]
             logger.info(f"RAG ctx [{len(results)} nodi]: {' | '.join(node_tags)}")
 
+        # Audit di Coerenza: registra ID per analisi notturna di eventuali correzioni
+        try:
+            self.memory.set_last_rag_ctx([r.get("id") for r in results[:6] if r.get("id")])
+        except Exception as e:
+            logger.debug(f"set_last_rag_ctx fallito: {e}")
+
         return "\n\n".join(sections)
 
     def _handle_web_search(self, text: str):
@@ -1016,6 +1023,20 @@ class VoiceDaemon:
 
 
     def _handle_chat(self, text: str):
+        # Audit di Coerenza: capture correction signal PRIMA di loggare/rispondere,
+        # così last_rag_ctx contiene ancora il ctx del turno precedente (corretto).
+        if self.memory.detect_correction(text):
+            try:
+                self.memory.save_correction_signal(
+                    prompt_originale=self._last_user_text or "",
+                    risposta_euri=self.memory.get_last_euri_turn(),
+                    correzione_user=text,
+                    rag_ctx_ids=self.memory.get_last_rag_ctx(),
+                )
+            except Exception as e:
+                logger.debug(f"Audit capture fallito: {e}")
+        self._last_user_text = text
+
         self.memory.log_conversation("Stefano", text)
 
         # Intercetta richieste conversazionali di creazione file prima di chiamare l'LLM
