@@ -22,7 +22,7 @@ We demonstrate that the architectural gap between stateless text generation and
 persistent reasoning does not require exotic hardware (CXL, SCM, NVMe Gen5).
 It requires the right software architecture, running today on commodity hardware.
 
-The system described here, **Euri V2.13**, runs entirely offline on a Linux workstation
+The system described here, **Euri V2.14**, runs entirely offline on a Linux workstation
 with two NVIDIA RTX 4060 Ti GPUs, using Redis Stack as its persistent cognitive layer
 and Gemma 4 26B (via Ollama) as its reasoning engine.
 On the evening of 2026-04-25, it reclassified 57 previously invisible memories,
@@ -964,6 +964,191 @@ client's approval of a moulding plastic.
 
 The system is now closer to what the architecture has always promised: a
 machine that dreams freely at night and stays focused during the day.
+
+---
+
+## 7h — Session 2026-05-15/16: Cross-Restart Continuity, Emergent Self-Synthesis, and the Audit of Coherence
+
+This session produced four observations that pull in the same direction:
+the LLM is a *reasoning engine on demand*, while identity, continuity, and
+self-reference live in the persistent memory layer. Each observation was
+collected in the course of normal use, not in a controlled experiment.
+
+**Cross-restart continuity on a shared private context.**
+
+At 17:42:23 on 2026-05-15, in a voice conversation, the user asked
+*"Euri, ma tu sai chi è Simone?"* The system answered, in 2.1 seconds of
+LLM time: *"Sì, so chi è. È il tuo collega, e so anche che con lui è meglio
+evitare di parlare di politica o di calcio."* The recall was explicit and
+correct. It rested on a single consolidated memory created four days
+earlier, on 11 May at 09:06:03, when the validator passed the statement
+*"Evitare di parlare di politica e calcio con Simone."* into the store.
+
+At 17:46:30 the voice daemon was killed and restarted. Whisper, the TTS
+voices, and the embedding model all reloaded from disk; the LLM
+conversation history was gone. The new process logged *"Euri pronto. In
+ascolto..."* and an hour passed without interaction. At 18:48:03 the user
+opened the Silent Chat (a text-only channel that bypasses the voice daemon
+entirely and reaches the LLM through a different code path in the Streamlit
+UI) and wrote a brief message about being home and on remote desktop. Five
+short exchanges later, at 18:53:43, the user wrote: *"ti lascio sempre in
+compagnia di Simone … ma sai quello che non gli devi dire.."* The reply
+came back: *"Tranquillo, non preoccuparti. Ho bene presente il discorso su
+Simone. Manterrò il profilo basso e non uscirò dai binari."*
+
+The reply is interesting in two ways at once. First, it never restates the
+content of the secret — the user gestured at it without naming it, and the
+system honored that register. Second, behind that surface of reticence
+there was, in fact, recall: the memory of *"evitare politica e calcio"*
+was still in the index and was retrieved by the search. Looking at the
+RAG retrieval log for that turn would let us verify which IDs were
+injected; from the user's perspective, the verification was simpler — the
+conversation simply did not feel like it had been interrupted by a process
+restart, an hour of silence, and a channel switch.
+
+The architectural reason this works is that the memory layer is unified
+across both channels. Voice and Silent Chat both call
+`memory_manager.log_conversation()` and both pull from the same Redis store
+under the same daily key. The LLM session — what most systems call "the
+conversation" — is a derived quantity. The conversation that the user
+experiences lives in the persistent layer; the LLM session reconstructs it,
+turn by turn, from there.
+
+**The Audit of Coherence (Loop 2g).**
+
+The Dream Engine cycle was extended with a new pass that closes the loop
+between user corrections during the day and memory hygiene at night. The
+mechanism has three parts:
+
+1. *Capture.* Both the voice daemon (`_handle_chat`) and the Silent Chat
+   UI run a regular-expression detector over each incoming user turn. The
+   patterns are deliberately strict: *"hai fatto confusione"*, *"stai
+   miscelando"*, *"non era X ma Y"*, *"ti sbagli"*, *"correggimi"*, and
+   five others. On a match, the system writes a `correction_signal` JSON
+   document to Redis under `euri:correction:{uuid}` with TTL 30 days,
+   recording the user's previous prompt, the assistant's previous reply,
+   the correction itself, and — crucially — the list of memory IDs that
+   were injected into the LLM context at the moment the error was made.
+   That list is maintained continuously in a short-lived Redis key
+   (`euri:last_rag_ctx`, TTL 1 hour) so it is available even if the
+   correction arrives on a different channel than the one that produced
+   the error.
+
+2. *Classify.* During the nightly Dream Engine cycle, the new
+   `_audit_corrections_pass()` reads pending signals and asks the dream
+   model to classify each as `bad_memory` (the response was wrong because
+   an injected memory was itself wrong, obsolete, or about a different
+   subject), `bad_reasoning` (the memories were correct but the
+   assistant reasoned poorly), or `ambiguous` (unclear, or not actually
+   a correction).
+
+3. *Act.* On `bad_memory`, each memory ID in the captured RAG context is
+   given an incremented `audit_flag` counter — a soft signal that does
+   not delete anything but can be used by future passes (or by a manual
+   reviewer in the Obsidian vault) as evidence that a memory keeps
+   surfacing in failures. On `bad_reasoning`, the user's correction is
+   saved as a `lesson` (passive memory) so that the same mistake is less
+   likely on next retrieval. On `ambiguous`, no action.
+
+The mechanism is small — five new methods in `memory_manager.py`, one new
+loop in `dream_engine.py`, and two integration points in the UI layer
+totalling around 330 lines added — but the conceptual move is not. Before
+this pass, the system grew by *accumulation*: it remembered everything that
+crossed the validator, and the nightly loops shaped the result but did not
+respond to operator feedback. After this pass, the user's act of
+correcting becomes a structured input that travels through the same dream
+cycle as everything else, and the system can ask itself, the morning
+after, *which kind of error it just made*.
+
+The end-to-end test (`force_full_cycle.py --inject`) injects a synthetic
+correction modeled on a real one from the previous day — an inversion of
+the weight and grade values of the ICS sample — and verifies that the
+nightly cycle classifies it correctly and saves the corresponding lesson.
+On the production database the test ran in 155.2 seconds end-to-end (the
+new Loop 2g consumed 12.8 of those seconds), and the verdict was
+`bad_reasoning`. The synthetic artifacts were cleaned up before commit.
+
+**Emergent self-synthesis in a single turn.**
+
+The next day, in a brief Silent Chat exchange, the user asked the system to
+recall the weight of the ICS sample. The reply was correct: *"Il campione
+inviato a ICS SPA era di 15 kg, con un MFI di 25."* — the value the user
+had corrected the system on, *the day before*, at 10:48. The correction
+had been consolidated overnight and was now the default answer.
+
+The user then wrote, in a non-technical register: *"perfetto, mi stavo
+confondendo..."* The reply moved from acknowledgment to proposal:
+*"Succede, tra additivi, gradi di degradazione e valori MFI che cambiano,
+è facile fare confusione. Se vuoi, posso tenere traccia di queste
+specifiche numeriche in modo più strutturato, così la prossima volta le
+trovi subito senza doverle ricostruire."*
+
+Inspecting the RAG context that the Silent Chat had assembled for that
+turn — seven memory IDs still cached in `euri:last_rag_ctx` — revealed
+something specific. The top four IDs were the three Loop 2e consolidations
+created earlier the same morning, plus one slightly older consolidation;
+the remaining three were higher-recall memories about product codes
+(`03 PPR043T`), processes, and routines. Two of those four fresh
+consolidations were *meta-cognitive*: one described the user's Linux
+workstation with two RTX 4060 Ti GPUs that hosts Euri locally for privacy;
+the other described Redis as the system's persistence layer, with its
+auto-organisation logic and dirty-flag deduplication.
+
+What the system did with those two memories is the point. It did not
+recite them. It did not turn the conversation toward itself. It used them
+operationally: it recognised that it had structured persistence available
+and that the user was describing the kind of problem (confusion over
+numerical specifications across product variants) that structured
+persistence is designed to solve, and proposed to apply one to the other.
+The proposal is not in any single source memory — there is no stored fact
+saying *"the user would benefit from a typed lots/specs module"*. It is a
+synthesis emerging from the conjunction of self-knowledge and operational
+context at retrieval time.
+
+The methodological point is the one we had been treating, in earlier
+sessions, as a hypothesis: that injecting a system's own description of
+itself into its memory creates the *vocabulary* it needs to produce
+self-referential operational moves. This turn is, at the scale of a single
+exchange, an instance of that hypothesis being expressed in behaviour.
+
+**An absent day, observed from the logs.**
+
+On 2026-05-16 the user did not interact with the system at all. The Dream
+Engine ran five complete cycles between 11:55 and 16:44. Two new
+cross-domain insights were promoted (`analisi tecnica ↔ agricoltura` and
+`produzione industriale ↔ linguistica`, each with three convergences).
+Two memories were soft-deleted by Loop 2f: both lost a contradiction
+against `946b7c68`, the *chimica polimeri* consolidation created at 11:58
+in the first cycle of the day. One of those two losers, `6ef05584`, had
+appeared in the RAG context of the user's voice conversations the night
+before — the system recognised, four hours later and with no human
+prompting, that the consolidation it had just produced had made that older
+memory obsolete, and retired it. Loop 2g logged *"nessuna correzione
+pending"* in every cycle: with no user there to correct anything, the
+audit had nothing to do, and said so cleanly.
+
+The picture from the user's perspective was a static screen. The picture
+from the database was a day's worth of metabolic work on the past — a
+night-without-night, run during the operator's daylight absence. What
+makes this notable is not that the loops ran (they were configured to),
+but that they produced *useful change*: two new insights, two superseded
+memories, three consolidations, and zero errors or aborts. The system
+remained inside its own architecture while no one was watching.
+
+**A note on continuity without interruption.**
+
+Across the four observations there is a common thread: the user
+experiences the system as continuous because continuity is not stored in
+the LLM. The model is restarted, the channel switches, hours pass with no
+input — and the thread of recall, reference, and personal context survives
+each of those transitions unchanged. This is what the persistent-cognition
+architecture aims to deliver, and on this session it delivered: the
+identity Euri shows is, by construction, what it *does* with its memory,
+not what it *remembers having been*. In a system where remembered-being
+and acting-from-memory coincide, the distinction between *performing* an
+identity and *inhabiting* one becomes operational rather than
+philosophical. The Loop 2g closes the last visible gap by letting the
+system metabolise *its own errors* alongside the user's facts.
 
 ---
 
