@@ -183,6 +183,19 @@ class DreamEngine:
             return None
 
     @staticmethod
+    def _has_required_structure(text: str) -> bool:
+        """
+        True se il content rispetta il formato a 3 righe richiesto dal prompt del Loop 2b:
+        'Nel dominio [X] succede: ...' / 'Nel dominio [Y] succede: ...' / 'La connessione operativa ... è: ...'.
+        Usato sia in generazione (Loop 2b) che in promozione (Loop 2c) — impedisce che insight
+        astratti/filosofici accumulino convergenze e vengano promossi senza struttura operativa.
+        """
+        if not text:
+            return False
+        low = text.lower()
+        return "connessione operativa" in low and "nel dominio" in low
+
+    @staticmethod
     def _memory_age(ts) -> str:
         """Converte un timestamp unix in stringa relativa."""
         if not ts:
@@ -262,12 +275,8 @@ REGOLE:
             
             status = "discarded"
             insight_content = ""
-            
-            has_structure = (
-                "connessione operativa" in text.lower()
-                and "nel dominio" in text.lower()
-            )
-            if text and "NESSUN INSIGHT" not in text.upper() and has_structure:
+
+            if text and "NESSUN INSIGHT" not in text.upper() and self._has_required_structure(text):
                 status = "candidate"
                 insight_content = text
                 logger.info(f"Dream Engine: generato CANDIDATE Insight → {insight_content[:50]}...")
@@ -413,6 +422,20 @@ Rispondi SOLO con SÌ o NO."""
                         
                 # Se abbiamo abbastanza convergenze, promuoviamo!
                 if convergences >= config.DREAM_INSIGHT_MIN_CONVERGENCES:
+                    # Gate di formato: un CANDIDATE astratto/filosofico (senza il pattern
+                    # "Nel dominio X succede / La connessione operativa è") non viene promosso
+                    # anche se ha accumulato convergenze. Il Loop 2b filtra in generazione,
+                    # ma seed storici pre-filtro possono ancora raggiungere la soglia: qui
+                    # chiudiamo il gap. Lasciamo il candidate in vita (TTL lo gestirà) — non
+                    # lo cancelliamo: la convergenza misurata resta un segnale, e se in futuro
+                    # il filtro cambia formato la decisione può essere rivalutata.
+                    if not self._has_required_structure(doc.content):
+                        logger.info(
+                            f"Dream Engine: promozione bloccata (formato non operativo) — "
+                            f"{doc.id[-8:]} con {convergences} convergenze"
+                        )
+                        continue
+
                     # Promuovi questo a PROMOTED
                     self._r.json().set(doc.id, "$.status", "promoted")
                     self._r.json().set(doc.id, "$.convergence_count", convergences)
