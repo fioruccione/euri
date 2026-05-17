@@ -795,6 +795,12 @@ class MemoryManager:
             r'\bcorre(g)?gimi\b',
             r'\bno\s*,?\s+(non|sbagli|stai|hai|in\s+realt[aà])\b',
             r'\bnon\s+era\b.*\bma\s+(era|erano)\b',
+            # Estensione 17 maggio: correzioni di tipo architetturale/fattuale
+            # che la prima formulazione strict aveva mancato (caso reale: "il
+            # Context Ingestion Layer non esiste, l'hai inventato").
+            r'\bnon\s+esiste\b',
+            r'\bhai\s+inventato\b',
+            r'\bnon\s+c[’\']\s*[èe]\s+ancora\b',
         ]
     ]
 
