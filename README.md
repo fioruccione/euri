@@ -378,3 +378,42 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 - TTS con sherpa-onnx + Piper.
 - RAG base su Redis.
 - Gate visivo con OpenCV.
+
+---
+
+## License & Citation
+
+This repository uses a dual-license approach appropriate to its nature
+(both software and written content):
+
+- **Code** (Python, scripts, configuration): Apache License 2.0 —
+  see [LICENSE-CODE](LICENSE-CODE).
+- **Written content** (Working Paper, README, archive/, all `.md`):
+  Creative Commons Attribution 4.0 International (CC-BY 4.0) —
+  see [LICENSE-PAPER](LICENSE-PAPER).
+
+Both licenses require **attribution**. Neither grants exclusive rights
+over the underlying ideas or architectural patterns; they protect the
+specific expression and code, not the concepts. Anyone is free to
+build on this work — the only obligation is to acknowledge the source.
+
+### Citation
+
+If you reference this work or build on its architecture, please cite:
+
+> Fiorucci, S. & Euri (2026). *From Volatile Computation to Persistent
+> Cognition: A Working Implementation, V2.15*.
+> GitHub: https://github.com/fioruccione/euri
+
+The full series of working documents on persistent cognition by the same
+author (October 2025 → present) is listed in §0 (Document History) of
+[paper_persistent_cognition.md](paper_persistent_cognition.md).
+
+### Priority of authorship
+
+Priority over the ideas described here is independently established by
+the publicly dated commit history of this and the preceding repositories
+in the series, the earliest of which
+([persistent-cognition](https://github.com/fioruccione/persistent-cognition))
+dates to **28 October 2025** — before most of the contemporary literature
+on persistent agent memory was published.

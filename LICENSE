@@ -1,0 +1,27 @@
+Dual License Notice
+====================
+
+This repository contains both software and written content, licensed
+under two different licenses appropriate to their nature.
+
+  - Software (Python code, configuration, scripts) is licensed under
+    the Apache License 2.0. See LICENSE-CODE for the full text.
+
+  - Written content (Working Paper, README files, documents in
+    archive/, and all other textual material) is licensed under the
+    Creative Commons Attribution 4.0 International License (CC-BY 4.0).
+    See LICENSE-PAPER for the full text.
+
+When in doubt about which license applies to a given file: source
+files (.py, .sh, .yaml, .json, .toml, requirements.txt) follow
+LICENSE-CODE; documentation and prose (.md, .txt, /paper/) follow
+LICENSE-PAPER.
+
+Both licenses require attribution. Neither license grants exclusive
+rights over the underlying ideas or architectural patterns described
+in this repository; they protect the specific expression and code,
+not the concepts.
+
+Copyright (c) 2025-2026 Stefano Fiorucci
+
+For citation, see the "License & Citation" section of README.md.

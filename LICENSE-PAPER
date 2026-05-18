@@ -1,0 +1,60 @@
+Attribution 4.0 International (CC BY 4.0)
+
+Copyright (c) 2025-2026 Stefano Fiorucci
+
+This work — the textual content of the repository, including
+`paper_persistent_cognition.md`, the README files, and the documents
+in `archive/` — is licensed under the Creative Commons Attribution 4.0
+International License.
+
+You are free to:
+
+  - Share: copy and redistribute the material in any medium or format
+  - Adapt: remix, transform, and build upon the material for any purpose,
+    even commercially
+
+Under the following terms:
+
+  - Attribution: You must give appropriate credit, provide a link to the
+    license, and indicate if changes were made. You may do so in any
+    reasonable manner, but not in any way that suggests the licensor
+    endorses you or your use.
+
+  - No additional restrictions: You may not apply legal terms or
+    technological measures that legally restrict others from doing
+    anything the license permits.
+
+The full legal text of the license is available at:
+https://creativecommons.org/licenses/by/4.0/legalcode
+
+Recommended citation:
+
+  Fiorucci, S. & Euri (2026). From Volatile Computation to Persistent
+  Cognition: A Working Implementation, V2.15. GitHub repository:
+  https://github.com/fioruccione/euri
+
+The earlier documents in this series (Fiorucci & Euri 2025,
+Fiorucci 2026, Fiorucci & Euri 2026) are each licensed under their own
+CC-BY 4.0 declarations in their respective repositories. See
+`paper_persistent_cognition.md` §0 (Document History) for the full
+series.
+
+—
+
+NOTICE — Notes on what this license protects and does not protect:
+
+This license protects the specific textual expression of the ideas in
+this repository (the prose, the figures, the formulations). It does
+not — and cannot — grant exclusive rights over the ideas themselves
+(architectural patterns, cognitive concepts, design principles).
+
+Anyone is free to read this work, learn from it, and implement systems
+inspired by it. The only obligation under CC-BY 4.0 is attribution:
+acknowledge the source. The intent of this license is exactly that —
+ensure that downstream work that builds on these ideas remembers where
+they came from.
+
+Priority of authorship for the ideas themselves is independently
+established by the publicly dated commit history of this and the
+preceding repositories in the series, the earliest of which (
+github.com/fioruccione/persistent-cognition ) dates to October 2025.
