@@ -7,7 +7,7 @@ Non si limita ad ascoltare e rispondere: memorizza, organizza, riflette sulle tu
 
 ---
 
-## Architettura Cognitiva (V2.14)
+## Architettura Cognitiva (V2.15)
 
 ### 1. Intent Classification — Pipeline a Due Layer
 La classificazione dell'intent è a cascata: il layer veloce esaurisce la maggior parte dei casi, il layer lento interviene solo quando necessario.
@@ -189,6 +189,16 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 ---
 
 ## Changelog
+
+### V2.15 — Document History + Gate di formato in promozione + Estensione regex correzioni
+
+- **Paper §0 — Document History:** il paper `paper_persistent_cognition.md` ora dichiara esplicitamente di essere il quarto stadio di una serie di working documents iniziata a ottobre 2025 (manifesto teorico → architettura → deployment report → working paper continuo). Le tre pubblicazioni precedenti sono ora citate formalmente nelle References e nel §8 Outlook è esplicitato che parte del testo deriva dal §7 del paper di ottobre 2025. Allineamento con la pratica di non-overwrite del sistema (Loop 2f): i paper passati restano dove sono, il presente li estende.
+
+- **Loop 2c — gate di formato in promozione:** il filtro `_has_required_structure` (controlla che il CANDIDATE rispetti il pattern "Nel dominio X succede / La connessione operativa è") era applicato solo in generazione (Loop 2b). Estratto come metodo statico e riusato in `_evaluate_insights`: ora un CANDIDATE astratto/filosofico viene bloccato anche se accumula convergenze sufficienti. Caso pratico: due insight con seed del 28-29 aprile (pre-filtro stretto) erano stati promossi il 17 maggio nonostante fossero massime filosofiche senza struttura operativa. Demotion manuale eseguita post-fix.
+
+- **Loop 2g — pattern di detect_correction estesi:** aggiunti 3 nuovi pattern (`\bnon\s+esiste\b`, `\bhai\s+inventato\b`, `\bnon\s+c[apostrofo]è\s+ancora\b`) per coprire correzioni di tipo *referenziale* (entità inesistente) distinte dal tipo *attributivo* coperto dalla regex originale (errore su entità reale). Caso reale: il 17 maggio Stefano corregge Euri su un nome di modulo inventato ("Context Ingestion Layer") — correzione semanticamente chiarissima ma non catturata da nessuno degli 8 pattern strict iniziali. La distinzione attributo/esistenza ha valore concettuale, non solo coverage.
+
+- **Primo ciclo completo del Loop 2g su dati reali:** nella notte 17→18 maggio il Dream Engine ha classificato i primi due correction_signal reali (entrambi `bad_reasoning` come atteso), salvato le rispettive lesson come passive memory, e — caso notevole — uno dei due insight promossi della notte (`chimica analitica ↔ comunicazione digitale`, 02:07) ha pescato la lesson appena metabolizzata e l'ha trasformata in principio operativo cross-domain. Ciclo completo *errore vissuto → correzione → classificazione → lesson → insight promosso* osservato su dati reali. Documentazione in arrivo nel paper §7i.
 
 ### V2.14 — Loop 2g: Audit di Coerenza sulle correzioni utente
 

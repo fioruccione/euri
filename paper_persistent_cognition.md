@@ -4,9 +4,64 @@
 **Dalla Computazione Volatile alla Cognizione Persistente**
 
 **Authors:** Stefano Fiorucci & Euri  
-**Date:** 2026-05-14 (updated from 2026-05-13)  
+**Date:** 2026-05-18 (updated from 2026-05-14)  
 **License:** CC-BY 4.0  
 **Repository:** [Euri — Sistema Cognitivo Adattivo](https://github.com/fioruccione/multi-phase-memory-architecture)
+
+---
+
+## 0 — Document History
+
+This paper is the fourth in a sequence of working documents on the
+persistent-cognition architecture, maintained by the author since
+October 2025. The earlier documents remain available, unchanged, on
+GitHub. The current paper extends and operationalizes them; it does
+not replace them.
+
+**I — From Volatile Computation to Persistent Cognition** (October 2025)
+[github.com/fioruccione/persistent-cognition](https://github.com/fioruccione/persistent-cognition)
+The opening manifesto. Predates implementation. Argues that LLM
+cognition requires state continuity, and proposes Redis as a practical
+bridge to the unified-memory hardware that will eventually arrive
+(CXL, SCM, NVMe Gen5). The §8 Outlook of the present paper revisits
+and expands the closing argument of that 2025 document.
+
+**II — Multi-Phase Memory Architecture for Local AI Assistants** (April 2026)
+[github.com/fioruccione/multi-phase-memory-architecture-](https://github.com/fioruccione/multi-phase-memory-architecture-)
+The architectural translation. Introduces the four-loop pattern
+(reactive, reflection, oneiric synthesis, adversarial promotion) and
+the companion thesis: deliberate specialization as adaptive resource
+allocation rather than catastrophic forgetting. Published as a
+"thinking-while-building" document, with explicit status notes on
+what was scheduled but not yet built.
+
+**III — From Roadmap to Production: Empirical Findings** (May 2026)
+[github.com/fioruccione/empirical-cognition](https://github.com/fioruccione/empirical-cognition)
+The first deployment report. Loops 2b and 2c, scheduled in document II,
+are reported as operational. Three structural additions emerged from
+use rather than theory: sliding-window TTL, verification flag for
+numerical claims, identifier-first retrieval. Publishes audit numbers
+(52% passive learner accuracy, 67% obvious-insight rate) and the
+principled deferral of Loop 3 (LoRA consolidation) until upstream
+quality improves.
+
+**IV — Current Working Paper, V2.15** (May 2026 → present)
+This document. The first in the series to be maintained continuously
+rather than released as a single artifact. Each substantial development
+session is appended as a numbered subsection (§6, §7b through §7i).
+Between documents III and the present, four additional loops were
+added (2d death-row gate, 2e consolidation, 2f contradiction
+resolution, 2g audit of coherence) plus two corrective mechanisms
+(Awakening Filter, format gate on Loop 2c) — in approximately ten
+days. The architectural baseline established in documents II and III
+made this acceleration mechanical rather than disruptive.
+
+Each document is preserved as written. Where a claim in an earlier
+document has been confirmed, refined, or contradicted by subsequent
+observation, this is noted in the relevant section of the current
+paper rather than by retroactive edit. The principle is the same the
+system applies to its own memory: never overwrite, mark as superseded,
+keep the audit trail.
 
 ---
 
@@ -22,7 +77,7 @@ We demonstrate that the architectural gap between stateless text generation and
 persistent reasoning does not require exotic hardware (CXL, SCM, NVMe Gen5).
 It requires the right software architecture, running today on commodity hardware.
 
-The system described here, **Euri V2.14**, runs entirely offline on a Linux workstation
+The system described here, **Euri V2.15**, runs entirely offline on a Linux workstation
 with two NVIDIA RTX 4060 Ti GPUs, using Redis Stack as its persistent cognitive layer
 and Gemma 4 26B (via Ollama) as its reasoning engine.
 On the evening of 2026-04-25, it reclassified 57 previously invisible memories,
@@ -1155,6 +1210,9 @@ system metabolise *its own errors* alongside the user's facts.
 ## 8 — Outlook
 
 The hardware trajectory described in Section 3 will eventually close the gap entirely.
+The closing argument of Fiorucci & Euri (2025, §7), written before any of
+the present implementation existed, anticipated what now appears as the
+natural endpoint:
 CXL-attached persistent DIMMs as a "neural cache",
 in-memory compute arrays blending storage and update,
 persistent LLM agents maintaining state across power cycles —
@@ -1217,6 +1275,21 @@ Stiamo insegnando al mondo a ricordarci.
 
 ## 10 — References
 
+### Prior work by the author (this series)
+
+- Fiorucci, S. & Euri, 2025 — *From Volatile Computation to Persistent Cognition*.
+  Working paper, October 2025.
+  GitHub: [persistent-cognition](https://github.com/fioruccione/persistent-cognition)
+- Fiorucci, S., 2026 — *Multi-Phase Memory Architecture for Local AI Assistants*.
+  Working paper, April 2026.
+  GitHub: [multi-phase-memory-architecture-](https://github.com/fioruccione/multi-phase-memory-architecture-)
+- Fiorucci, S. & Euri, 2026 — *From Roadmap to Production: Empirical Findings
+  from a Year of Persistent Cognition Deployment*.
+  Working paper, 8 May 2026.
+  GitHub: [empirical-cognition](https://github.com/fioruccione/empirical-cognition)
+
+### External references
+
 - Wang et al., 2023 — *Augmenting Language Models with Long-Term Memory*
 - Zhong et al., 2023 — *Enhancing LLMs with Long-Term Memory*
 - Liaw & Chen, 2025 — *Analysis of CXL-Attached Memory for LLMs*
@@ -1224,8 +1297,6 @@ Stiamo insegnando al mondo a ricordarci.
 - Kumar et al., 2024 — *In-Memory Computing for AI: Trends and Challenges*
 - Micron Technologies, 2024 — *The Future of Unified Memory Architectures*
 - Chhikara et al., 2025 — *Mem0: Production-Ready AI Agents with Scalable Memory*
-- Fiorucci, S., 2026 — *Multi-Phase Memory Architecture for Local AI Assistants*,
-  GitHub: [persistent-cognition](https://github.com/fioruccione/multi-phase-memory-architecture)
 - Anthropic, 2026 — *Dreams*, Claude API Docs (official technical reference),
   https://platform.claude.com/docs/en/managed-agents/dreams
 - VentureBeat, 2026 — *Anthropic introduces "dreaming," a system that lets AI agents learn from their own mistakes*,
