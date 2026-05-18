@@ -153,7 +153,7 @@ _PATTERNS: list[tuple[Intent, list[str]]] = [
         r"\bmetti\s+(questo\s+)?(negli\s+appunti|in\s+clipboard)\b",
         r"\bcosa\s+c[''è]\s+(negli\s+appunti|in\s+clipboard)\b",
         r"\bleggi\s+.{0,25}?((dagli|degli|gli)\s+appunti|(dalla|la)\s+clipboard)\b",
-        r"\b(analizza|studia|elabora|approfondisci|esamina)\s+((dagli?|degli?|gli?|dalla?|la)\s+)?(appunti|clipboard)\b",
+        r"\b(analizza|studia|elabora|approfondisci|esamina)\s+((dagli?|degli?|gli?|dalla?|la|da)\s+)?(appunti|clipboard)\b",
         r"\b(cosa\s+dice|dimmi\s+cosa\s+c[''è]|riassumi|sintetizza)\s+(negli?\s+appunti|in\s+clipboard|dalla\s+clipboard)\b",
         r"\bsalva\s+(dagli?\s+appunti|dalla\s+clipboard)\b",
         r"\bcopiami\b",

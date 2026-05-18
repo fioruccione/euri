@@ -801,6 +801,17 @@ class MemoryManager:
             r'\bnon\s+esiste\b',
             r'\bhai\s+inventato\b',
             r'\bnon\s+c[’\']\s*[èe]\s+ancora\b',
+            # Estensione 18 maggio: correzioni di tipo "assenza di recall"
+            # (l'entità c'era ma il retrieval non l'ha pescata). Caso reale:
+            # "Lucy Plast è l'azienda dove stai lavorando, ci guardavamo ieri
+            # sera" — correzione semantica chiara ma fuori da entrambe le
+            # categorie precedenti (attributiva, referenziale). Apre il terzo
+            # tipo: correzione di assenza.
+            r'\bne\s+abbiamo\s+(parlato|discusso|gi[àa]\s+parlato)\b',
+            r'\bci\s+(guardavamo|guardammo|vedevamo|eravamo\s+detti)\b',
+            r'\bricordi\s+(che|di|quando)\b',
+            r'\bte\s+l[’\']?\s*(avevo|ho)\s+(detto|gi[àa]\s+detto)\b',
+            r'\bce\s+l[’\']?\s*avevi\s+(detto|gi[àa])\b',
         ]
     ]
 

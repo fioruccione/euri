@@ -408,7 +408,7 @@ class VoiceDaemon:
             self._speak("Non sembra una cosa utile da ricordare.")
             return
         if self.memory.is_duplicate_memory(content, llm_probe_fn=self.brain.probe_same_meaning):
-            self._speak("Lo so già.")
+            self._speak("Lo avevo già segnato, ma grazie per la conferma.")
             return
         self.memory.save_memory(content, source="user")
         self.memory.log_conversation("Stefano", text)
@@ -535,16 +535,23 @@ class VoiceDaemon:
         self._speak(reply)
 
     def _handle_search(self, text: str):
-        query = extract_content_after_trigger(text, SEARCH_TRIGGERS) or text
+        """SEARCH path allineato a CHAT: usa _build_context per evitare
+        l'allucinazione di assenza ('non ce l'ho' su memorie che invece esistono).
+        Prima della V2.16 questo handler usava solo search_memories+search_notes
+        e format_search_results, producendo un retrieval più povero del CHAT path
+        e quindi risposte tipo 'non l'avevo mai sentita' su soggetti ben presenti
+        nello store."""
         self.memory.log_conversation("Stefano", text)
-
-        # Cerca in tutti e tre gli store
-        memories = self.memory.search_memories(query)
-        notes = self.memory.search_notes(query)
-        todos = self.memory.find_todo_by_content(query)
-
-        all_results = memories + notes + todos
-        reply = self.brain.format_search_results(all_results, query)
+        context = self._build_context(text)
+        search_hint = (
+            "[Modalità ricerca: rispondi alla domanda dell'utente usando "
+            "SOLO le informazioni presenti nel contesto sopra. Se le memorie "
+            "rilevanti non sono nel contesto, dichiaralo onestamente — non "
+            "inventare. Se invece il soggetto è presente, riassumi quello che sai.]"
+        )
+        context = (context + "\n\n" if context else "") + search_hint
+        with self._brain_lock:
+            reply = self.brain.respond(text, context=context)
         self.memory.log_conversation("Euri", reply)
         self._speak(reply)
 
