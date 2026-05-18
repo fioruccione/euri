@@ -541,6 +541,22 @@ class VoiceDaemon:
         e format_search_results, producendo un retrieval più povero del CHAT path
         e quindi risposte tipo 'non l'avevo mai sentita' su soggetti ben presenti
         nello store."""
+        # Audit di Coerenza: capture correction signal anche dal canale SEARCH.
+        # Prima della V2.16 questo check era solo in _handle_chat: correzioni
+        # classificate dal router come SEARCH (es. "qui ti correggo, X non è
+        # come ho detto") venivano perse silenziosamente.
+        if self.memory.detect_correction(text):
+            try:
+                self.memory.save_correction_signal(
+                    prompt_originale=self._last_user_text or "",
+                    risposta_euri=self.memory.get_last_euri_turn(),
+                    correzione_user=text,
+                    rag_ctx_ids=self.memory.get_last_rag_ctx(),
+                )
+            except Exception as e:
+                logger.debug(f"Audit capture (SEARCH) fallito: {e}")
+        self._last_user_text = text
+
         self.memory.log_conversation("Stefano", text)
         context = self._build_context(text)
         search_hint = (

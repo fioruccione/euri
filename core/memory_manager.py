@@ -812,6 +812,12 @@ class MemoryManager:
             r'\bricordi\s+(che|di|quando)\b',
             r'\bte\s+l[’\']?\s*(avevo|ho)\s+(detto|gi[àa]\s+detto)\b',
             r'\bce\s+l[’\']?\s*avevi\s+(detto|gi[àa])\b',
+            # Estensione 18 maggio (sera): pattern di correzione esplicita più
+            # diretti, osservati in conversazioni reali con turni tipo "qui ti
+            # correggo, perché in realtà il DSC l'abbiamo fatto su 03 PPR 043"
+            # (turno 8 sessione 12:15, non catturato dalle 16 regex precedenti).
+            r'\bti\s+correggo\b',
+            r'\bin\s+realt[àa]\b',
         ]
     ]
 
