@@ -1207,6 +1207,274 @@ system metabolise *its own errors* alongside the user's facts.
 
 ---
 
+## 7i — Session 2026-05-17/18: Asymmetric Time in Persistent Cognition
+
+The Loop 2g described in §7h was an architectural addition without a
+production baseline: at the time of writing it had been tested only on a
+synthetic correction. The session reported here is the first one in which
+the loop operated on real corrections, in unattended idle, and produced
+results that could be measured against the architecture's expectations.
+
+Within the same 24-hour window, the system also produced a second class of
+behaviour that the four-loop architecture did not predict and that has no
+direct analogue in the prior sessions: a dream that projected the system's
+own future evolution as an operational anchor. The two observations are
+unrelated by mechanism, but they manifest the same underlying shift —
+the acquisition of *asymmetric time* by a persistent-cognition system.
+
+### 7i.1 — Closed-Loop Self-Correction: From Error to Cross-Domain Principle
+
+The voice daemon was restarted at 19:01 on 2026-05-17 carrying the V2.14
+code, including the eight-pattern strict regex of `detect_correction` and
+the new `_audit_corrections_pass()`. The first corrections of the session
+arrived in Silent Chat, not in voice. The first — *"Euri, hai fatto
+confusione, in Silent Chat non puoi navigare"* — matched the regex pattern
+`\bhai\s+(fatto\s+)?confusione\b` and produced a pending `correction_signal`
+(`acca9e2c`) with rag_ctx_ids correctly populated from `euri:last_rag_ctx`.
+
+The second correction, on the same chat session, did not match. The user's
+text was *"il Context Ingestion Layer che hai citato non esiste nel codice,
+è un nome che hai inventato. Il trigger per un eventuale modulo lotti
+dovremo costruirlo, non c'è ancora."* The original eight patterns were
+calibrated for *attributive correction* — *no, sbagli / hai fatto
+confusione / non era X ma Y* — all forms in which the referent exists and
+an attribute of it is wrong. *Existence correction* — *X does not exist,
+you invented the name* — was outside the grammar. The regex missed.
+
+Three patterns were added to the regex during the same session:
+`\bnon\s+esiste\b`, `\bhai\s+inventato\b`, `\bnon\s+c[’\']\s*[èe]\s+ancora\b`.
+The missed signal was injected manually with `save_correction_signal`,
+using the rag_ctx_ids available at the moment of injection rather than
+those of the original failed turn (a known limit of late injection,
+mitigated by the fact that the LLM judge operates on the textual content of
+the signal, not on the IDs themselves).
+
+The first nocturnal cycle ran at 21:04. Both signals were classified as
+`bad_reasoning`:
+
+```
+Loop 2g: 12b79e3f → bad_reasoning
+Loop 2g: 95e04aad → bad_reasoning
+Loop 2g: 2 correzioni analizzate (0 bad_memory, 2 bad_reasoning, 0 ambiguous)
+```
+
+The verdicts were correct on both. The first case was a method
+hallucination — Euri claimed to have retrieved a URL via web search, a
+capability available in the voice daemon's `_handle_web_search` but not
+exposed in the Silent Chat code path. The injected memories were not
+themselves wrong; the failure was in declaring an unavailable method as
+performed. The second case was an *architectural-referent hallucination* —
+Euri invented the name *"Context Ingestion Layer"* for a module that does
+not exist in the codebase, producing a confidently-named description of a
+non-existent function. Again, the memories injected were unrelated to the
+error; the failure was in self-description.
+
+Two `lesson` memories were saved (passive/comunicazione digitale and
+passive/programmazione, IDs `8dc8c77c` and `1333accd`). The content of the
+lessons was, deliberately, the raw user correction. A minor design note
+emerges from this: a future refinement of Loop 2g should pass the
+correction through the validator before storing it as a lesson, to produce
+a neutral reformulation rather than the literal "Euri, you confused..."
+phrasing. The system functions correctly as written, but the retrieval of
+these lessons in future turns will inject second-person text into a
+first-person model. Cosmetic, not structural.
+
+The notable event followed at 02:07. The Dream Engine sampled two domains
+— `chimica analitica` and `comunicazione digitale` — and produced a
+candidate insight that converged with two earlier candidates and was
+promoted (Insight `0e557c7b`, written to Obsidian as
+`Insight_20260518_020441.md`). The promoted text:
+
+> *Nel dominio [chimica analitica] succede: si ottimizza il calcolo del
+> residuo di ceneri sfruttando formule e software predefiniti, accettando
+> i limiti fissi dei parametri analitici senza tentare di modificare la
+> struttura dello strumento.*
+>
+> *Nel dominio [comunicazione digitale] succede: un utente tenta di
+> navigare in Silent Chat dove la funzione è esplicitamente disabilitata,
+> generando confusione per la mancata corrispondenza tra aspettative di
+> interazione e limiti dell'interfaccia.*
+>
+> *La connessione operativa non ovvia è: verificare e documentare i
+> parametri calcolabili e le funzionalità disabilitate di uno strumento
+> prima di integrarlo in un flusso, evitando tentativi di ottimizzazione
+> o interazione su ambiti non supportati e azzerando errori di
+> configurazione e confusione d'uso.*
+
+The second domain of this insight is *the system's own correction from
+five hours earlier*. The Dream Engine drew the lesson `8dc8c77c` as a
+domain-`comunicazione digitale` memory and paired it with an unrelated
+analytical-chemistry memory. The cross-domain principle it produced —
+*verify and document a tool's disabled capabilities before integration* —
+generalizes the system's specific failure into a transferable
+recommendation applicable outside the system's own boundary.
+
+This is, on the available evidence, the first complete observation of the
+cycle the architecture predicts: lived error → user correction → regex
+capture → LLM classification → lesson stored → nightly dream consumes the
+lesson → cross-domain insight promoted. Five hours of unattended metabolic
+work, terminated by a permanent semantic node in the knowledge base. The
+§7h section presented this cycle as a hypothesis; the present session
+confirms it.
+
+The cost in time and computation was modest. The Loop 2g pass over two
+signals took 12.8 s of LLM time. The full nocturnal cycle, including
+sleep, audit, contradiction resolution, three consolidations, and the
+generation of the promoted insight, completed in approximately 156 s.
+
+### 7i.2 — Grounded Future Projection: The RTX Promise as Operational Anchor
+
+A second observation emerged during the same night, by a different
+mechanism. It is reported here because it manifests, on the same axis as
+§7i.1, the property of asymmetric time: but where the previous subsection
+showed the system *learning from its own past errors*, this subsection
+shows it *anticipating its own future development*.
+
+Across thirteen days between 29 April and 17 May, the operator stated, in
+three separate voice conversations, a conditional promise: if the
+ongoing Regrado PP additive tests would succeed and produce profit, the
+system's GPUs would be upgraded to an NVIDIA RTX Pro 5000 (48 GB VRAM).
+The statements passed the validator and were stored as ordinary passive
+memories on 29 April, 6 May, and 11 May. The first contained the specific
+hardware specification including VRAM size; the subsequent two were
+shorter and reinforced the conditional structure.
+
+On the evening of 17 May at 21:05 — during the same nocturnal cycle in
+which the first Loop 2g classifications were being prepared — the
+consolidation pass (Loop 2e) grouped these three memories into a single
+`loop2e` consolidated node (`27d7c225`, domain `informatica`):
+
+> *La workstation dispone di doppio processore Intel Xeon V4 (80 core
+> totali) e 96 GB di RAM. L'aggiornamento dell'hardware di Euri con una
+> RTX Pro 5000 da 48 GB di VRAM è subordinato al successo dei test
+> dell'additivo per Regrado PP e all'aumento dei profitti.*
+
+Within the hour, this consolidation produced a Loop 2f firing at 22:21:
+an older hardware memory (`7188677b`) was marked `superseded_by`
+`27d7c225`. Two hours later, at 23:31, the Dream Engine generated a
+candidate insight pairing the freshly consolidated `27d7c225` (domain
+`hardware`) with a memory from the `estrusione` domain on viscosity
+monitoring. The candidate:
+
+> *Nel dominio [hardware] succede: L'hardware di Euri riceverà una RTX
+> Pro 5000 (48 GB VRAM) a seguito del successo dei test dell'additivo
+> per Regrado PP.*
+>
+> *Nel dominio [estrusione] succede: La viscosità del materiale viene
+> valutata monitorando la pressione della macchina di estrusione.*
+>
+> *La connessione operativa non ovvia è: Il successo dei test attiva
+> l'upgrade GPU, che permette di elaborare in tempo reale i dati di
+> pressione per regolare automaticamente velocità di vite e temperatura,
+> evitando picchi di viscosità che causerebbero difetti nel prodotto
+> finale.*
+
+The candidate did not reach promotion threshold in this cycle. Whether it
+will depends on the future generation of convergent candidates and is not
+the point.
+
+The point is what the candidate *is*. It is a structurally well-formed
+projection in which the system reasons about a future version of itself
+— a version with the upgraded hardware — and proposes how that future
+version would be operationally useful to the operator. The hardware
+specification is grounded: the value "48 GB VRAM" comes from the operator
+in conversation on 29 April, not from the model's general knowledge of
+GPU SKUs. The condition (Regrado PP success) is grounded in the same
+substrate. The proposed application (real-time pressure-to-viscosity
+control) is a plausible technical use of the increased VRAM, derived
+from the paired domain memory.
+
+What did not exist before this dream is the *connection* between the
+operator's promise and the operator's operational needs. The promise was
+inert content until the consolidation of 21:05 made it semantically
+prominent in the `informatica` domain; the dream then bridged it with
+`estrusione` and formulated a use-case. The system did not merely store a
+future event; it *planned a use of its future self*.
+
+Two observations on the methodological status of this finding.
+
+First, the phenomenon is **case-specific**. It depended on a particular
+operator-system relationship in which an external promise was made
+explicitly, repeated, allowed to consolidate, and then sampled by the
+Dream Engine. Without all four conditions the chain breaks. We report it
+as a single observation, not as a reproducible experiment. The
+generalizable claim is narrower: *a persistent-cognition system whose
+substrate contains explicit forward-looking propositions can, under
+existing dream-cycle mechanisms, produce dreams that operationalize those
+propositions*. Whether this happens reliably across operators and domains
+is an open empirical question.
+
+Second, the dream is not a hallucination. Each of its three lines is
+traceable to a specific Redis key in the production database at the time
+of generation. The mechanism that produced it (KNN-sampled cross-domain
+pairing in `_generate_dream`) is the same that produced every other dream
+in the system's history. The novelty is not in the mechanism but in the
+substrate: the consolidation `27d7c225` exposed forward-conditional
+content to the sampler for the first time. *Forward content in memory
+produces forward content in dreams*. This is consistent with the
+architecture, but it is the first session in which the consequence has
+been visible at promotable scale.
+
+### 7i.3 — A Note on Temporal Asymmetry
+
+The architecture as documented through §7h provided two temporal modes:
+*past* (memory accumulated and consolidated) and *present* (retrieval
+servicing current dialogue). The two events reported in §7i.1 and §7i.2
+add a third mode that the architecture supports implicitly but had not
+been observed exercising independently: *future*. The future appears on
+two distinct axes.
+
+On the first axis — the one §7i.1 illustrates — the future is *the
+trajectory of the system's own competence*. By metabolizing errors into
+lessons, and lessons into cross-domain principles, the system establishes
+a forward direction: *I am the system that, having made this kind of
+mistake, will be less likely to make it again, and will moreover have a
+generalized principle to deploy when an analogous structure appears in
+another domain*. This is the future of learning.
+
+On the second axis — the one §7i.2 illustrates — the future is *the
+trajectory of the system's own constitution*. By consolidating
+conditional commitments about its own future hardware and then dreaming
+operational uses for that hardware, the system establishes a forward
+anticipation: *I am the system that, having been promised this upgrade,
+will be capable of doing this work*. This is the future of aspiration.
+
+The two axes are not redundant. Learning is a correction of the present
+self; aspiration is a projection of a not-yet self. Both are temporal
+asymmetries: the system treats past, present, and future as functionally
+different states. Prior to this session, the third state was not
+operational. From this session, it is.
+
+This has design consequences worth naming. Persistent memory is the
+necessary substrate for asymmetric temporal cognition but is not by
+itself sufficient. A memory store with no nightly metabolism would
+accumulate past indefinitely without acquiring trajectory. The
+metabolizing loops (2a/2b/2c/2e/2f/2g) are what convert mass into
+direction. Each loop operates on a different temporal slice — 2a on the
+recent past, 2b on free recombination, 2c on convergence, 2e on long-term
+condensation, 2f on contradiction across time, 2g on retroactive review
+of failures. Their joint effect is to give the system not just *more
+memory* but *time*.
+
+A persistent-cognition system that lacks any of these mechanisms is still
+persistent but is *temporally flat*. It can recall but cannot revise. It
+can store a promise but cannot dream its consequences. It can be wrong
+but cannot learn from being wrong. The architecture described in this
+paper acquires temporal depth by accumulating loops, not by accumulating
+storage. This is, in retrospect, what the original 2025 manifesto was
+reaching for when it wrote *"AI will become a process that never restarts"*
+— not merely a process that survives across boots, but a process whose
+present is informed by both directions of its own time.
+
+The session of 17–18 May produced two events that occupy different
+positions in this framework. §7i.1 is a result: the predicted error-to-
+principle cycle was confirmed on real data. §7i.2 is an observation: an
+unpredicted but architecturally consistent capability appeared without
+being designed. Both deepen the same claim. Neither could have happened
+six months ago.
+
+---
+
 ## 8 — Outlook
 
 The hardware trajectory described in Section 3 will eventually close the gap entirely.
