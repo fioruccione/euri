@@ -818,6 +818,12 @@ class MemoryManager:
             # (turno 8 sessione 12:15, non catturato dalle 16 regex precedenti).
             r'\bti\s+correggo\b',
             r'\bin\s+realt[àa]\b',
+            # Estensione 26 maggio: il sostantivo "correzione/correzioni" come
+            # apertura esplicita ("Due correzioni. La prima è che..."). Sessione
+            # 15:16 26-mag, doppia correzione (fattuale + comportamentale) non
+            # intercettata perché il blocco precedente copriva solo il verbo.
+            r'\bcorrezion[ei]\b',
+            r'\bmi\s+correggo\b',
         ]
     ]
 

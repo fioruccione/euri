@@ -90,7 +90,7 @@ Un'interfaccia web leggera (`ui/app.py`) per:
 | Ragionamento / LLM (conversazione) | Ollama — `gemma4:26b` |
 | Ragionamento / LLM (Dream Engine) | Ollama — `qwen3.6:35b` |
 | Visione Artificiale | Gemma 4 Vision (multimodale, offline) |
-| Memoria Attiva | Redis Stack (JSON + RediSearch full-text + VECTOR embedding) |
+| Memoria Attiva | Redis 8.8.0 vanilla (ReJSON / RediSearch / TimeSeries / Bloom / VectorSet integrati nel core + struttura `Array` nativa) |
 | Memoria Passiva/UI | Obsidian Vault sincronizzato via `watchdog` |
 | STT / Trascrizione | faster-whisper `large-v3-turbo` (CUDA float16 — NVIDIA RTX 4060 Ti) |
 | TTS / Voce | sherpa-onnx + Piper (`vits-piper-it_IT-paola-medium`) |
@@ -189,6 +189,14 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 ---
 
 ## Changelog
+
+### V2.16 — Substrato Redis vanilla 8.8 (Array + VectorSet) + pattern correzioni esteso + budget reflection
+
+- **Migrazione substrato:** Redis Stack 7.4.0-v8 → Redis vanilla 8.8.0. La Stack è di fatto deprecata; vanilla 8.x incorpora nativamente nel core i moduli che prima erano via Stack (`ReJSON`, `RediSearch`, `RedisTimeSeries`, `RedisBloom`) più due novità: `VectorSet` (set vettoriali nativi) e **`Array`** (struttura dati indicizzata sparsa). La PR [#15162](https://github.com/redis/redis/pull/15162) di Salvatore Sanfilippo (antirez) è stata mergeata il 13/05/2026, 8.8.0 stable rilasciato il 25/05. Sblocca due fronti lasciati in attesa: (a) refactor di `log_conversation` da `LPUSH+LTRIM` a `ARRING` (ring buffer capped nativo, con `AROP` per analytics server-side), (b) modulo dati tecnici lotti/prove Lucy Plast con schema emergente (caso d'uso "Workflow" del body PR: step numerati, gap significativi, `ARSCAN` per step popolati). Migrazione validata sul campo: 875 chiavi, tutti i 5 indici (`memories/insights/todos/notes/dreams`) preservati, retrieval RAG immediato dal restart del daemon.
+
+- **Loop 2g — pattern di `detect_correction` esteso:** aggiunti `\bcorrezion[ei]\b` (sostantivo singolare/plurale) e `\bmi\s+correggo\b` (auto-correzione utente). Caso reale del 26/05 ore 15:16: doppia correzione esplicita aperta da *"Due correzioni. La prima è che... La seconda è che..."* — una fattuale (esistenza portali quotazioni materie plastiche tipo Plastic Finder) e una comportamentale (filtrare la web search sul materiale richiesto, non allargare ad altri polimeri). Il blocco precedente copriva solo il verbo `correggere` e non il sostantivo, quindi il signal era andato perso e il Loop 2g non aveva potuto digerirlo.
+
+- **`generate_reflection` — `num_predict` 1000 → 3000:** Gemma 4 con `think=True` consuma molti token in reasoning prima di emettere output; cap a 1000 troncava la riflessione del Loop 2a a metà frase. Il loop gira in idle senza vincoli di latenza, cap alto giustificato.
 
 ### V2.15 — Document History + Gate di formato in promozione + Estensione regex correzioni
 

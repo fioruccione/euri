@@ -320,7 +320,9 @@ class Brain:
                     {"role": "system", "content": self._REFLECTION_SYSTEM},
                     {"role": "user", "content": user_msg},
                 ],
-                options={"temperature": 0.4, "num_predict": 1000},
+                # think=True: Gemma 4 consuma molti token in reasoning prima dell'output;
+                # Loop 2a gira in idle senza vincoli di latenza, cap alto per non troncare a metà frase.
+                options={"temperature": 0.4, "num_predict": 3000},
                 think=True,
             )
             result = self._clean(response.message.content or "")

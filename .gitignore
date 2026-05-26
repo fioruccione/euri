@@ -39,6 +39,7 @@ Thumbs.db
 
 # Backup vecchi
 codice aggiornato/
+backup_pre_migration_*/
 
 # Obsidian config
 .obsidian/
