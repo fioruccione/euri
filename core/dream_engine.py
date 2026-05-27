@@ -31,6 +31,10 @@ class DreamEngine:
         self._running = False
         self._thread = None
         self._lock = threading.Lock()
+        # Loop 2h — Self-Observation: istanziato solo se memory è disponibile
+        # (in test isolati può essere None).
+        from core.self_observation import SelfObservation
+        self._self_observation = SelfObservation(r, memory) if memory else None
         
         # Traccia l'ultimo activity (STT/TTS) globale di Euri
         # Usa time.time() (wall-clock) e non time.monotonic() perché
@@ -118,6 +122,15 @@ class DreamEngine:
 
             # 4b. Loop 2g: Audit di Coerenza — analizza le correzioni ricevute durante il giorno
             self._audit_corrections_pass()
+
+            # 4c. Loop 2h: Self-Observation — narrative di evoluzione dalle coppie superseded.
+            # Additivo: NON modifica il Loop 2f (che continua a fare superseded_by), aggiunge
+            # solo una voce narrativa in prima persona per ogni evoluzione mai raccontata prima.
+            if self._self_observation:
+                try:
+                    self._self_observation.run()
+                except Exception as e:
+                    logger.error(f"Loop 2h: errore self-observation pass: {e}")
 
             # 5. Pulizia Insight scaduti
             self._cleanup_expired_insights()
