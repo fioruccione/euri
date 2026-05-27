@@ -768,16 +768,30 @@ class MemoryManager:
     def clear_silent_mode(self):
         self.r.delete("euri:meta:silent_until")
 
+    # Cap del ring buffer giornaliero. Storico osservato: media ~90 turni/giorno,
+    # massimo ~200 (sessioni vocali dense). 500 dà 2.5× margine sul peggior caso.
+    _CONVERSATION_RING_CAP = 500
+
     def log_conversation(self, role: str, text: str):
         date_key = now().strftime("%Y-%m-%d")
         key = f"euri:conversation:{date_key}"
         entry = f"[{now().strftime('%H:%M:%S')}] {role}: {text}"
-        self.r.rpush(key, entry)
+        # ARRING (Redis 8.8): ring buffer nativo capped, sostituisce rpush+ltrim.
+        # Espulsione FIFO automatica oltre il cap, O(1) per insert.
+        self.r.execute_command("ARRING", key, self._CONVERSATION_RING_CAP, entry)
         self.r.expire(key, 60 * 60 * 24 * 30)  # 30 giorni
 
     def get_today_conversation(self) -> list[str]:
         date_key = now().strftime("%Y-%m-%d")
-        return self.r.lrange(f"euri:conversation:{date_key}", 0, -1)
+        key = f"euri:conversation:{date_key}"
+        if not self.r.exists(key):
+            return []
+        # Retrocompatibilità: chiavi pre-V2.16 sono LIST (rpush). Lette finché expire.
+        if self.r.type(key) == "list":
+            return self.r.lrange(key, 0, -1)
+        # ARLASTITEMS restituisce in ordine cronologico (vecchio→nuovo).
+        # ARGETRANGE non va usato qui: dopo wraparound mostra il ring fisico, non FIFO.
+        return self.r.execute_command("ARLASTITEMS", key, self._CONVERSATION_RING_CAP)
 
     # ──────────────────────────────────────────
     # AUDIT DI COERENZA — Correction signals
