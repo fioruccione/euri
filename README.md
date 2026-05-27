@@ -198,6 +198,8 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 
 - **`generate_reflection` — `num_predict` 1000 → 3000:** Gemma 4 con `think=True` consuma molti token in reasoning prima di emettere output; cap a 1000 troncava la riflessione del Loop 2a a metà frase. Il loop gira in idle senza vincoli di latenza, cap alto giustificato.
 
+- **Primo refactor che attiva `Array` in produzione (27/05):** `log_conversation` passa da `RPUSH + EXPIRE` a `ARRING` (ring buffer nativo, cap 500 turni/giorno — storico osservato: media 90, max 196). `get_today_conversation` passa da `LRANGE 0 -1` a `ARLASTITEMS` (necessario perché `ARGETRANGE` dopo wraparound mostra il ring fisico, non l'ordine cronologico FIFO). Retrocompat: chiavi pre-refactor di tipo `LIST` continuano ad essere lette via `LRANGE` finché expire (30gg), poi sostituite naturalmente dal nuovo backend. Benchmark: 600 `ARRING` con cap 500 in 96ms (0.16ms/insert). Validato sul campo dopo restart daemon: chiave odierna di tipo `array`, 10 turni, TTL e retrieval RAG funzionanti.
+
 ### V2.15 — Document History + Gate di formato in promozione + Estensione regex correzioni
 
 - **Paper §0 — Document History:** il paper `paper_persistent_cognition.md` ora dichiara esplicitamente di essere il quarto stadio di una serie di working documents iniziata a ottobre 2025 (manifesto teorico → architettura → deployment report → working paper continuo). Le tre pubblicazioni precedenti sono ora citate formalmente nelle References e nel §8 Outlook è esplicitato che parte del testo deriva dal §7 del paper di ottobre 2025. Allineamento con la pratica di non-overwrite del sistema (Loop 2f): i paper passati restano dove sono, il presente li estende.
