@@ -195,6 +195,17 @@ class VoiceDaemon:
             clf.setup(self.embedder, self.r)
             set_adaptive_classifier(clf)
 
+        # V2.18: ToolRegistry per Fast Path VectorSet (Redis 8.8 nativo)
+        # Bootstrap idempotente: se i tool sono già in Redis, register() li
+        # aggiorna in-place. Costo: 7 embedding+VADD a ogni boot (~1s).
+        if config.TOOL_VECTORSET_ENABLED:
+            from core.tool_registry import ToolRegistry, DEFAULT_TOOL_DEFINITIONS
+            from core.llm_classifier import set_tool_registry
+            tool_reg = ToolRegistry(self.r, self.embedder)
+            n = tool_reg.bootstrap_from_definitions(DEFAULT_TOOL_DEFINITIONS)
+            logger.info(f"ToolRegistry: {n}/{len(DEFAULT_TOOL_DEFINITIONS)} tool registrati (Fast Path attivo)")
+            set_tool_registry(tool_reg)
+
         # Inizializza Dream Engine
         from core.dream_engine import DreamEngine
         self.dream_engine = DreamEngine(self.r, self.embedder, brain=self.brain, memory=self.memory)

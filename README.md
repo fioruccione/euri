@@ -7,7 +7,7 @@ Non si limita ad ascoltare e rispondere: memorizza, organizza, riflette sulle tu
 
 ---
 
-## Architettura Cognitiva (V2.17)
+## Architettura Cognitiva (V2.18)
 
 ### 1. Intent Classification — Pipeline a Due Layer
 La classificazione dell'intent è a cascata: il layer veloce esaurisce la maggior parte dei casi, il layer lento interviene solo quando necessario.
@@ -190,6 +190,18 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 ---
 
 ## Changelog
+
+### V2.18 — Tool VectorSet: prima istanza del pattern VectorSet (Redis 8.8), congelata con kill switch off
+
+- **Cosa è stato costruito:** modulo isolato `core/tool_registry.py` (~430 righe) che indicizza il catalogo dei 7 intent del Layer 2 (`WEB_SEARCH, SEARCH, SAVE_TODO, SAVE_MEMORY, EXECUTE, COMPLETE, CHAT`) tramite **VectorSet nativo di Redis 8.8** (modulo nuovo, comandi `VADD`/`VSIM`/`VEMB`/`VREM`). Schema: una sola chiave `euri:tools:vset` con tutti gli embedding + JSON parallelo per metadata `euri:tool:{slug}`. Tre gate nella `match_tool()`: (1) threshold assoluta 0.85, (2) gap minimo 0.005 tra top-1 e top-2 per anti-ambiguità, (3) flag `is_fallback` su tool catch-all per disabilitare il match (es. `chat`). Wire-up nel `core/llm_classifier.py` come Fast Path prima del Slow Path LLM, con log timing `[INTENT_FAST]`/`[INTENT_SLOW]`. Test sandbox `test_tool_vectorset.py` con 16 query reali → 13/16 al freddo, latenza KNN puro 0.75-1.29ms (cleanup garantito via `try/finally`). Kill switch `config.TOOL_VECTORSET_ENABLED`.
+
+- **Perché è disabilitato di default:** la prima esecuzione in produzione (28/05/2026 ore 13:30) ha rivelato **due limiti strutturali non visibili nel test sintetico**:
+  1. **Latenza embedding CPU**: l'encoding di una query con `multilingual-e5-large` su CPU costa ~600ms. Il Fast Path totale risulta ~621ms vs ~700ms dello Slow Path LLM. **Guadagno reale 100ms, non i 700ms attesi** — lo "scatto felino" non c'è. Inoltre, quando il Fast Path non trova match e si ricade sullo Slow Path, si paga la somma dei due (osservati turni reali a 1.1-5.5s vs i 600-800ms originali → **peggioramento netto sui CHAT, che sono la maggioranza**).
+  2. **Score appiattiti su query lunghe**: `e5-large` ottimizzato per matching documento-query brevi produce distribuzioni cosine appiattite (0.88-0.92) su frasi conversazionali lunghe. Caso reale: *"Il mercato ha degli alti e dei bassi, dipende dalla situazione in cui uno si trova. Il Covid sicuramente non ha aiutato"* → routato come `SAVE_MEMORY` (0.898) perché il catch-all `chat` è finito in **ultima posizione del top-7** (0.881). Il test sintetico con frasi brevi non aveva mostrato il problema.
+
+- **Cosa resta:** codice, modulo, test, kill switch. La feature è congelata, non rimossa — il fondamento è valido, le vie per ripartire sono chiare. Tre proposte concrete (le prime due *intuite da Euri stessa nel turno 13:44 del 28/05*, mentre Stefano le raccontava il problema): **(a)** ricerca ibrida `FT.SEARCH keyword + VectorSet semantico` (intersezione che restringe il pool prima della similarità); **(b)** re-ranking 2-stage (top-N da VectorSet → LLM piccolo per selezionare); **(c)** embedder dedicato all'intent o `e5-large` su GPU (risolve solo la latenza, non l'appiattimento). Materiale per V2.18.1 / V2.19.
+
+- **Cosa abbiamo imparato (vale per il paper):** la differenza fra test sintetico e produzione reale è qualitativa, non quantitativa. Il test passava 13/16 con frasi brevi che mostravano gap netti — la prima query reale, lunga e conversazionale, ha rivelato un appiattimento dello spazio embedding che lo strumento di calibrazione non poteva nemmeno simulare. *L'unica prova vera è la produzione, e l'unica risposta corretta a un fallimento di produzione è il kill switch, non il forcing.*
 
 ### V2.17 — Loop 2h: Self-Observation (narrative di evoluzione)
 

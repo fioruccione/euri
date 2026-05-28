@@ -1,15 +1,17 @@
 """
 Fallback LLM per la classificazione degli intent non catturati dalle regex.
 
-Pipeline:
-  1. AdaptiveClassifier (5ms) — stato Welford persistito (es. n=15, σ=0.03)
-  2. LLM Gemma 26B (600ms)    — fallback solo se embedding < soglia adattiva
+Pipeline (V2.18):
+  1. ToolRegistry VectorSet (Fast Path, ~100ms embed + ~1ms KNN) — Redis 8.8 nativo
+  2. AdaptiveClassifier (Welford-based) — sospeso oggi
+  3. LLM Gemma 26B (Slow Path, ~600ms) — fallback se Fast Path ritorna None
 
 Viene chiamato SOLO quando il router regex restituisce CHAT.
 Verifica solo i 6 intent critici dove il fallback ha valore reale.
 Tutto il resto resta CHAT — non vogliamo over-classify.
 """
 import re
+import time
 import ollama
 import config
 from loguru import logger
@@ -17,11 +19,20 @@ from loguru import logger
 # Singleton del classificatore adattivo (viene inizializzato da voice_daemon)
 _adaptive_clf = None
 
+# Singleton del ToolRegistry per Fast Path VectorSet (V2.18) — iniettato da voice_daemon
+_tool_registry = None
+
 
 def set_adaptive_classifier(clf) -> None:
     """Iniettato da voice_daemon dopo il caricamento dell'embedder."""
     global _adaptive_clf
     _adaptive_clf = clf
+
+
+def set_tool_registry(reg) -> None:
+    """Iniettato da voice_daemon dopo il bootstrap del catalogo tool (V2.18)."""
+    global _tool_registry
+    _tool_registry = reg
 
 
 def _clean(text: str) -> str:
@@ -83,11 +94,38 @@ def llm_fallback_classify(text: str) -> str | None:
     Ritorna una stringa intent ("WEB_SEARCH", "SAVE_TODO", "SAVE_MEMORY", "EXECUTE")
     oppure None se la risposta è CHAT o non riconoscibile.
 
-    Pipeline:
-      1. Prova l'Adaptive Classifier (Welford-based, ~400ms con e5-large su CPU)
-      2. Se sotto soglia, chiama il LLM Gemma (~600ms)
-      3. Se LLM classifica con successo, aggiorna il centroide Welford per imparare
+    Pipeline V2.18:
+      1. Fast Path VectorSet (Redis 8.8 nativo): KNN su descrizioni tool, ~100-200ms
+      2. Adaptive Classifier (Welford) — sospeso oggi
+      3. LLM Gemma fallback (Slow Path, ~600ms) se Fast Path None
     """
+    # ── Fast Path V2.18: ToolRegistry VectorSet ──
+    if _tool_registry is not None and config.TOOL_VECTORSET_ENABLED:
+        t0 = time.time()
+        match = _tool_registry.match_tool(text)
+        total_ms = (time.time() - t0) * 1000
+        if match:
+            intent = match["intent"]
+            # Stessa guard manifatturiero del Layer LLM — vale anche qui:
+            # un EXECUTE che cade su contesto chimica/polimeri va bloccato a monte
+            # del routing (non vogliamo che il VectorSet scavalchi questa regola).
+            if intent == "EXECUTE" and _is_manufacturing_context(text):
+                logger.debug(
+                    f"[INTENT_FAST] EXECUTE bloccato (contesto manifatturiero): "
+                    f"'{text[:50]}' (score={match['score']:.3f})"
+                )
+                # Non return None: lasciamo lo Slow Path decidere — magari l'LLM
+                # capisce meglio il contesto e classifica come CHAT/SEARCH.
+            else:
+                logger.info(
+                    f"[INTENT_FAST] {intent} via VectorSet — "
+                    f"total={total_ms:.0f}ms vsim={match['elapsed_ms']:.1f}ms "
+                    f"score={match['score']:.3f}"
+                )
+                return intent
+        else:
+            logger.debug(f"[INTENT_FAST] no match → fallback Slow Path ({total_ms:.0f}ms)")
+
     # ── Layer 1: Adaptive classifier (Welford) ──
     if _adaptive_clf is not None and config.ADAPTIVE_CLASSIFIER_ENABLED:
         result = _adaptive_clf.classify(text)
@@ -97,27 +135,29 @@ def llm_fallback_classify(text: str) -> str | None:
             else:
                 return result.value
 
-    # ── Layer 2: LLM fallback ──
+    # ── Layer 2 (Slow Path): LLM fallback ──
     try:
+        t0 = time.time()
         response = ollama.chat(
             model=config.OLLAMA_MODEL,
             messages=[{"role": "user", "content": _PROMPT.format(text=text)}],
             options={"temperature": 0, "num_predict": 400},
             think=False,
         )
+        elapsed_ms = (time.time() - t0) * 1000
         result = _clean(response.message.content or "").upper().split()[0] if (response.message.content or "").strip() else ""
         if result in ("WEB_SEARCH", "SEARCH", "SAVE_TODO", "SAVE_MEMORY", "EXECUTE", "COMPLETE"):
             if result == "EXECUTE" and _is_manufacturing_context(text):
-                logger.debug(f"EXECUTE LLM bloccato: contesto manifatturiero — '{text[:50]}'")
+                logger.debug(f"[INTENT_SLOW] EXECUTE LLM bloccato: contesto manifatturiero — '{text[:50]}'")
                 return None
-            logger.info(f"LLM fallback: '{text[:50]}' → {result}")
-            
+            logger.info(f"[INTENT_SLOW] LLM fallback ({elapsed_ms:.0f}ms): '{text[:50]}' → {result}")
+
             # ── Layer 3: Feedback Loop Welford ──
             if _adaptive_clf is not None and config.ADAPTIVE_CLASSIFIER_ENABLED:
                 _adaptive_clf.update(text, result)
-                
+
             return result
         return None
     except Exception as e:
-        logger.debug(f"LLM fallback error: {e}")
+        logger.debug(f"[INTENT_SLOW] LLM fallback error: {e}")
         return None

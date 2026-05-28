@@ -219,3 +219,27 @@ CODE_RUNNER_SANDBOX_DIR = str(Path(__file__).parent / "sandbox")
 CODE_RUNNER_TIMEOUT = 30           # secondi max per esecuzione script
 CODE_RUNNER_MAX_OUTPUT_BYTES = 10240  # max stdout catturato
 
+# Tool VectorSet — Layer 2 intent routing semantico via Redis 8.8 VectorSet (V2.18)
+# Sostituisce l'LLM classifier (~800ms) con KNN nativo (~5ms) per query non ambigue.
+# Kill switch: portare a False disattiva il Fast Path, il sistema degrada al
+# comportamento pre-V2.18 (Layer 2 LLM puro).
+#
+# DISABILITATO 28/05/2026 dopo prima esecuzione in produzione.
+# Due problemi strutturali emersi sul vero:
+#   1) e5-large su CPU = ~600ms per encoding query. Latenza guadagnata vs
+#      LLM (~700ms) è di soli 100ms. "Scatto felino" smentito.
+#   2) e5-large produce score appiattiti (0.88-0.92) su query LUNGHE
+#      conversazionali — chat catch-all finisce in ULTIMA posizione (verificato
+#      sul caso reale "Il mercato ha alti e bassi... Il Covid non ha aiutato"
+#      → SAVE_MEMORY 0.898 invece di CHAT). Test sintetico con frasi brevi
+#      non aveva rivelato il problema; in produzione su 6 turni CHAT
+#      consecutivi nessun match Fast Path, sprecati 600ms embedding ogni volta.
+# Codice e modulo restano (core/tool_registry.py + test_tool_vectorset.py)
+# come fondamento per V2.18.1 / V2.19: vie suggerite per ripartire (Euri stessa
+# le ha intuite, sessione 13:44 del 28/05):
+#   (a) Ricerca ibrida FT.SEARCH keyword + VectorSet semantico
+#   (b) Re-ranking 2-stage (top-N VectorSet → LLM piccolo per scegliere)
+#   (c) Embedder dedicato all'intent o e5-large su GPU
+TOOL_VECTORSET_ENABLED = False
+TOOL_VECTORSET_THRESHOLD = 0.85
+
