@@ -298,7 +298,10 @@ class Executor:
                 description="Genera ed esegue codice Python per elaborare file (CSV, PDF, Excel, immagini). Parametro: task (str) — cosa fare con i file.",
                 parameters_schema={"task": {"type": "str", "required": True}},
                 handler=_tool_run_code,
-                timeout_seconds=config.CODE_RUNNER_TIMEOUT + 10,  # margine per generazione
+                # Tempo totale = pre-extract Vision + code-gen Gemma + execution.
+                # V2.18.2: con PDF scansionati o immagini il pre-extract chiama
+                # Vision Gemma 4 per ogni pagina (~10s/pagina). Margine ampio.
+                timeout_seconds=config.CODE_RUNNER_TOOL_TIMEOUT,
             ),
             ToolSpec(
                 name="analyze_image",

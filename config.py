@@ -218,6 +218,11 @@ CODE_RUNNER_OUTPUT_DIR = str(Path.home() / "Scrivania" / "scambio_dati")
 CODE_RUNNER_SANDBOX_DIR = str(Path(__file__).parent / "sandbox")
 CODE_RUNNER_TIMEOUT = 30           # secondi max per esecuzione script
 CODE_RUNNER_MAX_OUTPUT_BYTES = 10240  # max stdout catturato
+# Timeout dell'intero handler run_code = pre-extract Vision + code-gen + esecuzione.
+# Settato V2.18.2 dopo osservazione 28/05 ore 16:29: pre-extract di 5 file
+# (con 3 chiamate Vision Gemma 4) + code-gen Gemma + execution = ~57s.
+# Margine ampio per file pesanti / Dream Engine in concorrenza.
+CODE_RUNNER_TOOL_TIMEOUT = 180     # secondi max per l'intero ciclo CodeRunner
 
 # Tool VectorSet — Layer 2 intent routing semantico via Redis 8.8 VectorSet (V2.18)
 # Sostituisce l'LLM classifier (~800ms) con KNN nativo (~5ms) per query non ambigue.
