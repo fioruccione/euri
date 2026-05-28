@@ -95,10 +95,15 @@ def write_insight(doc: dict):
         logger.error(f"Obsidian Sync: impossibile creare cartella {dir_path}: {e}")
         return
         
-    dt = from_timestamp(doc["created_at"])
+    # Bug fix V2.17 (28/05/2026): usare promoted_at, non created_at.
+    # Il seed di un CANDIDATE può avere settimane prima della promotion; il
+    # nome file Obsidian deve riflettere l'evento di promozione, non l'origine.
+    # Fallback a created_at per retrocompat con eventuali doc legacy.
+    ts = doc.get("promoted_at") or doc["created_at"]
+    dt = from_timestamp(ts)
     date_str = dt.strftime("%Y-%m-%d %H:%M:%S")
     safe_date = dt.strftime("%Y%m%d_%H%M%S")
-    
+
     filepath = dir_path / f"Insight_{safe_date}.md"
     
     frontmatter = {
