@@ -81,7 +81,9 @@ class SecurityScanner:
         "subprocess", "shutil.rmtree", "shutil.move",
         "os.system(", "os.remove(", "os.unlink(", "os.rmdir(",
         "os.removedirs(", "os.rename(",
-        "eval(", "exec(", "compile(", "__import__(",
+        # NB: 'compile(' rimosso dalla blacklist testuale (catturava anche
+        # re.compile() innocuo). Il check sul compile() builtin è ora via AST.
+        "eval(", "exec(", "__import__(",
         "open('/etc", "open('/sys", "open('/proc", "open('/dev",
         'open("/etc', 'open("/sys', 'open("/proc', 'open("/dev',
         "socket", "http.client", "urllib", "requests",
@@ -119,10 +121,16 @@ class SecurityScanner:
                 if node.module and not self._is_allowed_module(node.module):
                     return False, f"Import bloccato: 'from {node.module}'"
 
-            # 4. Blocca chiamate a __import__
+            # 4. Blocca chiamate a builtin pericolose: __import__, compile
+            # (eval/exec sono già coperti dalla blacklist testuale).
+            # NB: re.compile() qui passa perché node.func è ast.Attribute,
+            # non ast.Name — l'AST distingue correttamente fra builtin e metodo.
             elif isinstance(node, ast.Call):
-                if isinstance(node.func, ast.Name) and node.func.id == "__import__":
-                    return False, "Chiamata __import__() bloccata"
+                if isinstance(node.func, ast.Name):
+                    if node.func.id == "__import__":
+                        return False, "Chiamata __import__() bloccata"
+                    if node.func.id == "compile":
+                        return False, "Chiamata compile() builtin bloccata"
                 # Blocca os.system, os.popen, ecc.
                 if isinstance(node.func, ast.Attribute):
                     if (isinstance(node.func.value, ast.Name) and
@@ -266,47 +274,75 @@ class CodeRunner:
         # li carica via json.load() invece di hardcodare 2-8 KB di testo come
         # stringhe multilinea (osservato 28/05: Gemma duplicava il content e
         # superava num_predict, troncando lo script a metà stringa).
+        #
+        # Path FISSO e CORTO (V2.18.3 fix 28/05 16:35): con nome dinamico
+        # 'euri_file_contents_<timestamp>.json' Gemma a volte tronca il
+        # path quando lo ricopia come stringa, generando SyntaxError. Path
+        # fisso = 0 caratteri da sbagliare. È sicuro perché il file viene
+        # sovrascritto ad ogni richiesta (operazioni seriali nel daemon).
         contents_path = None
         if file_contents:
             import json
-            contents_path = self._sandbox_dir / f"euri_file_contents_{int(time.time())}.json"
             self._sandbox_dir.mkdir(parents=True, exist_ok=True)
+            contents_path = self._sandbox_dir / "file_contents.json"
             with open(contents_path, "w", encoding="utf-8") as f:
                 json.dump(file_contents, f, ensure_ascii=False)
             logger.debug(f"CodeRunner: file_contents salvati in {contents_path.name}")
 
-        # 2. Genera il codice con l'LLM
-        logger.info(f"CodeRunner: generazione codice per '{task[:60]}...'")
-        code = brain.generate_code(
-            task=task,
-            available_files=available_files,
-            input_dir=str(self._input_dir),
-            output_dir=str(self._output_dir),
-            file_contents=file_contents,
-            file_contents_path=str(contents_path) if contents_path else None,
+        # 2. Genera il codice con l'LLM (retry su SyntaxError)
+        # Gemma a temperature=0.2 non è deterministica: stessa task può produrre
+        # codice corretto o codice con bug di sintassi. Osservato 28/05: 2 falsi
+        # consecutivi, poi successo. Retry trasforma fallimenti intermittenti
+        # in successi affidabili (al prezzo di max 2× latenza nel peggior caso).
+        setup_block = ""
+        if contents_path is not None:
+            setup_block = (
+                "import json\n"
+                f"FILE_CONTENTS = json.load(open({str(contents_path)!r}, encoding='utf-8'))\n"
+                "\n"
+            )
+
+        MAX_ATTEMPTS = 2
+        last_reason = "code_generation_failed"
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            logger.info(
+                f"CodeRunner: generazione codice per '{task[:60]}...'"
+                + (f" (tentativo {attempt}/{MAX_ATTEMPTS})" if attempt > 1 else "")
+            )
+            code = brain.generate_code(
+                task=task,
+                available_files=available_files,
+                input_dir=str(self._input_dir),
+                output_dir=str(self._output_dir),
+                file_contents=file_contents,
+                file_contents_path=str(contents_path) if contents_path else None,
+            )
+            if not code or len(code.strip()) < 10:
+                last_reason = "code_generation_failed"
+                continue
+
+            # Prepend setup block (FILE_CONTENTS già definito)
+            full_code = setup_block + code
+
+            logger.debug(f"CodeRunner: codice generato ({len(code)} chars, tentativo {attempt})")
+
+            # 3. Scansione sicurezza
+            is_safe, reason = self._scanner.scan(full_code)
+            if is_safe:
+                # 4. Esecuzione
+                return self._execute_code(full_code, stop_event, timeout)
+
+            last_reason = reason
+            logger.warning(
+                f"CodeRunner: codice BLOCCATO al tentativo {attempt}/{MAX_ATTEMPTS} — {reason}"
+            )
+
+        # Tutti i tentativi falliti
+        return CodeResult(
+            success=False,
+            output=f"Ho generato il codice ma l'ho bloccato per sicurezza: {last_reason}",
+            error=f"security: {last_reason}"
         )
-
-        if not code or len(code.strip()) < 10:
-            return CodeResult(
-                success=False,
-                output="Non sono riuscito a generare il codice per questa richiesta.",
-                error="code_generation_failed"
-            )
-
-        logger.debug(f"CodeRunner: codice generato ({len(code)} chars)")
-
-        # 3. Scansione sicurezza
-        is_safe, reason = self._scanner.scan(code)
-        if not is_safe:
-            logger.warning(f"CodeRunner: codice BLOCCATO — {reason}")
-            return CodeResult(
-                success=False,
-                output=f"Ho generato il codice ma l'ho bloccato per sicurezza: {reason}",
-                error=f"security: {reason}"
-            )
-
-        # 4. Esecuzione
-        return self._execute_code(code, stop_event, timeout)
 
     def _execute_code(self, code: str, stop_event: threading.Event,
                       timeout: int) -> CodeResult:

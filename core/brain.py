@@ -634,16 +634,18 @@ class Brain:
                     blocks.append(f"=== {fname} ===\n{snippet}")
                 else:
                     blocks.append(f"=== {fname} ===\n(testo non estratto — file protetto, vuoto, o non leggibile)")
-            # Header: dice a Gemma come accedere ai contenuti senza ricopiarli
+            # Header: dice a Gemma che FILE_CONTENTS è GIÀ DEFINITO nello scope
+            # (CodeRunner fa il prepend del setup block prima dell'esecuzione).
+            # Gemma deve SOLO usarlo, senza ridichiararlo, senza riassegnare
+            # variabili tipo json_path/contents_path.
             access_hint = (
-                f"\nIMPORTANTE — come usare questi contenuti nel codice:\n"
-                f"Sono già salvati in JSON in: {file_contents_path}\n"
-                f"All'inizio del tuo script fai:\n"
-                f"    import json\n"
-                f"    FILE_CONTENTS = json.load(open({file_contents_path!r}, encoding='utf-8'))\n"
-                f"Poi usa FILE_CONTENTS['nome_del_file.ext'] per ottenere il testo.\n"
-                f"NON ricopiare i testi sotto come stringhe nel codice — "
-                f"caricali sempre via json.load().\n"
+                f"\nIMPORTANTE — il dict FILE_CONTENTS è GIÀ DEFINITO nello "
+                f"scope globale del tuo script (l'ho caricato io prima). "
+                f"USALO direttamente: FILE_CONTENTS['nome_del_file.ext'] "
+                f"restituisce il testo del file.\n"
+                f"NON ridichiarare FILE_CONTENTS, NON aprire file JSON, "
+                f"NON definire variabili tipo json_path/contents_path: "
+                f"vai dritto alla logica di analisi.\n"
             ) if file_contents_path else ""
 
             file_section = (
@@ -665,7 +667,7 @@ class Brain:
             f"7. Gestisci le eccezioni con try/except e stampa messaggi chiari in italiano.\n"
             f"8. Se crei grafici con matplotlib usa plt.savefig() nella cartella output, NON plt.show().\n"
             f"9. Stampa un breve riassunto dei risultati alla fine.\n"
-            f"10. Se nel prompt c'è una sezione CONTENUTO DEI FILE PRE-LETTI, segui le istruzioni IMPORTANTE per caricare il dict FILE_CONTENTS via json.load() — NON ricopiare i testi come stringhe nello script, NON aprire quei file binari da disco. CSV/XLSX/JSON/TXT/MD invece vanno letti normalmente da disco.\n\n"
+            f"10. Se nel prompt c'è una sezione CONTENUTO DEI FILE PRE-LETTI: il dict FILE_CONTENTS è già caricato nello scope, usalo direttamente (FILE_CONTENTS['nome_file.ext']) senza ridichiararlo né aprire file JSON. CSV/XLSX/JSON/TXT/MD invece vanno letti normalmente da disco.\n\n"
             f"FILE DISPONIBILI IN INPUT:\n{files_list}\n"
             f"{file_section}\n"
             f"TASK: {task}"
