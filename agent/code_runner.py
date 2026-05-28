@@ -64,7 +64,9 @@ class SecurityScanner:
         # Data Science
         "pandas", "numpy", "openpyxl", "xlsxwriter", "odf", "odfpy",
         # PDF
-        "PyPDF2", "pypdf", "reportlab",
+        "PyPDF2", "pypdf", "reportlab", "pdf2image",
+        # Word / PowerPoint (V2.18.2)
+        "docx", "pptx",
         # Immagini
         "PIL", "PIL.Image", "PIL.ImageDraw", "PIL.ImageFont",
         "PIL.ImageFilter", "PIL.ImageEnhance", "PIL.ExifTags",
@@ -189,6 +191,48 @@ class CodeRunner:
         return [f for f in self._input_dir.iterdir()
                 if f.is_file() and f.suffix.lower() in IMAGE_EXTS]
 
+    def _preextract_files(self, brain) -> dict[str, str]:
+        """
+        Pre-estrae il testo da tutti i file gestiti nella cartella di input
+        (PDF, DOCX, PPTX, immagini). Per i formati strutturati direttamente
+        leggibili (csv, xlsx, json, txt, md) non si fa pre-estrazione: Gemma
+        li legge nel codice generato via pandas/open().
+
+        Cascata per formato:
+        - PDF: pypdf → fallback Vision (Gemma 4 multimodale)
+        - DOCX: python-docx (nessun fallback Vision: i .docx sono strutturati)
+        - PPTX: python-pptx → fallback Vision (per slide grafiche)
+        - Immagini: Vision diretta (è l'unico canale)
+
+        Restituisce dict {filename: testo_estratto}. File senza testo
+        estraibile hanno valore stringa vuota.
+        """
+        if not self._input_dir.exists():
+            return {}
+
+        from agent.file_extractors import extract_any, IMAGE_EXTS
+
+        HANDLED = {".pdf", ".docx", ".pptx"} | IMAGE_EXTS
+        files = [f for f in self._input_dir.iterdir()
+                 if f.is_file() and f.suffix.lower() in HANDLED]
+        if not files:
+            return {}
+
+        # vision_callback wrappa Brain.analyze_image così file_extractors
+        # non ha dipendenza diretta su Brain (modulo isolato).
+        vision_cb = brain.analyze_image if brain is not None else None
+
+        out = {}
+        for f in files:
+            try:
+                text = extract_any(f, vision_callback=vision_cb)
+                out[f.name] = text
+                logger.info(f"Pre-extract '{f.name}' ({f.suffix}): {len(text)} char")
+            except Exception as e:
+                logger.warning(f"Pre-extract fallito su {f.name}: {e}")
+                out[f.name] = ""
+        return out
+
     def generate_and_run(self, task: str, brain,
                          stop_event: threading.Event,
                          timeout: int = None) -> CodeResult:
@@ -212,6 +256,25 @@ class CodeRunner:
                 error="no_input_files"
             )
 
+        # 1b. Pre-estrazione testo da PDF/DOCX/PPTX/immagini
+        # Cascata testo-nativo → Vision (Gemma 4 multimodale) per i casi
+        # scansionati. Formati testuali (csv/xlsx/json/txt/md) NON vengono
+        # pre-estratti: Gemma li legge direttamente da disco.
+        file_contents = self._preextract_files(brain)
+
+        # 1c. Salva i file_contents su disco come JSON così lo script generato
+        # li carica via json.load() invece di hardcodare 2-8 KB di testo come
+        # stringhe multilinea (osservato 28/05: Gemma duplicava il content e
+        # superava num_predict, troncando lo script a metà stringa).
+        contents_path = None
+        if file_contents:
+            import json
+            contents_path = self._sandbox_dir / f"euri_file_contents_{int(time.time())}.json"
+            self._sandbox_dir.mkdir(parents=True, exist_ok=True)
+            with open(contents_path, "w", encoding="utf-8") as f:
+                json.dump(file_contents, f, ensure_ascii=False)
+            logger.debug(f"CodeRunner: file_contents salvati in {contents_path.name}")
+
         # 2. Genera il codice con l'LLM
         logger.info(f"CodeRunner: generazione codice per '{task[:60]}...'")
         code = brain.generate_code(
@@ -219,6 +282,8 @@ class CodeRunner:
             available_files=available_files,
             input_dir=str(self._input_dir),
             output_dir=str(self._output_dir),
+            file_contents=file_contents,
+            file_contents_path=str(contents_path) if contents_path else None,
         )
 
         if not code or len(code.strip()) < 10:

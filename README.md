@@ -191,6 +191,26 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 
 ## Changelog
 
+### V2.18.2 — CodeRunner gestisce PDF/DOCX/PPTX/immagini con cascata testo-nativo → Vision (Gemma 4 multimodale)
+
+- **Nuovo modulo `agent/file_extractors.py`** con 4 estrattori uniformi (PDF, DOCX, PPTX, immagini) + dispatcher `extract_any(path)`. Cascata: per ogni formato prova prima la lettura nativa (pypdf/python-docx/python-pptx istantanea), se il testo estratto è sotto soglia (50 char) attiva fallback **Vision Gemma 4** (modello già caricato in Ollama, multimodale out-of-the-box). Per le immagini Vision è il primo e unico canale.
+
+- **CodeRunner pre-estrae automaticamente i file all'inizio di `generate_and_run()`** invece di lasciare a Gemma il compito di aprirli nello script. Pattern di lavoro:
+  1. `_preextract_files()` legge ogni PDF/DOCX/PPTX/immagine, salva `{filename: testo}` come **JSON in sandbox** (`euri_file_contents_<ts>.json`).
+  2. Il prompt di `Brain.generate_code()` mostra a Gemma un anteprima del contenuto (cap 8000 char/file) E gli dice come caricare il dict completo via `json.load(open(path))`.
+  3. Lo script generato è breve (~2 KB invece di ~6 KB), Gemma non duplica il testo, niente troncamento da `num_predict`.
+  4. CSV/XLSX/JSON/TXT/MD continuano a essere letti normalmente da disco — non vanno pre-estratti.
+
+- **PPTX scansionati**: fallback Vision passa da `libreoffice --headless --convert-to pdf` → `pdf2image` → Vision per slide. Richiede `libreoffice` installato (già presente su Pop!_OS).
+
+- **Test sul campo (28/05/2026)**:
+  - **D19 Scheda Tecnica PDF scansionato** (Pipal, secchio plastico): 2874 char estratti via Vision, codice generato 2175 char, esecuzione 200ms, output strutturato (articolo/materiale PP.5/volumi/dimensioni/accatastamento/tabella coperchi). Durata totale 35s.
+  - **Multi-file (5 documenti: 2 PDF, 1 DOCX 28KB, 1 PPTX, 1 JPG)**: pre-extract totale 31.6s, code-gen 13s, esecuzione 200ms. Output: 5 file analizzati, **3 connessioni semantiche emergenti** identificate (es. *"esiste un legame operativo tra produzione del secchiello D19 e la gestione degli scarti trattati nella stazione di selezione Lucy Plast"* — collegamento NON esplicito in nessun singolo file).
+
+- **Caveat onesto — concorrenza con Dream Engine**: se un dream cycle è in corso quando arriva una richiesta CodeRunner, le chiamate Vision sono **drasticamente degradate** (osservato: 9.4s → 24-51s per pagina, e in un caso output troncato a 63 char invece di 1750). In produzione succede raramente perché `notify_activity()` resetta l'idle del Dream Engine ad ogni STT, ma se l'attivazione vocale capita durante un ciclo onirico, la pipeline rallenta ~3× e la qualità Vision cala. Mitigazioni future possibili: hard cap N file pre-estratti per richiesta, filtro per task (se menziona un file specifico, estrai solo quello), segnale "pause dream" durante CodeRunner.
+
+- **Nuove dipendenze**: `pypdf>=4.0`, `pdf2image>=1.17`, `python-docx>=1.0`, `python-pptx>=1.0` (Python). `poppler-utils` (apt, necessario a `pdf2image`). Whitelist `code_runner.py` estesa con `docx`, `pptx`, `pdf2image`.
+
 ### V2.18 — Tool VectorSet: prima istanza del pattern VectorSet (Redis 8.8), congelata con kill switch off
 
 - **Cosa è stato costruito:** modulo isolato `core/tool_registry.py` (~430 righe) che indicizza il catalogo dei 7 intent del Layer 2 (`WEB_SEARCH, SEARCH, SAVE_TODO, SAVE_MEMORY, EXECUTE, COMPLETE, CHAT`) tramite **VectorSet nativo di Redis 8.8** (modulo nuovo, comandi `VADD`/`VSIM`/`VEMB`/`VREM`). Schema: una sola chiave `euri:tools:vset` con tutti gli embedding + JSON parallelo per metadata `euri:tool:{slug}`. Tre gate nella `match_tool()`: (1) threshold assoluta 0.85, (2) gap minimo 0.005 tra top-1 e top-2 per anti-ambiguità, (3) flag `is_fallback` su tool catch-all per disabilitare il match (es. `chat`). Wire-up nel `core/llm_classifier.py` come Fast Path prima del Slow Path LLM, con log timing `[INTENT_FAST]`/`[INTENT_SLOW]`. Test sandbox `test_tool_vectorset.py` con 16 query reali → 13/16 al freddo, latenza KNN puro 0.75-1.29ms (cleanup garantito via `try/finally`). Kill switch `config.TOOL_VECTORSET_ENABLED`.

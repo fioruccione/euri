@@ -605,12 +605,53 @@ class Brain:
             return text
 
     def generate_code(self, task: str, available_files: list[str],
-                      input_dir: str, output_dir: str) -> str:
+                      input_dir: str, output_dir: str,
+                      file_contents: dict[str, str] = None,
+                      file_contents_path: str = None) -> str:
         """
         Chiede a Gemma di generare uno script Python per manipolare file.
         Restituisce il codice puro (senza markdown fences).
+
+        file_contents (opzionale): dict {filename: testo_estratto} per i file
+        pre-leggibili (PDF/DOCX/PPTX/immagini). Il testo viene iniettato nel
+        prompt così Gemma fa analisi su stringhe invece di riaprire i file
+        binari (più affidabile: per i PDF/PPTX scansionati e le immagini, il
+        fallback Vision di CodeRunner._preextract_files li ha già letti via
+        Gemma multimodale).
+        File come csv/xlsx/json/txt/md NON sono qui — Gemma li legge da
+        disco direttamente nel codice generato.
         """
         files_list = "\n".join(f"  - {f}" for f in available_files) if available_files else "  (nessun file)"
+
+        # Sezione file già estratti: testi pronti, Gemma lavora su stringhe
+        file_section = ""
+        if file_contents:
+            blocks = []
+            for fname, text in file_contents.items():
+                if text:
+                    # Cap a 8000 char per file per non saturare il context
+                    snippet = text[:8000] + (" ...[troncato]" if len(text) > 8000 else "")
+                    blocks.append(f"=== {fname} ===\n{snippet}")
+                else:
+                    blocks.append(f"=== {fname} ===\n(testo non estratto — file protetto, vuoto, o non leggibile)")
+            # Header: dice a Gemma come accedere ai contenuti senza ricopiarli
+            access_hint = (
+                f"\nIMPORTANTE — come usare questi contenuti nel codice:\n"
+                f"Sono già salvati in JSON in: {file_contents_path}\n"
+                f"All'inizio del tuo script fai:\n"
+                f"    import json\n"
+                f"    FILE_CONTENTS = json.load(open({file_contents_path!r}, encoding='utf-8'))\n"
+                f"Poi usa FILE_CONTENTS['nome_del_file.ext'] per ottenere il testo.\n"
+                f"NON ricopiare i testi sotto come stringhe nel codice — "
+                f"caricali sempre via json.load().\n"
+            ) if file_contents_path else ""
+
+            file_section = (
+                "\nCONTENUTO DEI FILE PRE-LETTI (PDF/DOCX/PPTX/immagini — "
+                "testo già estratto, mostrato qui SOLO per riferimento):\n\n"
+                + "\n\n".join(blocks) + "\n"
+                + access_hint
+            )
 
         prompt = (
             f"Sei un programmatore Python esperto. Genera uno script Python che esegua il task richiesto.\n\n"
@@ -623,8 +664,10 @@ class Brain:
             f"6. Librerie disponibili: pandas, numpy, json, csv, pathlib, PIL, matplotlib, PyPDF2, openpyxl, math, re, collections, statistics, odfpy.\n"
             f"7. Gestisci le eccezioni con try/except e stampa messaggi chiari in italiano.\n"
             f"8. Se crei grafici con matplotlib usa plt.savefig() nella cartella output, NON plt.show().\n"
-            f"9. Stampa un breve riassunto dei risultati alla fine.\n\n"
-            f"FILE DISPONIBILI IN INPUT:\n{files_list}\n\n"
+            f"9. Stampa un breve riassunto dei risultati alla fine.\n"
+            f"10. Se nel prompt c'è una sezione CONTENUTO DEI FILE PRE-LETTI, segui le istruzioni IMPORTANTE per caricare il dict FILE_CONTENTS via json.load() — NON ricopiare i testi come stringhe nello script, NON aprire quei file binari da disco. CSV/XLSX/JSON/TXT/MD invece vanno letti normalmente da disco.\n\n"
+            f"FILE DISPONIBILI IN INPUT:\n{files_list}\n"
+            f"{file_section}\n"
             f"TASK: {task}"
         )
         try:
@@ -632,7 +675,11 @@ class Brain:
             response = ollama.chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                options={"temperature": 0.2, "num_predict": 2000},
+                # num_predict 4000: con PDF pre-estratti (cascata Vision) i
+                # contenuti finiscono nel prompt E rispecchiati nello script
+                # generato come stringa. Cap a 2000 troncava il codice a metà
+                # del parsing (osservato sul caso D19 Scheda Tecnica, 28/05).
+                options={"temperature": 0.2, "num_predict": 4000},
                 think=False,
             )
             elapsed = (time.perf_counter() - _t) * 1000
