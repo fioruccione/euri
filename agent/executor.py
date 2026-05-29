@@ -241,10 +241,54 @@ class Executor:
                 brain=brain,
                 stop_event=stop_ev,
             )
+            # artifacts = contenuto fedele dei file prodotti, da iniettare nel
+            # contesto LLM (non nel parlato): è la memoria esatta dell'analisi.
             return ToolResult(
                 success=result.success,
                 output=result.output,
                 error=result.error,
+                raw_data={"context_extra": result.artifacts} if result.artifacts else {},
+            )
+
+        def _tool_read_document(params: dict, **kwargs) -> ToolResult:
+            """
+            Percorso LETTURA (no code-gen): estrae il testo dai documenti e lo fa
+            COMPRENDERE a Gemma. Per "leggi/analizza/estrai dal documento/PDF/
+            scheda". run_code resta per "elabora/unisci/calcola/crea".
+            """
+            from core.brain import Brain
+            brain = Brain._shared_instance if hasattr(Brain, '_shared_instance') else Brain()
+
+            input_dir = self._code_runner._input_dir
+            if not input_dir.exists() or not any(input_dir.iterdir()):
+                return ToolResult(success=False, output="Non ci sono file nella cartella dati.")
+
+            # 1. PDF/DOCX/PPTX/immagini → cascata pre-extract (pypdf → Vision)
+            documents = dict(self._code_runner._preextract_files(brain))
+            # 2. File testuali strutturati → lettura diretta
+            TEXT_EXT = {".csv", ".txt", ".md", ".json", ".tsv"}
+            for p in sorted(input_dir.iterdir()):
+                if p.is_file() and p.suffix.lower() in TEXT_EXT and p.name not in documents:
+                    try:
+                        documents[p.name] = p.read_text(encoding="utf-8", errors="replace")
+                    except Exception:
+                        pass
+            if not any((t or "").strip() for t in documents.values()):
+                return ToolResult(success=False, output="Non sono riuscito a leggere testo dai documenti.")
+
+            question = params.get("question", "") or ""
+            comprehension = brain.read_and_extract(documents, question)
+
+            # context_extra = testo GREZZO dei documenti, iniettato nel contesto
+            # (non nel parlato) per il richiamo fedele dei valori esatti nei turn
+            # successivi — stesso disaccoppiamento parla/ricorda del fix run_code.
+            raw_blob = "\n\n".join(
+                f"=== {f} ===\n{t.strip()}" for f, t in documents.items() if t and t.strip()
+            )
+            return ToolResult(
+                success=True,
+                output=comprehension,
+                raw_data={"context_extra": raw_blob[:6000]} if raw_blob else {},
             )
 
         def _tool_analyze_image(params: dict, **kwargs) -> ToolResult:
@@ -304,11 +348,22 @@ class Executor:
                 timeout_seconds=config.CODE_RUNNER_TOOL_TIMEOUT,
             ),
             ToolSpec(
+                name="read_document",
+                description="Legge e COMPRENDE un documento (PDF, DOCX, scheda tecnica, CSV, testo) nella cartella dati ed estrae i dati che contiene, senza generare codice. Parametro opzionale: question (str) — cosa cercare nel documento.",
+                parameters_schema={"question": {"type": "str", "required": False}},
+                handler=_tool_read_document,
+                # pre-extract (pypdf, eventuale Vision) + 1 chiamata di comprensione.
+                timeout_seconds=config.CODE_RUNNER_TOOL_TIMEOUT,
+            ),
+            ToolSpec(
                 name="analyze_image",
                 description="Analizza un'immagine nella cartella dati usando la visione artificiale. Parametro opzionale: question (str) — domanda specifica sull'immagine.",
                 parameters_schema={"question": {"type": "str", "required": False}},
                 handler=_tool_analyze_image,
-                timeout_seconds=30,
+                # 60s come clipboard_analyze: la PRIMA chiamata vision a freddo
+                # carica Gemma 4 multimodale in VRAM (~35s osservati il 29/05),
+                # superando il vecchio cap di 30s. Le successive (caldo) ~5s.
+                timeout_seconds=60,
             ),
             ToolSpec(
                 name="list_data_files",
@@ -400,11 +455,20 @@ class Executor:
             r'|\b(cosa\s+vedi|cosa\s+c[\'\`è])\s+.*(foto|immagin[ei]|screenshot)\b',
             re.IGNORECASE,
         ), "analyze_image", {}),
-        # DOPO: Elaborazione documenti/dati (run_code)
+        # IN MEZZO: LETTURA/comprensione di un documento (read_document, no code-gen).
+        # Verbi di lettura + sostantivo-documento → Gemma LEGGE ed estrae i valori,
+        # non scrive un parser. Deve precedere run_code (che ora prende solo i verbi
+        # di elaborazione/calcolo). Vedi caso 03PPR100: il code-gen sbagliava colonna.
+        (re.compile(
+            r'\b(leggi|apri|analizza|esamina|controlla|riassumi|sintetizza|estrai|consulta|guarda|verifica)\s+.*\b(documento|document[io]|pdf|sched[ae]|certificat[oi]|file|foglio|testo|presentazion[ei]|docx|pptx|csv|excel|xlsx|ods|json|relazione|rapporto|report)\b'
+            r'|\b(cosa\s+(dice|riporta|c[\'\`è]\s+scritto)|che\s+(dati|valori)\s+ci\s+sono)\b.*\b(documento|pdf|sched[ae]|file|certificat[oi]|csv|excel)\b',
+            re.IGNORECASE,
+        ), "read_document", {"question": "__USER_TEXT__"}),
+        # DOPO: Elaborazione/calcolo/creazione su file (run_code). Solo verbi che
+        # TRASFORMANO o PRODUCONO dati — la pura lettura è gestita sopra.
         (re.compile(
             r'\b(unisci|fondi|combina|merge|raggruppa)\s+.*(csv|file|pdf|excel|dati|document[io]|ods|odt|txt|json)\b'
-            r'|\b(leggi|apri|elabora|processa|converti|trasforma|analizza|controlla|riassumi|estrai)\s+.*(csv|pdf|excel|dati|document[io]|ods|odt|txt|json|presentazion[ei])\b'
-            r'|\b(analizza|leggi|controlla|estrai|riassumi)\s+il\s+(documento|file|pdf|foglio|testo)\b'
+            r'|\b(elabora|processa|converti|trasforma|calcola|filtra|ordina|conta|somma)\s+.*(csv|pdf|excel|dati|document[io]|ods|odt|txt|json|file)\b'
             r'|\b(crea|genera|esporta|salva)\s+.*(csv|file|pdf|excel|grafico|report|tabella|document[io])\b'
             r'|\b(ridimensiona|comprimi|ruota|taglia|converti)\s+.*(foto|immagin[ei])\b',
             re.IGNORECASE,

@@ -666,7 +666,7 @@ class Brain:
             f"6. Librerie disponibili: pandas, numpy, json, csv, pathlib, PIL, matplotlib, PyPDF2, openpyxl, math, re, collections, statistics, odfpy.\n"
             f"7. Gestisci le eccezioni con try/except e stampa messaggi chiari in italiano.\n"
             f"8. Se crei grafici con matplotlib usa plt.savefig() nella cartella output, NON plt.show().\n"
-            f"9. Stampa un breve riassunto dei risultati alla fine.\n"
+            f"9. Stampa con print() i VALORI CONCRETI che estrai o calcoli (numeri, proprietà, misure, nomi, totali), non solo un conteggio tipo 'estratte 5 righe'. Quello che NON stampi non esiste per chi ascolta: anche se salvi i dati in un CSV, stampa comunque i valori chiave nel testo, perché l'assistente vocale ricorderà SOLO l'output stampato, non il contenuto del file.\n"
             f"10. Se nel prompt c'è una sezione CONTENUTO DEI FILE PRE-LETTI: il dict FILE_CONTENTS è già caricato nello scope, usalo direttamente (FILE_CONTENTS['nome_file.ext']) senza ridichiararlo né aprire file JSON. CSV/XLSX/JSON/TXT/MD invece vanno letti normalmente da disco.\n\n"
             f"FILE DISPONIBILI IN INPUT:\n{files_list}\n"
             f"{file_section}\n"
@@ -737,3 +737,65 @@ class Brain:
         except Exception as e:
             logger.error(f"Errore analyze_image: {e}")
             return "Non sono riuscito ad analizzare l'immagine."
+
+    def read_and_extract(self, documents: dict[str, str], question: str = "") -> str:
+        """
+        Percorso LETTURA (non code-gen): dà a Gemma il testo già estratto dai
+        documenti e gli chiede di COMPRENDERLO ed estrarne i dati, invece di
+        fargli scrivere un parser. Per un 26B leggere è molto più affidabile che
+        programmare un parser corretto al primo colpo (vedi caso 03PPR100: il
+        valore era leggibile, ma il parser generato prendeva il numero della
+        norma ISO al posto del valore). Generico: nessuna assunzione di layout.
+        """
+        blocks = []
+        for fname, text in documents.items():
+            if text and text.strip():
+                # cap per file: non saturare il contesto su documenti lunghi
+                snippet = text[:8000] + (" ...[troncato]" if len(text) > 8000 else "")
+                blocks.append(f"=== {fname} ===\n{snippet}")
+        if not blocks:
+            return "Non sono riuscito a leggere testo dai documenti nella cartella dati."
+
+        focus = (
+            f"\nDomanda specifica dell'utente: {question}\n"
+            "Rispondi prima a questa, poi riporta gli altri dati salienti."
+            if question and question.strip() else ""
+        )
+        prompt = (
+            "Questi sono i testi ESTRATTI da uno o più documenti reali. "
+            "Leggili con attenzione ed estrai i dati che contengono.\n\n"
+            "REGOLE:\n"
+            "- Il testo del documento è QUI SOTTO: è il tuo input. NON dire che "
+            "non puoi accedere a file/cartelle, NON aggiungere premesse o "
+            "disclaimer — vai diritto ai dati.\n"
+            "- Adàttati al TIPO di documento (scheda tecnica, fattura, lettera, "
+            "report, ricetta, tabella... qualunque cosa) ed estrai il suo "
+            "contenuto saliente, senza dare per scontato cosa contenga.\n"
+            "- Riporta ogni dato concreto con la sua etichetta e l'unità se "
+            "presente: valori, misure, importi, date, nomi, quantità "
+            "(es. 'IZOD: 6,5 kJ/m²', 'Totale: 1.240 €', 'Scadenza: 30/06').\n"
+            "- Riporta SOLO ciò che è scritto nel testo. Se un dato non c'è, "
+            "NON inventarlo: dì che non è riportato, oppure omettilo.\n"
+            "- Distingui i valori reali dai codici e riferimenti (numeri di "
+            "norma o metodo, sigle, ID): il numero di un riferimento NON è un "
+            "valore misurato.\n"
+            "- Output per voce: frasi naturali, niente markdown, niente tabelle "
+            "ASCII. Se elenchi, usa 'Primo... Secondo...'.\n"
+            f"{focus}\n\n"
+            "DOCUMENTI:\n" + "\n\n".join(blocks)
+        )
+        try:
+            _t = time.perf_counter()
+            response = ollama.chat(
+                model=config.OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                # think=False: lettura diretta; num_predict ampio per documenti
+                # con molte proprietà (il modello si ferma da solo).
+                options={"temperature": 0.2, "num_predict": 1500},
+                think=False,
+            )
+            logger.info(f"[TIMING] brain.read_and_extract() Ollama: {(time.perf_counter()-_t)*1000:.0f}ms")
+            return self._clean(response.message.content or "Non sono riuscito a leggere il documento.")
+        except Exception as e:
+            logger.error(f"Errore read_and_extract: {e}")
+            return "Non sono riuscito a leggere il documento."

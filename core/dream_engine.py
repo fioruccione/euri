@@ -449,6 +449,28 @@ Rispondi SOLO con SÌ o NO."""
                         )
                         continue
 
+                    # Gate di ri-promozione (V2.19, opzione b): la PRIMA promozione è
+                    # libera (il sogno deve poter affiorare per sola convergenza). Ma un
+                    # insight già demoto da Gate 1 — cioè invecchiato (14–30 giorni dalla
+                    # creazione) e MAI richiamato in conversazione — non torna in vita per
+                    # la sola ri-convergenza (il sogno che si auto-resuscita). Per rinascere
+                    # deve essere stato validato dall'uso reale (recalled_count > 0).
+                    # I candidate non sono nel percorso di richiamo (search_insights filtra
+                    # @status:{promoted}), quindi per un demoto questo è di fatto sempre
+                    # vero: resta candidate e si spegne pulito al giorno 30 (Gate 3).
+                    # Il check su recalled_count è esplicito per documentare il principio
+                    # ed essere a prova di futuro. Niente oscillazione demote↔re-promote.
+                    stored_dem = self._r.json().get(doc.id, "$.demoted_once")
+                    demoted_once = bool(stored_dem[0]) if stored_dem else False
+                    stored_rc = self._r.json().get(doc.id, "$.recalled_count")
+                    recalled = int(stored_rc[0]) if stored_rc else 0
+                    if demoted_once and recalled == 0:
+                        logger.info(
+                            f"Dream Engine: re-promozione negata (demoto, mai validato "
+                            f"dall'uso) — {doc.id[-8:]} con {convergences} convergenze"
+                        )
+                        continue
+
                     # Promuovi questo a PROMOTED
                     self._r.json().set(doc.id, "$.status", "promoted")
                     self._r.json().set(doc.id, "$.convergence_count", convergences)
@@ -821,6 +843,10 @@ Rispondi SOLO con una di queste tre parole: BAD_MEMORY, BAD_REASONING, AMBIGUOUS
                     continue
                 self._r.json().set(doc.id, "$.status", "candidate")
                 self._r.json().set(doc.id, "$.convergence_count", 1)
+                # Marca: "hai già avuto i tuoi 14 giorni di vetrina senza essere usato".
+                # Il gate in _evaluate_insights impedirà la re-promozione per sola
+                # convergenza (opzione b) — torna a vivere solo se la realtà ti richiama.
+                self._r.json().set(doc.id, "$.demoted_once", True)
                 logger.info(f"Dream Engine: Insight retrocesso a candidate (ID: {doc.id})")
 
             # Gate 2: più vecchio di TTL_DAYS → elimina

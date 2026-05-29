@@ -105,6 +105,24 @@ def _tts_trim(text: str, max_chars: int = 400) -> str:
     return text[:cut].strip() + " Dimmi se vuoi i dettagli."
 
 
+def build_injected_context(spoken: str, raw_data: dict | None) -> str:
+    """
+    Costruisce la stringa da iniettare nella history LLM dopo un tool.
+    Disaccoppia 'cosa dice' (spoken, vocalizzato) da 'cosa ricorda': se il tool
+    ha prodotto dati fedeli su file (run_code → raw_data['context_extra']), li
+    accoda al contesto coi valori esatti, così le domande quantitative
+    successive li leggono invece di confabularli dal riassunto vocale.
+    Funzione pura: nessuna dipendenza da audio/stato → testabile end-to-end.
+    """
+    context_extra = (raw_data or {}).get("context_extra", "")
+    if not context_extra:
+        return spoken
+    return (
+        f"{spoken}\n\n[DATI ESTRATTI DAL FILE — valori esatti, "
+        f"usa questi e non riassumere a memoria]\n{context_extra}"
+    )
+
+
 class _PendingState:
     """Stato temporaneo con timeout — sostituisce le coppie (dict, float) sparse in __init__."""
     __slots__ = ("data", "_ts", "_timeout")
@@ -656,29 +674,44 @@ class VoiceDaemon:
             self._speak(hint)
             return
 
-        # Per run_code: sostituisce la sentinella __USER_TEXT__ con la frase reale dell'utente
-        if call.tool_name == "run_code":
-            if not call.parameters.get("task") or call.parameters.get("task") == "__USER_TEXT__":
-                call.parameters["task"] = text
+        # Sostituisce la sentinella __USER_TEXT__ (pattern run_code/read_document)
+        # con la frase reale dell'utente, su qualunque parametro la contenga.
+        for _k, _v in call.parameters.items():
+            if _v == "__USER_TEXT__":
+                call.parameters[_k] = text
 
         # Feedback vocale differenziato
         if call.tool_name == "run_code":
             self._speak("Ci penso, genero ed eseguo il codice.")
+        elif call.tool_name == "read_document":
+            self._speak("Leggo il documento.")
         elif call.tool_name == "analyze_image":
             self._speak("Guardo l'immagine.")
         else:
             self._speak("Controllo.")
 
-        result = self.executor.execute_safe(call)
-        self.memory.log_conversation("Euri", result)
+        result = self.executor.execute(call)
+        spoken = result.output
+        self.memory.log_conversation("Euri", spoken)
 
-        # Per analyze_image: inietta il testo completo nella history prima di parlare,
-        # poi parla solo un riassunto breve (evita 2+ minuti di UUID/descrizioni parlate)
-        if call.tool_name in ("analyze_image", "clipboard_analyze"):
-            self.brain.inject_tool_result(text, result)
-            self._speak(_tts_trim(result, max_chars=400))
+        # Continuità conversazionale (V2.18.3 → fix V2.19): inietta il risultato del
+        # tool nella history LLM del Brain, così i turn CHAT successivi lo "vedono"
+        # (es. "cosa ne pensi?" subito dopo un'analisi). log_conversation scrive su
+        # Redis, ma respond() costruisce il contesto solo da _conversation_history:
+        # senza questo inject il CodeRunner risponderebbe "non vedo nulla".
+        if call.tool_name in ("analyze_image", "clipboard_analyze", "run_code", "read_document"):
+            # Disaccoppia "cosa dice" da "cosa ricorda": nel contesto va anche il
+            # contenuto FEDELE (run_code → CSV prodotto; read_document → testo grezzo
+            # del documento), così le domande quantitative successive ("quanto era
+            # l'IZOD?") leggono i valori esatti invece di confabularli.
+            self.brain.inject_tool_result(text, build_injected_context(spoken, result.raw_data))
+
+        # analyze_image/clipboard/read_document parlano un riassunto breve (evita di
+        # leggere a voce tabelle/descrizioni intere); run_code parla l'output completo.
+        if call.tool_name in ("analyze_image", "clipboard_analyze", "read_document"):
+            self._speak(_tts_trim(spoken, max_chars=400))
         else:
-            self._speak(result)
+            self._speak(spoken)
 
 
     def _handle_audit_memory(self, text: str):

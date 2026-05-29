@@ -39,6 +39,10 @@ class CodeResult:
     exit_code: int = -1
     interrupted: bool = False
     script_path: str = ""     # per debug
+    artifacts: str = ""       # contenuto FEDELE dei file prodotti in output_dir,
+                              # riletto dal disco per iniettarlo nel contesto LLM
+                              # (la "memoria del collega": valori esatti, non il
+                              # riassunto che lo script ha scelto di stampare).
 
 
 # ─────────────────────────────────────────
@@ -344,6 +348,62 @@ class CodeRunner:
             error=f"security: {last_reason}"
         )
 
+    def _read_output_artifacts(self, before_outputs: dict,
+                               max_total: int = 4000) -> str:
+        """
+        Rilegge dal disco i file che lo script ha prodotto/aggiornato in
+        output_dir durante questa run, per iniettarli FEDELMENTE nel contesto
+        LLM. È la "memoria del collega": ciò che Euri ricorda dell'analisi sono
+        i valori esatti scritti su file, non il riassunto che lo script ha
+        scelto di stampare a voce (che era lossy → confabulazioni su numeri).
+
+        Solo file testuali (csv/json/txt/md/tsv). Cap a max_total caratteri
+        totali per non saturare il contesto.
+
+        TODO (debito noto, non urgente): output_dir (scambio_dati/) cresce
+        all'infinito e non viene mai svuotata. Il filtro mtime qui sotto isola
+        i file di QUESTA run, quindi nell'uso normale `produced` contiene 1-2
+        file e il problema non morde. MA se una singola run producesse molti
+        file, `sorted(iterdir())` li ordina alfabeticamente e il cap a 4KB
+        rileggerebbe i primi per nome, non i più pertinenti. Da chiudere con
+        una pulizia periodica della cartella o un sotto-folder per-run con
+        timestamp (es. scambio_dati/<run_ts>/). Solo allora ordinare per mtime.
+        """
+        if not self._output_dir.exists():
+            return ""
+        TEXT_EXT = {".csv", ".json", ".txt", ".md", ".tsv"}
+        produced = []
+        for p in sorted(self._output_dir.iterdir()):
+            if not p.is_file():
+                continue
+            try:
+                mtime = p.stat().st_mtime
+            except OSError:
+                continue
+            prev = before_outputs.get(str(p))
+            if prev is None or mtime > prev:  # nuovo o modificato in questa run
+                produced.append(p)
+        if not produced:
+            return ""
+
+        blocks = []
+        budget = max_total
+        for p in produced:
+            if budget <= 0:
+                break
+            if p.suffix.lower() not in TEXT_EXT:
+                blocks.append(f"=== {p.name} === (file non testuale, {p.stat().st_size} byte)")
+                continue
+            try:
+                txt = p.read_text(encoding="utf-8", errors="replace").strip()
+            except Exception:
+                continue
+            if len(txt) > budget:
+                txt = txt[:budget] + " ...[troncato]"
+            blocks.append(f"=== {p.name} ===\n{txt}")
+            budget -= len(txt)
+        return "\n\n".join(blocks)
+
     def _execute_code(self, code: str, stop_event: threading.Event,
                       timeout: int) -> CodeResult:
         """Esegue il codice in subprocess isolato."""
@@ -364,6 +424,18 @@ class CodeRunner:
                                   "GOOGLE_API_KEY", "REDIS_PASSWORD"):
                 env.pop(sensitive_key, None)
             env["PYTHONIOENCODING"] = "utf-8"
+
+            # Snapshot dei file già presenti in output_dir: dopo il run ci serve
+            # per capire QUALI file lo script ha prodotto/aggiornato e rileggerli
+            # fedelmente nel contesto (memoria del collega — vedi CodeResult.artifacts).
+            before_outputs = {}
+            if self._output_dir.exists():
+                for p in self._output_dir.iterdir():
+                    if p.is_file():
+                        try:
+                            before_outputs[str(p)] = p.stat().st_mtime
+                        except OSError:
+                            pass
 
             # Lancia il subprocess
             process = subprocess.Popen(
@@ -421,11 +493,15 @@ class CodeRunner:
                 logger.success(f"CodeRunner: completato in {elapsed_ms}ms")
                 # Restituisci l'output oppure un messaggio di default
                 output = stdout.strip() if stdout.strip() else "Operazione completata senza errori."
+                artifacts = self._read_output_artifacts(before_outputs)
+                if artifacts:
+                    logger.debug(f"CodeRunner: artefatti riletti per il contesto ({len(artifacts)} char)")
                 return CodeResult(
                     success=True,
                     output=output,
                     exit_code=exit_code,
                     script_path=str(script_path),
+                    artifacts=artifacts,
                 )
             else:
                 logger.error(f"CodeRunner: errore (exit={exit_code})")
