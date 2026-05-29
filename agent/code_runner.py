@@ -95,11 +95,54 @@ class SecurityScanner:
         "ctypes", "cffi",
         "signal.SIG",
         "input(",
+        # Deserializzazione = RCE che bypassa l'AST: pickle/joblib eseguono
+        # codice arbitrario al load; np.load con allow_pickle idem. (np.loadtxt
+        # resta consentito: il pattern ha la parentesi, "np.load(" non matcha
+        # "np.loadtxt(".)
+        "pickle", "read_parquet", "joblib", "np.load(", "numpy.load(", ".to_pickle",
+        # Path sensibili: chiavi/credenziali/traversal. I path di lavoro
+        # (input/output) arrivano come VARIABILI, non come queste stringhe —
+        # quindi bloccarle non tocca il codice legittimo.
+        ".ssh", "id_rsa", "id_ed25519", ".gnupg", ".aws", ".netrc",
+        "authorized_keys", ".bash_history", "../",
     ]
 
-    def scan(self, code: str) -> tuple[bool, str]:
+    # Funzioni/metodi che aprono file: i loro argomenti string-literal assoluti
+    # devono cadere nelle cartelle di lavoro (check in scan(), via allowed_roots).
+    _FILE_FUNCS = frozenset({"open", "Path"})
+    _FILE_METHODS = frozenset({
+        "open", "write_text", "read_text", "write_bytes", "read_bytes",
+        "read_csv", "read_excel", "read_json", "read_table",
+        "to_csv", "to_excel", "to_json", "savefig", "save",
+    })
+
+    @staticmethod
+    def _path_outside_roots(p: str, allowed_roots: list[str]) -> bool:
+        """
+        True se `p` è un path che esce dalle cartelle di lavoro.
+        - path relativi → ok (il subprocess gira con cwd nella sandbox);
+        - `~...` → bloccato (espansione home);
+        - path assoluti → ammessi solo se contenuti in una root permessa.
+        """
+        if not p:
+            return False
+        if p.startswith("~"):
+            return True
+        if not p.startswith("/"):
+            return False
+        norm = os.path.normpath(p)
+        for r in allowed_roots:
+            rn = os.path.normpath(r)
+            if norm == rn or norm.startswith(rn + os.sep):
+                return False
+        return True
+
+    def scan(self, code: str, allowed_roots: list[str] | None = None) -> tuple[bool, str]:
         """
         Analizza il codice generato.
+        allowed_roots: se passato, i path string-literal assoluti nelle chiamate
+        di apertura file devono cadere in una di queste cartelle (input/output/
+        sandbox). I path costruiti da variabili non sono toccati.
         Returns: (is_safe, reason)
         """
         # 1. Check testuale veloce (pattern blacklist)
@@ -142,6 +185,22 @@ class SecurityScanner:
                         node.func.attr in ("system", "popen", "execvp", "fork",
                                            "remove", "unlink", "rmdir", "removedirs")):
                         return False, f"Chiamata os.{node.func.attr}() bloccata"
+
+                # Path letterali assoluti fuori dalle cartelle di lavoro: blocca
+                # le chiamate di apertura file con una stringa-literal sospetta
+                # (es. open('/home/fio/.ssh/id_rsa')). I path da variabili passano.
+                if allowed_roots is not None:
+                    fn = node.func
+                    is_file_call = (
+                        (isinstance(fn, ast.Name) and fn.id in self._FILE_FUNCS)
+                        or (isinstance(fn, ast.Attribute) and fn.attr in self._FILE_METHODS)
+                    )
+                    if is_file_call:
+                        for arg in node.args:
+                            if (isinstance(arg, ast.Constant)
+                                    and isinstance(arg.value, str)
+                                    and self._path_outside_roots(arg.value, allowed_roots)):
+                                return False, f"Path fuori dalle cartelle di lavoro: '{arg.value}'"
 
         return True, "OK"
 
@@ -330,8 +389,14 @@ class CodeRunner:
 
             logger.debug(f"CodeRunner: codice generato ({len(code)} chars, tentativo {attempt})")
 
-            # 3. Scansione sicurezza
-            is_safe, reason = self._scanner.scan(full_code)
+            # 3. Scansione sicurezza (con confinamento path alle cartelle di lavoro)
+            is_safe, reason = self._scanner.scan(
+                full_code,
+                allowed_roots=[
+                    str(self._input_dir), str(self._output_dir),
+                    str(self._sandbox_dir), "/tmp",
+                ],
+            )
             if is_safe:
                 # 4. Esecuzione
                 return self._execute_code(full_code, stop_event, timeout)
