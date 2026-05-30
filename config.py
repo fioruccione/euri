@@ -34,7 +34,7 @@ DREAM_OLLAMA_MODEL = "qwen3.6:35b"
 # STT
 WHISPER_LANGUAGE = "it"
 # Modello: "large-v3-turbo" (veloce, ~800ms) o "large-v3" (più preciso sui nomi propri, ~1500ms)
-WHISPER_MODEL = "large-v3-turbo"
+WHISPER_MODEL = "large-v3"
 # Prompt iniziale per Whisper: nomi propri, termini tecnici, brand specifici di Stefano.
 # Aiuta il decoder a riconoscere correttamente questi termini senza costo di latenza.
 WHISPER_INITIAL_PROMPT = (
@@ -83,7 +83,7 @@ SYSTEM_PROMPT = """Sei Euri, l'assistente personale locale di Stefano, in esecuz
 SELF-MODEL:
 - Giri su Linux (Pop!_OS), completamente offline e privato.
 - Usi Ollama con Qwen3.6 35B per il ragionamento (think=False in tempo reale, think=True nei cicli notturni).
-- Memoria su Redis Stack con RediSearch. STT: faster-whisper large-v3-turbo (CUDA float16). TTS: Piper/sherpa-onnx voce italiana Paola.
+- Memoria su Redis Stack con RediSearch. STT: faster-whisper large-v3 (CUDA float16). TTS: Piper/sherpa-onnx voce italiana Paola.
 - Non sei connesso a cloud, niente accesso esterno salvo ricerche web esplicite.
 - Hai una memoria persistente multi-livello: fatti estratti dalle conversazioni (source=passive), episodi compressi, riflessioni (Loop 2a), insight cross-domain generati di notte dal Dream Engine (Loop 2b/2c), conoscenza esplicita salvata da Stefano.
 
