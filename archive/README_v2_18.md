@@ -7,7 +7,7 @@ Non si limita ad ascoltare e rispondere: memorizza, organizza, riflette sulle tu
 
 ---
 
-## Architettura Cognitiva (V2.19)
+## Architettura Cognitiva (V2.18)
 
 ### 1. Intent Classification — Pipeline a Due Layer
 La classificazione dell'intent è a cascata: il layer veloce esaurisce la maggior parte dei casi, il layer lento interviene solo quando necessario.
@@ -21,11 +21,11 @@ La classificazione dell'intent è a cascata: il layer veloce esaurisce la maggio
 > **AdaptiveClassifier (Welford) — sospeso:** con e5-large 1024-dim, il costo di encoding (~400ms) era uguale al LLM fallback, con il rischio aggiuntivo di corruzione dei centroidi per feedback loop su classificazioni errate. Architettura sospesa: il codice è presente ma `ADAPTIVE_CLASSIFIER_ENABLED = False`. Riabilitabile solo con un modello di embedding leggero dedicato all'intent.
 
 ### 2. Domain Gating + Ricerca 3-Livelli (RAG Autonomo)
-Tutte le memorie estratte dalle conversazioni vengono lette dall'LLM, che assegna loro automaticamente delle "etichette di dominio" (es. *informatica, chimica, business, casa*). **Dal V2.19** l'assegnazione è **disambiguata dai vicini semantici** (P1): il tagger riceve come suggerimento non vincolante i domini delle memorie più vicine via KNN, evitando che frammenti corti finiscano nel dominio sbagliato (es. *neutro* del polipropilene letto come *fisica nucleare*). Nessun dominio è cablato nel codice — i suggerimenti vengono dalla memoria stessa di Euri, che resta un learner libero e portabile. All'**ingest**, un **Memory Guard** (V2.19) rifiuta dalle fonti non fidate (web) i contenuti con pattern di prompt-injection o esfiltrazione, prima che diventino memoria.
+Tutte le memorie estratte dalle conversazioni vengono lette dall'LLM, che assegna loro automaticamente delle "etichette di dominio" (es. *informatica, chimica, business, casa*).
 
 Il recupero avviene a tre livelli in cascata:
 1. **Identifier-first** — estrae dalla query acronimi (MFI, DCP), codici lotto (PPR-738P) e numeri decimali (3.2, 0.35%) e li cerca con keyword search diretta. Garantisce che fatti tecnici specifici vengano restituiti in cima anche quando il dominio è saturo di memorie simili.
-2. **Domain-boosted KNN** *(V2.19)* — ricerca vettoriale sull'intero DB con un *boost* per le memorie nel dominio della query: il dominio è una **preferenza, non un filtro**. Un fatto molto pertinente ma archiviato in un dominio diverso da quello (non-deterministico) della domanda riemerge comunque. *(Prima della V2.19 era un gate rigido che filtrava per dominio e faceva fallback solo con <2 risultati → falsi negativi: Euri rispondeva "non ho niente in memoria" su fatti presenti in decine di memorie.)*
+2. **Domain-gated KNN** — ricerca vettoriale filtrata per dominio. Se il dominio ha pochi risultati, scala all'intero DB.
 3. **Hybrid fill** — se i risultati sono ancora sotto il limite, `_search_hybrid` (semantic + safe_keywords) riempie i posti rimanenti.
 
 ### 3. Dream Engine (Sogni Onirici in background)
@@ -93,7 +93,7 @@ Un'interfaccia web leggera (`ui/app.py`) per:
 | Visione Artificiale | Gemma 4 Vision (multimodale, offline) |
 | Memoria Attiva | Redis 8.8.0 vanilla (ReJSON / RediSearch / TimeSeries / Bloom / VectorSet integrati nel core + struttura `Array` nativa) |
 | Memoria Passiva/UI | Obsidian Vault sincronizzato via `watchdog` |
-| STT / Trascrizione | faster-whisper `large-v3` (CUDA float16 — NVIDIA RTX 4060 Ti) |
+| STT / Trascrizione | faster-whisper `large-v3-turbo` (CUDA float16 — NVIDIA RTX 4060 Ti) |
 | TTS / Voce | sherpa-onnx + Piper (`vits-piper-it_IT-paola-medium`) |
 | Embedding | sentence-transformers `intfloat/multilingual-e5-large` (1024-dim, asimmetrico query/passage) |
 | Classificatore Veloce | ~~Welford AdaptiveClassifier~~ — sospeso (vedi sezione 1) |
@@ -190,30 +190,6 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 ---
 
 ## Changelog
-
-### V2.19 — Lettura documenti, gate di ri-promozione, e robustezza della memoria (recall, anti-poisoning, fedeltà)
-
-**Lettura documenti per comprensione (`read_document`)** (commit `5102443`) — Euri legge PDF/DOCX/immagini *capendoli* invece di generare codice che li estrae; maggiore fedeltà del dato restituito dai tool.
-
-**Gate di ri-promozione degli insight** (commit `5102443`) — un insight retrocesso a `candidate` non risale a `promoted` per sola convergenza: deve essere **validato dall'uso** (recall). Frena la ri-promozione di insight mai usati (log: *"re-promozione negata — demoto, mai validato dall'uso"*), compensando la suggestionabilità positiva del Dream Engine.
-
-**`salva la conversazione / l'immagine`** (commit `81cf1ff`) — questi comandi salvano il **contesto recente**, non un frammento generico.
-
-**Sicurezza CodeRunner** (commit `14395b2`) — bloccata la deserializzazione-RCE e confinati i path di lettura/scrittura alle sole cartelle di lavoro.
-
-#### Aggiornamenti 30/05/2026
-
-- **P1 — disambiguazione dei domini dai vicini** (commit `ece0d98`): `assign_domain` riceve come suggerimento *non vincolante* i domini delle memorie semanticamente vicine. Cura una classe di errori di tagging su frammenti corti (es. "neutro" del polipropilene → "fisica nucleare", poi amplificato dal Dream Engine in insight confabulati sui "neutroni"). Nessun dominio cablato nel codice: i suggerimenti vengono dalla memoria stessa di Euri → resta learner libero e portabile su un ambiente pulito.
-
-- **Domain gating: da filtro rigido a boost morbido** (commit `5b45df6`): `domain_aware_search` cercava solo nel dominio della query (fallback solo con <2 risultati), così un fatto archiviato in un dominio diverso da quello — non-deterministico — della domanda veniva **escluso dal recall**. Ora cerca sull'intero DB e *boosta* l'in-dominio: recupero robusto al misclassamento del dominio-query. L'anti-poisoning che il gate rigido copriva è ora gestito a monte dal Memory Guard.
-
-- **Memory Guard — anti-poisoning sull'ingest** (commit `6ea2c7e`): scanner che rileva pattern di *injection* (override di istruzioni, dirottamento di ruolo, token di system-prompt) ed *esfiltrazione* (imperativo + bersaglio sensibile: memorie/password/chiavi). Da fonte **non fidata** (web/mobile_in) il contenuto con match viene **rifiutato**; da fonte fidata viene salvato ma marcato (`safety_flag`). 0 falsi positivi sulle memorie reali. Difende il ciclo cognitivo dai contenuti web avvelenati che, salvati come memoria, riemergerebbero nel contesto LLM. Nessuna conoscenza di dominio cablata — sono pattern di sicurezza indipendenti dall'argomento.
-
-- **STT → `large-v3`** (commit `94d0b5f`): dal modello turbo a quello pieno, più fedele su nomi propri, codici e brand (P-Pile, MFI, Realube, VistaMax, Safic Alcan) che inquinavano la memoria a monte. ~1500ms vs ~800ms, latenza accettabile sull'hardware attuale; reversibile in una riga.
-
-- **System prompt: modello LLM corretto** (commit `341d6c9`): il prompt dichiarava "Qwen3.6 35B per il ragionamento in tempo reale", ma il real-time gira su `gemma4:26b` — Qwen3.6 35B è solo il modello dei **cicli onirici**. Emerso testando l'autodescrizione di Euri (riportava fedelmente un prompt impreciso, *non* confabulava). Ora dichiara il modello giusto per ciascuna fase.
-
-- **Manutenzione dati** (Redis, non-git): ripuliti 2 memorie + 3 insight con etichetta "nucleare" — residuo del bug di trascrizione/tagging *neutro→nucleare* (domini ri-etichettati + testo de-mascherato, "neutroni"→"neutri"); corrette 3 memorie che attribuivano lo spostamento di grado/MFI al VistaMax (la leva del grado è il **perossido**; il VistaMax dà tenacità, accoppia le cariche e modula la reologia). Tutto validato via test strutturato a due round su recall, onestà sull'ignoto, anti-piaggeria e logica.
 
 ### V2.18.2 — CodeRunner gestisce PDF/DOCX/PPTX/immagini con cascata testo-nativo → Vision (Gemma 4 multimodale)
 

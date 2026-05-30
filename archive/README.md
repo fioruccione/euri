@@ -29,3 +29,15 @@ attraverso le versioni. La versione è dichiarata internamente nell'header
 (*Date* e *Euri VX.YY* nell'abstract) e formalmente nella §0 Document
 History. Ogni nuovo bump di versione che introduce contenuto sostanziale
 (non solo refinement) produce uno snapshot in `archive/`.
+
+## README del progetto
+
+Lo stesso principio si applica al `README.md` root: a ogni bump di versione
+con contenuto sostanziale si conserva qui lo snapshot precedente.
+
+- `README_v2_18.md` — README alla linea **V2.18.2** (snapshot prima del bump a
+  V2.19, 2026-05-30). Stato subito prima dell'introduzione di P1 (domini
+  disambiguati dai vicini), del Memory Guard anti-poisoning e del passaggio
+  del domain gating da filtro rigido a boost morbido nel retrieval.
+
+Il README attuale (V2.19) è in `../README.md`.
