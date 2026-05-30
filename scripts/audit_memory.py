@@ -220,6 +220,62 @@ def backfill_domains(r: redis.Redis, only_generale: bool = True):
     print(f"\n→ {updated} aggiornate, {unchanged} invariate (già corrette o ancora 'generale').")
 
 
+def scan_outliers(r: redis.Redis, fix: bool = False, k: int = 10):
+    """
+    R1 — rileva memorie il cui dominio assegnato è incoerente col vicinato semantico
+    (il dominio NON compare tra i k vicini più prossimi, self escluso). Riusa gli
+    embedding già in Redis: nessun re-encoding, nessun dominio cablato nel codice.
+
+    La correzione proposta passa per lo STESSO tagger context-aware di P1
+    (assign_domain con i vicini come suggerimento): l'arbitro è il modello di Euri,
+    non una soglia statistica. È pensato come REPORT da rivedere: con fix=True applica,
+    ma di default mostra soltanto. NON va agganciato ai loop notturni autonomi —
+    un re-tag di massa eroderebbe la granularità dei domini imparati.
+    """
+    import numpy as np
+    from core.domain_gater import _knn_domains, assign_domain
+
+    docs = scan_memories(r, "all")
+    docs = [d for d in docs if d.get("embedding")]
+    print_header(f"SCAN OUTLIER DI DOMINIO (R1) — {len(docs)} memorie con embedding")
+
+    outliers = []
+    for i, doc in enumerate(docs, 1):
+        print(f"[{i}/{len(docs)}] analisi vicinato...      ", end="\r", flush=True)
+        vec_bytes = np.asarray(doc["embedding"], dtype="float32").tobytes()
+        mid = doc["_key"].replace("euri:memory:", "")
+        assigned = doc.get("domain", "generale")
+        neighbors = _knn_domains(vec_bytes, r, k=k, exclude_id=mid)
+        if not neighbors or assigned in neighbors:
+            continue  # coerente col vicinato → non è un outlier
+        proposed = assign_domain(doc.get("content", ""), hint_domains=neighbors)
+        outliers.append((doc, assigned, proposed, neighbors))
+
+    print(" " * 50, end="\r")
+    if not outliers:
+        print("\nNessun outlier rilevato: ogni dominio è coerente col proprio vicinato.")
+        return
+
+    print(f"\n{len(outliers)} outlier rilevati:\n")
+    for doc, assigned, proposed, neighbors in outliers:
+        nb = ", ".join(dict.fromkeys(neighbors))
+        mark = "→" if proposed != assigned else "(invariato)"
+        print(f"  [{assigned}]  {mark}  [{proposed}]")
+        print(f"     vicini: {nb}")
+        print(f"     content: {doc.get('content', '')[:60]}")
+        print()
+
+    if fix:
+        applied = 0
+        for doc, assigned, proposed, _ in outliers:
+            if proposed != assigned:
+                r.json().set(doc["_key"], "$.domain", proposed)
+                applied += 1
+        print(f"→ {applied} domini ri-etichettati (tagger context-aware).")
+    else:
+        print("→ Solo report. Rivedi le proposte; usa --fix-outliers per applicarle.")
+
+
 def stats(r: redis.Redis):
     """Stampa statistiche rapide per source."""
     docs = scan_memories(r, "all")
@@ -245,6 +301,10 @@ if __name__ == "__main__":
                         help="Ricalcola il domain label per le memorie con domain='generale'")
     parser.add_argument("--backfill-all", action="store_true",
                         help="Ricalcola il domain label per TUTTE le memorie")
+    parser.add_argument("--scan-outliers", action="store_true",
+                        help="R1: rileva memorie con dominio incoerente col vicinato (solo report)")
+    parser.add_argument("--fix-outliers", action="store_true",
+                        help="R1: rileva E ri-etichetta gli outlier al dominio modale dei vicini")
     args = parser.parse_args()
 
     r = get_client()
@@ -257,6 +317,10 @@ if __name__ == "__main__":
 
     if args.stats:
         stats(r)
+    elif args.fix_outliers:
+        scan_outliers(r, fix=True)
+    elif args.scan_outliers:
+        scan_outliers(r, fix=False)
     elif args.delete:
         delete_by_source(r, args.delete)
     elif args.backfill_all:

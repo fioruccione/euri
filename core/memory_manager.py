@@ -12,7 +12,7 @@ import redis as redis_lib
 from redis.commands.search.query import Query
 
 from utils.date_utils import now, to_timestamp, from_timestamp, format_datetime
-from core.domain_gater import assign_domain, domain_aware_search
+from core.domain_gater import assign_domain, domain_aware_search, neighbor_domains
 from utils.obsidian_sync import write_memory
 
 
@@ -72,8 +72,17 @@ class MemoryManager:
             "session_type": source,
         }
 
-        # Domain assignment auto-scoperto via LLM
-        domain_label = assign_domain(content)
+        # Domain assignment auto-scoperto via LLM, disambiguato dai vicini semantici (P1).
+        # I suggerimenti vengono dalla memoria stessa di Euri (KNN), mai da liste cablate:
+        # su un DB vuoto non ci sono vicini e si ricade nel comportamento base.
+        hint_domains = None
+        if embedding is not None:
+            try:
+                vec_bytes = vec.astype("float32").tobytes()
+                hint_domains = neighbor_domains(vec_bytes, self.r, k=8)
+            except Exception as e:
+                logger.debug(f"P1 neighbor_domains fallito: {e}")
+        domain_label = assign_domain(content, hint_domains=hint_domains)
 
         # Flag dati numerici non verificati (dosaggi, percentuali, misure)
         import re as _re
