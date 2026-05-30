@@ -38,7 +38,15 @@ class MemoryManager:
     # MEMORIES (ricordi a lungo termine)
     # ──────────────────────────────────────────
 
-    def save_memory(self, content: str, category: str = "personale", tags: list[str] = None, source: str = "user", expires_at: datetime | None = None) -> str:
+    def save_memory(self, content: str, category: str = "personale", tags: list[str] = None, source: str = "user", expires_at: datetime | None = None) -> str | None:
+        # Memory Guard: scansione anti-poisoning sull'ingest. Da fonte non fidata
+        # (web/mobile_in) un contenuto con injection/esfiltrazione viene rifiutato
+        # (ritorna None); da fonte fidata si salva ma marcato in safety_flag.
+        from core.memory_guard import evaluate
+        guard = evaluate(content, source)
+        if guard["reject"]:
+            return None
+
         mid = str(uuid.uuid4())
         key = f"euri:memory:{mid}"
         ts = now()
@@ -109,6 +117,7 @@ class MemoryManager:
             "tags": tags or [],
             "embedding": embedding,
             "context_meta": context_meta,
+            "safety_flag": guard["safety_flag"],  # [] se pulito; categorie se contenuto sospetto da fonte fidata
         }
         self.r.json().set(key, "$", doc)
         if expires_at:

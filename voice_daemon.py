@@ -984,8 +984,11 @@ class VoiceDaemon:
             tags=["web_search"],
             source="web",
         )
-        self.memory.r.json().set(f"euri:memory:{mid}", "$.requires_verification", True)
-        logger.info(f"Web search salvata in memoria: {mid[:8]}… (query: '{query[:50]}')")
+        if mid:
+            self.memory.r.json().set(f"euri:memory:{mid}", "$.requires_verification", True)
+            logger.info(f"Web search salvata in memoria: {mid[:8]}… (query: '{query[:50]}')")
+        else:
+            logger.warning(f"Web search NON salvata: contenuto sospetto bloccato dal MemoryGuard (query '{query[:50]}')")
 
         # Tieni il contesto per eventuali "approfondisci" / "salva quello che hai trovato"
         self._web_pending = {"summary": summary, "results": results, "query": query}
