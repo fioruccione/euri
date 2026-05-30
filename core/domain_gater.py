@@ -141,68 +141,48 @@ def domain_aware_search(query: str, embedder, r, limit: int = 5) -> list[dict]:
         return []
     vec_bytes = vec.astype("float32").tobytes()
 
-    results = []
-    
-    # 2. Passo 1: Ricerca filtrata nel dominio (Gated Search)
-    if query_domain != "generale":
-        try:
-            # Sostituisce gli spazi con * per query di RediSearch flessibili se il dominio è di 2 parole
-            safe_domain = query_domain.replace(" ", "\\ ")
-            
-            q_domain = (
-                Query(f"(@domain:{{{safe_domain}}})=>[KNN {limit} @embedding $vec AS score]")
-                .sort_by("score")
-                .return_fields("id", "content", "source", "score", "created_at", "category", "domain")
-                .dialect(2)
-            )
-            res_domain = r.ft("idx:memories").search(q_domain, query_params={"vec": vec_bytes})
-            
-            for doc in res_domain.docs:
-                item = {
-                    "id": doc.id.replace("euri:memory:", ""),
-                    "content": doc.content,
-                    "score": float(doc.score),
-                    "source": doc.source,
-                    "domain": getattr(doc, "domain", "generale")
-                }
-                results.append(item)
-                
-            if len(results) >= 2:
-                logger.debug(f"Domain Gating: trovati {len(results)} risultati nel dominio '{query_domain}'")
-                return results
-                
-        except Exception as e:
-            logger.debug(f"Errore search dominio '{query_domain}': {e}")
-            
-    # 3. Passo 2: Fallback all'intero DB
+    # Gating come BOOST, non come filtro rigido. Si recupera un pool ampio
+    # dall'INTERO DB (nessuna esclusione per dominio) e si ri-ordina dando una
+    # spinta alle memorie nel dominio della query. Così un fatto molto pertinente
+    # ma archiviato in un altro dominio (es. "grado 17→P-Pile" salvato in
+    # 'logistica' mentre la query è taggata 'business') riemerge comunque, mentre
+    # il dominio resta una preferenza — non più una museruola che causa falsi negativi.
+    # L'anti-poisoning è ora coperto a monte dal Memory Guard sull'ingest.
+    DOMAIN_BOOST = 0.85  # <1: 'score' è una distanza, quindi in-dominio = avvicinato
+    pool = max(limit * 4, 20)
     try:
         q_all = (
-            Query(f"*=>[KNN {limit} @embedding $vec AS score]")
+            Query(f"*=>[KNN {pool} @embedding $vec AS score]")
             .sort_by("score")
             .return_fields("id", "content", "source", "score", "created_at", "category", "domain")
             .dialect(2)
         )
         res_all = r.ft("idx:memories").search(q_all, query_params={"vec": vec_bytes})
-        
-        # Filtra i duplicati già trovati nel primo passo
-        existing_ids = {r["id"] for r in results}
-        
-        for doc in res_all.docs:
-            if doc.id.replace("euri:memory:", "") not in existing_ids:
-                item = {
-                    "id": doc.id.replace("euri:memory:", ""),
-                    "content": doc.content,
-                    "score": float(doc.score),
-                    "source": doc.source,
-                    "domain": getattr(doc, "domain", "generale")
-                }
-                results.append(item)
-                
-        # Mantieni il limite
-        results = sorted(results, key=lambda x: x["score"])[:limit]
-        logger.debug(f"Domain Gating: allargato all'intero DB, {len(results)} risultati totali")
-        return results
-        
     except Exception as e:
         logger.error(f"Errore search full DB: {e}")
-        return results
+        return []
+
+    items = []
+    for doc in res_all.docs:
+        dom = getattr(doc, "domain", "generale")
+        raw = float(doc.score)
+        in_domain = query_domain != "generale" and dom == query_domain
+        items.append({
+            "id": doc.id.replace("euri:memory:", ""),
+            "content": doc.content,
+            "score": raw,
+            "source": doc.source,
+            "domain": dom,
+            "_adj": raw * (DOMAIN_BOOST if in_domain else 1.0),
+        })
+
+    items.sort(key=lambda x: x["_adj"])
+    results = items[:limit]
+    n_dom = sum(1 for it in results if it["domain"] == query_domain)
+    for it in results:
+        it.pop("_adj", None)
+    logger.debug(
+        f"Domain-boosted search: {len(results)} risultati "
+        f"(dominio query '{query_domain}', {n_dom} in-dominio su pool {pool})"
+    )
+    return results
