@@ -339,6 +339,21 @@ class Executor:
                 return ToolResult(success=False, output="Non sono riuscito a leggere testo dai documenti.")
 
             question = params.get("question", "") or ""
+
+            # Dedup per NOME-FILE, non semantico: file diversi (es. ICMA1 vs ICMA2,
+            # schede sorelle quasi identiche) vanno salvati entrambi. Re-ingest dello
+            # stesso file → skip. (Il dedup semantico globale cannibalizzava i sorelli.)
+            already = set()
+            if memory is not None:
+                try:
+                    for k in memory.r.scan_iter("euri:memory:*", count=2000):
+                        tg = memory.r.json().get(k, "$.tags")
+                        for tag in ((tg[0] if tg else []) or []):
+                            if isinstance(tag, str) and "." in tag and not tag.startswith("#"):
+                                already.add(tag)
+                except Exception:
+                    pass
+
             saved = skipped = 0
             lines = []
             for fname, text in documents.items():
@@ -357,14 +372,14 @@ class Executor:
                 if memory is None:
                     lines.append(f"- {fname}: letto (memoria non disponibile)")
                     continue
+                if fname in already:
+                    skipped += 1
+                    lines.append(f"- {fname}: già in memoria (stesso file)")
+                    continue
                 try:
-                    probe = getattr(brain, "probe_same_meaning", None)
-                    if memory.is_duplicate_memory(content, llm_probe_fn=probe):
-                        skipped += 1
-                        lines.append(f"- {fname}: già in memoria")
-                        continue
                     memory.save_memory(content, category="conoscenza",
                                        source="teach", tags=["documento", "ingest", fname])
+                    already.add(fname)
                     saved += 1
                     lines.append(f"- {fname}: salvato")
                 except Exception as e:
