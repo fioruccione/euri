@@ -45,7 +45,7 @@ numerical claims, identifier-first retrieval. Publishes audit numbers
 principled deferral of Loop 3 (LoRA consolidation) until upstream
 quality improves.
 
-**IV — Current Working Paper, V2.16** (May 2026 → present)
+**IV — Current Working Paper, V2.19** (May 2026 → present)
 This document. The first in the series to be maintained continuously
 rather than released as a single artifact. Each substantial development
 session is appended as a numbered subsection (§6, §7b through §7i).
@@ -63,11 +63,14 @@ paper rather than by retroactive edit. The principle is the same the
 system applies to its own memory: never overwrite, mark as superseded,
 keep the audit trail.
 
-**V2.16 (2026-05-31).** Added §7j (Related Work), situating Euri against prior art
+**V2.19 (2026-05-31).** Added §7j (Related Work), situating Euri against prior art
 on agent memory, reflection, and idle-time consolidation (Generative Agents;
 MemGPT / Letta sleep-time compute; mnemonic-sovereignty security work). The §10
 references were independently verified: titles corrected to their exact form, two
-unverifiable entries removed, and missing arXiv identifiers added.
+unverifiable entries removed, and missing arXiv identifiers added. This release
+also reconciles the document version with the running system: the paper version
+now tracks the Euri software version (V2.19) as a single scheme, retiring the
+separate paper-only lineage (V2.13–V2.15, preserved in `archive/`).
 
 ---
 
@@ -83,7 +86,7 @@ We demonstrate that the architectural gap between stateless text generation and
 persistent reasoning does not require exotic hardware (CXL, SCM, NVMe Gen5).
 It requires the right software architecture, running today on commodity hardware.
 
-The system described here, **Euri V2.15**, runs entirely offline on a Linux workstation
+The system described here, **Euri V2.19**, runs entirely offline on a Linux workstation
 with two NVIDIA RTX 4060 Ti GPUs, using Redis Stack as its persistent cognitive layer
 and Gemma 4 26B (via Ollama) as its reasoning engine.
 On the evening of 2026-04-25, it reclassified 57 previously invisible memories,
