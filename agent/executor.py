@@ -309,6 +309,71 @@ class Executor:
                 raw_data={"context_extra": raw_blob[:6000]} if raw_blob else {},
             )
 
+        def _tool_ingest_documents(params: dict, **kwargs) -> ToolResult:
+            """
+            INGEST per-documento: legge i file UNO ALLA VOLTA, ne estrae una
+            comprensione focalizzata e la SALVA come memoria ancorata (source=teach,
+            filename nel contenuto), poi passa al successivo. Scala a N documenti
+            senza sfondare il cap del contesto: il richiamo futuro viene dal RAG
+            sulla memoria, non da un blob effimero. Per "studia/memorizza i documenti".
+            """
+            from core.brain import Brain
+            brain = Brain._shared_instance if hasattr(Brain, '_shared_instance') else Brain()
+            memory = getattr(self, "memory", None)
+            stop = kwargs.get("stop_event")
+
+            input_dir = self._code_runner._input_dir
+            if not input_dir.exists() or not any(input_dir.iterdir()):
+                return ToolResult(success=False, output="Non ci sono file nella cartella dati.")
+
+            documents = dict(self._code_runner._preextract_files(brain))
+            TEXT_EXT = {".csv", ".txt", ".md", ".json", ".tsv"}
+            for p in sorted(input_dir.iterdir()):
+                if p.is_file() and p.suffix.lower() in TEXT_EXT and p.name not in documents:
+                    try:
+                        documents[p.name] = p.read_text(encoding="utf-8", errors="replace")
+                    except Exception:
+                        pass
+            documents = {f: t for f, t in documents.items() if t and t.strip()}
+            if not documents:
+                return ToolResult(success=False, output="Non sono riuscito a leggere testo dai documenti.")
+
+            question = params.get("question", "") or ""
+            saved = skipped = 0
+            lines = []
+            for fname, text in documents.items():
+                if stop is not None and stop.is_set():
+                    lines.append("… interrotto.")
+                    break
+                try:
+                    comp = brain.read_and_extract({fname: text}, question)
+                except Exception as e:
+                    lines.append(f"- {fname}: errore lettura ({e})")
+                    continue
+                if not comp or not comp.strip():
+                    lines.append(f"- {fname}: nessun contenuto")
+                    continue
+                content = f"[{fname}]\n{comp.strip()}"
+                if memory is None:
+                    lines.append(f"- {fname}: letto (memoria non disponibile)")
+                    continue
+                try:
+                    probe = getattr(brain, "probe_same_meaning", None)
+                    if memory.is_duplicate_memory(content, llm_probe_fn=probe):
+                        skipped += 1
+                        lines.append(f"- {fname}: già in memoria")
+                        continue
+                    memory.save_memory(content, category="conoscenza",
+                                       source="teach", tags=["documento", "ingest", fname])
+                    saved += 1
+                    lines.append(f"- {fname}: salvato")
+                except Exception as e:
+                    lines.append(f"- {fname}: errore salvataggio ({e})")
+
+            head = (f"Ho studiato i documenti uno per uno e li ho archiviati in memoria. "
+                    f"Salvati {saved}, già noti {skipped}, su {len(documents)} totali:")
+            return ToolResult(success=True, output=head + "\n" + "\n".join(lines))
+
         def _tool_analyze_image(params: dict, **kwargs) -> ToolResult:
             """Handler per analisi immagine via Gemma vision."""
             question = params.get('question', '')
@@ -372,6 +437,14 @@ class Executor:
                 handler=_tool_read_document,
                 # pre-extract (pypdf, eventuale Vision) + 1 chiamata di comprensione.
                 timeout_seconds=config.CODE_RUNNER_TOOL_TIMEOUT,
+            ),
+            ToolSpec(
+                name="ingest_documents",
+                description="Studia i documenti nella cartella dati UNO ALLA VOLTA e li salva in memoria a lungo termine (uno per uno, per non perdere dettagli quando i file sono molti). Per 'studia / memorizza / impara dai documenti', 'leggi e salva i file'.",
+                parameters_schema={"question": {"type": "str", "required": False}},
+                handler=_tool_ingest_documents,
+                # N documenti × 1 comprensione Gemma ciascuno → margine ampio.
+                timeout_seconds=600,
             ),
             ToolSpec(
                 name="analyze_image",
@@ -473,6 +546,15 @@ class Executor:
             r'|\b(cosa\s+vedi|cosa\s+c[\'\`è])\s+.*(foto|immagin[ei]|screenshot)\b',
             re.IGNORECASE,
         ), "analyze_image", {}),
+        # PRIMA della lettura singola: INGEST per-documento in memoria a lungo termine.
+        # "studia/memorizza/impara/archivia i documenti", "leggi e salva i file".
+        # Deve precedere read_document, altrimenti "leggi e salva" finirebbe nel read singolo.
+        (re.compile(
+            r'\b(studia|memorizza|impara|archivia|assimila|acquisisci|incamera)\s+.*\b(document[io]|file|pdf|manual[ei]|sched[ae]|materiale|impiant[oi])\b'
+            r'|\b(leggi|carica)\s+e\s+(salva|memorizza|archivia)\b'
+            r'|\b(salva|metti)\s+(in|a)\s+memoria\s+.*\b(document[io]|file|pdf|manual[ei]|sched[ae])\b',
+            re.IGNORECASE,
+        ), "ingest_documents", {}),
         # IN MEZZO: LETTURA/comprensione di un documento (read_document, no code-gen).
         # Verbi di lettura + sostantivo-documento → Gemma LEGGE ed estrae i valori,
         # non scrive un parser. Deve precedere run_code (che ora prende solo i verbi
