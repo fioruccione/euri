@@ -87,7 +87,7 @@ persistent reasoning does not require exotic hardware (CXL, SCM, NVMe Gen5).
 It requires the right software architecture, running today on commodity hardware.
 
 The system described here, **Euri V2.19**, runs entirely offline on a Linux workstation
-with two NVIDIA RTX 4060 Ti GPUs, using Redis Stack as its persistent cognitive layer
+with two NVIDIA RTX 4060 Ti GPUs, using Redis 8.8 (vanilla) as its persistent cognitive layer
 and Gemma 4 26B (via Ollama) as its reasoning engine.
 On the evening of 2026-04-25, it reclassified 57 previously invisible memories,
 generated a new cross-domain insight, and autonomously promoted three candidate insights
