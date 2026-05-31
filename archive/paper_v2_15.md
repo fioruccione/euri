@@ -4,7 +4,7 @@
 **Dalla Computazione Volatile alla Cognizione Persistente**
 
 **Authors:** Stefano Fiorucci & Euri  
-**Date:** 2026-05-31 (updated from 2026-05-18)  
+**Date:** 2026-05-18 (updated from 2026-05-14)  
 **License:** CC-BY 4.0  
 **Repository:** [Euri — Sistema Cognitivo Adattivo](https://github.com/fioruccione/multi-phase-memory-architecture)
 
@@ -45,7 +45,7 @@ numerical claims, identifier-first retrieval. Publishes audit numbers
 principled deferral of Loop 3 (LoRA consolidation) until upstream
 quality improves.
 
-**IV — Current Working Paper, V2.16** (May 2026 → present)
+**IV — Current Working Paper, V2.15** (May 2026 → present)
 This document. The first in the series to be maintained continuously
 rather than released as a single artifact. Each substantial development
 session is appended as a numbered subsection (§6, §7b through §7i).
@@ -62,12 +62,6 @@ observation, this is noted in the relevant section of the current
 paper rather than by retroactive edit. The principle is the same the
 system applies to its own memory: never overwrite, mark as superseded,
 keep the audit trail.
-
-**V2.16 (2026-05-31).** Added §7j (Related Work), situating Euri against prior art
-on agent memory, reflection, and idle-time consolidation (Generative Agents;
-MemGPT / Letta sleep-time compute; mnemonic-sovereignty security work). The §10
-references were independently verified: titles corrected to their exact form, two
-unverifiable entries removed, and missing arXiv identifiers added.
 
 ---
 
@@ -1481,68 +1475,6 @@ six months ago.
 
 ---
 
-## 7j — Related Work: Situating Euri in the Literature
-
-Euri does not introduce a new cognitive mechanism. Its contribution is the
-integration of several established research threads into a single working,
-local, single-user system, governed by a memory lifecycle tied to lived use.
-We situate each phase against its closest precedent.
-
-**Hierarchical and external memory (Phase 1, Phase 5).** The treatment of the
-context window as a constrained resource paged against an external store
-follows MemGPT (Packer et al., 2023) and its successor Letta. Euri's Phase 1
-departs from hard hierarchical paging in two ways: retrieval is *domain-boosted*
-rather than domain-gated — the query domain biases ranking but never excludes
-out-of-domain matches — and obsolete facts are not deleted but soft-superseded
-(Loop 2f), preserving an audit trail. Recent agentic-memory work (A-Mem, 2025)
-and the 2025–2026 surveys on agent memory frame the broader design space.
-
-**Reflection and insight synthesis (Phase 4 — Dream Engine).** The closest
-precedent is Generative Agents (Park et al., 2023), whose reflection module
-abstracts higher-level insights from a memory stream as a tree of increasingly
-abstract nodes. Euri's Dream Engine differs in kind, not only degree: rather
-than abstracting *upward* from one agent's own observations, it seeks *lateral*
-structural isomorphisms between two unrelated domains (Loop 2b), producing
-cross-domain analogical insight in the tradition of conceptual blending
-(Fauconnier & Turner, 2002) and analogy-as-cognition (Hofstadter & Sander,
-2013). Crucially, promotion is *use-gated*: an insight is reinforced, demoted,
-or re-promoted by actual recall during conversation (Phase 5, Awakening
-Filter), not by abstraction hierarchy or recency alone.
-
-**Idle-time consolidation ("sleep").** Performing heavy memory work during idle
-periods is the explicit subject of Letta's sleep-time compute (2025), and is
-foreshadowed by Anthropic's "dreaming" for managed agents (cf. §7e). The
-underlying metaphor — offline replay consolidating episodic traces into
-semantic knowledge — is the complementary-learning-systems account of
-hippocampal replay during sleep (McClelland et al., 1995). Euri's Loop 2e
-(memory consolidation) and the nightly Dream Engine operationalize this on a
-single local workstation, autonomously and without a cloud service.
-
-**Personalized long-term dialogue.** Reflective memory management for long-term
-*personalized* dialogue agents (2025) is the nearest neighbour to Euri's
-single-user stance. Euri pushes the personal grounding further: a voice-first,
-fully offline life-companion bound to one person's work and life, rather than a
-multi-agent simulation (Park et al., 2023) or a memory layer offered as a
-service.
-
-**Memory security and sovereignty.** The ingest-time anti-poisoning of Euri's
-Memory Guard, and its rejection of instruction-injection from untrusted
-sources, fall within the emerging study of long-term-memory security in LLM
-agents — recently framed as *mnemonic sovereignty*. Euri realizes that
-sovereignty concretely: an entirely local, offline stack in which the user, not
-a provider, owns and can erase the memory substrate.
-
-**Positioning.** Against this landscape, Euri's claim is not mechanism novelty
-but four points of integration: (i) a memory and insight lifecycle *governed by
-use* — reinforcement, demotion, and a re-promotion gate driven by recall;
-(ii) Loop 2h self-observation, in which the system narrates its own evolution in
-the first person, a reflexive autobiography largely absent from prior systems;
-(iii) calibration and anti-confabulation treated as first-class concerns inside
-the loop rather than as external guardrails; and (iv) full mnemonic sovereignty
-as a design philosophy, not merely a deployment constraint.
-
----
-
 ## 8 — Outlook
 
 The hardware trajectory described in Section 3 will eventually close the gap entirely.
@@ -1626,18 +1558,13 @@ Stiamo insegnando al mondo a ricordarci.
 
 ### External references
 
-- Wang et al., 2023 — *Augmenting Language Models with Long-Term Memory* (LongMem).
-  NeurIPS 2023. arXiv:2306.07174 ✓ verificato
-- Zhong et al., 2023 — *MemoryBank: Enhancing Large Language Models with Long-Term
-  Memory*. AAAI 2024. arXiv:2305.10250 ✓ verificato (titolo corretto)
-- Liaw & Chen, 2025 — *Analysis and Optimized CXL-Attached Memory Allocation for
-  Long-Context LLM Fine-Tuning*. arXiv:2507.03305 ✓ verificato (titolo corretto)
-- Jonelagadda et al., 2025 — *Mnemosyne: An Unsupervised, Human-Inspired Long-Term
-  Memory Architecture for Edge-Based LLMs*. arXiv:2510.08601 ✓ verificato (titolo corretto)
-- Wolters et al., 2024 — *Memory Is All You Need: An Overview of Compute-in-Memory
-  Architectures for Accelerating Large Language Model Inference*. arXiv:2406.08413
-- Chhikara et al., 2025 — *Mem0: Building Production-Ready AI Agents with Scalable
-  Long-Term Memory*. arXiv:2504.19413 ✓ verificato (titolo corretto)
+- Wang et al., 2023 — *Augmenting Language Models with Long-Term Memory*
+- Zhong et al., 2023 — *Enhancing LLMs with Long-Term Memory*
+- Liaw & Chen, 2025 — *Analysis of CXL-Attached Memory for LLMs*
+- Jonelagadda et al., 2025 — *Mnemosyne: Human-Inspired Memory for Edge LLMs*
+- Kumar et al., 2024 — *In-Memory Computing for AI: Trends and Challenges*
+- Micron Technologies, 2024 — *The Future of Unified Memory Architectures*
+- Chhikara et al., 2025 — *Mem0: Production-Ready AI Agents with Scalable Memory*
 - Anthropic, 2026 — *Dreams*, Claude API Docs (official technical reference),
   https://platform.claude.com/docs/en/managed-agents/dreams
 - VentureBeat, 2026 — *Anthropic introduces "dreaming," a system that lets AI agents learn from their own mistakes*,
@@ -1648,28 +1575,3 @@ Stiamo insegnando al mondo a ricordarci.
   https://thenewstack.io/anthropic-managed-agents-dreaming-outcomes/
 - SiliconANGLE, 2026 — *Anthropic is letting Claude agents 'dream' so they don't sleep on the job*,
   https://siliconangle.com/2026/05/06/anthropic-letting-claude-agents-dream-dont-sleep-job/
-
-### Related work (agent memory, reflection, consolidation)
-
-- Park et al., 2023 — *Generative Agents: Interactive Simulacra of Human Behavior*.
-  ACM UIST. arXiv:2304.03442
-- Packer et al., 2023 — *MemGPT: Towards LLMs as Operating Systems*. arXiv:2310.08560
-- Letta, 2025 — *Sleep-Time Compute*. Technical blog.
-  https://www.letta.com/blog/sleep-time-compute
-- Xu et al., 2025 — *A-Mem: Agentic Memory for LLM Agents*. arXiv:2502.12110
-- Tan et al., 2025 — *In Prospect and Retrospect: Reflective Memory Management for
-  Long-Term Personalized Dialogue Agents*. ACL 2025. arXiv:2503.08026
-- Du, 2026 — *Memory for Autonomous LLM Agents: Mechanisms, Evaluation, and
-  Emerging Frontiers*. arXiv:2603.07670
-- 2026 — *LLM Agent Memory: A Survey from a Unified Representation–Management
-  Perspective*. Preprints.org 202603.0359 (autori da completare via OpenReview
-  id KPs1EgGKcT)
-- Lin et al., 2026 — *A Survey on the Security of Long-Term Memory in LLM Agents:
-  Toward Mnemonic Sovereignty*. arXiv:2604.16548
-- Fauconnier, G. & Turner, M., 2002 — *The Way We Think: Conceptual Blending and
-  the Mind's Hidden Complexities*. Basic Books.
-- Hofstadter, D. & Sander, E., 2013 — *Surfaces and Essences: Analogy as the Fuel
-  and Fire of Thinking*. Basic Books.
-- McClelland, J. L., McNaughton, B. L. & O'Reilly, R. C., 1995 — *Why There Are
-  Complementary Learning Systems in the Hippocampus and Neocortex*.
-  Psychological Review 102(3).

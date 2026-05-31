@@ -18,7 +18,12 @@ marcate come *superseded* e restano consultabili come audit trail.
   (Audit di Coerenza), della §7h sulla continuità trans-restart e sulla
   sintesi emergente.
 
-La versione attuale (V2.15) è in `../paper_persistent_cognition.md`.
+- `paper_v2_15.md` — Working Paper V2.15 (snapshot dello stato datato 2026-05-18,
+  catturato prima del bump a V2.16 del 2026-05-31). Stato del paper prima
+  dell'aggiunta della §7j (Related Work) e della verifica/correzione dei
+  riferimenti in §10.
+
+La versione attuale (V2.16) è in `../paper_persistent_cognition.md`.
 La storia completa di tutte le revisioni intermedie è nel git log del
 file principale; questi snapshot sono punti fissi citabili.
 
