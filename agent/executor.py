@@ -112,6 +112,24 @@ class SandboxGuard:
 # Executor
 # ─────────────────────────────────────────
 
+def build_injected_context(spoken: str, raw_data: dict | None) -> str:
+    """
+    Costruisce la stringa da iniettare nella history LLM dopo un tool.
+    Disaccoppia 'cosa dice' (spoken) da 'cosa ricorda': se il tool ha prodotto
+    dati fedeli su file (run_code/read_document → raw_data['context_extra']), li
+    accoda coi valori esatti, così le domande quantitative successive li leggono
+    invece di confabularli. Funzione pura: nessuna dipendenza da audio/stato.
+    (Spostata qui da voice_daemon per condividerla tra canale vocale e testuale.)
+    """
+    context_extra = (raw_data or {}).get("context_extra", "")
+    if not context_extra:
+        return spoken
+    return (
+        f"{spoken}\n\n[DATI ESTRATTI DAL FILE — valori esatti, "
+        f"usa questi e non riassumere a memoria]\n{context_extra}"
+    )
+
+
 class Executor:
     def __init__(self):
         self._registry: dict[str, ToolSpec] = {}
@@ -547,3 +565,54 @@ class Executor:
     def execute_safe(self, call: ToolCall) -> str:
         result = self.execute(call)
         return result.output
+
+    def dispatch_text(self, text: str, llm_fallback: bool = True) -> dict | None:
+        """
+        Ingresso channel-agnostic (NO TTS): seleziona un tool dal testo
+        (regex fast-path → fallback LLM opzionale), lo esegue, inietta il
+        risultato FEDELE nella history del Brain e ritorna un dict. Ritorna
+        None SOLO se nessun tool corrisponde (il chiamante ricade sulla chat).
+        Quando un tool corrisponde ma fallisce/è vuoto, ritorna comunque il dict
+        con l'output onesto del tool ("non ci sono file…") — mai sostituirlo con
+        una risposta chat, per non riaprire la porta alla confabulazione.
+
+        Stessa logica di selezione/esecuzione di voice_daemon._handle_execute,
+        condivisa per non far divergere canale vocale e testuale.
+          llm_fallback=False → solo regex (cheap, niente inferenza extra): adatto
+          alla Silent Chat, dove va eseguito su ogni messaggio.
+        """
+        self.stop_event.clear()
+        call = self.select_tool_by_regex(text)
+        if call is None and llm_fallback and getattr(self, "brain", None) is not None:
+            try:
+                tools_desc = self.get_tools_description()
+                llm_response = self.brain.decide_tool_call(text, tools_desc)
+                call = self.parse_llm_response(llm_response)
+            except Exception as e:
+                logger.debug(f"dispatch_text: fallback LLM fallito — {e}")
+                call = None
+        if call is None:
+            return None
+
+        # Sostituisce __USER_TEXT__ (pattern run_code/read_document) col testo reale
+        for _k, _v in call.parameters.items():
+            if _v == "__USER_TEXT__":
+                call.parameters[_k] = text
+
+        result = self.execute(call)
+
+        # Continuità: inietta il contenuto fedele nella history del Brain, così i
+        # turn successivi leggono i valori esatti invece di confabularli.
+        if call.tool_name in ("analyze_image", "clipboard_analyze", "run_code", "read_document") \
+                and getattr(self, "brain", None) is not None:
+            try:
+                self.brain.inject_tool_result(text, build_injected_context(result.output, result.raw_data))
+            except Exception as e:
+                logger.debug(f"dispatch_text: inject_tool_result fallito — {e}")
+
+        return {
+            "tool_name": call.tool_name,
+            "output": result.output,
+            "raw_data": result.raw_data or {},
+            "success": result.success,
+        }

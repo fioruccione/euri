@@ -67,6 +67,13 @@ def get_brain():
     return Brain()
 
 @st.cache_resource
+def get_executor():
+    """Istanza condivisa dell'Executor — dà alla Silent Chat l'esecuzione dei tool
+    (read_document, run_code, analyze_image…), come il voice daemon."""
+    from agent.executor import Executor
+    return Executor()
+
+@st.cache_resource
 def get_stt():
     from voice.stt import STT
     stt = STT()
@@ -168,6 +175,9 @@ r = get_redis()
 embedder = get_embedder()
 brain = get_brain()
 memory_manager = MemoryManager(r, embedder)
+executor = get_executor()
+executor.brain = brain
+executor.memory = memory_manager
 if brain._episode_callback is None:
     brain._episode_callback = lambda summary: memory_manager.save_memory(
         summary,
@@ -554,9 +564,22 @@ with main_col:
             # Risposta Euri
             with st.chat_message("assistant"):
                 with st.spinner("Euri sta pensando..."):
-                    chat_hint = "[Modalità chat testuale — nessun vincolo TTS. Puoi rispondere con più profondità, sviluppare i concetti, fare domande di ritorno. Sii presente e partecipe come in una conversazione reale.]"
-                    context_full = (context + "\n\n" + chat_hint) if context else chat_hint
-                    response = brain.respond(prompt, context=context_full)
+                    # Prima prova a ESEGUIRE un tool (read_document, run_code, analyze_image…).
+                    # Solo regex (llm_fallback=False): cheap su ogni messaggio, e una frase
+                    # normale non matcha → ricade sulla chat. Se un tool matcha si mostra il
+                    # SUO output reale (anche "non ci sono file") — fine della confabulazione
+                    # sui file in chat testuale (vedi project_euri_silentchat_no_tools).
+                    tool_res = None
+                    try:
+                        tool_res = executor.dispatch_text(prompt, llm_fallback=False)
+                    except Exception:
+                        tool_res = None
+                    if tool_res is not None:
+                        response = tool_res.get("output") or "Comando eseguito."
+                    else:
+                        chat_hint = "[Modalità chat testuale — nessun vincolo TTS. Puoi rispondere con più profondità, sviluppare i concetti, fare domande di ritorno. Sii presente e partecipe come in una conversazione reale.]"
+                        context_full = (context + "\n\n" + chat_hint) if context else chat_hint
+                        response = brain.respond(prompt, context=context_full)
                     st.markdown(response)
 
             # Salva risposta

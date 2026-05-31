@@ -40,7 +40,7 @@ from core.time_parser import extract_due_date
 from core.memory_manager import MemoryManager
 from core.brain import Brain
 from core.embedder import Embedder
-from agent.executor import Executor
+from agent.executor import Executor, build_injected_context
 
 
 # ──────────────────────────────────────────
@@ -103,24 +103,6 @@ def _tts_trim(text: str, max_chars: int = 400) -> str:
     else:
         cut += 1
     return text[:cut].strip() + " Dimmi se vuoi i dettagli."
-
-
-def build_injected_context(spoken: str, raw_data: dict | None) -> str:
-    """
-    Costruisce la stringa da iniettare nella history LLM dopo un tool.
-    Disaccoppia 'cosa dice' (spoken, vocalizzato) da 'cosa ricorda': se il tool
-    ha prodotto dati fedeli su file (run_code → raw_data['context_extra']), li
-    accoda al contesto coi valori esatti, così le domande quantitative
-    successive li leggono invece di confabularli dal riassunto vocale.
-    Funzione pura: nessuna dipendenza da audio/stato → testabile end-to-end.
-    """
-    context_extra = (raw_data or {}).get("context_extra", "")
-    if not context_extra:
-        return spoken
-    return (
-        f"{spoken}\n\n[DATI ESTRATTI DAL FILE — valori esatti, "
-        f"usa questi e non riassumere a memoria]\n{context_extra}"
-    )
 
 
 class _PendingState:
