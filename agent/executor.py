@@ -454,6 +454,34 @@ class Executor:
                 pass
             return ToolResult(success=True, output=f"Salvata in memoria la pagina {url} come fonte web (indicativa, da verificare).")
 
+        def _tool_run_eval(params: dict, **kwargs) -> ToolResult:
+            """Lancia l'INTERA suite di benchmark (scripts/eval.py: calibrazione + recall)
+            in un subprocess isolato e riporta il punteggio. Pesante (~18 chiamate al
+            modello, alcuni minuti, contende la GPU col daemon): on-demand."""
+            import subprocess
+            import os as _os
+            import sys as _sys
+            from pathlib import Path as _Path
+            repo = _Path(__file__).resolve().parents[1]
+            script = repo / "scripts" / "eval.py"
+            if not script.exists():
+                return ToolResult(success=False, output="Non trovo scripts/eval.py.")
+            try:
+                env = {**_os.environ, "PYTHONPATH": str(repo)}
+                proc = subprocess.run(
+                    [_sys.executable, str(script)],
+                    cwd=str(repo), env=env, capture_output=True, text=True, timeout=900,
+                )
+                out = proc.stdout or ""
+                lines = [ln for ln in out.splitlines()
+                         if any(k in ln for k in ("PASS", "FAIL", "WARN", "PUNTEGGIO", "TOTALE", "#  "))]
+                summary = ("\n".join(lines))[-3500:] or out[-3500:] or (proc.stderr or "")[-1000:]
+                return ToolResult(success=True, output="Risultato della suite di eval:\n" + summary)
+            except subprocess.TimeoutExpired:
+                return ToolResult(success=False, output="La suite di eval ha impiegato troppo (timeout 900s).")
+            except Exception as e:
+                return ToolResult(success=False, output=f"Errore nel lancio degli eval: {e}")
+
         def _tool_analyze_image(params: dict, **kwargs) -> ToolResult:
             """Handler per analisi immagine via Gemma vision."""
             question = params.get('question', '')
@@ -538,6 +566,13 @@ class Executor:
                 description="Salva in memoria l'ultima pagina web letta con read_url (come fonte web, da verificare). Per 'salva questa pagina / questo link'.",
                 parameters_schema={},
                 handler=_tool_save_url,
+            ),
+            ToolSpec(
+                name="run_eval",
+                description="Lancia l'intera suite di benchmark di Euri (calibrazione + recall) e riporta il punteggio. Per 'eval' / 'lancia gli eval' / 'auto-test'. Operazione pesante, alcuni minuti.",
+                parameters_schema={},
+                handler=_tool_run_eval,
+                timeout_seconds=900,
             ),
             ToolSpec(
                 name="analyze_image",
@@ -632,6 +667,12 @@ class Executor:
             re.IGNORECASE,
         ), "clipboard_read", {}),
         # ── CodeRunner patterns ──
+        # Suite di eval/benchmark: la parola "eval" (o "lancia gli eval", "auto-test") la avvia.
+        (re.compile(
+            r'\beval\b|\bbenchmark\b|\bauto-?test\b|\bautodiagnosi\b'
+            r'|\b(lancia|esegui|gira|fai|avvia)\b.{0,25}\b(eval|test|benchmark)\b',
+            re.IGNORECASE,
+        ), "run_eval", {}),
         # PRIMA: Analisi immagine diretta con Gemma Vision — deve precedere run_code
         # per evitare che "analizza le immagini nella cartella dati" finisca in run_code via "dati"
         (re.compile(

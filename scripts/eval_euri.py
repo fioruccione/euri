@@ -135,6 +135,7 @@ def main():
     for cat, (p, n) in sorted(by_cat.items()):
         print(f"  {cat:18} {p}/{n}")
     print("\n(euristiche approssimative — verifica a occhio le risposte sopra)")
+    return passed, len(CASES)
 
 
 if __name__ == "__main__":

@@ -90,6 +90,7 @@ def main():
           f"WARN (oltre la finestra): {warned}   FAIL (non recuperato): {failed}")
     print("WARN = il fatto c'è ma non entra nella finestra iniettata → recall-gap.")
     print("FAIL = non recuperato → assente, o superseded/consolidato via (data-integrity).")
+    return passed, len(CASES)
 
 
 if __name__ == "__main__":
