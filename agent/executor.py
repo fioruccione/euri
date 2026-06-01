@@ -649,9 +649,12 @@ class Executor:
             r'\b(gpu|grafica|vram|scheda\s+video)\b',
             re.IGNORECASE,
         ), "gpu_usage", {}),
-        # read_log
+        # read_log — richiede un verbo vicino a "log" (non la parola "log" nuda, che
+        # compariva in frasi normali tipo "il MES, i log..." facendo partire il tool).
         (re.compile(
-            r'\b(log|log\s+di\s+euri|ultime\s+righe\s+del\s+log)\b',
+            r'\b(leggi|mostra|fammi\s+veder|vedi|controlla|guarda|apri|stampa)\b[^.\n]{0,25}\blog\b'
+            r'|\bultim[ei]\s+(righe\s+del\s+log|errori)\b'
+            r'|\blog\s+di\s+euri\b',
             re.IGNORECASE,
         ), "read_log", {}),
         # clipboard_analyze — PRIMA di clipboard_read (pattern più specifici)
@@ -808,6 +811,12 @@ class Executor:
           alla Silent Chat, dove va eseguito su ogni messaggio.
         """
         self.stop_event.clear()
+        # Guardia anti-falso-positivo: un comando-tool è una frase BREVE ("leggi il log",
+        # "studia i documenti", "eval"). Un messaggio lungo è chat o insegnamento e NON va
+        # instradato a un tool anche se contiene una parola-trigger ("log", "file", "dati"…).
+        # Senza questo, una spiegazione di 3000 char con dentro "i log" faceva partire read_log.
+        if not text or len(text) > 300:
+            return None
         call = self.select_tool_by_regex(text)
         if call is None and llm_fallback and getattr(self, "brain", None) is not None:
             try:
