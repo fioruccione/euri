@@ -536,8 +536,11 @@ with main_col:
                 recent = memory_manager.get_recent_memories(limit=4)
                 recent_ids = {r.get("id") for r in recent}
 
-                # Memorie semanticamente rilevanti per la query corrente
-                semantic = [r for r in memory_manager.search_memories(prompt, limit=3)
+                # Memorie semanticamente rilevanti per la query corrente.
+                # limit=6 (non 3): la chat testuale non ha vincoli TTS e Stefano ci passa
+                # dati densi (manuali, schede) — più copertura riduce i falsi "non ce l'ho"
+                # quando il fatto È in memoria ma non entrava nei primi 3 (caso ICMA 01/06).
+                semantic = [r for r in memory_manager.search_memories(prompt, limit=6)
                             if r.get("id") not in recent_ids]
 
                 insights = memory_manager.search_insights(prompt, limit=2)

@@ -699,7 +699,7 @@ class VoiceDaemon:
         # (es. "cosa ne pensi?" subito dopo un'analisi). log_conversation scrive su
         # Redis, ma respond() costruisce il contesto solo da _conversation_history:
         # senza questo inject il CodeRunner risponderebbe "non vedo nulla".
-        if call.tool_name in ("analyze_image", "clipboard_analyze", "run_code", "read_document"):
+        if call.tool_name in ("analyze_image", "clipboard_analyze", "run_code", "read_document", "ingest_documents"):
             # Disaccoppia "cosa dice" da "cosa ricorda": nel contesto va anche il
             # contenuto FEDELE (run_code → CSV prodotto; read_document → testo grezzo
             # del documento), così le domande quantitative successive ("quanto era

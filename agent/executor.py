@@ -356,6 +356,7 @@ class Executor:
 
             saved = skipped = 0
             lines = []
+            recap_items = []  # (filename, gist) per il recap-in-contesto della sessione
             for fname, text in documents.items():
                 if stop is not None and stop.is_set():
                     lines.append("… interrotto.")
@@ -369,6 +370,7 @@ class Executor:
                     lines.append(f"- {fname}: nessun contenuto")
                     continue
                 content = f"[{fname}]\n{comp.strip()}"
+                recap_items.append((fname, comp.strip()[:150]))
                 if memory is None:
                     lines.append(f"- {fname}: letto (memoria non disponibile)")
                     continue
@@ -387,7 +389,19 @@ class Executor:
 
             head = (f"Ho studiato i documenti uno per uno e li ho archiviati in memoria. "
                     f"Salvati {saved}, già noti {skipped}, su {len(documents)} totali:")
-            return ToolResult(success=True, output=head + "\n" + "\n".join(lines))
+            # Recap compatto iniettato nel contesto di sessione: così i documenti appena
+            # studiati sono discutibili SUBITO (Euri sa cosa ha letto) senza dipendere solo
+            # dal RAG; i dettagli completi restano in memoria, richiamabili. (Fix recall 01/06.)
+            recap = ""
+            if recap_items:
+                recap = ("Documenti studiati ora in questa sessione (dettagli completi in "
+                         "memoria, richiamabili a domanda):\n"
+                         + "\n".join(f"- {fn}: {gist}" for fn, gist in recap_items))
+            return ToolResult(
+                success=True,
+                output=head + "\n" + "\n".join(lines),
+                raw_data={"context_extra": recap[:4000]} if recap else {},
+            )
 
         def _tool_analyze_image(params: dict, **kwargs) -> ToolResult:
             """Handler per analisi immagine via Gemma vision."""
@@ -700,7 +714,7 @@ class Executor:
 
         # Continuità: inietta il contenuto fedele nella history del Brain, così i
         # turn successivi leggono i valori esatti invece di confabularli.
-        if call.tool_name in ("analyze_image", "clipboard_analyze", "run_code", "read_document") \
+        if call.tool_name in ("analyze_image", "clipboard_analyze", "run_code", "read_document", "ingest_documents") \
                 and getattr(self, "brain", None) is not None:
             try:
                 self.brain.inject_tool_result(text, build_injected_context(result.output, result.raw_data))
