@@ -494,30 +494,86 @@ Rispondi SOLO con SÌ o NO."""
         except Exception as e:
             logger.error(f"Errore valutazione insights: {e}")
 
-    def _llm_check_contradiction(self, content_a: str, content_b: str) -> bool:
-        """True se A e B esprimono claims fattuali/numerici in conflitto sullo stesso soggetto."""
+    def _llm_classify_pair(self, content_a: str, content_b: str) -> str:
+        """
+        Classifica la relazione tra due memorie simili. Generale, agnostico al dominio
+        (ragiona su 'stesso soggetto vs soggetti diversi', non su liste cablate):
+          'contradiction' — STESSO soggetto specifico, valori in conflitto che si
+                            escludono (es. "MFI lotto X = 6" vs "= 4") → soft-delete.
+          'comparison'    — soggetti/entità DIVERSI ma confrontabili (due impianti, due
+                            clienti, due strategie, due posizioni): le differenze NON sono
+                            errori, sono informazione → niente cancellazione, genera confronto.
+          'none'          — non correlate o aspetti complementari.
+        """
         prompt = f"""\
 Memoria A: "{content_a[:400]}"
 Memoria B: "{content_b[:400]}"
 
-Queste due memorie contengono valori fattuali o numerici in conflitto sullo STESSO soggetto specifico?
-Esempi di conflitto reale: "MFI=6" vs "MFI=4", "concentrazione 3%" vs "concentrazione 5%", "scade il 10 maggio" vs "scade il 15 maggio".
-Non è conflitto se parlano di soggetti diversi, di aspetti complementari, o se i valori non si escludono a vicenda.
+Classifica la relazione tra A e B. Rispondi con UNA sola parola:
+- CONTRADDIZIONE: parlano dello STESSO soggetto specifico ma con valori in conflitto che si escludono a vicenda (es. "MFI lotto X = 6" vs "MFI lotto X = 4"; "scade il 10" vs "scade il 15").
+- CONFRONTO: parlano di soggetti o entità DIVERSI ma confrontabili (es. due macchine diverse, due clienti, due strategie). Valori diversi qui sono NORMALI, non errori.
+- NESSUNA: non correlate, o aspetti complementari che non si escludono.
 
-Rispondi SOLO: SÌ o NO."""
+Rispondi SOLO con: CONTRADDIZIONE, CONFRONTO, o NESSUNA."""
         try:
             response = self._ollama_chat(
                 model=config.DREAM_OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                options={"temperature": 0, "num_predict": 10},
+                options={"temperature": 0, "num_predict": 12},
                 think=False,
                 _timeout=60,
             )
             text = (response.message.content or "").strip().upper()
-            return text.startswith(("SÌ", "SI", "YES"))
+            if "CONTRADD" in text:
+                return "contradiction"
+            if "CONFRONT" in text:
+                return "comparison"
+            return "none"
         except Exception as e:
-            logger.debug(f"Loop 2f: errore LLM contradiction check — {e}")
-            return False
+            logger.debug(f"Loop 2f: errore LLM classify pair — {e}")
+            return "none"
+
+    def _make_comparison_memory(self, content_a: str, content_b: str, domain: str) -> None:
+        """
+        Idea di Stefano (01/06): quando il Loop 2f trova entità DIVERSE ma simili
+        (due impianti, due clienti…), non sceglie un vincitore — genera una nota di
+        CONFRONTO operativa (cosa in comune, in cosa differiscono, quando preferire
+        l'una o l'altra). È meta-conoscenza, NON un fatto grezzo: la salvo con
+        requires_verification=False così il Loop 2f non la ri-processa (no feedback loop).
+        """
+        if not self._memory_manager:
+            return
+        prompt = f"""\
+Due voci di memoria descrivono entità DIVERSE ma confrontabili:
+
+A: "{content_a[:500]}"
+B: "{content_b[:500]}"
+
+Scrivi un breve CONFRONTO operativo (2-4 frasi): cosa hanno in comune, in cosa
+DIFFERISCONO concretamente (valori/limiti), e quando conviene l'una rispetto all'altra.
+Non inventare dati non presenti nelle due voci. Rispondi solo col confronto."""
+        try:
+            resp = self._ollama_chat(
+                model=config.DREAM_OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.3, "num_predict": 500},
+                think=False,
+                _timeout=120,
+            )
+            import re as _re
+            text = _re.sub(r"<think>.*?</think>", "", (resp.message.content or ""),
+                           flags=_re.DOTALL).strip()
+            if not text:
+                return
+            mid = self._memory_manager.save_memory(
+                f"[confronto] {text}", category="conoscenza", source="reflection",
+                tags=["confronto", "loop2f", domain],
+            )
+            if mid:  # meta-conoscenza → fuori dal Loop 2f, niente ri-processamento
+                self._r.json().set(f"euri:memory:{mid}", "$.requires_verification", False)
+                logger.info(f"Loop 2f: nota di confronto generata {mid[:8]}… (dominio: {domain})")
+        except Exception as e:
+            logger.debug(f"Loop 2f: errore _make_comparison_memory — {e}")
 
     def _contradiction_resolution_pass(self):
         """
@@ -572,6 +628,7 @@ Rispondi SOLO: SÌ o NO."""
 
             pairs_checked = 0
             resolved = 0
+            compared = 0
 
             for seed in candidates:
                 if pairs_checked >= MAX_PAIRS_PER_CYCLE:
@@ -621,8 +678,8 @@ Rispondi SOLO: SÌ o NO."""
                     if n_doc.get("superseded_by"):
                         continue
 
-                    # 4. LLM contradiction check
-                    is_conflict = self._llm_check_contradiction(
+                    # 4. Classifica la relazione: contraddizione / confronto / nessuna
+                    rel = self._llm_classify_pair(
                         seed.get("content", ""), n_doc.get("content", "")
                     )
 
@@ -630,10 +687,25 @@ Rispondi SOLO: SÌ o NO."""
                     self._r.expire(CHECKED_KEY, 180 * 86400)
                     pairs_checked += 1
 
-                    if not is_conflict:
+                    if rel == "comparison":
+                        # Entità DIVERSE ma simili (es. due impianti, due clienti): NON è una
+                        # contraddizione → non si cancella nulla. Le differenze sono conoscenza:
+                        # genera una nota di confronto (mappa di scelta). Idea di Stefano 01/06.
+                        self._make_comparison_memory(
+                            seed.get("content", ""), n_doc.get("content", ""),
+                            seed.get("domain", "generale"),
+                        )
+                        compared += 1
+                        logger.info(
+                            f"Loop 2f: {seed_id[:8]}… ↔ {n_id[:8]}… confronto tra entità "
+                            f"distinte (nessun soft-delete)"
+                        )
                         continue
 
-                    # 5. Soft-delete il più vecchio (created_at minore)
+                    if rel != "contradiction":
+                        continue
+
+                    # 5. Contraddizione vera: soft-delete il più vecchio (created_at minore)
                     seed_ts = float(seed.get("created_at") or 0)
                     n_ts = float(n_doc.get("created_at") or 0)
 
@@ -653,10 +725,13 @@ Rispondi SOLO: SÌ o NO."""
 
                     resolved += 1
 
-            if resolved:
-                logger.info(f"Loop 2f: {resolved} contraddizioni risolte ({pairs_checked} coppie analizzate)")
+            if resolved or compared:
+                logger.info(
+                    f"Loop 2f: {resolved} contraddizioni risolte, {compared} confronti generati "
+                    f"({pairs_checked} coppie analizzate)"
+                )
             else:
-                logger.debug(f"Loop 2f: nessuna contraddizione ({pairs_checked} coppie analizzate)")
+                logger.debug(f"Loop 2f: nessuna contraddizione né confronto ({pairs_checked} coppie analizzate)")
 
         except Exception as e:
             logger.error(f"Errore Loop 2f contradiction resolution: {e}")
