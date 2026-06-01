@@ -403,6 +403,57 @@ class Executor:
                 raw_data={"context_extra": recap[:4000]} if recap else {},
             )
 
+        def _tool_read_url(params: dict, **kwargs) -> ToolResult:
+            """
+            Legge una pagina WEB il cui URL è dato ESPLICITAMENTE da Stefano (NON
+            navigazione autonoma): fetch del testo + comprensione, iniettata nel
+            contesto di sessione. NON salva di default (salva-su-richiesta via
+            save_url). Contenuto trattato come fonte esterna/indicativa.
+            """
+            from core.brain import Brain
+            from core.web_search import fetch_page_text
+            brain = Brain._shared_instance if hasattr(Brain, '_shared_instance') else Brain()
+            text = params.get("url", "") or ""
+            m = re.search(r'https?://\S+', text)
+            if not m:
+                return ToolResult(success=False, output="Non ho trovato un URL nel messaggio. Dammi un link http(s) da leggere.")
+            url = m.group(0).rstrip('.,);]\'"')
+            page = fetch_page_text(url)
+            if not page or not page.strip():
+                return ToolResult(success=False, output=f"Non sono riuscito a leggere contenuto da {url} (pagina vuota, protetta o irraggiungibile).")
+            question = re.sub(r'https?://\S+', '', text).strip()
+            try:
+                comp = brain.read_and_extract({url: page}, question)
+            except Exception:
+                comp = page[:1500]
+            self._last_url = url
+            self._last_url_text = page
+            return ToolResult(
+                success=True,
+                output=comp,
+                raw_data={"context_extra": f"=== PAGINA WEB {url} (fonte esterna, da verificare) ===\n{page[:6000]}"},
+            )
+
+        def _tool_save_url(params: dict, **kwargs) -> ToolResult:
+            """Salva in memoria l'ULTIMA pagina letta con read_url (salva-su-richiesta).
+            source=web → Memory Guard + requires_verification (fonte esterna indicativa)."""
+            memory = getattr(self, "memory", None)
+            url = getattr(self, "_last_url", None)
+            page = getattr(self, "_last_url_text", None)
+            if not url or not page:
+                return ToolResult(success=False, output="Non ho una pagina letta di recente da salvare. Prima dimmi 'leggi questa pagina [URL]'.")
+            if memory is None:
+                return ToolResult(success=False, output="Memoria non disponibile.")
+            content = f"[pagina web: {url}]\n{page[:4000]}"
+            mid = memory.save_memory(content, category="web", source="web", tags=["web", "pagina", url])
+            if mid is None:
+                return ToolResult(success=False, output="Pagina NON salvata: contenuto sospetto bloccato dal Memory Guard.")
+            try:
+                memory.r.json().set(f"euri:memory:{mid}", "$.requires_verification", True)
+            except Exception:
+                pass
+            return ToolResult(success=True, output=f"Salvata in memoria la pagina {url} come fonte web (indicativa, da verificare).")
+
         def _tool_analyze_image(params: dict, **kwargs) -> ToolResult:
             """Handler per analisi immagine via Gemma vision."""
             question = params.get('question', '')
@@ -474,6 +525,19 @@ class Executor:
                 handler=_tool_ingest_documents,
                 # N documenti × 1 comprensione Gemma ciascuno → margine ampio.
                 timeout_seconds=600,
+            ),
+            ToolSpec(
+                name="read_url",
+                description="Legge una pagina web il cui URL è fornito ESPLICITAMENTE da Stefano (es. 'leggi questa pagina https://…') ed estrae i contenuti. NON naviga né cerca da solo. Parametro: url (str) — il messaggio contenente l'URL.",
+                parameters_schema={"url": {"type": "str", "required": True}},
+                handler=_tool_read_url,
+                timeout_seconds=60,
+            ),
+            ToolSpec(
+                name="save_url",
+                description="Salva in memoria l'ultima pagina web letta con read_url (come fonte web, da verificare). Per 'salva questa pagina / questo link'.",
+                parameters_schema={},
+                handler=_tool_save_url,
             ),
             ToolSpec(
                 name="analyze_image",
@@ -575,6 +639,16 @@ class Executor:
             r'|\b(cosa\s+vedi|cosa\s+c[\'\`è])\s+.*(foto|immagin[ei]|screenshot)\b',
             re.IGNORECASE,
         ), "analyze_image", {}),
+        # Pagina web da URL ESPLICITO (read_url) e salvataggio della pagina (save_url).
+        # read_url scatta SOLO se c'è un http(s):// nel messaggio → nessun clash con read_document.
+        (re.compile(
+            r'\bsalva\b.*\b(pagin|link|url|quello\s+che\s+hai\s+letto|ci[òo]\s+che\s+hai\s+letto)',
+            re.IGNORECASE | re.DOTALL,
+        ), "save_url", {}),
+        (re.compile(
+            r'(?=.*https?://)(?=.*\b(leggi|legg|apri|analizz|guard|controll|riassum|studia|esamin|pagin|link|sito|url))',
+            re.IGNORECASE | re.DOTALL,
+        ), "read_url", {"url": "__USER_TEXT__"}),
         # PRIMA della lettura singola: INGEST per-documento in memoria a lungo termine.
         # "studia/memorizza/impara/archivia i documenti", "leggi e salva i file".
         # Deve precedere read_document, altrimenti "leggi e salva" finirebbe nel read singolo.
@@ -714,7 +788,7 @@ class Executor:
 
         # Continuità: inietta il contenuto fedele nella history del Brain, così i
         # turn successivi leggono i valori esatti invece di confabularli.
-        if call.tool_name in ("analyze_image", "clipboard_analyze", "run_code", "read_document", "ingest_documents") \
+        if call.tool_name in ("analyze_image", "clipboard_analyze", "run_code", "read_document", "ingest_documents", "read_url") \
                 and getattr(self, "brain", None) is not None:
             try:
                 self.brain.inject_tool_result(text, build_injected_context(result.output, result.raw_data))
