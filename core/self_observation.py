@@ -84,6 +84,8 @@ class SelfObservation:
                     continue
                 loser = d[0]
                 winner_id = loser.get("superseded_by")
+                if isinstance(winner_id, list):  # tollera entrambi i formati (str o [str])
+                    winner_id = winner_id[0] if winner_id else None
                 if not winner_id:
                     continue
                 loser_id = loser.get("id")
