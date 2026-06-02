@@ -687,6 +687,8 @@ class VoiceDaemon:
             self._speak("Leggo il documento.")
         elif call.tool_name == "analyze_image":
             self._speak("Guardo l'immagine.")
+        elif call.tool_name == "teach_text":
+            self._speak("Lo memorizzo.")
         else:
             self._speak("Controllo.")
 
@@ -699,7 +701,7 @@ class VoiceDaemon:
         # (es. "cosa ne pensi?" subito dopo un'analisi). log_conversation scrive su
         # Redis, ma respond() costruisce il contesto solo da _conversation_history:
         # senza questo inject il CodeRunner risponderebbe "non vedo nulla".
-        if call.tool_name in ("analyze_image", "clipboard_analyze", "run_code", "read_document", "ingest_documents", "read_url"):
+        if call.tool_name in ("analyze_image", "clipboard_analyze", "run_code", "read_document", "ingest_documents", "read_url", "teach_text"):
             # Disaccoppia "cosa dice" da "cosa ricorda": nel contesto va anche il
             # contenuto FEDELE (run_code → CSV prodotto; read_document → testo grezzo
             # del documento), così le domande quantitative successive ("quanto era

@@ -403,6 +403,61 @@ class Executor:
                 raw_data={"context_extra": recap[:4000]} if recap else {},
             )
 
+        def _tool_teach_text(params: dict, **kwargs) -> ToolResult:
+            """
+            Stefano INSEGNA esplicitamente un testo/elenco INCOLLATO in chat
+            ("memorizza questo: …", "impara quanto segue: …", "tieni a mente: …") e
+            lo salva come memoria PERMANENTE (source=teach): niente TTL, intoccabile
+            dai cicli notturni. È il gemello di ingest_documents — che però studia i
+            FILE nella cartella — per il testo battuto/incollato al volo. Chiude il
+            buco per cui un elenco incollato finiva in chat (passive, 90gg) mentre
+            Euri dichiarava di averlo salvato "permanentemente": qui il salvataggio
+            è reale e la conferma scatta solo se è andato a buon fine.
+            """
+            memory = getattr(self, "memory", None)
+            if memory is None:
+                return ToolResult(success=False, output="Memoria non disponibile: non posso salvare adesso.")
+            raw = params.get("text", "") or ""
+            # Toglie la frase-comando iniziale e tiene il CONTENUTO da imparare.
+            # Caso 1: c'è il due punti ("memorizza questo: <testo>") → taglia fino ai ":".
+            body = re.sub(
+                r'^\s*(memorizza|impara|imprimiti|assimila|tieni\s+a\s+mente|segnati|annota|prendi\s+nota)\b'
+                r'[^:\n]{0,40}?:\s*',
+                '', raw, count=1, flags=re.IGNORECASE)
+            # Caso 2: nessun due punti → toglie il comando + eventuali determinanti e
+            # nomi generici ("queste informazioni", "questi dati", "la lista") finché
+            # non resta il contenuto vero. Se Stefano scrive solo il comando senza
+            # incollare nulla ("memorizza queste informazioni"), il corpo collassa a
+            # vuoto e sotto scatta l'avviso "manca il testo" invece di salvare un guscio.
+            if body == raw:
+                body = re.sub(
+                    r'^\s*(memorizza|impara|imprimiti|assimila|tieni\s+a\s+mente|segnati|annota|prendi\s+nota)\b'
+                    r"(\s+(quest[oaei]|quei|quegli|quell[ao]|il|i|lo|gli|la|le)\b|\s+l['’])*"
+                    r"(\s+(seguent[ei]|informazion[ei]|info|dat[oi]|cos[ae]|roba|lista|elenco|testo|nota|appunt[oi]|nozion[ei])\b|\s+quanto\s+segue\b)*"
+                    r'\s*', '', raw, count=1, flags=re.IGNORECASE)
+            body = body.strip()
+            # Ripulisce punteggiatura e vocativo iniziali ("memorizza questo, Euri, …"
+            # lasciava ", Euri, …"): toglie virgole/spazi e un eventuale "Euri" iniziale.
+            body = re.sub(r"^[\s,;:.–—-]*(euri\b[\s,;:.–—-]*)?", "",
+                          body, count=1, flags=re.IGNORECASE).strip()
+            if len(body) < 3:
+                return ToolResult(success=False, output=(
+                    "Non ho trovato il contenuto da memorizzare dopo il comando. "
+                    "Scrivilo così: «memorizza questo: …» seguito dal testo o dall'elenco."))
+            mid = memory.save_memory(body, category="conoscenza", source="teach",
+                                     tags=["teach", "insegnamento-testo"])
+            if mid is None:
+                return ToolResult(success=False, output=(
+                    "Contenuto NON salvato: il Memory Guard l'ha bloccato come sospetto."))
+            preview = body[:140].replace("\n", " ")
+            ell = "…" if len(body) > 140 else ""
+            return ToolResult(
+                success=True,
+                output=(f"Memorizzato in modo permanente — non scadrà e i cicli notturni "
+                        f"non lo toccheranno: «{preview}{ell}»"),
+                raw_data={"context_extra": f"=== APPRESO ORA (permanente, source=teach) ===\n{body[:6000]}"},
+            )
+
         def _tool_read_url(params: dict, **kwargs) -> ToolResult:
             """
             Legge una pagina WEB il cui URL è dato ESPLICITAMENTE da Stefano (NON
@@ -555,6 +610,12 @@ class Executor:
                 timeout_seconds=600,
             ),
             ToolSpec(
+                name="teach_text",
+                description="Salva in memoria a lungo termine (permanente) un testo o un elenco che Stefano INCOLLA in chat. Per 'memorizza questo: …', 'impara quanto segue: …', 'tieni a mente: …'. Gemello di ingest_documents ma per testo incollato al volo, non per file.",
+                parameters_schema={"text": {"type": "str", "required": True}},
+                handler=_tool_teach_text,
+            ),
+            ToolSpec(
                 name="read_url",
                 description="Legge una pagina web il cui URL è fornito ESPLICITAMENTE da Stefano (es. 'leggi questa pagina https://…') ed estrae i contenuti. NON naviga né cerca da solo. Parametro: url (str) — il messaggio contenente l'URL.",
                 parameters_schema={"url": {"type": "str", "required": True}},
@@ -702,6 +763,18 @@ class Executor:
             r'|\b(salva|metti)\s+(in|a)\s+memoria\s+.*\b(document[io]|file|pdf|manual[ei]|sched[ae])\b',
             re.IGNORECASE,
         ), "ingest_documents", {}),
+        # teach_text — Stefano INSEGNA un testo/elenco INCOLLATO in chat → salvataggio
+        # PERMANENTE (source=teach). Trigger esplicito ("memorizza questo:", "impara
+        # quanto segue:", "tieni a mente:") per non confondersi con la chat normale.
+        # DOPO ingest_documents: se c'è un sostantivo-file ("memorizza i documenti")
+        # vince l'ingest; senza, il testo incollato finisce qui invece che nel limbo
+        # passive (90gg). Bypassa la guardia 300-char in dispatch_text: insegnare un
+        # elenco lungo è proprio il suo caso d'uso (vedi guardia).
+        (re.compile(
+            r'\b(memorizza|impara|imprimiti|assimila|tieni\s+a\s+mente|segnati|annota|prendi\s+nota)\b'
+            r"[^.\n]{0,30}?(\bquest[oae]\b|\bquanto\s+segue\b|\bil\s+seguente\b|\bi\s+seguenti\b|\bla\s+lista\b|\bl['’]elenco\b|:)",
+            re.IGNORECASE,
+        ), "teach_text", {"text": "__USER_TEXT__"}),
         # IN MEZZO: LETTURA/comprensione di un documento (read_document, no code-gen).
         # Verbi di lettura + sostantivo-documento → Gemma LEGGE ed estrae i valori,
         # non scrive un parser. Deve precedere run_code (che ora prende solo i verbi
@@ -811,13 +884,17 @@ class Executor:
           alla Silent Chat, dove va eseguito su ogni messaggio.
         """
         self.stop_event.clear()
+        if not text:
+            return None
+        call = self.select_tool_by_regex(text)
         # Guardia anti-falso-positivo: un comando-tool è una frase BREVE ("leggi il log",
         # "studia i documenti", "eval"). Un messaggio lungo è chat o insegnamento e NON va
         # instradato a un tool anche se contiene una parola-trigger ("log", "file", "dati"…).
         # Senza questo, una spiegazione di 3000 char con dentro "i log" faceva partire read_log.
-        if not text or len(text) > 300:
+        # ECCEZIONE: teach_text con trigger esplicito ("memorizza questo: <elenco>") È
+        # proprio l'insegnamento di un testo lungo incollato → deve passare la guardia.
+        if len(text) > 300 and not (call is not None and call.tool_name == "teach_text"):
             return None
-        call = self.select_tool_by_regex(text)
         if call is None and llm_fallback and getattr(self, "brain", None) is not None:
             try:
                 tools_desc = self.get_tools_description()
@@ -838,7 +915,7 @@ class Executor:
 
         # Continuità: inietta il contenuto fedele nella history del Brain, così i
         # turn successivi leggono i valori esatti invece di confabularli.
-        if call.tool_name in ("analyze_image", "clipboard_analyze", "run_code", "read_document", "ingest_documents", "read_url") \
+        if call.tool_name in ("analyze_image", "clipboard_analyze", "run_code", "read_document", "ingest_documents", "read_url", "teach_text") \
                 and getattr(self, "brain", None) is not None:
             try:
                 self.brain.inject_tool_result(text, build_injected_context(result.output, result.raw_data))
