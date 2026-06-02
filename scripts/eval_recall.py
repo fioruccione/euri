@@ -45,6 +45,7 @@ CASES = [
     dict(id="leva_grado_mfi",    q="Cosa alza o abbassa il grado/MFI del polipropilene?", markers=["perossido"]),
     dict(id="figlia_stefano",    q="Come si chiama la figlia di Stefano?",           markers=["roberta"]),
     dict(id="regrado_pp",        q="Cos'è il progetto Regrado PP?",                  markers=["regrado"]),
+    dict(id="leonardo_ruolo",    q="Chi è Leonardo Fiorucci e che ruolo ha in Lucy Plast?", markers=["collega", "produzione"]),
 ]
 
 

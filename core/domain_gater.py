@@ -164,6 +164,16 @@ def domain_aware_search(query: str, embedder, r, limit: int = 5) -> list[dict]:
 
     items = []
     for doc in res_all.docs:
+        # Soft-delete (Loop 2f / correzioni): superseded_by NON è tra i return_fields
+        # dell'indice, quindi va letto a parte — altrimenti il filtro a valle in
+        # search_memories è un no-op e le memorie "superate" continuano a riemergere
+        # (bug del path domain-boosted dal V2.19: il soft-delete era inefficace qui).
+        try:
+            sup = r.json().get(doc.id, "$.superseded_by")
+        except Exception:
+            sup = None
+        if sup and sup[0]:
+            continue
         dom = getattr(doc, "domain", "generale")
         raw = float(doc.score)
         in_domain = query_domain != "generale" and dom == query_domain
