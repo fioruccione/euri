@@ -859,12 +859,70 @@ class MemoryManager:
         ]
     ]
 
+    # Secondo livello — marcatori "soft": da soli sarebbero deboli (possono essere
+    # benigni, "guarda che bello"), ma diventano segnale di correzione QUANDO
+    # contraddicono qualcosa che Euri ha appena detto (overlap di token salienti
+    # con l'ultimo turno). Catturano le correzioni implicite/maldette ("ma dai,
+    # Leonardo è un collega") che le regex forti mancavano. La precisione fine la
+    # fa comunque il giudice LLM del Loop 2g (un falso positivo → "ambiguous").
+    _SOFT_CORRECTION_MARKERS = [
+        re.compile(p, re.IGNORECASE) for p in [
+            r'\bguarda\s+che\b', r'\bma\s+no\b', r'\bma\s+dai\b', r'\binvece\b',
+            r'\bsemmai\b', r'\bcasomai\b', r'\bveramente\b', r'\bmica\b',
+            r'\bpiuttosto\b', r'\bocchio\b', r'\battenz?(ione|to)\b',
+            r'\bnon\s+è\b', r'\bnon\s+sono\b', r'\bnon\s+era[no]?\b',
+        ]
+    ]
+    # Marcatori "forti soft": esprimono già di per sé correzione o disappunto,
+    # bastano senza overlap (rari in frasi benigne).
+    _STRONG_SOFT_MARKERS = [
+        re.compile(p, re.IGNORECASE) for p in [
+            r'\bmi\s+offendo\b', r'\bnon\s+confondere\b', r'\bnon\s+scambiare\b',
+            r'\bti\s+ricordo\s+che\b', r'\bnon\s+mi\s+chiamo\b',
+            r'\bnon\s+sono\s+io\b', r'\bguarda\s+che\s+ti\s+sbagli\b',
+        ]
+    ]
+    # Token "salienti" = nomi propri (maiuscoli), codici alfanumerici, numeri:
+    # le cose specifiche su cui una correzione fa leva.
+    _SALIENT_RE = re.compile(r'\b([A-ZÀ-Ü][\wÀ-ü]{2,}|[A-Z0-9_]{3,}|\d+(?:[.,]\d+)?)\b')
+    # Parole comuni maiuscole a inizio frase: non sono "salienti" (evitano falsi overlap).
+    _SALIENT_STOP = {
+        "non", "però", "quindi", "perché", "perche", "anche", "come", "cosa",
+        "questo", "questa", "quello", "quella", "sono", "era", "erano", "sei",
+        "hai", "ecco", "allora", "forse", "magari", "euri", "scusa", "senti",
+    }
+
     @classmethod
-    def detect_correction(cls, text: str) -> bool:
-        """True se il prompt utente assomiglia a una correzione di un turno precedente."""
+    def _salient_tokens(cls, text: str) -> set[str]:
+        return {
+            m.group(1).lower() for m in cls._SALIENT_RE.finditer(text or "")
+        } - cls._SALIENT_STOP
+
+    def detect_correction(self, text: str, last_euri_turn: str | None = None) -> bool:
+        """True se il prompt utente assomiglia a una correzione di un turno precedente.
+
+        Due livelli: (1) pattern forti — bastano da soli; (2) marcatori soft —
+        valgono solo se l'utente contraddice qualcosa di specifico che Euri ha
+        appena detto (overlap di token salienti con l'ultimo turno di Euri).
+        """
         if not text:
             return False
-        return any(p.search(text) for p in cls._CORRECTION_PATTERNS)
+        # Livello 1 — segnali forti espliciti
+        if any(p.search(text) for p in self._CORRECTION_PATTERNS):
+            return True
+        # Livello 2a — soft "forti": correzione/disappunto già nel marcatore
+        if any(p.search(text) for p in self._STRONG_SOFT_MARKERS):
+            return True
+        # Livello 2b — soft + contraddice qualcosa appena detto da Euri
+        if any(p.search(text) for p in self._SOFT_CORRECTION_MARKERS):
+            if last_euri_turn is None:
+                try:
+                    last_euri_turn = self.get_last_euri_turn()
+                except Exception:
+                    last_euri_turn = ""
+            if last_euri_turn and (self._salient_tokens(text) & self._salient_tokens(last_euri_turn)):
+                return True
+        return False
 
     def set_last_rag_ctx(self, ids: list[str]) -> None:
         """
