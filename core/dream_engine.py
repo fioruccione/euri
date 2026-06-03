@@ -952,15 +952,19 @@ Rispondi SOLO con una di queste tre parole: BAD_MEMORY, BAD_REASONING, AMBIGUOUS
 
     def _cleanup_stale_memories(self):
         """
-        Elimina memorie passive/reflection mai richiamate dopo MEMORY_TTL_PASSIVE_DAYS.
-        Le memorie user/teach/obsidian_vault non vengono mai toccate automaticamente:
-        sono state salvate con intenzione esplicita e non hanno data di scadenza.
+        Rete di sicurezza: elimina memorie passive/reflection/conversation mai
+        richiamate solo quando hanno SUPERATO la propria expires_at.
+
+        TTL Redis = fonte di verità operativa (Redis cancella da solo alla scadenza);
+        questa pulizia interviene solo sugli orfani che hanno perso il TTL Redis ma
+        hanno una expires_at già passata. NON usa più created_at: così non contraddice
+        il verdetto KEEP del death-row gate (Loop 2d), che estende expires_at nel futuro.
+        Le memorie user/teach/obsidian_vault non vengono mai toccate automaticamente.
         recalled_count non è indicizzato in RediSearch — la scan è necessaria.
         """
         _EPHEMERAL_SOURCES = {"passive", "reflection", "conversation"}
         try:
-            ttl_sec = config.MEMORY_TTL_PASSIVE_DAYS * 86400
-            cutoff = to_timestamp(now()) - ttl_sec
+            now_ts = to_timestamp(now())
             evaporated = 0
 
             for key in self._r.scan_iter("euri:memory:*"):
@@ -973,7 +977,11 @@ Rispondi SOLO con una di queste tre parole: BAD_MEMORY, BAD_REASONING, AMBIGUOUS
                         continue
                     if doc.get("recalled_count", 0) > 0:
                         continue
-                    if doc.get("created_at", 0) > cutoff:
+                    # Cancella solo ciò che ha superato la propria expires_at (mirror del
+                    # TTL Redis). Niente expires_at o scadenza nel futuro → si conserva:
+                    # rispetta il KEEP del Loop 2d e non cancella per età grezza (created_at).
+                    exp = doc.get("expires_at")
+                    if not exp or exp > now_ts:
                         continue
                     self._r.delete(key)
                     evaporated += 1
