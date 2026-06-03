@@ -1040,16 +1040,21 @@ Rispondi SOLO con una di queste tre parole: BAD_MEMORY, BAD_REASONING, AMBIGUOUS
                         # Estendi di almeno 30 giorni — episodi hanno ttl=7 e
                         # rientrerebbero nella finestra ogni ciclo senza questo floor.
                         extended_ttl = max(ttl_days, 30)
-                        new_exp = to_timestamp(now() + timedelta(days=extended_ttl))
-                        self._r.json().set(key, "$.expires_at", new_exp)
+                        new_exp_dt = now() + timedelta(days=extended_ttl)
+                        # TTL Redis = verità operativa, expires_at = mirror di audit:
+                        # vanno aggiornati insieme o la chiave muore alla vecchia scadenza.
+                        self._r.json().set(key, "$.expires_at", to_timestamp(new_exp_dt))
+                        self._r.expireat(key, new_exp_dt)
                         extended += 1
                         continue
 
                     # Death-row: chiedi al LLM
                     verdict = self._brain.evaluate_memory_relevance(doc.get("content", ""))
                     if verdict == "KEEP":
-                        new_exp = to_timestamp(now() + timedelta(days=ttl_days))
-                        self._r.json().set(key, "$.expires_at", new_exp)
+                        new_exp_dt = now() + timedelta(days=ttl_days)
+                        # TTL Redis = verità operativa, expires_at = mirror di audit.
+                        self._r.json().set(key, "$.expires_at", to_timestamp(new_exp_dt))
+                        self._r.expireat(key, new_exp_dt)
                         kept += 1
                         logger.debug(f"Loop 2d: memoria salvata dal giudice LLM ({key[-8:]})")
                     else:
