@@ -862,9 +862,13 @@ Rispondi SOLO con una di queste tre parole: BAD_MEMORY, BAD_REASONING, AMBIGUOUS
                             continue
                         mkey = mid if mid.startswith("euri:memory:") else f"euri:memory:{mid}"
                         try:
-                            current = self._r.json().get(mkey, "$.audit_flag")
-                            cur_val = int(current[0]) if current else 0
-                            self._r.json().set(mkey, "$.audit_flag", cur_val + 1)
+                            # Incremento atomico (come recalled_count): elimina la race del
+                            # read-modify-write. audit_flag non è inizializzato in save_memory,
+                            # quindi lo si crea a 0 solo se assente (SET NX, idempotente) e poi
+                            # lo si incrementa con NUMINCRBY: due correzioni concorrenti sulla
+                            # stessa memoria non perdono più un incremento.
+                            self._r.json().set(mkey, "$.audit_flag", 0, nx=True)
+                            self._r.json().numincrby(mkey, "$.audit_flag", 1)
                         except Exception:
                             continue
 
