@@ -649,7 +649,7 @@ class VoiceDaemon:
     def _handle_status(self, text: str):
         todos = self.memory.get_pending_todos()
         overdue = self.memory.get_overdue_todos()
-        memories = self.memory.get_recent_memories(limit=999)
+        memories = self.memory.get_recent_memories(limit=999, touch=False)
         reply = self.brain.generate_status(len(todos), len(overdue), len(memories))
         self._speak(reply)
 
