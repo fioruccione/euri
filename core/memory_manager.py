@@ -3,6 +3,7 @@ CRUD Redis per memories, todos, notes.
 Tutte le operazioni usano Redis JSON + RediSearch.
 """
 import re
+import json
 import time
 import uuid
 from datetime import datetime
@@ -931,14 +932,29 @@ class MemoryManager:
         TTL 1h: oltre quel limite, la correzione non è più associabile in modo affidabile.
         """
         key = "euri:last_rag_ctx"
-        self.r.delete(key)
-        if ids:
-            self.r.rpush(key, *ids)
-            self.r.expire(key, 3600)
+        if not ids:
+            self.r.delete(key)
+            return
+        # SET atomico con TTL nello stesso comando: elimina la finestra delete→rpush in
+        # cui un lettore vedeva la lista vuota, e la chiave orfana senza TTL se il processo
+        # moriva tra rpush ed expire. Lista serializzata in JSON (gli id non hanno virgole).
+        self.r.set(key, json.dumps(ids), ex=3600)
 
     def get_last_rag_ctx(self) -> list[str]:
         """Recupera gli ID del RAG context del turno precedente (può essere vuoto)."""
-        return self.r.lrange("euri:last_rag_ctx", 0, -1) or []
+        try:
+            raw = self.r.get("euri:last_rag_ctx")
+        except Exception:
+            # Chiave residua nel vecchio formato lista → WRONGTYPE su GET: il prossimo
+            # set_last_rag_ctx la sovrascrive col nuovo formato. Best-effort: [].
+            return []
+        if not raw:
+            return []
+        try:
+            data = json.loads(raw)
+            return data if isinstance(data, list) else []
+        except (ValueError, TypeError):
+            return []
 
     def get_last_euri_turn(self) -> str:
         """Ultimo turno di Euri nella conversazione di oggi (stringa vuota se assente)."""
