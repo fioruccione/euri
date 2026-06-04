@@ -559,6 +559,34 @@ class MemoryManager:
                     return True
         return False
 
+    def find_similar_memory(self, content: str) -> dict | None:
+        """
+        Memoria esistente più simile a `content`, per il merge costruttivo del SAVE
+        esplicito (core/save_service). Ritorna {'id', 'content', 'similarity'} o None.
+        Usa l'embedding; senza embedder non fa nulla (None → il chiamante salva nuovo).
+        similarity = 1 - distanza coseno (1.0 = identico).
+        """
+        if not (self._embedder and self._embedder.available):
+            return None
+        candidates = self._search_semantic(content, limit=1)  # già esclude i superseded
+        if not candidates:
+            return None
+        cand = candidates[0]
+        return {
+            "id": cand.get("id"),
+            "content": cand.get("content", ""),
+            "similarity": 1.0 - cand.get("_vec_score", 1.0),
+        }
+
+    def supersede_memory(self, old_id: str, new_id: str) -> None:
+        """Soft-delete della memoria vecchia puntando alla nuova (convenzione Loop 2f:
+        superseded_by = id stringa). Il retrieval esclude già i superseded."""
+        key = old_id if str(old_id).startswith("euri:memory:") else f"euri:memory:{old_id}"
+        try:
+            self.r.json().set(key, "$.superseded_by", new_id)
+        except Exception as e:
+            logger.debug(f"supersede_memory fallito per {key}: {e}")
+
     @staticmethod
     def _llm_is_same_content(a: str, b: str) -> bool:
         """True se A non aggiunge informazioni concrete rispetto a B (= è un duplicato)."""

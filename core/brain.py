@@ -352,6 +352,76 @@ class Brain:
             logger.error(f"Errore summarize_knowledge: {e}")
             return accumulated
 
+    def extract_fact_from_exchange(self, stefano_turn: str, euri_turn: str = "") -> str:
+        """
+        SAVE anaforico ("memorizza questo / queste informazioni"): estrae il FATTO
+        memorizzabile emerso in uno scambio — NON riassume la conversazione.
+        Fonte primaria: ciò che afferma Stefano; la risposta di Euri serve SOLO a
+        disambiguare nomi/soggetti/contesto. Esclude meta-commenti (cosa il sistema
+        sa/non sa), inviti a caricare documenti, spiegazioni sul salvataggio, preamboli.
+        Ritorna il fatto pulito (max 3 frasi), o '' se non c'è un fatto memorizzabile.
+        """
+        prompt = (
+            f"In questo scambio Stefano vuole fissare in memoria un FATTO.\n\n"
+            f"Stefano: {stefano_turn}\n"
+            f"Euri: {euri_turn}\n\n"
+            f"Estrai SOLO il fatto memorizzabile emerso, in italiano, conciso (max 3 frasi). "
+            f"Fonte primaria: ciò che afferma Stefano; usa la risposta di Euri solo per "
+            f"disambiguare nomi, soggetti o contesto.\n"
+            f"NON includere: commenti su cosa il sistema sa o non sa, inviti a caricare "
+            f"documenti, spiegazioni sul salvataggio, preamboli (es. 'Ecco un riassunto'). "
+            f"Scrivi direttamente il fatto.\n"
+            f"Se non c'è un fatto concreto da ricordare, rispondi SOLO con: NESSUN FATTO"
+        )
+        try:
+            response = ollama.chat(
+                model=config.OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.2, "num_predict": 2000},
+                think=True,
+            )
+            out = self._clean(response.message.content or "").strip()
+            return "" if out.upper().startswith("NESSUN FATTO") else out
+        except Exception as e:
+            logger.error(f"Errore extract_fact_from_exchange: {e}")
+            return ""
+
+    def merge_memories(self, existing: str, new: str) -> str:
+        """
+        Decide se ARRICCHIRE una memoria esistente con una nuova informazione.
+        Ritorna una di tre cose:
+          - il testo FUSO (B integrato con C, fedele, senza invenzioni) → stesso soggetto, C aggiunge;
+          - 'DIVERSO' → C riguarda un soggetto diverso, o non è chiaro che sia lo stesso;
+          - 'NESSUNA AGGIUNTA' → C non aggiunge nulla di nuovo.
+        Bias esplicito: in dubbio → DIVERSO. Conflare due entità distinte è peggio di un
+        doppione (il doppione lo consolida il Loop 2e; la conflazione corrompe il dato).
+        Su errore LLM ritorna 'DIVERSO' (il chiamante salva separato: nessuna perdita, nessuna conflazione).
+        """
+        prompt = (
+            f"Memoria esistente B:\n{existing}\n\n"
+            f"Nuova informazione C:\n{new}\n\n"
+            f"Decidi:\n"
+            f"- Se C riguarda CHIARAMENTE lo stesso soggetto/entità di B e aggiunge fatti "
+            f"concreti non già presenti (varianti, numeri, componenti, processi, date, nomi), "
+            f"riscrivi B integrando C: fedele ai fatti, senza inventare nulla, conciso, "
+            f"mantenendo tutti i dettagli di B.\n"
+            f"- Se C riguarda un soggetto DIVERSO da B, oppure non è chiaro che sia lo stesso "
+            f"(es. codici/numeri/nomi che potrebbero essere cose distinte), rispondi SOLO con: DIVERSO\n"
+            f"- Se C non aggiunge nulla di nuovo rispetto a B, rispondi SOLO con: NESSUNA AGGIUNTA\n"
+            f"In caso di dubbio sul fatto che B e C siano lo stesso soggetto, scegli DIVERSO."
+        )
+        try:
+            response = ollama.chat(
+                model=config.OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.2, "num_predict": 2000},
+                think=True,
+            )
+            return self._clean(response.message.content or "").strip()
+        except Exception as e:
+            logger.error(f"Errore merge_memories: {e}")
+            return "DIVERSO"
+
     def evaluate_memory_relevance(self, content: str) -> str:
         """
         Death-row gate: valuta se una memoria in scadenza vale ancora la pena conservare.

@@ -140,6 +140,7 @@ cd /home/fio/Euri
 | Comando | Cosa fa |
 |---|---|
 | *"Ricordami che..."* / *"Segna che..."* | Salva una memoria immediata |
+| *"Memorizza questo / queste informazioni"* | Salva l'ultimo scambio (tuo turno + risposta di Euri) come sintesi fedele |
 | *"Salva tutto"* | Il Passive Learner salva il riassunto della conversazione |
 | *"Cosa sai di me?"* | Audit delle memorie salvate |
 | *"Ti racconto una cosa..."* | Modalità insegnamento esplicito |
@@ -181,8 +182,11 @@ cd /home/fio/Euri
 
 ### Salvataggio Vocale
 - **Memoria:** *"Ricordami che..."* / *"Segna che..."*
+- **Memoria anaforica:** *"memorizza questo / queste informazioni"* — salva l'ultimo scambio (sintesi fedele), non le parole del comando.
+- **Arricchimento (merge):** se aggiungi un dettaglio nuovo a qualcosa di già salvato, Euri **arricchisce** la memoria esistente e te lo annuncia ("Ho aggiornato la memoria: …") invece di scartarlo come duplicato o crearne uno doppio. Se invece è un soggetto diverso, salva separato.
 - **Todo con scadenza:** *"Devo fare X fra 5 minuti"*
 - **Passive Learner:** Euri ascolta passivamente e dopo 45 secondi di silenzio salva informazioni utili in background.
+- **Stessa cosa in Silent Chat:** i comandi di salvataggio funzionano identici nella chat testuale (stesso coordinatore), senza più fingere il salvataggio.
 
 ### Salvataggio via Dropzone (Obsidian)
 Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi quello che ti serve. Euri lo leggerà, classificherà il dominio, sposterà il file e lo inserirà nel suo database RAG in meno di un secondo.
@@ -190,6 +194,17 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 ---
 
 ## Changelog
+
+### V2.19 (continua, 03–04/06/2026) — Audit logico (integrità del lifecycle) + salvataggio intenzionale (anaforico, Silent Chat, merge)
+
+Arco nato da un **audit logico read-only dell'intero codice** (occhio esterno): 6 finding reali su 8, di cui due erano una crepa architetturale silenziosa nel ciclo di vita della memoria.
+
+- **TTL Redis = fonte di verità della scadenza** (commit `f908801`, `1e09bd6`): i dati mostravano **due meccanismi di scadenza divergenti** (TTL Redis *e* campo JSON `expires_at`) — 817 memorie, 403 con TTL e 204 con solo il campo. Fix: ogni aggiornamento di `$.expires_at` chiama anche `expireat` (il Loop 2d aggiornava solo il campo → la chiave moriva alla vecchia data, anche per memorie *salvate* dal death-row gate). `_cleanup_stale_memories` non cancella più per `created_at` ma rispetta `expires_at` (e quindi il verdetto KEEP del Loop 2d). Backfill una-tantum `scripts/audit_memory.py --backfill-ttl` (riallinea solo le scadenze future; le scadute le segnala, non le tocca): 403→607 chiavi allineate, 0 cancellazioni.
+- **Lo status diagnostico non rinforza più la memoria** (commit `afd3c9b`): `_handle_status` faceva `get_recent_memories(limit=999)` con `touch=True` → chiedere "stato del sistema" gonfiava `recalled_count` e rinnovava il TTL di quasi tutte le memorie. Ora `touch=False` (ultima fuga diagnostica rimasta dopo il refactor `touch=True/False`).
+- **`last_rag_ctx` atomica** (commit `fdf47fa`): `delete`+`rpush`+`expire` separati → finestra in cui un lettore vedeva la lista vuota, e chiave senza TTL se il processo moriva nel mezzo. Ora un singolo `SET <json> EX 3600`. Comportamento invariato (chiave unica, condivisa tra canali, TTL 1h).
+- **`audit_flag` incremento atomico** (commit `5288f10`): da read-modify-write (`get` + `set cur+1`) a `SET $.audit_flag 0 NX` + `JSON.NUMINCRBY` (il campo non è inizializzato in `save_memory`). Come `recalled_count`: due correzioni concorrenti non perdono più un colpo.
+- **Salvataggio intenzionale anaforico + Silent Chat reale** (commit `b463912`): comandi come *"memorizza questa informazione / queste informazioni / quello che ti ho appena spiegato"* — dove il fatto è nello **scambio precedente**, non nelle parole del comando — non finiscono più come JUNK al Buttafuori: vengono risolti sintetizzando l'ultimo scambio (**mix** tuo turno + risposta di Euri, sintesi fedele). Anche *"X, quindi memorizza questo"* (trigger a fine frase) ora cattura il fatto **prima** del trigger. La Silent Chat aveva un buco grave: i comandi "salva" **confabulavano** la conferma ("Ho integrato nella memoria") senza salvare nulla — ora classifica l'intent con lo stesso router della voce e **salva davvero**. Logica unica in `core/save_service.py`, condivisa tra voce (`voice_daemon`) e Silent Chat (`ui/app.py`): niente duplicazione/drift.
+- **Merge costruttivo a 3 vie — i raffinamenti incrementali** *(validato dal vivo, in corso di commit)*: **supera il probe binario sì/no della V2.11** per i save **espliciti** (il passive learner continua a usare `is_duplicate_memory`). In zona grigia (similarità 0.70–0.95 con una memoria esistente), invece di scartare il "duplicato" o crearne uno quasi identico, `brain.merge_memories` costruisce l'**unione** e ritorna uno di tre esiti: **MERGE** (stesso soggetto, aggiunge → salva la fusa + soft-delete della vecchia via `superseded_by`, e *annuncia* cosa ha aggiunto), **DIVERSO** (soggetto diverso o dubbio → salva separato, niente supersede), **NESSUNA AGGIUNTA** (skip). Bias esplicito a DIVERSO in caso di dubbio: conflare due entità è peggio di un doppione (lo consolida il Loop 2e). Lezione dal vivo: senza il guard DIVERSO il merge aveva conflato due codici di prodotti diversi (pallet vs flange) soppiantando la memoria corretta; col guard distingue correttamente una *variante dello stesso prodotto* (→ arricchisce) da un *articolo diverso* (→ separato). Il modello passa così da **giudice** (gate binario, sbaglia in silenzio e perde dati) ad **autore/editore** (operazione costruttiva, ispezionabile e correggibile).
 
 ### V2.19 (continua, 31/05–02/06/2026) — Silent Chat coi tool, ingest documenti, Loop 2f confronto, calibrazione "battere ciglio", lettura web, suite di eval, insegnamento di testo incollato
 

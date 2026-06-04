@@ -585,16 +585,13 @@ with main_col:
                     # core/save_service. Vedi [[project_euri_silentchat_no_tools]].
                     save_res = None
                     if tool_res is None:
-                        from core.intent_router import (
-                            classify, Intent, extract_content_after_trigger, SAVE_MEMORY_TRIGGERS,
-                        )
+                        from core.intent_router import classify, Intent
                         from core.save_service import save_memory_command
                         try:
                             _intent, _ = classify(prompt)
                         except Exception:
                             _intent = None
                         if _intent == Intent.SAVE_MEMORY:
-                            content_payload = extract_content_after_trigger(prompt, SAVE_MEMORY_TRIGGERS)
                             # Sorgente anaforica = ultimo scambio PRIMA del prompt corrente
                             # (messages[-1] è il "memorizza…" appena appeso).
                             prev_user, prev_assist = "", ""
@@ -606,7 +603,7 @@ with main_col:
                                 if prev_user and prev_assist:
                                     break
                             save_res = save_memory_command(
-                                content_payload, memory_manager, brain,
+                                prompt, memory_manager, brain,
                                 prev_user_text=prev_user, prev_assistant_text=prev_assist,
                                 fresh=True,
                             )

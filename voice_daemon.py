@@ -410,14 +410,14 @@ class VoiceDaemon:
         if due_at:
             self._handle_save_todo(text)
             return
-        content = extract_content_after_trigger(text, SAVE_MEMORY_TRIGGERS)
-        # Logica SAVE_MEMORY (anaforico + Buttafuori + dedup + save) condivisa con la
-        # Silent Chat via core/save_service. Qui la voce fornisce l'ultimo scambio
-        # (TTL 300s) e fa l'I/O (speak + log). Vedi [[project_euri_save_anaforico]].
+        # Logica SAVE_MEMORY (risoluzione contenuto anaforico/pre-trigger + Buttafuori +
+        # merge costruttivo) condivisa con la Silent Chat via core/save_service. Qui la voce
+        # fornisce l'ultimo scambio (TTL 300s) e fa l'I/O (speak + log).
+        # Vedi [[project_euri_save_anaforico]].
         fresh = bool(self._last_speech_content
                      and time.time() - self._last_speech_ts < 300)
         result = save_memory_command(
-            content, self.memory, self.brain,
+            text, self.memory, self.brain,
             prev_user_text=self._last_user_text or "",
             prev_assistant_text=self._last_speech_content or "",
             fresh=fresh,
