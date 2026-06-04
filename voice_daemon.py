@@ -404,46 +404,28 @@ class VoiceDaemon:
         )
 
     def _handle_save_memory(self, text: str):
-        from core.validator import validate_payload
+        from core.save_service import save_memory_command
         # Se c'è una scadenza parsabile, è un todo mascherato da memory
         due_at = extract_due_date(text)
         if due_at:
             self._handle_save_todo(text)
             return
         content = extract_content_after_trigger(text, SAVE_MEMORY_TRIGGERS)
-        # "salva la conversazione / l'immagine / quello che hai detto": il comando
-        # si riferisce al CONTESTO recente, non a un fatto nelle sue parole — il
-        # Buttafuori giustamente boccerebbe quelle parole come non-fatto. Quando il
-        # contenuto è SOLO un riferimento meta (anchored: niente fatto frammisto),
-        # salva l'ultima descrizione lunga di Euri. Se non c'è (o è scaduta, TTL
-        # 300s come "scrivilo"), si ricade nel flusso normale. Non tocca altro.
-        _META_SAVE_REF = re.compile(
-            r'^(?:\W|\s|,|\be\b'
-            r'|\bl[\'’]immagin[ei]\b|\bla\s+conversazione\b|\bla\s+descrizione\b'
-            r'|\bquello\s+che\s+(?:hai\s+(?:detto|visto|descritto)|ci\s+siamo\s+detti)\b'
-            r'|\bquanto\s+(?:detto|ci\s+siamo\s+detti)\b|\bquesto\b|\btutto(?:\s+questo)?\b'
-            r')+$',
-            re.IGNORECASE,
+        # Logica SAVE_MEMORY (anaforico + Buttafuori + dedup + save) condivisa con la
+        # Silent Chat via core/save_service. Qui la voce fornisce l'ultimo scambio
+        # (TTL 300s) e fa l'I/O (speak + log). Vedi [[project_euri_save_anaforico]].
+        fresh = bool(self._last_speech_content
+                     and time.time() - self._last_speech_ts < 300)
+        result = save_memory_command(
+            content, self.memory, self.brain,
+            prev_user_text=self._last_user_text or "",
+            prev_assistant_text=self._last_speech_content or "",
+            fresh=fresh,
         )
-        if (content and _META_SAVE_REF.match(content)
-                and self._last_speech_content
-                and time.time() - self._last_speech_ts < 300):
-            content = self._last_speech_content
-        if not content:
-            self._speak("Cosa devo ricordare?")
-            return
-        content = validate_payload(content, "memory")
-        if not content:
-            self._speak("Non sembra una cosa utile da ricordare.")
-            return
-        if self.memory.is_duplicate_memory(content, llm_probe_fn=self.brain.probe_same_meaning):
-            self._speak("Lo avevo già segnato, ma grazie per la conferma.")
-            return
-        self.memory.save_memory(content, source="user")
-        self.memory.log_conversation("Stefano", text)
-        reply = self.brain.confirm_save("memory", content)
-        self.memory.log_conversation("Euri", reply)
-        self._speak(reply)
+        if result["saved"]:
+            self.memory.log_conversation("Stefano", text)
+            self.memory.log_conversation("Euri", result["reply"])
+        self._speak(result["reply"])
 
     def _handle_save_todo(self, text: str):
         from core.validator import validate_payload
