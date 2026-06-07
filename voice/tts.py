@@ -9,6 +9,24 @@ from pathlib import Path
 from loguru import logger
 import sherpa_onnx
 import config
+import re
+
+
+# Pulisce il markdown dal testo PRIMA della sintesi vocale: il TTS leggeva gli asterischi
+# ("asterisco asterisco") e gli altri marcatori. Tocca SOLO l'audio — il testo
+# loggato/mostrato in Silent Chat/salvato resta col suo markdown.
+_MD_BULLET = re.compile(r'(?m)^[ \t]*[-*•]\s+')
+_MD_HEADER = re.compile(r'(?m)^[ \t]*#{1,6}[ \t]*')
+
+
+def _strip_markup_for_speech(text: str) -> str:
+    if not text:
+        return text
+    t = _MD_BULLET.sub("", text)            # bullet a inizio riga (*, -, •)
+    t = _MD_HEADER.sub("", t)               # heading markdown (#)
+    t = t.replace("*", "").replace("`", "")  # asterischi e backtick residui (grassetto/corsivo/code)
+    t = re.sub(r"[ \t]{2,}", " ", t)
+    return t.strip()
 
 
 def _load_sherpa_model(model_dir: Path) -> sherpa_onnx.OfflineTts:
@@ -94,6 +112,7 @@ class TTS:
         logger.info(f"TTS pronto — sample rate IT: {self.sample_rate}Hz")
 
     def synthesize(self, text: str, speed: float = 1.0, lang: str = "it") -> tuple[np.ndarray, int]:
+        text = _strip_markup_for_speech(text)  # niente asterischi/markdown letti ad alta voce
         lang_code = _LANG_CODES.get(lang.lower(), lang.lower()[:2])
 
         if lang_code == "en" and self._tts_en is not None:
