@@ -676,7 +676,8 @@ class Executor:
         ), "top_processes", {"sort_by": "memory"}),
         # top_processes by cpu
         (re.compile(
-            r'\b(processi|app|applicazioni)\b'
+            r'\b(processi|app|applicazioni)\b.{0,40}\b(pesanti|attiv[ie]|apert[ie]|girando|esecuzione|cpu|sistema|pc|workstation|linux)\b'
+            r'|\b(che|quali|mostra|controlla|verifica)\b.{0,25}\b(processi|app|applicazioni)\b.{0,40}\b(pesanti|attiv[ie]|apert[ie]|girando|esecuzione|cpu|sistema|pc|workstation|linux)\b'
             r'|\bconsuma(?:no)?\s+(?:più\s+)?cpu'
             r'|\boccupa(?:no)?\s+(?:più\s+)?cpu'
             r'|\bpesanti\s+(?:per\s+)?(?:la\s+)?cpu',
@@ -807,11 +808,26 @@ class Executor:
         Selettore deterministico: evita la chiamata LLM per i tool comuni.
         Ritorna None se nessun pattern corrisponde (si cade sul LLM).
         """
+        if self._is_negated_tool_request(text):
+            return None
         for pattern, tool_name, params in self._TOOL_PATTERNS:
             if pattern.search(text):
                 logger.debug(f"Executor: tool selezionato via regex — {tool_name} {params}")
                 return ToolCall(tool_name=tool_name, parameters=dict(params))
         return None
+
+    @staticmethod
+    def _is_negated_tool_request(text: str) -> bool:
+        """Blocca trigger tool esplicitamente negati: 'non leggere il log', 'non cercare online'."""
+        return bool(re.search(
+            r'\b(non|senza)\s+.{0,20}\b('
+            r'leggere?|aprire?|analizzare?|studiare?|controllare?|verificare?|'
+            r'cercare?|calcolare?|scrivere?|salvare?|copiare?|mostrare?|'
+            r'processare?|elaborare?|eseguire?|lanciare?|avviare?'
+            r')\b',
+            text,
+            re.IGNORECASE,
+        ))
 
     def parse_llm_response(self, response: str) -> ToolCall | None:
         try:

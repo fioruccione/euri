@@ -1235,6 +1235,10 @@ Rispondi SOLO con la sintesi. Niente intestazioni."""
                 )
                 key = f"euri:memory:{mid}"
                 self._r.json().set(key, "$.consolidated_from", cluster_ids)
+                risk = self._consolidation_source_risk(cluster_ids, qualified_by_id)
+                self._r.json().set(key, "$.consolidation_risk", risk)
+                if risk["level"] != "ok":
+                    self._r.json().set(key, "$.source_audit_flags", risk["audit_flagged"])
 
                 # Eredita requires_verification se almeno una memoria sorgente ce l'ha
                 sources_rv = any(
@@ -1264,6 +1268,45 @@ Rispondi SOLO con la sintesi. Niente intestazioni."""
 
         except Exception as e:
             logger.error(f"Errore Loop 2e consolidation: {e}")
+
+    def _consolidation_source_risk(self, cluster_ids: list[str], source_docs: dict[str, dict] | None = None) -> dict:
+        """Fotografa la fragilità delle fonti usate da un nodo loop2e."""
+        source_docs = source_docs or {}
+        risk = {
+            "level": "ok",
+            "total_sources": len(cluster_ids),
+            "audit_flagged": [],
+            "superseded": [],
+            "missing": [],
+            "requires_verification": [],
+        }
+
+        for cid in cluster_ids:
+            doc = source_docs.get(cid)
+            if doc is None:
+                try:
+                    raw = self._r.json().get(f"euri:memory:{cid}", "$")
+                    doc = raw[0] if raw else None
+                except Exception:
+                    doc = None
+            if not doc:
+                risk["missing"].append(cid)
+                continue
+            if int(doc.get("audit_flag") or 0) > 0:
+                risk["audit_flagged"].append(cid)
+            if doc.get("superseded_by"):
+                # Lista di id-stringa, identica alla forma calcolata dal backfill in
+                # scripts/audit_memory.py: così il campo consolidation_risk persistito è
+                # coerente tra loop live e audit, e il backfill non ri-sporca nodi già scritti.
+                risk["superseded"].append(cid)
+            if doc.get("requires_verification"):
+                risk["requires_verification"].append(cid)
+
+        if risk["missing"] or risk["superseded"] or risk["requires_verification"]:
+            risk["level"] = "high"
+        elif risk["audit_flagged"]:
+            risk["level"] = "watch"
+        return risk
 
     def _write_obsidian_sources(self, mid: str, domain: str, cluster_ids: list[str]):
         """Appende i wiki-link alle memorie sorgente nel file Obsidian del nodo consolidato."""

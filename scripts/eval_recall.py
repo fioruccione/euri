@@ -62,7 +62,7 @@ def main():
     print("=" * 66)
     for c in CASES:
         try:
-            results = mm.search_memories(c["q"], limit=LIMIT)
+            results = mm.search_memories(c["q"], limit=LIMIT, touch=False)
         except Exception as e:
             results = []
             print(f"\n[FAIL] {c['id']} — errore search: {e}")

@@ -47,7 +47,6 @@ _PATTERNS: list[tuple[Intent, list[str]]] = [
         r"\bche\s+stato\s+(hai|c[''è])\b",
         r"\bdammi\s+(uno\s+)?stato\b",
         r"\bstato\s+(del\s+sistema|di\s+euri)\b",
-        r"come\s+stai",
         r"quant[ie]\s+(todo|ricordi|appunti|scadenz)",
         r"riassumimi",
     ]),
@@ -128,6 +127,8 @@ _PATTERNS: list[tuple[Intent, list[str]]] = [
     ]),
     (Intent.EXECUTE, [
         r"\b(controlla|verifica|monitora|dimmi|mostrami)\s+(cpu|ram|memoria|disco|processi?|gpu|vram|temperatura|carico)\b",
+        r"\b(controlla|verifica|monitora|dimmi|mostrami)\s+(i\s+)?processi\s+(del\s+)?(pc|sistema|workstation|linux)\b",
+        r"\b(controlla|verifica|monitora|dimmi|mostrami)\s+(i\s+)?processi\s+(attivi|aperti|pesanti|in\s+esecuzione)\b",
         r"\b(quanta|quanto)\s+(ram|memoria|cpu|disco|vram)\s+(usa|c[''è]|ho|è\s+liber[ao])\b",
         r"\bche\s+(processi?|programmi?)\s+(sono|stanno)\s+(aperti|girando|in\s+esecuzione)\b",
         r"\bstato\s+(del\s+)?(sistema|workstation|pc|server)\b",

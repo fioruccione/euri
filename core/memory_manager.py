@@ -138,7 +138,13 @@ class MemoryManager:
         r'\b[A-Z]{2,}(?:-[A-Z0-9]+)*\b|\b\d+[.,]\d+\b'
     )
 
-    def search_memories(self, query: str, limit: int = 5, source_filter: list[str] | None = None) -> list[dict]:
+    def search_memories(
+        self,
+        query: str,
+        limit: int = 5,
+        source_filter: list[str] | None = None,
+        touch: bool = True,
+    ) -> list[dict]:
         """
         Ricerca a tre livelli:
         1. Identifier-first: acronimi, codici, numeri decimali → keyword search diretta, risultati in cima
@@ -146,6 +152,9 @@ class MemoryManager:
         3. Hybrid fill: _search_hybrid riempie eventuali slot rimasti
         Garantisce che fatti specifici (MFI lotto, concentrazioni, codici progetto) non vengano
         sepolti da memorie semanticamente centrali già consolidate nello stesso dominio.
+
+        touch=True rinforza solo i risultati restituiti: recalled_count, last_recalled_at
+        e TTL scorrevole. Usa touch=False per audit, UI diagnostica e test read-only.
         """
         if self._embedder and self._embedder.available and query != "*":
             merged: list[dict] = []
@@ -155,7 +164,7 @@ class MemoryManager:
             identifiers = self._IDENTIFIER_RE.findall(query)
             if identifiers:
                 id_query = " | ".join(identifiers)
-                id_results = self._search_keyword(id_query, limit, source_filter=source_filter)
+                id_results = self._search_keyword(id_query, limit, source_filter=source_filter, touch=False)
                 for r in id_results:
                     uid = r.get("id", "")
                     if uid not in seen_uuids:
@@ -175,7 +184,7 @@ class MemoryManager:
 
             # Livello 3 — hybrid fill se ancora sotto il limite
             if len(merged) < limit:
-                hybrid = self._search_hybrid(query, limit, source_filter=source_filter)
+                hybrid = self._search_hybrid(query, limit, source_filter=source_filter, touch=False)
                 for r in hybrid:
                     uid = r.get("id", "")
                     if uid not in seen_uuids and len(merged) < limit:
@@ -186,9 +195,12 @@ class MemoryManager:
                 f"Search 3-livelli: {len(merged)} risultati "
                 f"(id:{len(identifiers)} token, semantic:{len(semantic)}, fill)"
             )
-            return merged[:limit]
+            results = merged[:limit]
+            if touch:
+                self._touch_memories(results)
+            return results
 
-        return self._search_keyword(query, limit, source_filter=source_filter)
+        return self._search_keyword(query, limit, source_filter=source_filter, touch=touch)
 
     @staticmethod
     def _sanitize_query(text: str) -> str:
@@ -204,7 +216,13 @@ class MemoryManager:
         escaped = "|".join(source_filter)
         return f"@source:{{{escaped}}} "
 
-    def _search_keyword(self, query: str, limit: int, source_filter: list[str] | None = None) -> list[dict]:
+    def _search_keyword(
+        self,
+        query: str,
+        limit: int,
+        source_filter: list[str] | None = None,
+        touch: bool = True,
+    ) -> list[dict]:
         try:
             prefix = self._source_prefix(source_filter).strip()
             safe_query = query if query == "*" else self._sanitize_query(query)
@@ -220,7 +238,7 @@ class MemoryManager:
                 
             q = Query(full_query).paging(0, limit).sort_by("created_at", asc=False)
             results = self.r.ft("idx:memories").search(q)
-            return self._hydrate(results.docs)
+            return self._hydrate(results.docs, touch=touch)
         except Exception as e:
             logger.error(f"Errore ricerca keyword memories: {e}")
             return []
@@ -274,7 +292,13 @@ class MemoryManager:
             logger.error(f"Errore ricerca semantica: {e}")
             return []
 
-    def _search_hybrid(self, query: str, limit: int, source_filter: list[str] | None = None) -> list[dict]:
+    def _search_hybrid(
+        self,
+        query: str,
+        limit: int,
+        source_filter: list[str] | None = None,
+        touch: bool = True,
+    ) -> list[dict]:
         """
         Merge ricerca semantica + keyword.
         Priorità: doc trovati da entrambi > solo semantici > solo keyword.
@@ -283,7 +307,7 @@ class MemoryManager:
         kw_query = " | ".join(kw_list[:6]) if kw_list else None
 
         sem_docs = self._search_semantic(query, limit, source_filter=source_filter)
-        kw_docs = self._search_keyword(kw_query, limit, source_filter=source_filter) if kw_query else []
+        kw_docs = self._search_keyword(kw_query, limit, source_filter=source_filter, touch=False) if kw_query else []
 
         sem_ids = {d["id"] for d in sem_docs}
         kw_ids = {d["id"] for d in kw_docs}
@@ -310,23 +334,13 @@ class MemoryManager:
                 merged.append(d)
                 seen.add(d["id"])
 
-        # Aggiorna contatori richiami e resetta finestra scorrevole TTL
-        for item in merged[:limit]:
-            key = f"euri:memory:{item['id']}"
-            self.r.json().numincrby(key, "$.recalled_count", 1)
-            ts_now = to_timestamp(now())
-            self.r.json().set(key, "$.last_recalled_at", ts_now)
-            ttl_days = _TTL_BY_SOURCE.get(item.get("source", ""))
-            if ttl_days:
-                from datetime import timedelta
-                new_exp_dt = now() + timedelta(days=ttl_days)
-                self.r.json().set(key, "$.expires_at", to_timestamp(new_exp_dt))
-                self.r.expireat(key, new_exp_dt)
+        results = merged[:limit]
+        if touch:
+            self._touch_memories(results)
+        return results
 
-        return merged[:limit]
-
-    def _hydrate(self, raw_docs) -> list[dict]:
-        """Carica i documenti completi da Redis JSON e aggiorna i contatori."""
+    def _hydrate(self, raw_docs, touch: bool = True) -> list[dict]:
+        """Carica i documenti completi da Redis JSON; opzionalmente rinforza i richiami."""
         docs = []
         for doc in raw_docs:
             data = self.r.json().get(doc.id, "$")
@@ -336,16 +350,31 @@ class MemoryManager:
                     continue
                 item["_created_at"] = from_timestamp(item.get("created_at"))
                 docs.append(item)
-                self.r.json().numincrby(doc.id, "$.recalled_count", 1)
-                ts_now = to_timestamp(now())
-                self.r.json().set(doc.id, "$.last_recalled_at", ts_now)
+        if touch:
+            self._touch_memories(docs)
+        return docs
+
+    def _touch_memories(self, memories: list[dict]):
+        """Rinforza memorie realmente usate in retrieval cognitivo."""
+        if not memories:
+            return
+        ts_now = to_timestamp(now())
+        for item in memories:
+            mid = item.get("id")
+            if not mid:
+                continue
+            key = mid if str(mid).startswith("euri:memory:") else f"euri:memory:{mid}"
+            try:
+                self.r.json().numincrby(key, "$.recalled_count", 1)
+                self.r.json().set(key, "$.last_recalled_at", ts_now)
                 ttl_days = _TTL_BY_SOURCE.get(item.get("source", ""))
                 if ttl_days:
                     from datetime import timedelta
                     new_exp_dt = now() + timedelta(days=ttl_days)
-                    self.r.json().set(doc.id, "$.expires_at", to_timestamp(new_exp_dt))
-                    self.r.expireat(doc.id, new_exp_dt)
-        return docs
+                    self.r.json().set(key, "$.expires_at", to_timestamp(new_exp_dt))
+                    self.r.expireat(key, new_exp_dt)
+            except Exception as e:
+                logger.debug(f"Touch memory fallito per {key}: {e}")
 
     def get_expiring_memories(self, days_ahead: int = 7) -> list[dict]:
         """Restituisce memorie con expires_at entro days_ahead giorni (escluse user/teach/obsidian)."""
@@ -367,24 +396,35 @@ class MemoryManager:
                 continue
         return results
 
-    def get_recent_memories(self, limit: int = 10, source_filter: list[str] | None = None) -> list[dict]:
-        return self._search_keyword("*", limit=limit, source_filter=source_filter)
+    def get_recent_memories(
+        self,
+        limit: int = 10,
+        source_filter: list[str] | None = None,
+        touch: bool = True,
+    ) -> list[dict]:
+        return self._search_keyword("*", limit=limit, source_filter=source_filter, touch=touch)
 
-    def search_memories_by_timerange(self, ts_start: float, ts_end: float, limit: int = 5) -> list[dict]:
+    def search_memories_by_timerange(
+        self,
+        ts_start: float,
+        ts_end: float,
+        limit: int = 5,
+        touch: bool = True,
+    ) -> list[dict]:
         """Recupera memorie in un range temporale tramite filtro numerico su created_at."""
         try:
             q = (Query(f"@created_at:[{ts_start} {ts_end}]")
                  .sort_by("created_at", asc=False)
                  .paging(0, limit))
             results = self.r.ft("idx:memories").search(q)
-            return self._hydrate(results.docs)
+            return self._hydrate(results.docs, touch=touch)
         except Exception as e:
             logger.error(f"Errore ricerca temporale: {e}")
             return []
 
-    def get_recent_reflections(self, limit: int = 2) -> list[dict]:
+    def get_recent_reflections(self, limit: int = 2, touch: bool = True) -> list[dict]:
         """Restituisce le reflection più recenti generate da Loop 2a."""
-        return self._search_keyword("*", limit=limit, source_filter=["reflection"])
+        return self._search_keyword("*", limit=limit, source_filter=["reflection"], touch=touch)
 
     # ──────────────────────────────────────────
     # TODOS (promemoria con scadenza)
@@ -526,7 +566,7 @@ class MemoryManager:
         if len(words) < 2:
             return False
         keyword_query = " | ".join(words[:5])
-        results = self._search_keyword(keyword_query, limit=3)
+        results = self._search_keyword(keyword_query, limit=3, touch=False)
         if not results:
             return False
         content_kws = set(words)
@@ -614,7 +654,7 @@ class MemoryManager:
 
     def get_passive_memory_stats(self) -> dict:
         """Statistiche sulle memorie passive per l'audit."""
-        all_memories = self.get_recent_memories(limit=500)
+        all_memories = self.get_recent_memories(limit=500, touch=False)
         passive = [m for m in all_memories if m.get("source") == "passive"]
         user_saved = [m for m in all_memories if m.get("source") == "user"]
         teach = [m for m in all_memories if m.get("source") == "teach"]

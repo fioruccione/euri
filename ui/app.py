@@ -716,7 +716,7 @@ with main_col:
                 else:
                     # Ricerca vettoriale
                     st.info("Ricerca vettoriale (KNN) in corso...")
-                    results = memory_manager.search_memories(search_query, limit=limit)
+                    results = memory_manager.search_memories(search_query, limit=limit, touch=False)
                     
                     if selected_domain != "Tutti":
                         results = [x for x in results if x.get("domain") == selected_domain]

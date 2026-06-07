@@ -17,6 +17,8 @@ Uso:
 import sys
 import json
 import argparse
+from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Aggiungi root al path
@@ -28,7 +30,12 @@ import config
 
 
 def get_client() -> redis.Redis:
-    return redis.Redis(host="localhost", port=6379, decode_responses=True)
+    return redis.Redis(
+        host=config.REDIS_HOST,
+        port=config.REDIS_PORT,
+        db=config.REDIS_DB,
+        decode_responses=True,
+    )
 
 
 def scan_memories(r: redis.Redis, source_filter: str = None) -> list[dict]:
@@ -289,6 +296,391 @@ def stats(r: redis.Redis):
         print(f"  {src:<15} {count:>4} memorie")
 
 
+def _scan_json_docs(r: redis.Redis, pattern: str) -> list[dict]:
+    """Legge documenti RedisJSON senza usare API di retrieval o mutare contatori/TTL."""
+    docs = []
+    for key in r.scan_iter(pattern):
+        try:
+            data = r.json().get(key, "$")
+            if not data:
+                continue
+            doc = data[0]
+            doc["_key"] = key
+            docs.append(doc)
+        except Exception:
+            continue
+    return docs
+
+
+def _ts_to_dt(ts) -> datetime | None:
+    if ts in (None, "", 0):
+        return None
+    try:
+        return datetime.fromtimestamp(float(ts), tz=timezone.utc)
+    except Exception:
+        return None
+
+
+def _fmt_age(ts, now_dt: datetime) -> str:
+    dt = _ts_to_dt(ts)
+    if not dt:
+        return "n/d"
+    delta = now_dt - dt
+    days = delta.days
+    if days <= 0:
+        hours = max(0, int(delta.total_seconds() // 3600))
+        return f"{hours}h fa"
+    if days < 30:
+        return f"{days}g fa"
+    return f"{days // 30} mesi fa"
+
+
+def _print_counter(title: str, counter: Counter, limit: int = 15):
+    print(f"\n{title}")
+    if not counter:
+        print("  n/d")
+        return
+    for key, count in counter.most_common(limit):
+        label = str(key or "unknown")
+        print(f"  {label:<28} {count:>5}")
+    hidden = len(counter) - limit
+    if hidden > 0:
+        print(f"  ... altri {hidden}")
+
+
+def _short(text: str, width: int = 92) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= width else text[: width - 1] + "…"
+
+
+def _consolidation_risk(r: redis.Redis, doc: dict) -> dict:
+    """Calcola read-only la fragilità delle fonti di un nodo consolidato."""
+    source_ids = doc.get("consolidated_from") or []
+    risk = {
+        "level": "ok",
+        "total_sources": len(source_ids),
+        "audit_flagged": [],
+        "superseded": [],
+        "missing": [],
+        "requires_verification": [],
+    }
+    for cid in source_ids:
+        try:
+            raw = r.json().get(f"euri:memory:{cid}", "$")
+        except Exception:
+            raw = None
+        if not raw:
+            risk["missing"].append(cid)
+            continue
+        src = raw[0]
+        if int(src.get("audit_flag") or 0) > 0:
+            risk["audit_flagged"].append(cid)
+        if src.get("superseded_by"):
+            risk["superseded"].append(cid)
+        if src.get("requires_verification"):
+            risk["requires_verification"].append(cid)
+
+    if risk["missing"] or risk["superseded"] or risk["requires_verification"]:
+        risk["level"] = "high"
+    elif risk["audit_flagged"]:
+        risk["level"] = "watch"
+    return risk
+
+
+def backfill_consolidation_risk(r: redis.Redis, apply: bool = False):
+    """Calcola e opzionalmente salva consolidation_risk sui loop2e esistenti."""
+    docs = [
+        d for d in _scan_json_docs(r, "euri:memory:*")
+        if d.get("source") == "loop2e" and d.get("consolidated_from")
+    ]
+    if not docs:
+        print("\nNessun nodo loop2e con consolidated_from.")
+        return
+
+    counts = Counter()
+    changed = 0
+    for doc in docs:
+        risk = _consolidation_risk(r, doc)
+        counts[risk["level"]] += 1
+        old = doc.get("consolidation_risk")
+        if old != risk:
+            changed += 1
+            if apply:
+                key = doc["_key"]
+                r.json().set(key, "$.consolidation_risk", risk)
+                if risk["level"] != "ok":
+                    r.json().set(key, "$.source_audit_flags", risk["audit_flagged"])
+
+    print_header("BACKFILL CONSOLIDATION RISK")
+    print(f"  loop2e analizzati     {len(docs):>5}")
+    print(f"  da aggiornare         {changed:>5}")
+    print(f"  ok                    {counts.get('ok', 0):>5}")
+    print(f"  watch                 {counts.get('watch', 0):>5}")
+    print(f"  high                  {counts.get('high', 0):>5}")
+    if apply:
+        print("  → campi Redis aggiornati.")
+    else:
+        print("  → dry-run. Usa --apply per salvare i campi Redis.")
+
+
+def backfill_ttl_from_expires_at(r: redis.Redis, apply: bool = False):
+    """
+    Riallinea il TTL Redis al campo JSON expires_at (F-01/F-02).
+
+    Modello: TTL Redis = fonte di verità operativa, expires_at = mirror di audit.
+    Per le memorie temporanee (hanno expires_at) ma SENZA TTL Redis:
+      - expires_at nel FUTURO → si imposta expireat (con --apply). Operazione sicura.
+      - expires_at GIÀ SCADUTO → NON si tocca: impostare expireat su un timestamp
+        passato cancellerebbe la chiave all'istante. Si segnala soltanto, perché la
+        cancellazione richiede conferma esplicita di Stefano.
+    Non cancella mai nulla.
+    """
+    now_ts = datetime.now(timezone.utc).timestamp()
+    docs = _scan_json_docs(r, "euri:memory:*")
+
+    aligned = 0          # ha già TTL Redis coerente
+    permanent = 0        # nessuna expires_at (user/teach/obsidian/loop2e) — corretto così
+    to_set_future = []   # senza TTL, expires_at futura → target del backfill
+    flagged_past = []    # senza TTL, expires_at scaduta → richiede conferma
+
+    for doc in docs:
+        exp = doc.get("expires_at")
+        if not exp:
+            permanent += 1
+            continue
+        ttl = r.ttl(doc["_key"])
+        if ttl and ttl > 0:
+            aligned += 1
+            continue
+        # ttl == -1 (chiave senza scadenza) → disallineata rispetto a expires_at
+        if float(exp) > now_ts:
+            to_set_future.append(doc)
+        else:
+            flagged_past.append(doc)
+
+    applied = 0
+    if apply:
+        for doc in to_set_future:
+            try:
+                r.expireat(doc["_key"], int(float(doc["expires_at"])))
+                applied += 1
+            except Exception as e:
+                print(f"  ! errore expireat su {doc['_key']}: {e}")
+
+    print_header("BACKFILL TTL ⟵ expires_at")
+    print(f"  memorie totali                       {len(docs):>5}")
+    print(f"  permanenti (nessuna expires_at)      {permanent:>5}")
+    print(f"  TTL già allineato                    {aligned:>5}")
+    print(f"  senza TTL, expires_at FUTURA         {len(to_set_future):>5}  ← backfill sicuro")
+    print(f"  senza TTL, expires_at SCADUTA        {len(flagged_past):>5}  ← richiede conferma, NON toccate")
+
+    if flagged_past:
+        print("\nScadute senza TTL (decisione di Stefano — questo script non cancella):")
+        by_src = Counter(d.get("source") for d in flagged_past)
+        for src, n in by_src.most_common():
+            print(f"  {str(src or 'unknown'):<16} {n:>5}")
+        for doc in sorted(flagged_past, key=lambda d: float(d.get("expires_at") or 0))[:10]:
+            print(
+                f"  {_fmt_age(doc.get('expires_at'), datetime.now(timezone.utc)):>9} scaduta | "
+                f"{doc.get('source', '?'):<12} | {_short(doc.get('content', ''))}"
+            )
+
+    if apply:
+        print(f"\n  → expireat impostato su {applied} chiavi (solo expires_at futura).")
+    else:
+        print("\n  → dry-run. Usa --apply per impostare il TTL sulle chiavi con expires_at futura.")
+
+
+def read_only_report(r: redis.Redis, expiring_days: int = 14, report_source: str = "all"):
+    """
+    Report diagnostico non invasivo.
+
+    Non chiama search_memories(), _hydrate(), _search_hybrid() o FT.SEARCH:
+    legge solo RedisJSON via SCAN + JSON.GET, quindi non incrementa recalled_count
+    e non estende TTL.
+    """
+    memories = _scan_json_docs(r, "euri:memory:*")
+    if report_source != "all":
+        memories = [d for d in memories if d.get("source") == report_source]
+    insights = _scan_json_docs(r, "euri:insight:*")
+    dreams = _scan_json_docs(r, "euri:dream:*")
+    corrections = _scan_json_docs(r, "euri:correction:*")
+
+    now_dt = datetime.now(timezone.utc)
+    now_ts = now_dt.timestamp()
+    exp_cutoff = now_ts + expiring_days * 86400
+
+    by_source = Counter(d.get("source") for d in memories)
+    by_domain = Counter(d.get("domain") for d in memories)
+    by_category = Counter(d.get("category") for d in memories)
+    by_safety = Counter(flag for d in memories for flag in (d.get("safety_flag") or []))
+
+    permanent_sources = {"user", "teach", "obsidian_vault", "campus"}
+    permanent = [d for d in memories if d.get("source") in permanent_sources and not d.get("expires_at")]
+    no_expiry_non_explicit = [
+        d for d in memories
+        if not d.get("expires_at") and d.get("source") not in permanent_sources
+    ]
+    temporary = [d for d in memories if d.get("expires_at")]
+    expired_field = [d for d in temporary if float(d.get("expires_at") or 0) <= now_ts]
+    expiring = [d for d in temporary if now_ts < float(d.get("expires_at") or 0) <= exp_cutoff]
+    requires_verification = [d for d in memories if d.get("requires_verification")]
+    superseded = [d for d in memories if d.get("superseded_by")]
+    audit_flagged = [d for d in memories if int(d.get("audit_flag") or 0) > 0]
+    missing_embedding = [d for d in memories if not d.get("embedding")]
+    never_recalled = [d for d in memories if int(d.get("recalled_count") or 0) == 0]
+    with_consolidated_from = [d for d in memories if d.get("consolidated_from")]
+    consolidation_risks = [
+        (d, _consolidation_risk(r, d))
+        for d in with_consolidated_from
+    ]
+    by_consolidation_risk = Counter(risk["level"] for _, risk in consolidation_risks)
+    high_recall = sorted(memories, key=lambda d: int(d.get("recalled_count") or 0), reverse=True)
+    recent = sorted(memories, key=lambda d: float(d.get("created_at") or 0), reverse=True)
+
+    include_global_sections = report_source == "all"
+    insight_by_status = Counter(d.get("status") for d in insights)
+    insight_never_recalled = [d for d in insights if int(d.get("recalled_count") or 0) == 0]
+    insight_promoted_cold = [
+        d for d in insights
+        if d.get("status") == "promoted" and int(d.get("recalled_count") or 0) == 0
+    ]
+    dream_by_status = Counter(d.get("status") for d in dreams)
+
+    title = "REPORT READ-ONLY MEMORIA"
+    if report_source != "all":
+        title += f" — source={report_source}"
+    print_header(title)
+    print("Modalità: solo SCAN + JSON.GET. Nessun recalled_count o TTL modificato.")
+    print(f"Timestamp: {now_dt.astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}")
+
+    print("\nSintesi")
+    print(f"  Memorie totali                 {len(memories):>5}")
+    print(f"  Permanenti esplicite           {len(permanent):>5}")
+    print(f"  Senza expires_at non esplicite {len(no_expiry_non_explicit):>5}")
+    print(f"  Temporanee con expires_at      {len(temporary):>5}")
+    print(f"  Campo expires_at già scaduto   {len(expired_field):>5}")
+    print(f"  In scadenza entro {expiring_days:>2}g        {len(expiring):>5}")
+    print(f"  Mai richiamate                 {len(never_recalled):>5}")
+    print(f"  Con consolidated_from          {len(with_consolidated_from):>5}")
+    if with_consolidated_from:
+        print(f"  Consolidati rischio high       {by_consolidation_risk.get('high', 0):>5}")
+        print(f"  Consolidati rischio watch      {by_consolidation_risk.get('watch', 0):>5}")
+    print(f"  Requires verification          {len(requires_verification):>5}")
+    print(f"  Soft-deleted/superseded        {len(superseded):>5}")
+    print(f"  Audit flag > 0                 {len(audit_flagged):>5}")
+    print(f"  Senza embedding                {len(missing_embedding):>5}")
+    if include_global_sections:
+        print(f"  Insight totali                 {len(insights):>5}")
+        print(f"  Insight promoted freddi        {len(insight_promoted_cold):>5}")
+        print(f"  Dreams totali                  {len(dreams):>5}")
+        print(f"  Correction signal aperti       {len(corrections):>5}")
+
+    _print_counter("Distribuzione per source", by_source)
+    _print_counter("Distribuzione per dominio", by_domain)
+    _print_counter("Distribuzione per categoria", by_category)
+    _print_counter("Safety flag", by_safety)
+    if with_consolidated_from:
+        _print_counter("Rischio consolidati", by_consolidation_risk)
+    if include_global_sections:
+        _print_counter("Insight per status", insight_by_status)
+        _print_counter("Dream per status", dream_by_status)
+
+    print("\nTop memorie per recalled_count")
+    for doc in high_recall[:10]:
+        print(
+            f"  {int(doc.get('recalled_count') or 0):>4} | "
+            f"{doc.get('source', '?'):<12} | {doc.get('domain', '?'):<24} | "
+            f"{_short(doc.get('content', ''))}"
+        )
+
+    print("\nMemorie recenti")
+    for doc in recent[:10]:
+        print(
+            f"  {_fmt_age(doc.get('created_at'), now_dt):>9} | "
+            f"{doc.get('source', '?'):<12} | {doc.get('domain', '?'):<24} | "
+            f"{_short(doc.get('content', ''))}"
+        )
+
+    if expiring:
+        print(f"\nMemorie in scadenza entro {expiring_days} giorni")
+        for doc in sorted(expiring, key=lambda d: float(d.get("expires_at") or 0))[:15]:
+            print(
+                f"  {_fmt_age(doc.get('created_at'), now_dt):>9} | "
+                f"{doc.get('source', '?'):<12} | rc={int(doc.get('recalled_count') or 0):<3} | "
+                f"{_short(doc.get('content', ''))}"
+            )
+
+    if no_expiry_non_explicit:
+        print("\nSenza expires_at non esplicite")
+        by_no_expiry_source = Counter(d.get("source") for d in no_expiry_non_explicit)
+        for source, count in by_no_expiry_source.most_common():
+            print(f"  {str(source or 'unknown'):<16} {count:>5}")
+
+    if requires_verification:
+        print("\nRequires verification")
+        for doc in sorted(requires_verification, key=lambda d: float(d.get("created_at") or 0), reverse=True)[:15]:
+            print(
+                f"  {doc.get('source', '?'):<12} | {doc.get('domain', '?'):<24} | "
+                f"{_short(doc.get('content', ''))}"
+            )
+
+    if superseded:
+        print("\nSoft-deleted / superseded")
+        for doc in sorted(superseded, key=lambda d: float(d.get("created_at") or 0), reverse=True)[:10]:
+            print(
+                f"  {doc.get('id', '?')[:8]} -> {str(doc.get('superseded_by'))[:8]} | "
+                f"{doc.get('source', '?'):<12} | {_short(doc.get('content', ''))}"
+            )
+
+    if audit_flagged:
+        print("\nAudit flag")
+        for doc in sorted(audit_flagged, key=lambda d: int(d.get("audit_flag") or 0), reverse=True)[:10]:
+            print(
+                f"  flag={int(doc.get('audit_flag') or 0):>2} | "
+                f"{doc.get('source', '?'):<12} | {doc.get('domain', '?'):<24} | "
+                f"{_short(doc.get('content', ''))}"
+            )
+
+    risky_consolidations = [
+        (doc, risk) for doc, risk in consolidation_risks
+        if risk["level"] != "ok"
+    ]
+    if risky_consolidations:
+        print("\nConsolidati con fonti fragili")
+        risky_consolidations.sort(
+            key=lambda x: (
+                0 if x[1]["level"] == "high" else 1,
+                -len(x[1]["audit_flagged"]),
+                int(x[0].get("recalled_count") or 0),
+            )
+        )
+        for doc, risk in risky_consolidations[:15]:
+            details = []
+            if risk["missing"]:
+                details.append(f"missing={len(risk['missing'])}")
+            if risk["superseded"]:
+                details.append(f"superseded={len(risk['superseded'])}")
+            if risk["requires_verification"]:
+                details.append(f"rv={len(risk['requires_verification'])}")
+            if risk["audit_flagged"]:
+                details.append(f"audit_src={len(risk['audit_flagged'])}")
+            print(
+                f"  {risk['level']:<5} | rc={int(doc.get('recalled_count') or 0):<3} | "
+                f"{doc.get('id', '?')[:8]} | {', '.join(details):<28} | "
+                f"{_short(doc.get('content', ''))}"
+            )
+
+    if include_global_sections and insight_never_recalled:
+        print("\nInsight mai richiamati")
+        for doc in sorted(insight_never_recalled, key=lambda d: float(d.get("created_at") or 0), reverse=True)[:10]:
+            domains = f"{doc.get('domain_a', '?')} ↔ {doc.get('domain_b', '?')}"
+            print(f"  {doc.get('status', '?'):<10} | {domains:<38} | {_short(doc.get('content', ''))}")
+
+    print("\nNota")
+    print("  Questo report misura lo stato della memoria; non decide cancellazioni e non chiama LLM.")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Audit e pulizia memorie Redis di Euri")
     parser.add_argument("--source", default="passive",
@@ -297,6 +689,12 @@ if __name__ == "__main__":
                         help="Cancella TUTTE le memorie di una source senza audit")
     parser.add_argument("--stats", action="store_true",
                         help="Mostra solo statistiche per source")
+    parser.add_argument("--report", action="store_true",
+                        help="Report read-only completo: memorie, domini, TTL, insight, audit flag")
+    parser.add_argument("--report-source", default="all",
+                        help="Filtra il report read-only per source (default: all)")
+    parser.add_argument("--expiring-days", type=int, default=14,
+                        help="Finestra per memorie in scadenza nel report read-only (default: 14)")
     parser.add_argument("--backfill-domains", action="store_true",
                         help="Ricalcola il domain label per le memorie con domain='generale'")
     parser.add_argument("--backfill-all", action="store_true",
@@ -305,6 +703,12 @@ if __name__ == "__main__":
                         help="R1: rileva memorie con dominio incoerente col vicinato (solo report)")
     parser.add_argument("--fix-outliers", action="store_true",
                         help="R1: rileva E ri-etichetta gli outlier al dominio modale dei vicini")
+    parser.add_argument("--backfill-consolidation-risk", action="store_true",
+                        help="Calcola/salva consolidation_risk sui nodi loop2e esistenti")
+    parser.add_argument("--backfill-ttl", action="store_true",
+                        help="Riallinea il TTL Redis al campo expires_at (solo scadenze future; le scadute non vengono toccate)")
+    parser.add_argument("--apply", action="store_true",
+                        help="Applica i backfill che supportano dry-run")
     args = parser.parse_args()
 
     r = get_client()
@@ -315,7 +719,13 @@ if __name__ == "__main__":
         print("Errore: Redis non raggiungibile su localhost:6379")
         sys.exit(1)
 
-    if args.stats:
+    if args.report:
+        read_only_report(r, expiring_days=args.expiring_days, report_source=args.report_source)
+    elif args.backfill_consolidation_risk:
+        backfill_consolidation_risk(r, apply=args.apply)
+    elif args.backfill_ttl:
+        backfill_ttl_from_expires_at(r, apply=args.apply)
+    elif args.stats:
         stats(r)
     elif args.fix_outliers:
         scan_outliers(r, fix=True)
