@@ -6,6 +6,7 @@ Se il contenuto è spazzatura o conversazione, blocca il salvataggio.
 Se è reale, restituisce il testo riscritto in modo pulito e sintetico.
 """
 import ollama
+from core.ollama_client import chat_client
 import config
 from loguru import logger
 
@@ -29,7 +30,7 @@ def validate_payload(text: str, intent_type: str) -> str | None:
     if not text or len(text.strip()) < 3:
         return None
     try:
-        response = ollama.chat(
+        response = chat_client.chat(
             model=config.OLLAMA_MODEL,
             messages=[{
                 "role": "user",

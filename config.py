@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import pytz
 
 BASE_DIR = Path(__file__).parent
@@ -25,7 +26,12 @@ REDIS_PORT = 6379
 REDIS_DB = 0
 
 # Ollama
-OLLAMA_HOST = "http://localhost:11434"
+OLLAMA_HOST = "http://localhost:11434"   # default condiviso (offline-first)
+# Host distinti per realtime (Gemma) e Dream Engine (Qwen). Default = OLLAMA_HOST (localhost):
+# le due env var sono un OPT-IN per puntare altrove (es. pod remoto in test). Se non settate,
+# il comportamento offline resta identico a prima.
+CHAT_OLLAMA_HOST  = os.environ.get("CHAT_OLLAMA_HOST",  OLLAMA_HOST)
+DREAM_OLLAMA_HOST = os.environ.get("DREAM_OLLAMA_HOST", OLLAMA_HOST)
 OLLAMA_MODEL = "gemma4:26b"   # verifica con `ollama list`
 # Modello dedicato al Dream Engine (sogni notturni + insight).
 # Separato da OLLAMA_MODEL per poter usare un modello più capace per il ragionamento astratto.

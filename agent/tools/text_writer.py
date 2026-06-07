@@ -173,14 +173,14 @@ def _analyze_text_full(text: str, cfg, brain) -> str:
     ≤ 80K chars → singolo passaggio con num_ctx=32768.
     > 80K chars → estrae fatti da ogni chunk (max 4×20K), poi sintesi finale.
     """
-    import ollama
+    from core.ollama_client import chat_client
 
     _OPTS_SINGLE = {"temperature": 0.3, "num_predict": 1200, "num_ctx": 32768}
     _OPTS_CHUNK  = {"temperature": 0.2, "num_predict": 600,  "num_ctx": 32768}
     _OPTS_SYNTH  = {"temperature": 0.3, "num_predict": 1000, "num_ctx": 16384}
 
     def _chat(prompt: str, opts: dict) -> str:
-        r = ollama.chat(
+        r = chat_client.chat(
             model=cfg.OLLAMA_MODEL,
             messages=[{"role": "user", "content": prompt}],
             options=opts,

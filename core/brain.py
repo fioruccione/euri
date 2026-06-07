@@ -7,6 +7,7 @@ import time
 import threading
 from loguru import logger
 import ollama
+from core.ollama_client import chat_client
 import config
 from utils.date_utils import now
 
@@ -67,7 +68,7 @@ class Brain:
 
         try:
             _t = time.perf_counter()
-            response = ollama.chat(
+            response = chat_client.chat(
                 model=config.OLLAMA_MODEL,
                 messages=messages,
                 # num_predict alto: Gemma 4 consuma token di thinking prima della risposta;
@@ -120,7 +121,7 @@ class Brain:
                 f"{dialogue}\n\nRiassunto:"
             )
             try:
-                response = ollama.chat(
+                response = chat_client.chat(
                     model=config.OLLAMA_MODEL,
                     messages=[{"role": "user", "content": prompt}],
                     options={"temperature": 0.1, "num_predict": 250},
@@ -223,7 +224,7 @@ class Brain:
             f"Sii diretto. Max 1 frase."
         )
         try:
-            response = ollama.chat(
+            response = chat_client.chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": 0.7, "num_predict": 500},
@@ -270,7 +271,7 @@ class Brain:
             f"Se non c'è nulla di concreto da salvare: scrivi solo NOTHING."
         )
         try:
-            response = ollama.chat(
+            response = chat_client.chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": 0.1, "num_predict": 2000},
@@ -314,7 +315,7 @@ class Brain:
             f"Memorie correlate dall'archivio:\n{_fmt(related_memories)}"
         )
         try:
-            response = ollama.chat(
+            response = chat_client.chat(
                 model=config.OLLAMA_MODEL,
                 messages=[
                     {"role": "system", "content": self._REFLECTION_SYSTEM},
@@ -341,7 +342,7 @@ class Brain:
             f"Scrivi come se dovessi spiegarlo a qualcuno in futuro. Max 5 frasi."
         )
         try:
-            response = ollama.chat(
+            response = chat_client.chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": 0.3, "num_predict": 2000},
@@ -374,7 +375,7 @@ class Brain:
             f"Se non c'è un fatto concreto da ricordare, rispondi SOLO con: NESSUN FATTO"
         )
         try:
-            response = ollama.chat(
+            response = chat_client.chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": 0.2, "num_predict": 2000},
@@ -411,7 +412,7 @@ class Brain:
             f"In caso di dubbio sul fatto che B e C siano lo stesso soggetto, scegli DIVERSO."
         )
         try:
-            response = ollama.chat(
+            response = chat_client.chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": 0.2, "num_predict": 2000},
@@ -436,7 +437,7 @@ class Brain:
             f"Rispondi SOLO con KEEP o DROP."
         )
         try:
-            response = ollama.chat(
+            response = chat_client.chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": 0, "num_predict": 10},
@@ -451,7 +452,7 @@ class Brain:
     def probe_same_meaning(self, question: str) -> str:
         """Probe leggero: risponde SI o NO. Usato per dedup semantico."""
         try:
-            response = ollama.chat(
+            response = chat_client.chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": question}],
                 options={"temperature": 0, "num_predict": 300},
@@ -479,7 +480,7 @@ class Brain:
             f"Richiesta utente: \"{user_text}\""
         )
         try:
-            response = ollama.chat(
+            response = chat_client.chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": 0, "num_predict": 700},
@@ -499,7 +500,7 @@ class Brain:
         )
         try:
             _t = time.perf_counter()
-            response = ollama.chat(
+            response = chat_client.chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": 0, "num_predict": 300},
@@ -573,7 +574,7 @@ class Brain:
             )
 
         try:
-            response = ollama.chat(
+            response = chat_client.chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": 0, "num_predict": 400},
@@ -601,7 +602,7 @@ class Brain:
             f"Rispondi SOLO con le parole chiave, max 8 parole. Nient'altro."
         )
         try:
-            response = ollama.chat(
+            response = chat_client.chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": 0, "num_predict": 400},
@@ -643,7 +644,7 @@ class Brain:
             f"5. TEMPERATURE: converti sempre in Celsius. Se trovi Fahrenheit, converti: (F - 32) × 5/9. Non dire mai gradi Fahrenheit."
         )
         try:
-            response = ollama.chat(
+            response = chat_client.chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": 0.2, "num_predict": 1500},
@@ -664,7 +665,7 @@ class Brain:
             f"Estrai in 2-5 parole cosa ha completato/fatto. Solo le parole chiave, nient'altro."
         )
         try:
-            response = ollama.chat(
+            response = chat_client.chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": 0, "num_predict": 300},
@@ -744,7 +745,7 @@ class Brain:
         )
         try:
             _t = time.perf_counter()
-            response = ollama.chat(
+            response = chat_client.chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 # num_predict 4000: con PDF pre-estratti (cascata Vision) i
@@ -791,7 +792,7 @@ class Brain:
 
         try:
             _t = time.perf_counter()
-            response = ollama.chat(
+            response = chat_client.chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{
                     "role": "user",
@@ -856,7 +857,7 @@ class Brain:
         )
         try:
             _t = time.perf_counter()
-            response = ollama.chat(
+            response = chat_client.chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 # think=False: lettura diretta; num_predict ampio per documenti

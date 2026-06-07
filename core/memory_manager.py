@@ -591,7 +591,7 @@ class MemoryManager:
     def _llm_is_same_content(a: str, b: str) -> bool:
         """True se A non aggiunge informazioni concrete rispetto a B (= è un duplicato)."""
         try:
-            import ollama
+            from core.ollama_client import chat_client
             import config
             prompt = (
                 f"La frase A contiene informazioni concrete non già presenti in B? "
@@ -600,7 +600,7 @@ class MemoryManager:
                 f"B: {b}\n"
                 f"Rispondi solo SÌ o NO."
             )
-            response = ollama.chat(
+            response = chat_client.chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": 0, "num_predict": 5},

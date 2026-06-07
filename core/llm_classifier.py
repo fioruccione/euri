@@ -13,6 +13,7 @@ Tutto il resto resta CHAT — non vogliamo over-classify.
 import re
 import time
 import ollama
+from core.ollama_client import chat_client
 import config
 from loguru import logger
 
@@ -138,7 +139,7 @@ def llm_fallback_classify(text: str) -> str | None:
     # ── Layer 2 (Slow Path): LLM fallback ──
     try:
         t0 = time.time()
-        response = ollama.chat(
+        response = chat_client.chat(
             model=config.OLLAMA_MODEL,
             messages=[{"role": "user", "content": _PROMPT.format(text=text)}],
             options={"temperature": 0, "num_predict": 400},

@@ -7,6 +7,7 @@ In fase di recupero, la ricerca avviene in due step:
  2. Fallback all'intero DB se ci sono pochi risultati
 """
 import ollama
+from core.ollama_client import chat_client
 from loguru import logger
 from redis.commands.search.query import Query
 
@@ -102,7 +103,7 @@ Informazione: "{content}"
 Rispondi SOLO con l'etichetta. Nessuna spiegazione. Niente virgolette. Tutto minuscolo."""
 
     try:
-        response = ollama.chat(
+        response = chat_client.chat(
             model=config.OLLAMA_MODEL,
             messages=[{"role": "user", "content": prompt}],
             options={"temperature": 0.2, "num_predict": 30},

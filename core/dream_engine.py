@@ -15,6 +15,7 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from loguru import logger
 import ollama
+from core.ollama_client import dream_client
 
 import config
 from utils.date_utils import now, to_timestamp
@@ -74,7 +75,7 @@ class DreamEngine:
         """Wrapper con timeout (default 200s) attorno a ollama.chat — evita hang notturni."""
         timeout = kwargs.pop("_timeout", 200)
         with ThreadPoolExecutor(max_workers=1) as ex:
-            future = ex.submit(ollama.chat, **kwargs)
+            future = ex.submit(dream_client.chat, **kwargs)
             try:
                 return future.result(timeout=timeout)
             except FuturesTimeout:

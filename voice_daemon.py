@@ -40,6 +40,9 @@ from core.time_parser import extract_due_date
 from core.memory_manager import MemoryManager
 from core.brain import Brain
 from core.embedder import Embedder
+from core.honesty import scrub_unbacked_save_claim
+from core.wide_recall import is_wide_recall_query, build_wide_recall_map
+from core.ollama_client import chat_client
 from agent.executor import Executor, build_injected_context
 
 
@@ -229,8 +232,8 @@ class VoiceDaemon:
     def _warmup_model(self):
         """Carica il modello LLM in VRAM senza produrre output vocale."""
         try:
-            import ollama
-            ollama.chat(
+            ollama_chat = chat_client.chat
+            ollama_chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": "ok"}],
                 options={"num_predict": 1},
@@ -570,6 +573,23 @@ class VoiceDaemon:
 
         self.memory.log_conversation("Stefano", text)
         context = self._build_context(text)
+        # Wide recall: SOLO su domande panoramiche/autobiografiche (path SEARCH). Aggiunge
+        # un campione per AREE (≤3 dominio corrente + ≤12 laterali), read-only/touch=False.
+        # NON tocca il retrieval principale: lo affianca.
+        if is_wide_recall_query(text):
+            try:
+                _recent = self.memory.get_recent_memories(limit=1, touch=False)
+                _cur = _recent[0].get("domain") if _recent else None
+                _rows = build_wide_recall_map(self.memory.r, current_domain=_cur)
+                if _rows:
+                    context = (context + "\n\n" if context else "") + (
+                        "[Panoramica per AREE della tua memoria — CAMPIONE rappresentativo, "
+                        "NON esaustivo (non è una scansione completa di Redis). Presenta le aree "
+                        "che conosci e offri di approfondirne una; non dichiarare di sapere tutto.]\n"
+                        + "\n".join(f"- {row}" for row in _rows)
+                    )
+            except Exception as e:
+                logger.debug(f"wide_recall fallito: {e}")
         search_hint = (
             "[Modalità ricerca: rispondi alla domanda dell'utente usando "
             "SOLO le informazioni presenti nel contesto sopra. Se le memorie "
@@ -579,6 +599,7 @@ class VoiceDaemon:
         context = (context + "\n\n" if context else "") + search_hint
         with self._brain_lock:
             reply = self.brain.respond(text, context=context)
+        reply = scrub_unbacked_save_claim(reply)  # pavimento di onestà: SEARCH non salva
         self.memory.log_conversation("Euri", reply)
         self._speak(reply)
 
@@ -701,7 +722,7 @@ class VoiceDaemon:
     def _handle_audit_memory(self, text: str):
         """Audit vocale delle memorie: analizza con LLM e propone cancellazione del rumore."""
         import json as _json
-        import ollama as _ollama
+        _ollama = chat_client  # instradato: chat_client.chat(...) == _ollama.chat(...)
 
         self.memory.log_conversation("Stefano", text)
         self._speak("Controllo la memoria. Un momento.")
@@ -1103,6 +1124,7 @@ class VoiceDaemon:
         context = (context + "\n\n" if context else "") + "[Modalità conversazione: sii presente e naturale, non rigido.]"
         with self._brain_lock:
             reply = self.brain.respond(text, context=context)
+        reply = scrub_unbacked_save_claim(reply)  # pavimento di onestà: CHAT non salva
         self.memory.log_conversation("Euri", reply)
         if len(reply) > 150:
             self._last_speech_content = reply
@@ -1850,6 +1872,7 @@ class VoiceDaemon:
                         # Brain — lock condiviso con _handle_chat()
                         with self._brain_lock:
                             response = self.brain.respond(text, context=context)
+                        response = scrub_unbacked_save_claim(response)  # pavimento di onestà: mobile non salva
 
                         self.memory.log_conversation("Euri", response)
                         logger.info(f"[Mobile] Euri: {response[:80]}")

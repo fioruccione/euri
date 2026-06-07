@@ -20,6 +20,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
 import ollama
+from core.ollama_client import dream_client
 from loguru import logger
 
 import config
@@ -161,7 +162,7 @@ class SelfObservation:
         try:
             with ThreadPoolExecutor(max_workers=1) as ex:
                 future = ex.submit(
-                    ollama.chat,
+                    dream_client.chat,
                     model=config.DREAM_OLLAMA_MODEL,
                     messages=[{"role": "user", "content": prompt}],
                     # num_predict 3000: Qwen con think=True consuma reasoning

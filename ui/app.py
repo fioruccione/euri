@@ -615,7 +615,26 @@ with main_col:
                     else:
                         chat_hint = "[Modalità chat testuale — nessun vincolo TTS. Puoi rispondere con più profondità, sviluppare i concetti, fare domande di ritorno. Sii presente e partecipe come in una conversazione reale.]"
                         context_full = (context + "\n\n" + chat_hint) if context else chat_hint
-                        response = brain.respond(prompt, context=context_full)
+                        # Wide recall: solo su domande panoramiche/autobiografiche (la Silent
+                        # Chat non ha un path SEARCH separato → gate sul predicate, quindi NON
+                        # scatta sulla chat normale). Campione per AREE, read-only/touch=False.
+                        from core.wide_recall import is_wide_recall_query, build_wide_recall_map
+                        if is_wide_recall_query(prompt):
+                            try:
+                                _rec = memory_manager.get_recent_memories(limit=1, touch=False)
+                                _cur = _rec[0].get("domain") if _rec else None
+                                _rows = build_wide_recall_map(memory_manager.r, current_domain=_cur)
+                                if _rows:
+                                    context_full += (
+                                        "\n\n[Panoramica per AREE della tua memoria — CAMPIONE "
+                                        "rappresentativo, NON esaustivo. Presenta le aree che conosci e "
+                                        "offri di approfondirne una; non dichiarare di sapere tutto.]\n"
+                                        + "\n".join(f"- {row}" for row in _rows)
+                                    )
+                            except Exception:
+                                pass
+                        from core.honesty import scrub_unbacked_save_claim
+                        response = scrub_unbacked_save_claim(brain.respond(prompt, context=context_full))
                     st.markdown(response)
 
             # Salva risposta
