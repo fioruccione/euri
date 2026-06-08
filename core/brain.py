@@ -9,6 +9,7 @@ import threading
 from loguru import logger
 import ollama
 from core.ollama_client import chat_client
+from core.operational_context import load_operational_context
 import config
 from utils.date_utils import now
 
@@ -41,6 +42,12 @@ class Brain:
         context: informazioni aggiuntive da iniettare (es. risultati ricerca Redis).
         """
         messages = [{"role": "system", "content": config.SYSTEM_PROMPT}]
+
+        # Contesto operativo opzionale (EURI_CONTEXT.md): cornice del mondo in cui Euri opera.
+        # Fail-open: "" se il file manca → prompt identico a prima.
+        op_ctx = load_operational_context()
+        if op_ctx:
+            messages.append({"role": "system", "content": op_ctx})
 
         dt_line = f"Data e ora corrente: {now().strftime('%A %d %B %Y, ore %H:%M')}"
         ctx_parts = [dt_line]

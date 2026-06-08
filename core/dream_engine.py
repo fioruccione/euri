@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from loguru import logger
 import ollama
 from core.ollama_client import dream_client
+from core.operational_context import load_operational_context
 
 import config
 from utils.date_utils import now, to_timestamp
@@ -74,8 +75,14 @@ class DreamEngine:
         return elapsed_hours >= config.DREAM_ENGINE_IDLE_HOURS
 
     def _ollama_chat(self, **kwargs) -> ollama.ChatResponse:
-        """Wrapper con timeout (default 200s) attorno a ollama.chat — evita hang notturni."""
+        """Wrapper con timeout (default 200s) attorno a ollama.chat — evita hang notturni.
+        Antepone il contesto operativo (EURI_CONTEXT.md) come messaggio system a tutte le
+        chiamate notturne (sogno, sintesi, contraddizioni, plausibilità). Fail-open: se il
+        file manca, op_ctx è "" e i messaggi restano invariati."""
         timeout = kwargs.pop("_timeout", 200)
+        op_ctx = load_operational_context()
+        if op_ctx and kwargs.get("messages"):
+            kwargs["messages"] = [{"role": "system", "content": op_ctx}, *kwargs["messages"]]
         with ThreadPoolExecutor(max_workers=1) as ex:
             future = ex.submit(dream_client.chat, **kwargs)
             try:

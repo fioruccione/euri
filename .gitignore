@@ -49,3 +49,6 @@ sandbox/
 
 # SSL certificates
 ssl/
+
+# Contesto operativo deployment-specifico (il template è EURI_CONTEXT.example.md)
+EURI_CONTEXT.md
