@@ -41,7 +41,6 @@ from core.memory_manager import MemoryManager
 from core.brain import Brain
 from core.embedder import Embedder
 from core.honesty import scrub_unbacked_save_claim
-from core.wide_recall import is_wide_recall_query, build_wide_recall_map
 from core.ollama_client import chat_client
 from agent.executor import Executor, build_injected_context
 
@@ -579,23 +578,10 @@ class VoiceDaemon:
 
         self.memory.log_conversation("Stefano", text)
         context = self._build_context(text)
-        # Wide recall: SOLO su domande panoramiche/autobiografiche (path SEARCH). Aggiunge
-        # un campione per AREE (≤3 dominio corrente + ≤12 laterali), read-only/touch=False.
-        # NON tocca il retrieval principale: lo affianca.
-        if is_wide_recall_query(text):
-            try:
-                _recent = self.memory.get_recent_memories(limit=1, touch=False)
-                _cur = _recent[0].get("domain") if _recent else None
-                _rows = build_wide_recall_map(self.memory.r, current_domain=_cur)
-                if _rows:
-                    context = (context + "\n\n" if context else "") + (
-                        "[Panoramica per AREE della tua memoria — CAMPIONE rappresentativo, "
-                        "NON esaustivo (non è una scansione completa di Redis). Presenta le aree "
-                        "che conosci e offri di approfondirne una; non dichiarare di sapere tutto.]\n"
-                        + "\n".join(f"- {row}" for row in _rows)
-                    )
-            except Exception as e:
-                logger.debug(f"wide_recall fallito: {e}")
+        # Gradino 2 — strategia di retrieval scelta dal modello caldo (wide/subject), solo
+        # quando la pre-gate cheap sospetta una domanda non-specifica. NON tocca il retrieval
+        # principale: lo affianca. Fail-safe a specific_search.
+        context = self._augment_context_by_strategy(text, context)
         search_hint = (
             "[Modalità ricerca: rispondi alla domanda dell'utente usando "
             "SOLO le informazioni presenti nel contesto sopra. Se le memorie "
@@ -930,6 +916,23 @@ class VoiceDaemon:
 
         return "\n\n".join(sections)
 
+    def _augment_context_by_strategy(self, text: str, context: str) -> str:
+        """
+        Gradino 2: amplia il context secondo la strategia di retrieval scelta dal modello
+        caldo (solo quando la pre-gate cheap sospetta una domanda non-specifica).
+        specific_search/recent_context → context invariato. Fail-safe: su errore, invariato.
+        """
+        try:
+            from core.retrieval_strategy import augment_context
+            with self.brain.history_lock:
+                recent = list(self.brain._conversation_history)
+            context, note = augment_context(text, context, self.memory, self.brain, recent)
+            if note:
+                logger.info(f"Retrieval strategy: {note}")
+        except Exception as e:
+            logger.debug(f"strategy augment fallito: {e}")
+        return context
+
     def _handle_web_search(self, text: str):
         """Cerca sul web, risponde vocalmente, propone di salvare."""
         from core.web_search import is_online, search
@@ -1127,6 +1130,9 @@ class VoiceDaemon:
             return
 
         context = self._build_context(text)
+        # Gradino 2 — strategia di retrieval (wide/subject) sul modello caldo, solo quando la
+        # pre-gate cheap scatta; specific_search → context invariato.
+        context = self._augment_context_by_strategy(text, context)
         context = (context + "\n\n" if context else "") + "[Modalità conversazione: sii presente e naturale, non rigido.]"
         with self._brain_lock:
             reply = self.brain.respond(text, context=context)

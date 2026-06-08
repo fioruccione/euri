@@ -518,6 +518,60 @@ class Brain:
             logger.error(f"Errore resolve_save_intent: {e}")
             return {}
 
+    def classify_retrieval_strategy(self, query: str, recent_history: list[dict] = None) -> dict:
+        """
+        Gradino 2 del controllore di memoria — RUOLO del modello GIÀ CALDO (Gemma realtime).
+        Sceglie la STRATEGIA di retrieval per una domanda; NON genera la risposta. Chiamato
+        solo quando una pre-gate cheap sospetta una domanda non-specifica (vedi
+        core/retrieval_strategy). Ritorna {"strategy","subject","confidence"}:
+          - "specific_search": domanda specifica/fattuale → retrieval attuale, subject "".
+          - "wide_recall"    : panoramica/autobiografica/progetti → campione ampio, subject "".
+          - "subject_recall" : tutto su un soggetto nominato in modo aperto → subject = nome.
+          - "recent_context" : si risolve con la conversazione recente → subject "".
+        {} su errore/parse fallito (→ il chiamante fa fallback a specific_search).
+        """
+        convo = self._format_history_for_save(recent_history)
+        convo_block = f"\nConversazione recente:\n{convo}\n" if convo else ""
+        prompt = (
+            "Classifica che TIPO di recupero memoria serve per la domanda di Stefano. "
+            "NON rispondere alla domanda, scegli solo la strategia.\n\n"
+            f"Domanda: \"{query}\"{convo_block}\n"
+            "Rispondi SOLO con un oggetto JSON, niente altro testo:\n"
+            '{"strategy": "...", "subject": "...", "confidence": 0.0}\n\n'
+            "strategy può essere:\n"
+            "- \"specific_search\": domanda specifica/fattuale (es. 'quanto pesa il Poseidon?', "
+            "'quando scade la commessa') → basta il recupero mirato. subject = \"\".\n"
+            "- \"wide_recall\": panoramica o autobiografica (es. 'cosa sai di me', 'che "
+            "progetti conosci', 'fammi una panoramica') → serve un campione ampio. subject = \"\".\n"
+            "- \"subject_recall\": vuole TUTTO su un SOGGETTO nominato in modo aperto (es. "
+            "'parlami di Poseidon', 'cosa sai del macinato Seari') → subject = il nome del "
+            "soggetto (es. 'Poseidon', 'macinato Seari').\n"
+            "- \"recent_context\": si risolve con ciò che vi siete detti POCO FA (es. "
+            "'ricapitola', 'cosa stavamo dicendo') → subject = \"\".\n\n"
+            "Distingui bene: 'quanto pesa il Poseidon?' è specific_search (un dato preciso), "
+            "'parlami di Poseidon' è subject_recall (tutto sul soggetto).\n"
+            "confidence: da 0 a 1, quanto sei sicuro."
+        )
+        try:
+            response = chat_client.chat(
+                model=config.OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.1, "num_predict": 2000},
+                think=True,
+            )
+            raw = self._clean(response.message.content or "").strip()
+            data = self._extract_json(raw)
+            if not data:
+                return {}
+            return {
+                "strategy": str(data.get("strategy", "")).strip().lower(),
+                "subject": str(data.get("subject", "")).strip(),
+                "confidence": data.get("confidence", 0.0),
+            }
+        except Exception as e:
+            logger.error(f"Errore classify_retrieval_strategy: {e}")
+            return {}
+
     def evaluate_memory_relevance(self, content: str) -> str:
         """
         Death-row gate: valuta se una memoria in scadenza vale ancora la pena conservare.
