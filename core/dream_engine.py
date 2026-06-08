@@ -11,6 +11,8 @@ Simula il processo di consolidamento della memoria umana:
 import time
 import threading
 import uuid
+import json
+import hashlib
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from loguru import logger
@@ -124,7 +126,11 @@ class DreamEngine:
             # 4b. Loop 2g: Audit di Coerenza — analizza le correzioni ricevute durante il giorno
             self._audit_corrections_pass()
 
-            # 4c. Loop 2h: Self-Observation — narrative di evoluzione dalle coppie superseded.
+            # 4c. Plausibility gate — flag-only: segnala fatti tecnici fisicamente/chimicamente
+            # implausibili senza correggere né cancellare. Usa Qwen già caldo nel ciclo dream.
+            self._plausibility_gate_pass()
+
+            # 4d. Loop 2h: Self-Observation — narrative di evoluzione dalle coppie superseded.
             # Additivo: NON modifica il Loop 2f (che continua a fare superseded_by), aggiunge
             # solo una voce narrativa in prima persona per ogni evoluzione mai raccontata prima.
             if self._self_observation:
@@ -896,6 +902,152 @@ Rispondi SOLO con una di queste tre parole: BAD_MEMORY, BAD_REASONING, AMBIGUOUS
 
         except Exception as e:
             logger.error(f"Errore Loop 2g audit corrections: {e}")
+
+    # ── Plausibility Gate: flag-only su fatti tecnici ──────────────────────
+
+    def _llm_plausibility_check(self, content: str, domain: str) -> dict:
+        """
+        Chiede al modello notturno già caldo se una memoria tecnica contiene un fatto
+        fisicamente/chimicamente/tecnicamente implausibile. Non corregge: produce solo un
+        giudizio strutturato che il pass userà come soft flag.
+        """
+        prompt = f"""\
+Valuta la plausibilità tecnica della seguente memoria di Euri.
+
+Dominio: {domain}
+Memoria: "{content[:700]}"
+
+Regole:
+- Devi segnalare SOLO impossibilità tecniche/chimiche/fisiche chiare o sospetti forti.
+- NON correggere conoscenza pratica di Stefano solo perché è insolita o non scolastica.
+- Se il dato può essere vero in un contesto industriale, anche se raro, considera PLAUSIBILE.
+- Se manca contesto, usa INCERTO.
+- Esempio di IMPOSSIBILE: "bicarbonato di calcio" usato come filler minerale solido in compound polimerici.
+- Esempio da NON bocciare automaticamente: additivi, blend o scelte di processo insolite ma industrialmente possibili.
+
+Rispondi SOLO con JSON valido:
+{{"verdict":"plausible|suspicious|impossible|uncertain","confidence":0.0,"reason":"breve motivo"}}"""
+        try:
+            response = self._ollama_chat(
+                model=config.DREAM_OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0, "num_predict": 300},
+                think=False,
+                _timeout=90,
+            )
+            raw = (response.message.content or "").strip()
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start == -1 or end == -1 or end <= start:
+                return {}
+            data = json.loads(raw[start:end + 1])
+            if not isinstance(data, dict):
+                return {}
+            return {
+                "verdict": str(data.get("verdict", "")).strip().lower(),
+                "confidence": data.get("confidence", 0.0),
+                "reason": str(data.get("reason", "")).strip(),
+            }
+        except Exception as e:
+            logger.debug(f"Plausibility gate: errore LLM check — {e}")
+            return {}
+
+    def _plausibility_gate_pass(self):
+        """
+        Plausibility gate — flag-only.
+
+        Cerca poche memorie tecniche/numeriche non ancora controllate e chiede al modello
+        notturno se contengono impossibilità oggettive. Non modifica il contenuto, non
+        supersede, non cancella: alza plausibility_flag + audit_flag solo ad alta confidenza.
+
+        Questo colma il buco emerso dal caso 332e18b6: Qwen sa che il bicarbonato di calcio
+        non è un filler minerale solido, ma nessun loop glielo chiedeva.
+        """
+        CHECKED_KEY = "euri:plausibility:checked"
+        MAX_PER_CYCLE = 8
+        CONF_FLOOR = 0.82
+        FLAG_VERDICTS = {"impossible", "suspicious"}
+        SKIP_SOURCES = {"web", "reflection", "conversation"}
+
+        try:
+            candidates = []
+            for key in self._r.scan_iter("euri:memory:*"):
+                try:
+                    d = self._r.json().get(key, "$")
+                    if not d:
+                        continue
+                    doc = d[0]
+                    content = (doc.get("content") or "").strip()
+                    if not content:
+                        continue
+                    if doc.get("superseded_by"):
+                        continue
+                    if doc.get("source") in SKIP_SOURCES:
+                        continue
+                    if not doc.get("requires_verification"):
+                        continue
+                    if doc.get("plausibility_flag"):
+                        continue
+                    digest = hashlib.sha1(content.encode("utf-8")).hexdigest()[:12]
+                    checked_id = f"{doc.get('id', '')}:{digest}"
+                    if self._r.sismember(CHECKED_KEY, checked_id):
+                        continue
+                    score = (
+                        int(doc.get("recalled_count") or 0),
+                        float(doc.get("created_at") or 0),
+                    )
+                    candidates.append((score, key, doc, checked_id))
+                except Exception:
+                    continue
+
+            if not candidates:
+                logger.debug("Plausibility gate: nessun candidato tecnico da controllare")
+                return
+
+            # Prima le memorie più richiamate: sono quelle che rischiano di avvelenare il RAG.
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            candidates = candidates[:MAX_PER_CYCLE]
+
+            checked = 0
+            flagged = 0
+            for _score, key, doc, checked_id in candidates:
+                result = self._llm_plausibility_check(
+                    doc.get("content", ""), doc.get("domain", "generale")
+                )
+                self._r.sadd(CHECKED_KEY, checked_id)
+                self._r.expire(CHECKED_KEY, 180 * 86400)
+                checked += 1
+
+                verdict = (result.get("verdict") or "").strip().lower()
+                try:
+                    confidence = float(result.get("confidence", 0.0))
+                except (TypeError, ValueError):
+                    confidence = 0.0
+                reason = (result.get("reason") or "").strip()
+
+                if verdict not in FLAG_VERDICTS or confidence < CONF_FLOOR:
+                    continue
+
+                flag = {
+                    "verdict": verdict,
+                    "confidence": confidence,
+                    "reason": reason[:500],
+                    "checked_at": time.time(),
+                    "source": "plausibility_gate",
+                }
+                self._r.json().set(key, "$.plausibility_flag", flag)
+                self._r.json().set(key, "$.audit_flag", 0, nx=True)
+                self._r.json().numincrby(key, "$.audit_flag", 1)
+                flagged += 1
+                logger.info(
+                    f"Plausibility gate: {doc.get('id', '')[:8]}… → {verdict} "
+                    f"({confidence:.2f}) — {reason[:120]}"
+                )
+
+            logger.info(f"Plausibility gate: {checked} controllate, {flagged} flaggate")
+
+        except Exception as e:
+            logger.error(f"Errore plausibility gate: {e}")
 
     def _cleanup_expired_insights(self):
         """

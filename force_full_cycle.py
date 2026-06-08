@@ -2,8 +2,9 @@
 """
 Force-run di un ciclo Dream Engine completo, senza aspettare l'idle notturno.
 Esegue in ordine: Loop 2b (sogni) → Loop 2c (insight eval) → Loop 2f
-(contraddizioni) → cleanup expired/stale → Loop 2d (pruning) → Loop 2e
-(consolidation, gated 24h ma _consolidation_last_run parte a 0 in fresh init).
+(contraddizioni) → Loop 2g (correzioni) → plausibility gate (flag-only)
+→ cleanup expired/stale → Loop 2d (pruning) → Loop 2e (consolidation,
+gated 24h ma _consolidation_last_run parte a 0 in fresh init).
 
 Stampa snapshot before/after per misurare l'effetto del ciclo.
 
@@ -27,6 +28,7 @@ def snapshot(r):
     by_source = Counter()
     superseded = 0
     audit_flagged = 0
+    plausibility_flagged = 0
     for key in r.scan_iter("euri:memory:*"):
         try:
             data = r.json().get(key, "$")
@@ -38,6 +40,8 @@ def snapshot(r):
                 superseded += 1
             if doc.get("audit_flag", 0) > 0:
                 audit_flagged += 1
+            if doc.get("plausibility_flag"):
+                plausibility_flagged += 1
         except Exception:
             pass
 
@@ -69,14 +73,15 @@ def snapshot(r):
         except Exception:
             pass
 
-    return dict(by_source), superseded, candidates, promoted, audit_flagged, dict(corr)
+    return dict(by_source), superseded, candidates, promoted, audit_flagged, plausibility_flagged, dict(corr)
 
 
-def _print_state(by_src, sup, cand, prom, audit_flagged, corr):
+def _print_state(by_src, sup, cand, prom, audit_flagged, plausibility_flagged, corr):
     for src, n in sorted(by_src.items(), key=lambda x: -x[1]):
         print(f"  {src:<18} {n:>4}")
     print(f"  superseded_by:     {sup}")
     print(f"  audit_flagged:     {audit_flagged}")
+    print(f"  plausibility_flag: {plausibility_flagged}")
     print(f"  insight candidate: {cand}")
     print(f"  insight promoted:  {prom}")
     if corr:
@@ -128,8 +133,8 @@ def main():
         print()
 
     print("── Stato PRIMA ─────────────────────────────")
-    by_src_b, sup_b, cand_b, prom_b, af_b, corr_b = snapshot(r)
-    _print_state(by_src_b, sup_b, cand_b, prom_b, af_b, corr_b)
+    by_src_b, sup_b, cand_b, prom_b, af_b, pf_b, corr_b = snapshot(r)
+    _print_state(by_src_b, sup_b, cand_b, prom_b, af_b, pf_b, corr_b)
 
     print("\n── Esecuzione ciclo completo ───────────────")
     t0 = time.time()
@@ -138,7 +143,7 @@ def main():
     print(f"\n✓ Ciclo completato in {elapsed:.1f}s")
 
     print("\n── Stato DOPO ──────────────────────────────")
-    by_src_a, sup_a, cand_a, prom_a, af_a, corr_a = snapshot(r)
+    by_src_a, sup_a, cand_a, prom_a, af_a, pf_a, corr_a = snapshot(r)
     all_sources = sorted(set(by_src_b) | set(by_src_a),
                          key=lambda s: -by_src_a.get(s, 0))
     for src in all_sources:
@@ -147,6 +152,7 @@ def main():
         print(f"  {src:<18} {a:>4}  ({_delta(a, b)})")
     print(f"  superseded_by:     {sup_a}  ({_delta(sup_a, sup_b)})")
     print(f"  audit_flagged:     {af_a}  ({_delta(af_a, af_b)})")
+    print(f"  plausibility_flag: {pf_a}  ({_delta(pf_a, pf_b)})")
     print(f"  insight candidate: {cand_a}  ({_delta(cand_a, cand_b)})")
     print(f"  insight promoted:  {prom_a}  ({_delta(prom_a, prom_b)})")
     if corr_a or corr_b:
