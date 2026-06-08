@@ -3,6 +3,7 @@ Interfaccia con Ollama.
 Interviene per: generazione risposte naturali, comprensione complessa, disambiguazione.
 """
 import re
+import json
 import time
 import threading
 from loguru import logger
@@ -422,6 +423,100 @@ class Brain:
         except Exception as e:
             logger.error(f"Errore merge_memories: {e}")
             return "DIVERSO"
+
+    @staticmethod
+    def _format_history_for_save(recent_history: list[dict], max_msgs: int = 16) -> str:
+        """Formatta gli ultimi scambi (ruolo→nome) per il risolutore SAVE. Vuoto se assente."""
+        if not recent_history:
+            return ""
+        lines = []
+        for m in recent_history[-max_msgs:]:
+            content = (m.get("content") or "").strip()
+            if not content:
+                continue
+            who = "Stefano" if m.get("role") == "user" else "Euri"
+            lines.append(f"{who}: {content}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _extract_json(raw: str) -> dict:
+        """Estrae il primo oggetto JSON da un testo (tollera testo attorno). {} se non trovato."""
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except Exception:
+            pass
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return {}
+        try:
+            obj = json.loads(raw[start:end + 1])
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            return {}
+
+    def resolve_save_intent(self, command: str, recent_history: list[dict]) -> dict:
+        """
+        Gradino 1 del controllore di memoria — RUOLO svolto dal modello GIÀ CALDO (Gemma
+        realtime), prima del risolutore a regex in save_service. Decide cosa significa un
+        comando di salvataggio guardando la conversazione recente:
+          - "direct"       : il comando contiene già un fatto completo e autosufficiente
+                             (es. "memorizza che Giovanna è responsabile qualità").
+          - "recent_topic" : il comando rimanda a un SOGGETTO/TEMA discusso poco fa
+                             (es. "ricordati il macinato di Seari") senza contenere i
+                             dettagli → cattura la SOSTANZA dagli scambi, non l'etichetta.
+          - "last_exchange": riferimento anaforico puro ("memorizza questo").
+          - "ask"          : non è chiaro cosa salvare.
+        Ritorna {"mode","memory","confidence"} oppure {} su errore/parse fallito (→ il
+        chiamante fa fallback al comportamento attuale). Vedi [[project_euri_memory_controller]].
+        """
+        convo = self._format_history_for_save(recent_history)
+        if not convo:
+            return {}
+        prompt = (
+            "Stefano ha dato a Euri un comando di salvataggio in memoria.\n\n"
+            f"Comando: \"{command}\"\n\n"
+            f"Conversazione recente (dal più vecchio al più recente):\n{convo}\n\n"
+            "Decidi cosa salvare e rispondi SOLO con un oggetto JSON, niente altro testo:\n"
+            '{"mode": "...", "memory": "...", "confidence": 0.0}\n\n'
+            "mode può essere:\n"
+            "- \"direct\": il comando contiene GIÀ un fatto completo e autosufficiente. "
+            "memory = quel fatto, ripulito.\n"
+            "- \"recent_topic\": il comando rimanda a un SOGGETTO o TEMA discusso negli "
+            "scambi qui sopra (es. 'ricordati il macinato di Seari'), senza contenere lui "
+            "stesso i dettagli. memory = una memoria pulita e densa che cattura la SOSTANZA "
+            "di ciò che è stato detto su quel soggetto nella conversazione (NON solo "
+            "l'etichetta o il nome).\n"
+            "- \"last_exchange\": riferimento puramente anaforico ('memorizza questo', "
+            "'segnati quanto detto'). memory = sintesi del fatto emerso nell'ultimo scambio.\n"
+            "- \"ask\": non è chiaro cosa salvare. memory = \"\".\n\n"
+            "Per memory: italiano, conciso (max 3-4 frasi), SOLO fatti concreti. Fonte "
+            "primaria: ciò che afferma Stefano; la conversazione serve a recuperare i "
+            "dettagli del soggetto. NON includere preamboli, meta-commenti o spiegazioni sul "
+            "salvataggio.\n"
+            "confidence: da 0 a 1, quanto sei sicuro della scelta di mode e del contenuto."
+        )
+        try:
+            response = chat_client.chat(
+                model=config.OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.2, "num_predict": 3000},
+                think=True,
+            )
+            raw = self._clean(response.message.content or "").strip()
+            data = self._extract_json(raw)
+            if not data:
+                return {}
+            return {
+                "mode": str(data.get("mode", "")).strip().lower(),
+                "memory": str(data.get("memory", "")).strip(),
+                "confidence": data.get("confidence", 0.0),
+            }
+        except Exception as e:
+            logger.error(f"Errore resolve_save_intent: {e}")
+            return {}
 
     def evaluate_memory_relevance(self, content: str) -> str:
         """

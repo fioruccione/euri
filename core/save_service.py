@@ -37,6 +37,7 @@ _META_SAVE_REF = re.compile(
 
 _MIN_FACT_LEN = 12        # sotto questa lunghezza un testo è un frammento, non un fatto
 _SIM_MERGE_FLOOR = 0.70   # ≥ → zona di fusione costruttiva (tutto: niente gate cieco); sotto → memoria nuova
+_SAVE_CONFIDENCE_FLOOR = 0.6  # sotto → il risolutore semantico cede al fallback a regex
 
 
 def _norm(s: str) -> str:
@@ -58,12 +59,50 @@ def _content_before_trigger(text: str, triggers: list[str]) -> str:
     return ""
 
 
-def _resolve_content(text: str, brain, prev_user_text: str, prev_assistant_text: str, fresh: bool):
+def _resolve_content_semantic(text: str, brain, recent_history):
+    """
+    Gradino 1 del controllore di memoria: risolutore SAVE semantico sul modello GIÀ CALDO.
+    Prima del resolver a regex, capisce se il comando è un fatto diretto, un riferimento a
+    un soggetto discusso poco fa ("ricordati il macinato di Seari" → cattura la sostanza,
+    non l'etichetta) o un anaforico puro. Ritorna (content|None, kind) come _resolve_content,
+    oppure None per CEDERE al fallback a regex (assenza history, errore, parse fallito,
+    confidence bassa, mode sconosciuto). Vedi [[feedback_insegnamento_naturale]].
+    """
+    if not recent_history or not hasattr(brain, "resolve_save_intent"):
+        return None
+    res = brain.resolve_save_intent(text, recent_history)
+    if not isinstance(res, dict) or not res:
+        return None
+    mode = (res.get("mode") or "").strip().lower()
+    memory = (res.get("memory") or "").strip()
+    try:
+        conf = float(res.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        conf = 0.0
+    if conf < _SAVE_CONFIDENCE_FLOOR:
+        return None
+    # 'direct' passa dal Buttafuori a valle; 'recent_topic'/'last_exchange' sono già
+    # sintesi pulite del modello → trattati come 'mix' (niente Buttafuori).
+    if mode == "direct" and len(memory) >= _MIN_FACT_LEN:
+        return memory, "direct"
+    if mode in ("recent_topic", "last_exchange") and len(memory) >= 3:
+        return memory, "mix"
+    if mode == "ask":
+        return None, "ask"
+    return None  # mode/memory inutilizzabili → fallback a regex
+
+
+def _resolve_content(text: str, brain, prev_user_text: str, prev_assistant_text: str,
+                     fresh: bool, recent_history=None):
     """
     Determina COSA salvare. Ritorna (content|None, kind) dove kind ∈
     {'direct','pre','mix','ask','fail'}. 'direct'/'pre' vanno ripuliti dal Buttafuori;
     'mix' è già una sintesi.
+    Prima prova il risolutore semantico (Gradino 1); se cede (None) si usa la regex.
     """
+    sem = _resolve_content_semantic(text, brain, recent_history)
+    if sem is not None:
+        return sem
     after = extract_content_after_trigger(text, SAVE_MEMORY_TRIGGERS)
     # A) fatto in chiaro dopo il trigger ("memorizza che X")
     if after and not is_anaphoric(after):
@@ -127,13 +166,16 @@ def save_memory_command(
     prev_user_text: str = "",
     prev_assistant_text: str = "",
     fresh: bool = True,
+    recent_history=None,
 ) -> dict:
     """
     Esegue SAVE_MEMORY in modo channel-agnostic a partire dal comando completo `text`.
     Ritorna {'saved': bool, 'merged': bool, 'reply': str, 'content': str|None}.
     Il chiamante parla/stampa 'reply' e, se 'saved', logga la conversazione.
+    `recent_history` (lista di {role,content}) abilita il risolutore semantico Gradino 1.
     """
-    content, kind = _resolve_content(text, brain, prev_user_text, prev_assistant_text, fresh)
+    content, kind = _resolve_content(text, brain, prev_user_text, prev_assistant_text,
+                                     fresh, recent_history)
     if content is None:
         reply = "Cosa devo ricordare?" if kind == "ask" else "Non sono riuscito a capire cosa salvare."
         return {"saved": False, "merged": False, "reply": reply, "content": None}

@@ -602,10 +602,17 @@ with main_col:
                                     prev_user = _m["content"]
                                 if prev_user and prev_assist:
                                     break
+                            # History recente per il risolutore SAVE semantico (Gradino 1):
+                            # escludo il "memorizza…" corrente (messages[-1]).
+                            recent_history = [
+                                {"role": _m["role"], "content": _m["content"]}
+                                for _m in st.session_state.messages[:-1]
+                            ]
                             save_res = save_memory_command(
                                 prompt, memory_manager, brain,
                                 prev_user_text=prev_user, prev_assistant_text=prev_assist,
                                 fresh=True,
+                                recent_history=recent_history,
                             )
 
                     if tool_res is not None:

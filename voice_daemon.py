@@ -419,11 +419,17 @@ class VoiceDaemon:
         # Vedi [[project_euri_save_anaforico]].
         fresh = bool(self._last_speech_content
                      and time.time() - self._last_speech_ts < 300)
+        # Snapshot della conversazione recente per il risolutore SAVE semantico (Gradino 1):
+        # serve a catturare la SOSTANZA di un soggetto discusso ("ricordati il macinato di
+        # Seari"), non solo l'ultimo scambio. Vedi [[feedback_insegnamento_naturale]].
+        with self.brain.history_lock:
+            recent_history = list(self.brain._conversation_history)
         result = save_memory_command(
             text, self.memory, self.brain,
             prev_user_text=self._last_user_text or "",
             prev_assistant_text=self._last_speech_content or "",
             fresh=fresh,
+            recent_history=recent_history,
         )
         if result["saved"]:
             self.memory.log_conversation("Stefano", text)
