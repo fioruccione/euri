@@ -133,9 +133,11 @@ class DreamEngine:
             # 4b. Loop 2g: Audit di Coerenza — analizza le correzioni ricevute durante il giorno
             self._audit_corrections_pass()
 
-            # 4c. Plausibility gate — flag-only: segnala fatti tecnici fisicamente/chimicamente
-            # implausibili senza correggere né cancellare. Usa Qwen già caldo nel ciclo dream.
-            self._plausibility_gate_pass()
+            # 4c. Plausibility gate — ARCHIVIATO (kill-switch off, codice lasciato in repo).
+            # Negative result: 1 vero positivo / 3 falsi positivi su gemme di dominio vere,
+            # anche col contesto operativo attivo → non chiamato di default. Vedi changelog.
+            if config.PLAUSIBILITY_GATE_ENABLED:
+                self._plausibility_gate_pass()
 
             # 4d. Loop 2h: Self-Observation — narrative di evoluzione dalle coppie superseded.
             # Additivo: NON modifica il Loop 2f (che continua a fare superseded_by), aggiunge

@@ -280,3 +280,8 @@ CODE_RUNNER_TOOL_TIMEOUT = 180     # secondi max per l'intero ciclo CodeRunner
 #   (c) Embedder dedicato all'intent o e5-large su GPU
 TOOL_VECTORSET_ENABLED = False
 TOOL_VECTORSET_THRESHOLD = 0.85
+
+# Plausibility gate — ARCHIVIATO 08/06/2026 (kill-switch off, codice in repo).
+# Negative result: 1 vero positivo / 3 falsi positivi su gemme di dominio vere, anche col
+# contesto operativo attivo. Vedi changelog V2.19 e [[project_euri_plausibility_gate]].
+PLAUSIBILITY_GATE_ENABLED = False
