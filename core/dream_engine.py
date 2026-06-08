@@ -905,6 +905,22 @@ Rispondi SOLO con una di queste tre parole: BAD_MEMORY, BAD_REASONING, AMBIGUOUS
 
     # ── Plausibility Gate: flag-only su fatti tecnici ──────────────────────
 
+    # Soglie di flag per verdetto: 'impossible' richiede alta confidenza; 'suspicious' una
+    # soglia più bassa, perché su memorie tecniche stringate il modello resta cauto anche su
+    # errori reali (caso 332e18b6: 'bicarbonato di calcio' → suspicious 0.70). Sempre flag-only.
+    _PLAUSIBILITY_FLOORS = {"impossible": 0.82, "suspicious": 0.70}
+
+    @classmethod
+    def _plausibility_should_flag(cls, verdict: str, confidence) -> bool:
+        """True se (verdetto, confidenza) supera la soglia di flag per quel verdetto.
+        Unico punto di verità della regola — usato dal pass e dal test, niente drift."""
+        floor = cls._PLAUSIBILITY_FLOORS.get((verdict or "").strip().lower())
+        try:
+            conf = float(confidence)
+        except (TypeError, ValueError):
+            conf = 0.0
+        return floor is not None and conf >= floor
+
     def _llm_plausibility_check(self, content: str, domain: str) -> dict:
         """
         Chiede al modello notturno già caldo se una memoria tecnica contiene un fatto
@@ -965,8 +981,6 @@ Rispondi SOLO con JSON valido:
         """
         CHECKED_KEY = "euri:plausibility:checked"
         MAX_PER_CYCLE = 8
-        CONF_FLOOR = 0.82
-        FLAG_VERDICTS = {"impossible", "suspicious"}
         SKIP_SOURCES = {"web", "reflection", "conversation"}
 
         try:
@@ -1025,7 +1039,7 @@ Rispondi SOLO con JSON valido:
                     confidence = 0.0
                 reason = (result.get("reason") or "").strip()
 
-                if verdict not in FLAG_VERDICTS or confidence < CONF_FLOOR:
+                if not self._plausibility_should_flag(verdict, confidence):
                     continue
 
                 flag = {
