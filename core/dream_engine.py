@@ -1074,6 +1074,56 @@ Rispondi SOLO con una di queste tre parole: BAD_MEMORY, BAD_REASONING, AMBIGUOUS
 
     # ── Loop 2e: Memory Consolidation ─────────────────────────────────────────
 
+    def _same_subject_gate(self, cluster: list[dict], domain: str, seed_id: str = "") -> list[dict]:
+        """
+        GATE prima della sintesi Loop 2e (D incrementale): tiene solo i frammenti che
+        parlano dello STESSO soggetto del seed, per non consolidare entità distinte in un
+        unico nodo (caso Poseidon↔Gamma: pallet a iniezione fuso con linea di estrusione).
+        Filtra l'INPUT della sintesi → anche consolidated_from risulta coerente. Usa il
+        modello notturno GIÀ CALDO (dream_client via _ollama_chat): niente secondo modello,
+        niente swap. Fail-open: su errore/risposta ambigua ritorna il cluster invariato.
+
+        Il frammento 1 è SEMPRE il seed: il cluster viene riordinato col seed in testa (sort
+        stabile), così non si dipende dall'ordine KNN. seed_id vuoto → ordine invariato.
+        """
+        ordered = sorted(cluster, key=lambda d: d.get("id") != seed_id) if seed_id else list(cluster)
+        items = ordered[:5]
+        if len(items) < 2:
+            return cluster
+        import re as _re
+        listing = "\n".join(
+            f"{i+1}. {(it.get('content') or '').strip()[:200]}" for i, it in enumerate(items)
+        )
+        prompt = (
+            f"Frammenti di memoria nel dominio \"{domain}\":\n{listing}\n\n"
+            f"Il frammento 1 fissa il SOGGETTO. Quali frammenti parlano dello STESSO "
+            f"soggetto/entità del frammento 1? Escludi quelli su entità diverse, anche se "
+            f"correlate (es. un prodotto vs un impianto diverso).\n"
+            f"Rispondi SOLO con gli indici da TENERE separati da virgola (includi sempre 1). "
+            f"Esempio: 1,3"
+        )
+        try:
+            resp = self._ollama_chat(
+                model=config.DREAM_OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0, "num_predict": 20},
+                think=False,
+                _timeout=60,
+            )
+            out = _re.sub(r"<think>.*?</think>", "", resp.message.content or "", flags=_re.DOTALL)
+            idxs = {int(n) for n in _re.findall(r"\d+", out)}
+            keep = [items[i - 1] for i in sorted(idxs) if 1 <= i <= len(items)]
+            # Fail-open: risposta vuota o che esclude il seed → non filtrare.
+            if not keep or 1 not in idxs:
+                return cluster
+            if len(keep) < len(items):
+                dropped = len(items) - len(keep)
+                logger.info(f"Loop 2e gate: {dropped} frammento/i di soggetto diverso esclusi dal consolidamento")
+            return keep
+        except Exception as e:
+            logger.debug(f"Loop 2e same-subject gate fallito (fail-open): {e}")
+            return cluster
+
     def _consolidation_pass(self):
         """
         Loop 2e — Consolidamento semantico delle memorie.
@@ -1172,6 +1222,13 @@ Rispondi SOLO con una di queste tre parole: BAD_MEMORY, BAD_REASONING, AMBIGUOUS
                         qd = qualified_by_id[did]
                         cluster.append({"id": did, "content": qd.get("content", "")})
 
+                if len(cluster) < MIN_CLUSTER:
+                    continue
+
+                # 3b. GATE same-subject PRIMA della sintesi: filtra i frammenti che non
+                # parlano dello stesso soggetto del seed (anti-conflazione Poseidon↔Gamma).
+                # Così fingerprint, consolidated_from e sintesi usano solo i coerenti.
+                cluster = self._same_subject_gate(cluster, seed_domain, seed_id)
                 if len(cluster) < MIN_CLUSTER:
                     continue
 
