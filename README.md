@@ -199,6 +199,16 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 
 ## Changelog
 
+### V2.19 (continua, 09/06/2026) — Richiamo temporale: la memoria vissuta prima dei pensieri riflessivi
+
+Caso reale: a *"di cosa parlavamo ieri?"* Euri rispondeva con vecchi temi Wi-Fi/Superbike invece del diario reale della giornata (macinato Seari, correzione carbonato, paraurti, Poseidon). Causa: le **reflection** serali dei loop notturni (recenti e auto-rinforzate via `recalled_count`) **out-rankavano gli episodi vissuti**; aggravante, i nodi `loop2e` hanno `created_at` = ora del *consolidamento*, non dell'evento, quindi un consolidato stampato ieri sera che raccoglie vecchi ricordi sembrava "di ieri".
+
+- **Distinzione vissuto / riflessivo nel retrieval temporale** (commit `8004092`). Quando la query contiene un riferimento di tempo (`extract_temporal_range`: "ieri", "oggi", "stamattina", "N giorni fa", giorno della settimana, **date esatte**), `core/temporal_recall.prioritize_window` ordina la finestra in tre livelli: **diario parlato** (`user/passive/episode/teach`, `created_at` ≈ quando è stato detto) → **consolidazioni** (`loop2e`) → **reflection/altro** in coda e cappati. `_build_context` prende la finestra dell'**intera giornata** (non i soli N più recenti, che pendono verso le reflection serali), sopprime la sezione "Sintesi recenti" generica sulle query temporali e allarga il cap di display a 10 (una domanda-diario merita più contesto).
+- **Additivo e isolato:** nessun effetto quando non c'è un riferimento temporale; non cancella reflection, non tocca i loop.
+- **Verificato in produzione:** su *"di cosa parlavamo ieri?"* il RAG context è passato da 5/6 reflection telecomunicazioni → il diario reale (`user:Seari`, `passive:carbonato`, simulazione, paraurti, portiere, `loop2e:Poseidon`); nodi Wi-Fi/telecom nel top da 5 a 1. Euri ha richiamato il contenuto giusto, **carbonato** incluso (non più "bicarbonato").
+- **Significato:** Euri ha **memoria vissuta** e **memoria riflessiva**, ma non devono pesare uguale a ogni domanda — se chiedi "ieri", guarda il diario di ieri prima dei suoi pensieri su ieri. Distinzione che rafforza l'impianto, non lo snatura.
+- **Parcheggiato (opzione C):** disciplinare a monte la *cascata* di reflection (dedup/TTL/recall più severi) è vero ma più rischioso — tocca il carattere autobiografico — e va affrontato a parte.
+
 ### V2.19 (continua, 08/06/2026) — Plausibility gate: negative result (archiviato) + contesto operativo opzionale
 
 Tentativo di colmare un buco emerso testando i loop: nessun loop confronta il *contenuto* di una memoria con la conoscenza del mondo del modello, quindi un fatto tecnico oggettivamente falso ma mai corretto a voce sopravvive. Caso reale: una memoria riportava "bicarbonato di calcio" tra le cariche minerali — Qwen sa che allo stato solido non esiste (si decompone in CaCO₃ + CO₂ + H₂O), ma nessun loop glielo chiedeva.
