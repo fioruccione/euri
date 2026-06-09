@@ -1555,12 +1555,19 @@ class VoiceDaemon:
                     continue
 
                 expires = _now() + timedelta(days=7)
-                self.memory.save_memory(
+                mid = self.memory.save_memory(
                     reflection,
                     category="riflessione",
                     source="reflection",
                     expires_at=expires,
                 )
+                if mid:
+                    try:
+                        doc = self.r.json().get(f"euri:memory:{mid}", "$")
+                        domain = doc[0].get("domain", "generale") if doc else "generale"
+                        self.memory.supersede_duplicate_reflections(mid, domain, reflection)
+                    except Exception as dedup_err:
+                        logger.debug(f"Loop 2a reflection dedup error: {dedup_err}")
                 logger.info("Loop 2a: reflection salvata silenziosamente")
                 self._consolidation_last_run = time.time()
 

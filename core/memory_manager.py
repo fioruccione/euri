@@ -12,6 +12,7 @@ from loguru import logger
 import redis as redis_lib
 from redis.commands.search.query import Query
 
+import config
 from utils.date_utils import now, to_timestamp, from_timestamp, format_datetime
 from core.domain_gater import assign_domain, domain_aware_search, neighbor_domains
 from utils.obsidian_sync import write_memory
@@ -25,6 +26,9 @@ _TTL_BY_SOURCE: dict[str, int] = {
     "web":          60,   # ricerche web — info può invecchiare
 }
 # Memorie user/teach/obsidian_vault non hanno TTL automatico — non compaiono qui.
+
+# Reflection dedup latest-wins: distanza cosine <= 0.10 equivale a similarita' >= 0.90.
+REFLECTION_DEDUP_MAX_DIST = 0.10
 
 
 class MemoryManager:
@@ -626,6 +630,95 @@ class MemoryManager:
             self.r.json().set(key, "$.superseded_by", new_id)
         except Exception as e:
             logger.debug(f"supersede_memory fallito per {key}: {e}")
+
+    def supersede_duplicate_reflections(
+        self,
+        new_id: str,
+        domain: str,
+        content: str,
+        *,
+        max_supersede: int = 10,
+    ) -> int:
+        """
+        Dedup latest-wins per reflection generate dai loop 2a/2h.
+
+        Dopo aver salvato una nuova reflection, cerca reflection quasi-identiche nello
+        stesso dominio (cosine distance <= REFLECTION_DEDUP_MAX_DIST) e marca le vecchie
+        con superseded_by=new_id. Soft-delete reversibile: niente delete, niente touch,
+        niente modifiche a contenuto/recalled_count/TTL.
+
+        Fail-open: qualsiasi errore ritorna 0, lasciando la nuova reflection salvata.
+        Le note di confronto 2f ("[confronto] ...") sono esplicitamente escluse.
+        """
+        if not new_id or not domain or not content:
+            return 0
+        if content.strip().lower().startswith("[confronto]"):
+            return 0
+        if not (self._embedder and self._embedder.available):
+            return 0
+
+        try:
+            vec = self._embedder.encode(content, mode="query")
+            if vec is None:
+                return 0
+
+            raw_r = redis_lib.Redis(
+                host=config.REDIS_HOST, port=config.REDIS_PORT,
+                db=config.REDIS_DB, decode_responses=False,
+            )
+            safe_domain = domain.replace(" ", "\\ ")
+            k = max(max_supersede + 5, 12)
+            q = (
+                Query(
+                    f"(@domain:{{{safe_domain}}} @source:{{reflection}})"
+                    f"=>[KNN {k} @embedding $vec AS dup_score]"
+                )
+                .sort_by("dup_score")
+                .return_fields("id", "dup_score")
+                .dialect(2)
+            )
+            res = raw_r.ft("idx:memories").search(
+                q, query_params={"vec": vec.astype("float32").tobytes()}
+            )
+
+            superseded = 0
+            for doc in res.docs:
+                raw_id = doc.id.decode() if isinstance(doc.id, bytes) else str(doc.id)
+                old_id = raw_id.replace("euri:memory:", "")
+                if old_id == new_id:
+                    continue
+
+                raw_score = getattr(doc, "dup_score", b"1.0")
+                dist = float(raw_score.decode() if isinstance(raw_score, bytes) else raw_score)
+                if dist > REFLECTION_DEDUP_MAX_DIST:
+                    continue
+
+                old_key = f"euri:memory:{old_id}"
+                old_raw = self.r.json().get(old_key, "$")
+                if not old_raw:
+                    continue
+                old_doc = old_raw[0]
+                if old_doc.get("superseded_by"):
+                    continue
+                if old_doc.get("source") != "reflection":
+                    continue
+                if (old_doc.get("content") or "").strip().lower().startswith("[confronto]"):
+                    continue
+
+                self.supersede_memory(old_id, new_id)
+                superseded += 1
+                if superseded >= max_supersede:
+                    break
+
+            if superseded:
+                logger.info(
+                    f"Reflection dedup (latest-wins): {superseded} soppiantate "
+                    f"(dominio {domain})"
+                )
+            return superseded
+        except Exception as e:
+            logger.debug(f"Reflection dedup latest-wins fallito: {e}")
+            return 0
 
     @staticmethod
     def _llm_is_same_content(a: str, b: str) -> bool:

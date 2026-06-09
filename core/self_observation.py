@@ -199,12 +199,20 @@ class SelfObservation:
         for p in pairs[:5]:
             tags.append(f"pair:{p['pair_key'][:16]}")
 
-        return self._memory.save_memory(
+        mid = self._memory.save_memory(
             content=content,
             category="meta",
             source="reflection",
             tags=tags,
         )
+        if mid:
+            try:
+                doc = self._r.json().get(f"euri:memory:{mid}", "$")
+                domain = doc[0].get("domain", "generale") if doc else "generale"
+                self._memory.supersede_duplicate_reflections(mid, domain, content)
+            except Exception as e:
+                logger.debug(f"Loop 2h reflection dedup error: {e}")
+        return mid
 
     def _mark_narrated(self, pairs: list[dict]) -> None:
         """Aggiunge le pair_key al set NARRATED, con refresh TTL."""
