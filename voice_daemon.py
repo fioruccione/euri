@@ -841,6 +841,7 @@ class VoiceDaemon:
     def _build_context(self, text: str) -> str:
         """Cerca in Redis contenuto rilevante da iniettare come contesto nella risposta."""
         from utils.temporal import extract_temporal_range
+        from core.temporal_recall import prioritize_window
         source_filter = config.DEMO_CONTEXT_SOURCES if config.DEMO_MODE else None
 
         # Reflections da Loop 2a — solo fuori DEMO_MODE (source=reflection non è in DEMO_CONTEXT_SOURCES)
@@ -853,15 +854,31 @@ class VoiceDaemon:
         seen_ids = {r.get("id") for r in results}
 
         # Ricerca temporale: se la query contiene "ieri", "5 maggio", "lunedì" ecc.
-        # le memorie di quel periodo vengono aggiunte in cima ai risultati.
+        # Su una domanda con riferimento di tempo, il DIARIO vissuto della finestra
+        # (user/passive/episode/teach/loop2e) viene PRIMA dei pensieri riflessivi su quel
+        # periodo: finestra ampia + prioritize_window mette le fonti vissute in testa e le
+        # reflection in coda. Cura il caso "cosa abbiamo fatto ieri?" in cui le reflection
+        # recenti e auto-rinforzate coprivano il diario. Nessun effetto senza riferimento
+        # temporale.
         time_range = extract_temporal_range(text, now())
         if time_range:
             ts_start, ts_end = time_range
-            time_mems = self.memory.search_memories_by_timerange(ts_start, ts_end, limit=5)
-            for r in reversed(time_mems):
-                if r.get("id") not in seen_ids:
-                    results.insert(0, r)
-                    seen_ids.add(r.get("id"))
+            # limit alto: la finestra deve coprire TUTTA la giornata, non i soli N più
+            # recenti (che pendono verso le reflection serali). prioritize_window poi sceglie.
+            window = self.memory.search_memories_by_timerange(ts_start, ts_end, limit=200)
+            merged = []
+            merged_seen = set()
+            for r in prioritize_window(window) + results:
+                rid = r.get("id")
+                if rid not in merged_seen:
+                    merged.append(r)
+                    merged_seen.add(rid)
+            results = merged
+            seen_ids = merged_seen
+            # Niente sezione "Sintesi recenti" generica sulle query temporali: sono proprio
+            # le reflection auto-rinforzate che coprivano il diario. Le reflection in-finestra
+            # restano ammesse, ma in coda a results (prioritize_window le limita).
+            reflection_lines = []
 
         words = re.findall(
             r'\b[a-zA-ZàáâãäåèéêëìíîïòóôõöùúûüÀÁÂÃÄÅÈÉÊËÌÍÎÏÒÓÔÕÖÙÚÛÜ]{4,}\b', text
@@ -887,11 +904,14 @@ class VoiceDaemon:
                 insight_lines.append(f"- [{dom_a} ↔ {dom_b}] {ins['content']}")
 
         sections = []
+        # Query temporale ("cosa abbiamo fatto ieri"): fetta di diario più ampia (10 vs 6),
+        # così oltre al parlato emergono anche le consolidazioni della giornata.
+        mem_cap = 10 if time_range else 6
         if reflection_lines:
             sections.append("Sintesi recenti:\n" + "\n".join(reflection_lines))
         if results:
             mem_lines = []
-            for r in results[:6]:
+            for r in results[:mem_cap]:
                 age = self._relative_time(r.get("created_at"))
                 label = f"[{r.get('domain', 'generale')} | {age}]" if age else f"[{r.get('domain', 'generale')}]"
                 suffix = " [DATO NON VERIFICATO — contiene valori numerici]" if r.get("requires_verification") else ""
@@ -904,13 +924,13 @@ class VoiceDaemon:
         if results:
             node_tags = [
                 f"{r.get('source','?')}:{r.get('domain','?')}({r.get('id','')[:8]})"
-                for r in results[:6]
+                for r in results[:mem_cap]
             ]
             logger.info(f"RAG ctx [{len(results)} nodi]: {' | '.join(node_tags)}")
 
         # Audit di Coerenza: registra ID per analisi notturna di eventuali correzioni
         try:
-            self.memory.set_last_rag_ctx([r.get("id") for r in results[:6] if r.get("id")])
+            self.memory.set_last_rag_ctx([r.get("id") for r in results[:mem_cap] if r.get("id")])
         except Exception as e:
             logger.debug(f"set_last_rag_ctx fallito: {e}")
 
