@@ -46,10 +46,13 @@ oggi?" (finestra popolata): **9 slot di testa su 9 identici, stesso ordine**; la
 temporale guadagna solo +1 nodo semantico in coda (slot 10, prima vuoto). Nessuna
 regressione: il diario di `prioritize_window` è a monte e non viene toccato.
 
-## Punto #3 (deep, decisione esplicita pendente)
+## Punto #3 (deep) — RISOLTO (stesso branch, commit isolato)
 
-`recalled_count` viene incrementato anche sui nodi iniettati per recency (non solo
-sui richiami meritati dal match semantico) → droga le statistiche che nutrono Loop
-2e e il lifecycle insight. Fix superficiale (ribilancio slot) ≠ fix profondo
-(distinguere richiamo meritato da iniettato). Scope da decidere con Stefano.
-Vedi [[project_euri_touch_lifecycle_validation]].
+`recalled_count` veniva incrementato anche sui nodi iniettati per recency (non solo
+sui richiami meritati dal match semantico) → drogava le statistiche che nutrono Loop
+2d/2e e il lifecycle insight (caso reale: nodi del ciclo Dream a recalled=6-12 in 30
+min solo perché iniettati ogni turno). Fix: in `_build_context` la base recency e le
+reflection "Sintesi recenti" passano a **`touch=False`** (richiamo INIETTATO); restano
+`touch=True` (richiamo MERITATO) solo i match semantici e la finestra temporale
+query-driven. Verificato: la base recency lascia `recalled_count` invariato (0→0).
+Validazione lifecycle a valle: [[project_euri_touch_lifecycle_validation]].

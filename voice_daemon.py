@@ -845,12 +845,22 @@ class VoiceDaemon:
         source_filter = config.DEMO_CONTEXT_SOURCES if config.DEMO_MODE else None
 
         # Reflections da Loop 2a — solo fuori DEMO_MODE (source=reflection non è in DEMO_CONTEXT_SOURCES)
+        # touch=False: iniezione "ambient" a prescindere dalla query → NON è un richiamo
+        # meritato, non deve gonfiare recalled_count (vedi sotto).
         reflection_lines = []
         if not config.DEMO_MODE:
-            for r in self.memory.get_recent_reflections(limit=2):
+            for r in self.memory.get_recent_reflections(limit=2, touch=False):
                 reflection_lines.append(f"- {r['content']}")
 
-        results = self.memory.get_recent_memories(limit=config.RAG_RECENCY_LIMIT, source_filter=source_filter)
+        # Base recency: memorie iniettate per pura recenza, non perché rilevanti alla
+        # query → richiamo INIETTATO, touch=False. Solo i richiami MERITATI (match
+        # semantico più sotto, e finestra temporale query-driven) incrementano
+        # recalled_count, che nutre Loop 2d/2e e il lifecycle insight. Senza questo, la
+        # recency drogava le statistiche di richiamo dei nodi off-topic (caso Eurostampi:
+        # i nodi del ciclo Dream a recalled=6-12 in 30 min solo perché iniettati ogni turno).
+        results = self.memory.get_recent_memories(
+            limit=config.RAG_RECENCY_LIMIT, source_filter=source_filter, touch=False
+        )
         seen_ids = {r.get("id") for r in results}
 
         # Ricerca temporale: se la query contiene "ieri", "5 maggio", "lunedì" ecc.
