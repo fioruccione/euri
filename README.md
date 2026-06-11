@@ -18,7 +18,7 @@ La classificazione dell'intent è a cascata: il layer veloce esaurisce la maggio
 
 **Guard manifatturiero:** se la frase contiene termini chimici/analitici (XRF, talco, MFI, carbonato…) senza termini di sistema espliciti, EXECUTE viene bloccato in entrambi i layer.
 
-> **AdaptiveClassifier (Welford) — sospeso:** con e5-large 1024-dim, il costo di encoding (~400ms) era uguale al LLM fallback, con il rischio aggiuntivo di corruzione dei centroidi per feedback loop su classificazioni errate. Architettura sospesa: il codice è presente ma `ADAPTIVE_CLASSIFIER_ENABLED = False`. Riabilitabile solo con un modello di embedding leggero dedicato all'intent.
+> **AdaptiveClassifier — in ricostruzione (V2: plasticità ancorata):** la versione Welford è sospesa (`ADAPTIVE_CLASSIFIER_ENABLED = False`) — con e5-large 1024-dim l'encoding (~400ms) eguagliava il fallback LLM e i centroidi non erano calibrati (falsi positivi). Limite strutturale più sottile: il **selection bias**, il layer impara solo dalle utterance che *non* sa già classificare (le sole che raggiungono il maestro LLM), derivando verso la coda ambigua. La V2 è un **dimostratore di plasticità ancorata**: per ogni classe un *anchor* congelato + un *delta* vivo col guinzaglio (deriva massima vincolata), embedding statico sub-millisecondo, e un'**omeostasi notturna** — canary set + rollback automatico — che misura e ripristina l'integrità. In corso la **Fase −1**: l'harvest persistente delle etichette del maestro LLM (`euri:aclf:harvest`) accumula il dataset reale su cui costruire e validare, prima di riattivare il fast path.
 
 ### 2. Domain Gating + Ricerca 3-Livelli (RAG Autonomo)
 Tutte le memorie estratte dalle conversazioni vengono lette dall'LLM, che assegna loro automaticamente delle "etichette di dominio" (es. *informatica, chimica, business, casa*). **Dal V2.19** l'assegnazione è **disambiguata dai vicini semantici** (P1): il tagger riceve come suggerimento non vincolante i domini delle memorie più vicine via KNN, evitando che frammenti corti finiscano nel dominio sbagliato (es. *neutro* del polipropilene letto come *fisica nucleare*). Nessun dominio è cablato nel codice — i suggerimenti vengono dalla memoria stessa di Euri, che resta un learner libero e portabile. All'**ingest**, un **Memory Guard** (V2.19) rifiuta dalle fonti non fidate (web) i contenuti con pattern di prompt-injection o esfiltrazione, prima che diventino memoria.
@@ -98,7 +98,7 @@ Un'interfaccia web leggera (`ui/app.py`) per:
 | STT / Trascrizione | faster-whisper `large-v3` (CUDA float16 — NVIDIA RTX 4060 Ti) |
 | TTS / Voce | sherpa-onnx + Piper (`vits-piper-it_IT-paola-medium`) |
 | Embedding | sentence-transformers `intfloat/multilingual-e5-large` (1024-dim, asimmetrico query/passage) |
-| Classificatore Veloce | ~~Welford AdaptiveClassifier~~ — sospeso (vedi sezione 1) |
+| Classificatore Veloce | AdaptiveClassifier V2 (plasticità ancorata) — in ricostruzione, Fase −1 harvest (vedi sezione 1) |
 | Web search | ddgs (DuckDuckGo, no API key) + beautifulsoup4 |
 | Gate visivo | OpenCV Haar cascade (webcam, 2fps) |
 | CodeRunner / Sandbox | subprocess isolato + AST SecurityScanner |
