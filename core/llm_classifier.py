@@ -36,6 +36,43 @@ def set_tool_registry(reg) -> None:
     _tool_registry = reg
 
 
+# ── Harvest etichette (AdaptiveClassifier V2, Fase −1) ─────────────────────
+# Persiste ogni coppia (utterance, label) prodotta dal maestro LLM su uno stream
+# Redis, per TUTTI i rami del fallback: le 6 azioni, il CHAT (l'LLM ha detto
+# "non è azione") e gli hard-negative del guard manifatturiero (EXECUTE vetato →
+# NON è EXECUTE). È il dataset di valutazione della Fase 0, la materia prima del
+# golden set (il residuo regex-CHAT = la distribuzione reale su cui il fast path
+# opererà) e l'inizio del dataset permanente. Indipendente da
+# ADAPTIVE_CLASSIFIER_ENABLED: raccoglie a classificatore spento.
+# Resiliente per costruzione: un errore qui non deve MAI rompere la classificazione.
+_HARVEST_STREAM = "euri:aclf:harvest"
+_harvest_r = None
+_harvest_disabled = False
+
+
+def _harvest(text: str, label: str, elapsed_ms: float, *, tag: str = "") -> None:
+    """Scrive una coppia (utterance, label) del maestro LLM sullo stream harvest."""
+    global _harvest_r, _harvest_disabled
+    if _harvest_disabled or not config.ACLF_HARVEST_ENABLED:
+        return
+    try:
+        if _harvest_r is None:
+            from utils.redis_client import get_client
+            _harvest_r = get_client()
+        _harvest_r.xadd(_HARVEST_STREAM, {
+            "text": text,
+            "label": label,
+            "elapsed_ms": f"{elapsed_ms:.0f}",
+            "channel": "voice",  # l'unico chiamante del fallback LLM oggi (la Silent Chat usa solo regex)
+            "tag": tag,
+            "ts": f"{time.time():.0f}",
+        })
+    except Exception as e:
+        # Mai rompere il routing per un problema di harvest: disattiva e logga.
+        _harvest_disabled = True
+        logger.debug(f"[ACLF_HARVEST] disattivato (errore Redis): {e}")
+
+
 def _clean(text: str) -> str:
     """Rimuove il reasoning interno di Gemma 4 dal content."""
     if not text:
@@ -150,14 +187,23 @@ def llm_fallback_classify(text: str) -> str | None:
         if result in ("WEB_SEARCH", "SEARCH", "SAVE_TODO", "SAVE_MEMORY", "EXECUTE", "COMPLETE"):
             if result == "EXECUTE" and _is_manufacturing_context(text):
                 logger.debug(f"[INTENT_SLOW] EXECUTE LLM bloccato: contesto manifatturiero — '{text[:50]}'")
+                # Ramo 3: hard-negative d'oro per il canary — linguaggio manifatturiero
+                # che NON è EXECUTE (l'LLM diceva EXECUTE, il guard ha vetato).
+                _harvest(text, "CHAT", elapsed_ms, tag="guard_manufacturing")
                 return None
             logger.info(f"[INTENT_SLOW] LLM fallback ({elapsed_ms:.0f}ms): '{text[:50]}' → {result}")
+            # Ramo 1: una delle 6 azioni riconosciute dal maestro.
+            _harvest(text, result, elapsed_ms)
 
             # ── Layer 3: Feedback Loop Welford ──
             if _adaptive_clf is not None and config.ADAPTIVE_CLASSIFIER_ENABLED:
                 _adaptive_clf.update(text, result)
 
             return result
+        # Ramo 2: l'LLM ha risposto ma non è un'azione → CHAT (abstain).
+        # Solo se ha prodotto un token reale: una risposta vuota non è un'etichetta affidabile.
+        if result:
+            _harvest(text, "CHAT", elapsed_ms)
         return None
     except Exception as e:
         logger.debug(f"[INTENT_SLOW] LLM fallback error: {e}")

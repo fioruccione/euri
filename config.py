@@ -59,6 +59,13 @@ ADAPTIVE_CLASSIFIER_ENABLED = False  # disabilitato: e5-large non è calibrato p
 ADAPTIVE_CLASSIFIER_BASE_THRESHOLD = 0.72
 ADAPTIVE_CLASSIFIER_VARIANCE_BETA = 0.3
 
+# AdaptiveClassifier V2 — Fase −1: harvest persistente delle etichette del maestro LLM.
+# Ogni coppia (utterance, label) prodotta dal fallback LLM viene scritta sullo stream
+# euri:aclf:harvest (tre rami: 6 azioni + CHAT + hard-negative del guard manifatturiero).
+# È il dataset di valutazione della Fase 0 e la materia prima del golden set.
+# Indipendente da ADAPTIVE_CLASSIFIER_ENABLED: raccoglie da subito, a classificatore spento.
+ACLF_HARVEST_ENABLED = True
+
 # VAD (silero)
 # Soglia alzata a 0.75 per ridurre falsi positivi col microfono webcam (default 0.5)
 # Abbassare a 0.5 quando si usa il Jabra o un microfono dedicato
