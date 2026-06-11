@@ -81,8 +81,8 @@ def select_context(mem: MemoryManager, text: str):
     """
     provenance: dict[str, str] = {}
 
-    # Base recency (riga 853): le 5 più recenti, a prescindere dal tema.
-    results = mem.get_recent_memories(limit=5, touch=False)
+    # Base recency (riga 853): le più recenti, a prescindere dal tema.
+    results = mem.get_recent_memories(limit=config.RAG_RECENCY_LIMIT, touch=False)
     for r in results:
         provenance[r.get("id")] = "recency"
     seen_ids = {r.get("id") for r in results}
@@ -94,15 +94,19 @@ def select_context(mem: MemoryManager, text: str):
         is_temporal = True
         ts_start, ts_end = time_range
         window = mem.search_memories_by_timerange(ts_start, ts_end, limit=200, touch=False)
+        pw = prioritize_window(window)
         merged, merged_seen = [], set()
-        for r in prioritize_window(window) + results:
+        for r in pw + results:
             rid = r.get("id")
             if rid not in merged_seen:
                 merged.append(r)
                 merged_seen.add(rid)
-                provenance.setdefault(rid, "temporal")
         results = merged
         seen_ids = merged_seen
+        # Provenienza per ORIGINE, non per ordine di assegnazione: un nodo che è sia
+        # nella finestra sia nella base recency è un richiamo della FINESTRA (temporal).
+        for r in pw:
+            provenance[r.get("id")] = "temporal"
 
     # Ramo keyword/semantico (righe 883-896)
     words = re.findall(
@@ -110,7 +114,7 @@ def select_context(mem: MemoryManager, text: str):
     )
     keywords = list(dict.fromkeys(w for w in words if w.lower() not in _STOP_WORDS))
     if keywords:
-        extra = mem.search_memories(text, limit=3, source_filter=None, touch=False)
+        extra = mem.search_memories(text, limit=config.RAG_SEMANTIC_LIMIT, source_filter=None, touch=False)
         for r in extra:
             rid = r.get("id")
             if rid not in seen_ids:
@@ -118,7 +122,7 @@ def select_context(mem: MemoryManager, text: str):
                 seen_ids.add(rid)
                 provenance[rid] = "semantic"
 
-    mem_cap = 10 if is_temporal else 6
+    mem_cap = config.RAG_MEM_CAP_TEMPORAL if is_temporal else config.RAG_MEM_CAP
     return results[:mem_cap], provenance, is_temporal
 
 
@@ -132,9 +136,13 @@ TECH_QUERIES = [
     "Scrivimi una relazione su quello che ci siamo detti da inviare ad Eurostampi.",
 ]
 # Contro-caso (punto #2): DEVONO continuare a funzionare come oggi.
+# "oggi" ha finestra popolata (la conversazione di stamattina) → verifica VERA che
+# il diario vissuto resti in testa (provenance temporal>0). "ieri"/"prima" tenute
+# come casi noti (finestra vuota / "prima" non-temporale): documentano i limiti.
 TEMPORAL_QUERIES = [
-    "di cosa parlavamo prima?",
+    "di cosa abbiamo parlato oggi?",
     "di cosa parlavamo ieri?",
+    "di cosa parlavamo prima?",
 ]
 
 

@@ -850,7 +850,7 @@ class VoiceDaemon:
             for r in self.memory.get_recent_reflections(limit=2):
                 reflection_lines.append(f"- {r['content']}")
 
-        results = self.memory.get_recent_memories(limit=5, source_filter=source_filter)
+        results = self.memory.get_recent_memories(limit=config.RAG_RECENCY_LIMIT, source_filter=source_filter)
         seen_ids = {r.get("id") for r in results}
 
         # Ricerca temporale: se la query contiene "ieri", "5 maggio", "lunedì" ecc.
@@ -887,7 +887,7 @@ class VoiceDaemon:
             w for w in words if w.lower() not in self._STOP_WORDS
         ))
         if keywords:
-            extra_memories = self.memory.search_memories(text, limit=3, source_filter=source_filter)
+            extra_memories = self.memory.search_memories(text, limit=config.RAG_SEMANTIC_LIMIT, source_filter=source_filter)
             kw_query = " | ".join(keywords[:8])
             extra_notes = self.memory.search_notes(kw_query, limit=2)
             for r in extra_memories + extra_notes:
@@ -906,7 +906,7 @@ class VoiceDaemon:
         sections = []
         # Query temporale ("cosa abbiamo fatto ieri"): fetta di diario più ampia (10 vs 6),
         # così oltre al parlato emergono anche le consolidazioni della giornata.
-        mem_cap = 10 if time_range else 6
+        mem_cap = config.RAG_MEM_CAP_TEMPORAL if time_range else config.RAG_MEM_CAP
         if reflection_lines:
             sections.append("Sintesi recenti:\n" + "\n".join(reflection_lines))
         if results:

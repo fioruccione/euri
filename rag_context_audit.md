@@ -31,6 +31,21 @@ onirico avvelena la recency per ore, finché non si accumulano memorie più rece
 - Query tecniche: **ON↑ / OFF↓** (la recency non deve annegare la rilevanza).
 - Query temporali: composizione/ordine **invariati** rispetto a oggi.
 
+## Risultato del ribilanciamento (recency 5→2, semantic 3→5; config.py)
+
+Confronto **back-to-back sullo stesso stato Redis** (cambia solo il config — annulla
+il drift di stato tra misure separate):
+
+| config | ON | OFF |
+|---|---|---|
+| PRIMA (recency=5 / sem=3) | 4 | 14 |
+| DOPO  (recency=2 / sem=5) | **8** | **6** |
+
+ON raddoppia, OFF −57%. Invariante temporale verificata su "di cosa abbiamo parlato
+oggi?" (finestra popolata): **9 slot di testa su 9 identici, stesso ordine**; la query
+temporale guadagna solo +1 nodo semantico in coda (slot 10, prima vuoto). Nessuna
+regressione: il diario di `prioritize_window` è a monte e non viene toccato.
+
 ## Punto #3 (deep, decisione esplicita pendente)
 
 `recalled_count` viene incrementato anche sui nodi iniettati per recency (non solo

@@ -238,6 +238,18 @@ MEMORY_TTL_PASSIVE_DAYS = 90
 # Loop 2d: soglia recalled_count per estendere TTL senza invocare il giudice LLM.
 MEMORY_KEEP_IF_RECALLED = 3
 
+# Budget slot del contesto RAG non-temporale (_build_context).
+# Caso Eurostampi (11/06): con recency=5 / semantic=3 / cap=6 le 5 memorie più
+# recenti (spesso output off-topic di un ciclo Dream appena girato) annegavano
+# l'unico slot semantico rilevante → contesto ~72% off-topic su query tecniche.
+# Ribilanciamento: poca recency per la continuità, il resto alla rilevanza.
+# Misurato da diag_rag_context.py (ON↑/OFF↓). Le query temporali usano un percorso
+# separato (prioritize_window) e un cap proprio (RAG_MEM_CAP_TEMPORAL): immutate.
+RAG_RECENCY_LIMIT = 2        # memorie recenti "ambient" iniettate a prescindere dal tema
+RAG_SEMANTIC_LIMIT = 5       # match semantici alla query corrente (la rilevanza)
+RAG_MEM_CAP = 6              # slot totali mostrati su query non-temporale
+RAG_MEM_CAP_TEMPORAL = 10    # slot su query con riferimento di tempo (diario più ampio)
+
 # Episodic Compression (Layer 0 — memoria di sessione)
 # Ogni EPISODE_COMPRESSION_THRESHOLD messaggi, i più vecchi vengono compressi in un episodio.
 # Gli episodi sopravvivono EPISODE_TTL_DAYS giorni in Redis e vengono iniettati come contesto.
