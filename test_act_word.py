@@ -8,7 +8,11 @@ Uso: venv/bin/python test_act_word.py
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
-from core.act_word_check import needs_honest_correction
+from core.act_word_check import (
+    needs_honest_correction,
+    scrub_unbacked_action_claim,
+    honest_correction,
+)
 
 # (descrizione, reply, turn_actions, atteso_flag)
 CASES = [
@@ -49,6 +53,33 @@ CASES = [
 ]
 
 
+_TAIL = honest_correction()
+
+# scrub_unbacked_action_claim: (descrizione, reply, turn_actions, predicato sull'output)
+SCRUB_CASES = [
+    # claim falso isolato → resta solo la coda onesta
+    ("claim solo → coda onesta",
+     "Ho aggiornato la nota.", set(),
+     lambda out: out == _TAIL),
+    # frase vera + claim falso → tiene la vera, droppa il claim, aggiunge coda
+    ("tiene la frase vera, droppa il claim",
+     "Capisco il punto sulla reologia. Ho salvato tutto.", set(),
+     lambda out: "reologia" in out and "salvato" not in out.lower() and out.endswith(_TAIL)),
+    # azione reale nel turno → invariato (il claim è coperto)
+    ("turno con azione → invariato",
+     "Ho salvato il promemoria.", {"save_todo"},
+     lambda out: out == "Ho salvato il promemoria."),
+    # nessun claim → invariato
+    ("nessun claim → invariato",
+     "Posso salvarlo quando vuoi.", set(),
+     lambda out: out == "Posso salvarlo quando vuoi."),
+    # passato-distante → racconto vero, invariato
+    ("passato-distante → invariato",
+     "Sì, l'ho salvata ieri quella nota.", set(),
+     lambda out: out == "Sì, l'ho salvata ieri quella nota."),
+]
+
+
 def main():
     ok = 0
     fails = []
@@ -60,8 +91,20 @@ def main():
         if not passed:
             fails.append(desc)
         print(f"  {mark}  atteso={str(expected):5} ottenuto={str(got):5} | {desc}")
+
+    print("\n  --- scrub_unbacked_action_claim ---")
+    for desc, reply, actions, pred in SCRUB_CASES:
+        out = scrub_unbacked_action_claim(reply, actions)
+        passed = pred(out)
+        ok += passed
+        mark = "✓" if passed else "✗ FAIL"
+        if not passed:
+            fails.append(desc)
+        print(f"  {mark}  {desc}  →  {out!r}")
+
+    total = len(CASES) + len(SCRUB_CASES)
     print("\n" + "=" * 60)
-    print(f"PASS: {ok}/{len(CASES)}")
+    print(f"PASS: {ok}/{total}")
     if fails:
         print("FALLITI:", ", ".join(fails))
     else:

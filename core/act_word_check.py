@@ -79,3 +79,25 @@ def honest_correction() -> str:
     """Riga onesta da pronunciare al posto del claim falso."""
     return ("Aspetta — in realtà non ho eseguito quell'azione in questo turno. "
             "Vuoi che la faccia adesso?")
+
+
+def scrub_unbacked_action_claim(reply: str, turn_actions: set) -> str:
+    """
+    Pavimento di onestà sull'AZIONE — fratello più largo di
+    honesty.scrub_unbacked_save_claim (che copre il solo salvataggio).
+
+    In un handler che NON esegue azioni mutanti (`turn_actions` vuoto): se la
+    risposta rivendica un'azione compiuta in questo turno (creato/eliminato/
+    aggiornato/completato...), rimuove le frasi che la rivendicano e aggiunge la
+    correzione onesta. Altrimenti ritorna invariato.
+
+    Specchia la forma di scrub_unbacked_save_claim: si applica a valle, frase per
+    frase, così le frasi vere restano e solo il claim infondato cade.
+    """
+    if turn_actions or not claims_completed_action(reply):
+        return reply
+    sentences = re.split(r"(?<=[.!?…])\s+", reply.strip())
+    kept = [s for s in sentences if not claims_completed_action(s)]
+    cleaned = " ".join(kept).strip()
+    tail = honest_correction()
+    return f"{cleaned}\n\n{tail}" if cleaned else tail
