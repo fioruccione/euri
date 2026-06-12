@@ -2,6 +2,15 @@
 
 Storico completo delle versioni di Euri. Il README riporta solo la versione corrente; qui la cronologia integrale.
 
+### V2.19 (continua, 12/06/2026) — Correzioni-fantasma: il gate "è una correzione?" in Loop 2g
+
+Problema misurato: la cattura `detect_correction` è larga e intercetta come "correzione" anche domande, elaborazioni, accordi, pensieri ad alta voce. Il classify notturno di Loop 2g NON filtrava: presupponeva che il signal *fosse* una correzione e ne classificava solo il tipo → generava **lesson spurie** che competono nel richiamo e scavalcano le note vere (caso reale 11/06: su "cosa pensi di chi rovina il materiale" le lesson-fantasma stavano sopra le note Eurostampi). Rumore diventato **generativo**.
+
+- **Baseline misurabile** (commit `fa171cc`, `diag_phantom_corrections.py`, read-only). Un giudice LLM fa la domanda che il sistema non fa — "è davvero una correzione di un errore di Euri?" — su tutti i 47 signal: **≥53% fantasmi** (25/47), ed è un pavimento (il giudice ha falsi negativi). Finding che decide la direzione: i 25 fantasmi sono **sparsi su tutti i verdict** (solo 6 in `ambiguous`, 19 in `bad_memory`/`bad_reasoning`) → filtrare sul verdict esistente ne prenderebbe il 24%. Il classify non chiede mai *se* è una correzione, solo *che tipo*.
+- **Fix — gate a 4 vie nella fase ACT notturna** (commit `fc05890`). `_llm_classify_correction` ora stabilisce PRIMA se è una correzione: nuovo verdetto **`not_a_correction`** (domanda/elaborazione/accordo/pensiero) → **niente lesson**, status `dismissed` (soft-delete del signal, audit preservato). Bias **conservativo**: nel dubbio tiene la correzione (il contro-caso è sacro). Cattura `detect_correction` invariata: si interviene in un punto solo, di notte → zero hot-path, zero regex tunata a mano (le alternative scartate). Validato sul metodo reale (Qwen, `diag_n1_validate.py`): **correzioni vere perse 0/11, fantasmi beccati 10/11** (l'unico miss è una domanda-richiamo borderline → lato sicuro).
+- **Bonifica del pregresso.** 19 lesson-fantasma già generate **soft-deletate** (`superseded_by="phantom_correction_n1"`, reversibile, mai cancellate). Selezione con **ensemble a due giudici** (Gemma baseline + Qwen del fix): 14 in accordo + 5 borderline; soft-delete di tutti e 19 (le correzioni sono ri-rifacibili). **Verifica:** i fantasmi non trapelano più e la nota vera `c27d668e` è ricomparsa nei top-4 sulla query dove prima venivano scavalcate.
+- **Prevenzione + cura:** il gate ferma la pollution futura, la bonifica pulisce quella esistente. I 21 audit_flag da fantasma (segnale debole) lasciati intatti.
+
 ### V2.19 (continua, 11/06/2026) — Contesto RAG: la rilevanza vince sulla recency + recalled_count solo meritato
 
 Caso reale (conversazione tecnica Eurostampi, estrusione/perossido): il contesto RAG su query tecniche era **~72% off-topic** — `_build_context` per le query non-temporali partiva dalle 5 memorie più **recenti** (spesso output off-topic di un ciclo Dream appena girato: informatica, IA, logistica, automazione) e lasciava **~1 solo slot** alla rilevanza semantica. La recency annegava la pertinenza.

@@ -51,4 +51,24 @@ NON devono essere filtrate. Il gate deve essere conservativo sul lato "scarto".
 - **Contro-caso: 0/11 correzioni vere perse.** Tutte restano `bad_memory`/`bad_reasoning`. Il bias conservativo ("nel dubbio, correzione") tiene.
 - **Recall: 10/11 fantasmi chiari beccati** (domande, elaborazioni, accordi → `not_a_correction`). Unico miss: `bf1e535b` ("ti ricordi che parlavamo di Eurostampi?") → `bad_memory`: domanda-richiamo borderline che implica "dovresti ricordarlo" → lato sicuro/conservativo dell'errore.
 
-Implementazione: `core/dream_engine._llm_classify_correction` ora a 4 vie (gate prima del tipo); `_audit_corrections_pass` su `not_a_correction` → niente lesson, status `dismissed` (soft-delete, audit preservato, TTL 30gg). La cattura `detect_correction` resta invariata (un punto solo). Il fix previene la pollution FUTURA; i fantasmi GIÀ diventati lesson (19, `status=analyzed`) restano da bonificare nel **Passo 3**.
+Implementazione: `core/dream_engine._llm_classify_correction` ora a 4 vie (gate prima del tipo); `_audit_corrections_pass` su `not_a_correction` → niente lesson, status `dismissed` (soft-delete, audit preservato, TTL 30gg). La cattura `detect_correction` resta invariata (un punto solo). Il fix previene la pollution FUTURA.
+
+## Passo 3 — Bonifica del pregresso (FATTA, 12/06)
+
+19 lesson-fantasma già generate (tag `from_correction`) **soft-deletate** —
+`superseded_by = "phantom_correction_n1"` (+ `superseded_at`). Reversibile: basta
+cancellare quel campo dove vale `phantom_correction_n1`. Mai cancellate (P-GT).
+
+Selezione con **ensemble a due giudici** (Gemma baseline + Qwen del fix): 14 dove
+entrambi concordano "fantasma" (alta confidenza) + 5 borderline (giudici discordi).
+Stefano ha deciso di soft-deletare **tutti e 19** ("le correzioni le posso rifare,
+anche l'ambiguo si elimina") — costo di un falso positivo basso perché ri-correggibile.
+
+ID soft-deletati: 774fdb9d, 3c3cb2f6, 9edff0c5, 664c9880, 5294f160, 4c824d4c,
+c02781c4, eabab7f0, 8531a01a, 1d8c4f4f, d57237fe, 6462f312, 78ed3073, c8d9dc6a
+(alta confidenza) + 8dc8c77c, ad34cf6a, 363c9d5d, 6a312794, 9542f3e2 (borderline).
+
+**Verifica retrieval:** su "cosa pensi di chi rovina il materiale" i fantasmi non
+trapelano più e la nota vera `c27d668e` è **ricomparsa** nei top-4 (prima la
+scavalcavano `4c824d4c`/`c02781c4`). I 21 audit_flag da fantasma lasciati intatti
+(segnale debole, non inquina il richiamo).
