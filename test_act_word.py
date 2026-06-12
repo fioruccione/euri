@@ -36,6 +36,16 @@ CASES = [
     ("possibilità", "Posso salvarlo per te quando vuoi.", set(), False),
     ("istruzione all'utente", "Dimmi 'memorizza questo' e lo salvo subito.", set(), False),
     ("futuro/intenzione", "Lo memorizzerò appena confermi.", set(), False),
+
+    # --- NON deve scattare: claim VERO su azione PASSATA-distante (turno vuoto) ---
+    ("azione passata: ieri", "Sì, l'ho salvata ieri quella nota.", set(), False),
+    ("azione passata: settimana scorsa", "Te l'ho memorizzato la settimana scorsa.", set(), False),
+    ("azione passata: già/prima", "Sì, l'ho già salvata prima.", set(), False),
+    ("azione passata: stamattina", "Quella nota l'ho creata stamattina.", set(), False),
+    # --- MA un claim su azione di QUESTO turno deve ancora scattare ("appena") ---
+    ("claim appena, nessuna azione", "Ho appena salvato la nota.", set(), True),
+    # --- e una negazione non scatta ---
+    ("negazione", "Ok, non ho salvato niente.", set(), False),
 ]
 
 
