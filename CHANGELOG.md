@@ -2,7 +2,11 @@
 
 Storico completo delle versioni di Euri. Il README riporta solo la versione corrente; qui la cronologia integrale.
 
-### V2.19 (continua, 12/06/2026) — Paraurti di richiamo nel Loop 2f: l'atomo molto richiamato non si auto-cancella (N3)
+## V2.20 (12/06/2026) — Onestà di ground-truth (P-GT)
+
+Minor release tematica: la trilogia **P-GT** ("il cognome di famiglia" della roadmap — l'output di Euri risponde a un fatto verificabile, non alla propria narrazione). Tre facce della stessa onestà, ciascuna con baseline misurato e contro-caso: **N1** non genera lesson dalle correzioni-fantasma, **N2** non afferma un'azione che non ha eseguito, **N3** non lascia che un atomo fattuale provato venga cancellato da una nota infedele. Prevenzione + cura in tutte e tre (gate/paraurti per il futuro, bonifica/riparazione del pregresso). Richiede un restart del daemon per attivare i gate notturni.
+
+### V2.20 — N3 · Paraurti di richiamo nel Loop 2f: l'atomo molto richiamato non si auto-cancella
 
 Problema (principio P-PIANO). Il soft-delete notturno del Loop 2f ragiona per cosine similarity, non per fedeltà del fatto: su una "contraddizione" tiene la più recente e soft-deleta l'altra. A volte la vincitrice è solo *affine*, non *fedele* — assorbe un atomo fattuale dentro una nota più lunga che NON ne riporta il valore. Casi provati: "Lotto 03 PR043: MFI 11,2" (recalled 12) soppiantato da una nota logistica su un altro campione (MFI 25); la struttura operativa di Lucy Plast (recalled 7) soppiantata da una riga sulla capacità di una macchina.
 
@@ -14,7 +18,16 @@ Problema (principio P-PIANO). Il soft-delete notturno del Loop 2f ragiona per co
 - **Cura del pregresso** (commit `d4656c4`, `repair_n3_atoms.py`). I 2 atomi già danneggiati ripristinati togliendo `superseded_by` (reversibile, niente delete). Verifica before/after con `search_memories(touch=False)`: **assenti prima, ricomparsi dopo** (MFI ora 2° in classifica, convive col suo assorbitore), `recalled_count` intatti. Prevenzione (paraurti) + cura (riparazione), come in N1.
 - **Significato.** Il consolidamento autonomo ha un bias entropico verso la fusione: ottimo contro la cascata di reflection, erosivo contro gli atomi fattuali deliberati. Il paraurti non insegna al loop a *giudicare* la fedeltà (non sa farlo) — gli impedisce di **scommettere** sugli atomi più provati dall'uso. **Richiede restart daemon** per attivarsi.
 
-### V2.19 (continua, 12/06/2026) — Correzioni-fantasma: il gate "è una correzione?" in Loop 2g
+### V2.20 — N2 · Atto-parola: niente "ho salvato" se nessuno ha salvato
+
+Problema (P-GT applicato al linguaggio). In un turno CHAT — dove nessun handler agisce — l'LLM a volte rivendica un'azione mai compiuta ("ho aggiornato la nota", "l'ho eliminato"): confabulazione di *agency*. Il pavimento di onestà esistente (`honesty.scrub_unbacked_save_claim`) copriva il solo **salvataggio**; restava scoperto ogni altro verbo d'azione (creato / eliminato / aggiornato la *nota* / completato).
+
+- **Rilevatore come funzione pura** (commit `523aaac`, `79566ab`, `core/act_word_check.py`). `claims_completed_action` riconosce il claim in 1ª persona passata; robusto a **negazione** ("non ho salvato"), **passato-distante** ("l'ho salvata ieri" = racconto, non claim sul turno) e **avverbi intermedi** ("ho appena salvato" = questo turno, scatta ancora). Test 28/28.
+- **Cablato nel pavimento di onestà** (commit `17d5eea`). `scrub_unbacked_action_claim` — fratello largo di `scrub_unbacked_save_claim` — applicato a valle nei 3 punti che NON agiscono (CHAT/SEARCH/mobile): droppa la frase del claim infondato e aggiunge una correzione onesta (`turn_actions` vuoto). Stessa forma del pavimento esistente, niente duplicazione né secondo modello.
+- **Limite noto.** "Sì, l'ho fatto" su un'azione vera di un turno passato, **senza marcatore temporale**, è un falso positivo (servirebbe stato conversazionale) — fuori dal raggio del rilevatore attuale, da tenere d'occhio nella validazione vocale.
+- **Significato.** P-GT sul linguaggio: Euri non afferma un'azione che non ha eseguito. La parte difficile non è correggere ma **rilevare il claim** — e scatta solo sul disallineamento claim + zero-azione-nel-turno.
+
+### V2.20 — N1 · Correzioni-fantasma: il gate "è una correzione?" in Loop 2g
 
 Problema misurato: la cattura `detect_correction` è larga e intercetta come "correzione" anche domande, elaborazioni, accordi, pensieri ad alta voce. Il classify notturno di Loop 2g NON filtrava: presupponeva che il signal *fosse* una correzione e ne classificava solo il tipo → generava **lesson spurie** che competono nel richiamo e scavalcano le note vere (caso reale 11/06: su "cosa pensi di chi rovina il materiale" le lesson-fantasma stavano sopra le note Eurostampi). Rumore diventato **generativo**.
 

@@ -7,7 +7,7 @@ Non si limita ad ascoltare e rispondere: memorizza, organizza, riflette sulle tu
 
 ---
 
-## Architettura Cognitiva (V2.19)
+## Architettura Cognitiva (V2.20)
 
 ### 1. Intent Classification — Pipeline a Due Layer
 La classificazione dell'intent è a cascata: il layer veloce esaurisce la maggior parte dei casi, il layer lento interviene solo quando necessario.
@@ -199,7 +199,7 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 
 ## Changelog
 
-Versione corrente: **V2.19**. Lo storico completo delle modifiche è in [CHANGELOG.md](CHANGELOG.md).
+Versione corrente: **V2.20**. Lo storico completo delle modifiche è in [CHANGELOG.md](CHANGELOG.md).
 
 Novità recenti:
 - V2.19 (continua, 09/06/2026) — Richiamo temporale: la memoria vissuta prima dei pensieri riflessivi
