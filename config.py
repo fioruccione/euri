@@ -237,6 +237,12 @@ INSIGHT_ACTIVE_SOURCES = {"teach", "user", "reflection"}
 MEMORY_TTL_PASSIVE_DAYS = 90
 # Loop 2d: soglia recalled_count per estendere TTL senza invocare il giudice LLM.
 MEMORY_KEEP_IF_RECALLED = 3
+# Loop 2f — PARAURTI di richiamo (N3): un atomo fattuale con recalled_count >= soglia non
+# viene auto-cancellato via contraddizione (tieni entrambi). Deterministico: nessun segnale
+# economico separa l'assorbimento dannoso dal legittimo, la fidelity-probe LLM sbaglia ~metà
+# delle volte (contro-caso test_plane_guard). Conservativo: protegge gli atomi molto
+# richiamati, lascia consolidare i poco usati. Fail-safe = tieni entrambi.
+LOOP2F_RECALL_GUARD = 5
 
 # Budget slot del contesto RAG non-temporale (_build_context).
 # Caso Eurostampi (11/06): con recency=5 / semantic=3 / cap=6 le 5 memorie più

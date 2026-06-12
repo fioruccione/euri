@@ -724,21 +724,37 @@ Non inventare dati non presenti nelle due voci. Rispondi solo col confronto."""
                     # 5. Contraddizione vera: soft-delete il più vecchio (created_at minore)
                     seed_ts = float(seed.get("created_at") or 0)
                     n_ts = float(n_doc.get("created_at") or 0)
-
-                    if seed_ts >= n_ts:
-                        self._r.json().set(f"euri:memory:{n_id}", "$.superseded_by", seed_id)
-                        logger.info(
-                            f"Loop 2f: {n_id[:8]}… superseded by {seed_id[:8]}… "
-                            f"(conflitto risolto, tenuto il più recente)"
-                        )
+                    seed_is_older = seed_ts < n_ts
+                    if seed_is_older:
+                        loser_doc, loser_id, winner_id = seed, seed_id, n_id
                     else:
-                        self._r.json().set(f"euri:memory:{seed_id}", "$.superseded_by", n_id)
-                        logger.info(
-                            f"Loop 2f: {seed_id[:8]}… superseded by {n_id[:8]}… "
-                            f"(conflitto risolto, tenuto il più recente)"
-                        )
-                        break  # seed è stato superseded, inutile continuare con i suoi vicini
+                        loser_doc, loser_id, winner_id = n_doc, n_id, seed_id
 
+                    # PARAURTI di richiamo (N3): un atomo fattuale MOLTO RICHIAMATO non viene
+                    # auto-cancellato via contraddizione — tieni entrambi. Deterministico:
+                    # nessun segnale economico (cosine/lunghezza/richiamo/giudizio LLM) separa
+                    # in modo affidabile l'assorbimento dannoso da quello legittimo — la
+                    # fidelity-probe sbaglia ~metà delle volte sulle distinzioni fini
+                    # (contro-caso test_plane_guard). Conservativo: il consolidamento sui
+                    # poco-richiamati resta invariato; il fail-safe è "tieni entrambi". Costo:
+                    # un valore vecchio molto-usato sopravvive finché una correzione esplicita
+                    # non lo soppianta. (Repo N3 / baseline diag_plane_fusion.py)
+                    loser_recalled = int(loser_doc.get("recalled_count") or 0)
+                    if loser_recalled >= config.LOOP2F_RECALL_GUARD:
+                        logger.info(
+                            f"Loop 2f: paraurti richiamo — {loser_id[:8]}… "
+                            f"(recalled={loser_recalled}) NON soft-deletato via contraddizione, "
+                            f"tengo entrambi"
+                        )
+                        continue  # pair già in CHECKED: non si ripresenta
+
+                    self._r.json().set(f"euri:memory:{loser_id}", "$.superseded_by", winner_id)
+                    logger.info(
+                        f"Loop 2f: {loser_id[:8]}… superseded by {winner_id[:8]}… "
+                        f"(conflitto risolto, tenuto il più recente)"
+                    )
+                    if seed_is_older:
+                        break  # seed è stato superseded, inutile continuare con i suoi vicini
                     resolved += 1
 
             if resolved or compared:
