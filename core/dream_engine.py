@@ -758,33 +758,44 @@ Non inventare dati non presenti nelle due voci. Rispondi solo col confronto."""
         self, prompt_orig: str, risposta_euri: str, correzione: str, ctx_memories: list[str]
     ) -> str:
         """
-        LLM-as-judge: classifica una correzione come bad_memory / bad_reasoning / ambiguous.
+        LLM-as-judge a 4 vie. PRIMA il gate (è davvero una correzione?), poi il tipo.
+        - not_a_correction: non è una correzione (domanda, elaborazione, accordo,
+          pensiero ad alta voce, cambio argomento) → niente lesson, signal scartato.
         - bad_memory: l'errore deriva da una memoria iniettata sbagliata o obsoleta.
         - bad_reasoning: le memorie erano OK, l'errore è di ragionamento al volo.
-        - ambiguous: non è chiaro o la "correzione" non è davvero una correzione.
+        - ambiguous: è una correzione, ma non è chiaro se memoria o ragionamento.
+        Baseline (diag_phantom_corrections.py): senza il gate, ≥53% dei signal erano
+        fantasmi e 19/25 prendevano bad_memory/bad_reasoning → lesson spurie.
         """
         ctx_block = "\n".join(f"- {m}" for m in ctx_memories) if ctx_memories else "(nessuna memoria iniettata)"
         prompt = f"""\
-Devi analizzare una correzione che un utente ha fatto a un assistente.
+Devi analizzare un messaggio che un utente ha rivolto a un assistente (Euri), dopo una risposta dell'assistente.
 
-DOMANDA UTENTE:
+DOMANDA/CONTESTO ORIGINALE DELL'UTENTE:
 "{prompt_orig[:500]}"
 
 MEMORIE INIETTATE NEL CONTESTO DELL'ASSISTENTE (la base su cui ha risposto):
 {ctx_block}
 
-RISPOSTA DELL'ASSISTENTE (che l'utente ha corretto):
+RISPOSTA DELL'ASSISTENTE:
 "{risposta_euri[:500]}"
 
-CORREZIONE DELL'UTENTE:
+MESSAGGIO SUCCESSIVO DELL'UTENTE (da analizzare):
 "{correzione[:500]}"
 
-Classifica l'origine dell'errore in UNA di queste tre categorie:
-- BAD_MEMORY: la risposta sbagliata deriva da una memoria iniettata che era essa stessa sbagliata, obsoleta, o riferita a un soggetto diverso da quello chiesto.
-- BAD_REASONING: le memorie erano corrette e pertinenti, ma l'assistente ha ragionato male, confuso concetti, o tratto la conclusione sbagliata.
-- AMBIGUOUS: non è chiaro dove sia l'errore, oppure il messaggio dell'utente non è davvero una correzione (es. cambio di argomento, scherzo, sfumatura).
+PRIMA stabilisci: questo messaggio è davvero una CORREZIONE di un errore dell'assistente?
+È una correzione SOLO se l'utente afferma che l'assistente ha sbagliato un fatto, un ricordo o un ragionamento, e indica (anche implicitamente) la versione giusta.
+NON è una correzione se l'utente: fa una domanda o chiede un ricordo ("ti ricordi di X?", "cosa sai di Y?"), aggiunge o elabora informazioni proprie, concorda ("esatto", "sì"), pensa ad alta voce, cambia argomento, scherza, o commenta in generale il comportamento dell'assistente — anche se il messaggio contiene "no", "non è", "in realtà".
 
-Rispondi SOLO con una di queste tre parole: BAD_MEMORY, BAD_REASONING, AMBIGUOUS."""
+Se NON è una correzione → rispondi NOT_A_CORRECTION.
+Se È una correzione, classifica l'origine dell'errore:
+- BAD_MEMORY: la risposta sbagliata deriva da una memoria iniettata sbagliata, obsoleta, o di un soggetto diverso da quello chiesto.
+- BAD_REASONING: le memorie erano corrette e pertinenti, ma l'assistente ha ragionato male o confuso concetti.
+- AMBIGUOUS: è una correzione, ma non è chiaro se l'origine sia la memoria o il ragionamento.
+
+Nel dubbio tra NOT_A_CORRECTION e una categoria di correzione, scegli la correzione: è peggio scartare una correzione vera che processarne una falsa.
+
+Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMBIGUOUS."""
         try:
             response = self._ollama_chat(
                 model=config.DREAM_OLLAMA_MODEL,
@@ -798,7 +809,9 @@ Rispondi SOLO con una di queste tre parole: BAD_MEMORY, BAD_REASONING, AMBIGUOUS
                 text = text.split("<channel|>", 1)[-1].strip()
             import re as _re
             text = _re.sub(r"<THINK>.*?</THINK>", "", text, flags=_re.DOTALL).strip()
-            for verdict in ("BAD_MEMORY", "BAD_REASONING", "AMBIGUOUS"):
+            # NOT_A_CORRECTION per primo: è il gate. Default/fallback = ambiguous
+            # (conservativo: trattato come correzione, ma senza generare lesson).
+            for verdict in ("NOT_A_CORRECTION", "BAD_MEMORY", "BAD_REASONING", "AMBIGUOUS"):
                 if verdict in text:
                     return verdict.lower()
             return "ambiguous"
@@ -841,7 +854,7 @@ Rispondi SOLO con una di queste tre parole: BAD_MEMORY, BAD_REASONING, AMBIGUOUS
             pending.sort(key=lambda x: x[1].get("created_at", 0))
             pending = pending[:MAX_PER_CYCLE]
 
-            counts = {"bad_memory": 0, "bad_reasoning": 0, "ambiguous": 0}
+            counts = {"not_a_correction": 0, "bad_memory": 0, "bad_reasoning": 0, "ambiguous": 0}
 
             for key, doc in pending:
                 # Recupera contenuti delle memorie iniettate
@@ -866,12 +879,14 @@ Rispondi SOLO con una di queste tre parole: BAD_MEMORY, BAD_REASONING, AMBIGUOUS
 
                 counts[verdict] = counts.get(verdict, 0) + 1
 
-                # Aggiorna lo status del signal
-                self._r.json().set(key, "$.status", "analyzed")
+                # Aggiorna lo status del signal. not_a_correction = soft-delete:
+                # status "dismissed" (audit preservato, niente azione, il signal
+                # evapora col suo TTL 30gg). Nessuna lesson generata: è il fix N1.
+                self._r.json().set(key, "$.status", "dismissed" if verdict == "not_a_correction" else "analyzed")
                 self._r.json().set(key, "$.verdict", verdict)
                 self._r.json().set(key, "$.analyzed_at", time.time())
 
-                # Azioni differenziate
+                # Azioni differenziate (not_a_correction e ambiguous: nessuna azione)
                 if verdict == "bad_memory":
                     for mid in doc.get("rag_ctx_ids", []):
                         if not mid:
@@ -905,8 +920,9 @@ Rispondi SOLO con una di queste tre parole: BAD_MEMORY, BAD_REASONING, AMBIGUOUS
                 logger.info(f"Loop 2g: {key[-8:]} → {verdict}")
 
             logger.info(
-                f"Loop 2g: {len(pending)} correzioni analizzate "
-                f"({counts['bad_memory']} bad_memory, {counts['bad_reasoning']} bad_reasoning, {counts['ambiguous']} ambiguous)"
+                f"Loop 2g: {len(pending)} signal analizzati "
+                f"({counts['not_a_correction']} not_a_correction/scartati, {counts['bad_memory']} bad_memory, "
+                f"{counts['bad_reasoning']} bad_reasoning, {counts['ambiguous']} ambiguous)"
             )
 
         except Exception as e:

@@ -45,3 +45,10 @@ correzione" e chiede solo *che tipo*; non chiede mai **se** lo è.
 Le correzioni VERE (almeno 22/47, es. "non è tricarbonato è bicarbonato",
 "Davide è responsabile produzione non lavora con...", "lo 03 PPR610 è rigenerato")
 NON devono essere filtrate. Il gate deve essere conservativo sul lato "scarto".
+
+## DOPO il fix (classify a 4 vie, gate `not_a_correction` — `diag_n1_validate.py`, Qwen reale)
+
+- **Contro-caso: 0/11 correzioni vere perse.** Tutte restano `bad_memory`/`bad_reasoning`. Il bias conservativo ("nel dubbio, correzione") tiene.
+- **Recall: 10/11 fantasmi chiari beccati** (domande, elaborazioni, accordi → `not_a_correction`). Unico miss: `bf1e535b` ("ti ricordi che parlavamo di Eurostampi?") → `bad_memory`: domanda-richiamo borderline che implica "dovresti ricordarlo" → lato sicuro/conservativo dell'errore.
+
+Implementazione: `core/dream_engine._llm_classify_correction` ora a 4 vie (gate prima del tipo); `_audit_corrections_pass` su `not_a_correction` → niente lesson, status `dismissed` (soft-delete, audit preservato, TTL 30gg). La cattura `detect_correction` resta invariata (un punto solo). Il fix previene la pollution FUTURA; i fantasmi GIÀ diventati lesson (19, `status=analyzed`) restano da bonificare nel **Passo 3**.
