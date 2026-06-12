@@ -2,6 +2,16 @@
 
 Storico completo delle versioni di Euri. Il README riporta solo la versione corrente; qui la cronologia integrale.
 
+### V2.19 (continua, 11/06/2026) — Contesto RAG: la rilevanza vince sulla recency + recalled_count solo meritato
+
+Caso reale (conversazione tecnica Eurostampi, estrusione/perossido): il contesto RAG su query tecniche era **~72% off-topic** — `_build_context` per le query non-temporali partiva dalle 5 memorie più **recenti** (spesso output off-topic di un ciclo Dream appena girato: informatica, IA, logistica, automazione) e lasciava **~1 solo slot** alla rilevanza semantica. La recency annegava la pertinenza.
+
+- **Metodo (come la Fase −1): prima il numero, poi il codice.** `diag_rag_context.py` (read-only, `touch=False`) replica la selezione di `_build_context` leggendo le **stesse costanti** che usa il codice reale (test e fix non possono divergere) e conta slot ON/OFF-topic + provenienza (recency/semantic/temporal). Baseline e misure in `rag_context_audit.md`.
+- **Ribilanciamento slot** (commit `0698a48`). Budget reso configurabile: `RAG_RECENCY_LIMIT` 5→2 (poca recency "ambient" per la continuità), `RAG_SEMANTIC_LIMIT` 3→5 (il resto alla rilevanza), cap invariato 6. Misurato **back-to-back sullo stesso stato Redis** (annulla il drift): **PRIMA ON=4/OFF=14 → DOPO ON=8/OFF=6** (ON×2, OFF −57%). Revertibile in una riga.
+- **Contro-caso temporale verificato.** Su "di cosa abbiamo parlato oggi?" (finestra popolata) i **9 slot di testa sono identici** prima/dopo, +1 nodo semantico in coda: `prioritize_window` (il diario vissuto) è a monte e non viene toccato. Le query con riferimento di tempo restano immutate.
+- **`recalled_count` solo sui richiami MERITATI, non iniettati** (commit **`a73d728`** — **CUTOVER per la validazione touch/lifecycle di metà giugno**). La base recency e le reflection "Sintesi recenti" passano a `touch=False`: l'iniezione per pura recenza non incrementa più `recalled_count`. Solo i match semantici e la finestra temporale query-driven (richiami *meritati*) lo incrementano. **I contatori PRIMA di `a73d728` sono gonfiati dall'iniezione di recency e NON confrontabili con quelli dopo** — la validazione del lifecycle deve trattare `a73d728` come discontinuità. Verificato non-distruttivo: base recency `recalled_count` 0→0.
+- **Validato dal vivo** (conversazione bins/Eurostampi, 11/06): contesto on-topic fino a 5/6 nodi `chimica polimeri`, e su una domanda etica la nota comportamentale dedicata è uscita **top-1**. Mergiato su `main`.
+
 ### V2.19 (continua, 11/06/2026) — AdaptiveClassifier V2: plasticità ancorata — Fase −1 (harvest etichette)
 
 La ricostruzione del classificatore intent riparte come **dimostratore di ricerca**, non come ottimizzazione di latenza: con la GPU in arrivo l'incentivo economico (saltare il fallback LLM) si assottiglia, mentre il valore — un componente che si aggiorna dall'esperienza **senza corrompersi**, con omeostasi notturna misurabile — è ortogonale all'hardware e regge nella serie di paper. Revisione sul codice reale *prima* di scrivere codice: la diagnosi di morte del V1 era in parte sbagliata.
