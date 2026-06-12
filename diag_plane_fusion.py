@@ -88,6 +88,46 @@ def _segment(ls, ws, lrv, wrv) -> str:
     return "altro"
 
 
+# Probe di CONTENIMENTO (non leading): chiede se il fatto di A sopravvive in B, non
+# "è una fusione?". Tre esiti netti, una parola. Distingue il danno reale dal benigno.
+_JUDGE = """\
+La memoria A è stata SOPPIANTATA da B: il sistema ha cancellato A e tenuto B.
+Il fatto/informazione SPECIFICA di A sopravvive in B?
+
+A (cancellata): "{a}"
+B (tenuta):     "{b}"
+
+Rispondi con UNA sola parola:
+- PRESERVA: B contiene o implica lo stesso fatto specifico di A (lo ripete, lo arricchisce
+  o lo ingloba). Niente è andato perso → cancellare A va bene.
+- CONTRADDICE: B afferma sullo STESSO identico soggetto un valore che ESCLUDE quello di A
+  (es. stesso lotto, MFI diverso; stessa scadenza, data diversa). A era obsoleto → corretto.
+- PERDE: A porta un fatto o un aspetto SPECIFICO che B NON riporta né contraddice (B parla
+  d'altro, solo affine). Cancellare A ha perso informazione.
+
+Rispondi SOLO con: PRESERVA, CONTRADDICE, o PERDE."""
+
+
+def judge_pair(client, model, a: str, b: str) -> str:
+    try:
+        resp = client.chat(
+            model=model,
+            messages=[{"role": "user", "content": _JUDGE.format(a=a[:700], b=b[:700])}],
+            options={"temperature": 0, "num_predict": 8},
+            think=False,
+        )
+        t = (resp.message.content or "").strip().upper()
+    except Exception as e:
+        return f"ERR:{type(e).__name__}"
+    if "PERDE" in t or "PERD" in t:
+        return "PERDE"
+    if "CONTRADD" in t:
+        return "CONTRADDICE"
+    if "PRESERV" in t:
+        return "PRESERVA"
+    return "INCERTO"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--absorb-factor", type=float, default=1.3,
@@ -95,6 +135,8 @@ def main():
     ap.add_argument("--near-dist", type=float, default=0.10,
                     help="dist cosine ≤ soglia = quasi-doppione")
     ap.add_argument("--md", action="store_true", help="scrive plane_fusion_audit.md")
+    ap.add_argument("--judge", action="store_true",
+                    help="classifica le 30 bersaglio col giudice di contenimento (LLM)")
     args = ap.parse_args()
 
     r = _r()
@@ -179,6 +221,34 @@ def main():
     print(f"INTEGRITA' (orfane vere, UUID sparito): {len(by_seg['orfana-vera'])}")
     print("-" * 68)
 
+    # --judge: classifica per FEDELTA' le 30 bersaglio (giudice di contenimento).
+    judged = []
+    if args.judge:
+        import ollama
+        client = ollama.Client(host=config.DREAM_OLLAMA_HOST)
+        model = config.DREAM_OLLAMA_MODEL
+        target = by_seg["loop2f-contrad"] + by_seg["altro"]
+        print(f"\n>>> giudico {len(target)} coppie bersaglio (modello {model})...\n")
+        verdicts = Counter()
+        for i, x in enumerate(target, 1):
+            v = judge_pair(client, model, x["loser_content"], x["winner_content"])
+            x["verdict"] = v
+            verdicts[v] += 1
+            judged.append(x)
+            flag = "  ← DANNO" if v == "PERDE" else ""
+            print(f"  [{i:2}/{len(target)}] {x['loser_id']}→{x['winner_id']} "
+                  f"({x['seg']}, {x['llen']}→{x['wlen']}c, dist={x['dist']:.3f}, "
+                  f"recalled={x['loser_recalled']}) => {v}{flag}")
+        perde = verdicts["PERDE"]
+        print("\n" + "-" * 68)
+        print("FEDELTA' sulle 30 bersaglio:")
+        print(f"  PRESERVA    : {verdicts['PRESERVA']:2}  (arricchimento/dup legittimo — supersede giusto)")
+        print(f"  CONTRADDICE : {verdicts['CONTRADDICE']:2}  (correzione legittima — A obsoleto)")
+        print(f"  PERDE       : {perde:2}  ← DANNO REALE, baseline N3 da abbassare")
+        if verdicts.get("INCERTO"):
+            print(f"  INCERTO     : {verdicts['INCERTO']:2}")
+        print("-" * 68)
+
     if args.md:
         out = [
             f"# Baseline N3 — fusione/assorbimento nel soft-delete ({datetime.now():%Y-%m-%d %H:%M})",
@@ -219,6 +289,18 @@ def main():
                 f"  - perso : {_short(x['loser_content'])}\n"
                 f"  - tenuto: {_short(x['winner_content'])}"
             )
+        if judged:
+            out += ["", "## Verdetto di fedeltà — coppie PERDE (danno reale, da salvare)", ""]
+            for x in judged:
+                if x.get("verdict") != "PERDE":
+                    continue
+                out.append(
+                    f"- `{x['loser_id']}`→`{x['winner_id']}` "
+                    f"({x['seg']}, dist={x['dist']:.3f}, {x['llen']}→{x['wlen']}c, "
+                    f"recalled={x['loser_recalled']})\n"
+                    f"  - perso : {_short(x['loser_content'], 220)}\n"
+                    f"  - tenuto: {_short(x['winner_content'], 220)}"
+                )
         Path("plane_fusion_audit.md").write_text("\n".join(out), encoding="utf-8")
         print("→ scritto plane_fusion_audit.md")
 
