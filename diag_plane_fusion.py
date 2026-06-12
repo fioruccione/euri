@@ -29,6 +29,7 @@ Uso:
 from __future__ import annotations
 
 import argparse
+import re
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -70,6 +71,15 @@ def _short(s: str, n: int = 150) -> str:
     return s[:n] + ("…" if len(s) > n else "")
 
 
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-", re.IGNORECASE)
+
+
+def _is_real_id(wid: str) -> bool:
+    """Un vincitore reale ha forma UUID. I sentinella (es. 'phantom_correction_n1',
+    la lapide della bonifica N1) NON sono memorie: sono soft-delete intenzionali."""
+    return bool(_UUID_RE.match(str(wid)))
+
+
 def _segment(ls, ws, lrv, wrv) -> str:
     if ls == "reflection" and ws == "reflection":
         return "refl-dedup"
@@ -105,7 +115,10 @@ def main():
         wc = _get(r, wkey, "$.content")
         lc = _get(r, key, "$.content", "") or ""
         if wc is None:
-            rows.append({"seg": "orfana", "loser_id": loser_id[:8], "winner_id": str(wid)[:8],
+            # Vincitore assente: distingui la lapide intenzionale (sentinella non-UUID,
+            # es. bonifica N1) dall'orfana vera (UUID reale ma chiave sparita).
+            seg = "orfana-vera" if _is_real_id(wid) else "tombstone-intenz"
+            rows.append({"seg": seg, "loser_id": loser_id[:8], "winner_id": str(wid)[:8],
                          "loser_src": _get(r, key, "$.source", "?"),
                          "loser_recalled": _get(r, key, "$.recalled_count", 0),
                          "loser_content": lc, "dist": None})
@@ -128,7 +141,7 @@ def main():
             "loser_content": lc, "winner_content": wc,
         })
 
-    segs = ("refl-dedup", "loop2f-contrad", "altro", "orfana")
+    segs = ("refl-dedup", "loop2f-contrad", "altro", "tombstone-intenz", "orfana-vera")
     by_seg = defaultdict(list)
     for x in rows:
         by_seg[x["seg"]].append(x)
@@ -151,7 +164,7 @@ def main():
             near = sum(1 for d in dvals if d <= args.near_dist)
             print(f"  dist: med={med:.3f} min={dvals[0]:.3f} max={dvals[-1]:.3f} | "
                   f"quasi-dup ≤{args.near_dist}: {near}/{len(dvals)}")
-        if s != "orfana":
+        if s not in ("orfana-vera", "tombstone-intenz"):
             print(f"  assorbimento (vincitore ≥{args.absorb_factor}× più lungo): "
                   f"{len(absorbed)}/{len(sub)}")
         if s in ("loop2f-contrad", "altro"):
@@ -162,7 +175,8 @@ def main():
     print(f"BERSAGLIO N3 (loop2f-contrad + altro): {n_target} coppie")
     print(f"  di cui con segnale assorbimento-blob: {target_absorbed}  ← baseline da abbassare")
     print(f"FUORI SCOPO (refl-dedup, voluto): {len(by_seg['refl-dedup'])}")
-    print(f"INTEGRITA' (orfane, vincitore sparito): {len(by_seg['orfana'])}")
+    print(f"INTENZIONALE (lapidi sentinella, es. bonifica N1): {len(by_seg['tombstone-intenz'])}")
+    print(f"INTEGRITA' (orfane vere, UUID sparito): {len(by_seg['orfana-vera'])}")
     print("-" * 68)
 
     if args.md:
@@ -183,13 +197,15 @@ def main():
             med = f"{dvals[len(dvals)//2]:.3f}" if dvals else "—"
             near = sum(1 for d in dvals if d <= args.near_dist)
             absorbed = sum(1 for x in sub if x.get("absorbed"))
+            skip_absorb = s in ("orfana-vera", "tombstone-intenz")
             out.append(f"| {s} | {len(sub)} | {med} | {near}/{len(dvals) if dvals else 0} | "
-                       f"{absorbed}/{len(sub) if s!='orfana' else 0} |")
+                       f"{absorbed}/{0 if skip_absorb else len(sub)} |")
         out += ["",
                 f"**Bersaglio N3** = loop2f-contrad + altro = {n_target} coppie, "
                 f"assorbimento-blob su **{target_absorbed}**. "
-                f"refl-dedup ({len(by_seg['refl-dedup'])}) fuori scopo; orfane "
-                f"({len(by_seg['orfana'])}) = integrità.",
+                f"refl-dedup ({len(by_seg['refl-dedup'])}) fuori scopo; lapidi intenzionali "
+                f"({len(by_seg['tombstone-intenz'])}, N1); orfane vere "
+                f"({len(by_seg['orfana-vera'])}) = integrità.",
                 "",
                 "## Coppie bersaglio con assorbimento (atomo perso dentro un blob più lungo)",
                 ""]
