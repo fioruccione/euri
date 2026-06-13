@@ -113,6 +113,10 @@ def _create_todo_index(r: redis.Redis):
         schema = (
             TextField("$.content", as_name="content"),
             NumericField("$.due_at", as_name="due_at", sortable=True),
+            # created_at indicizzato: is_duplicate_todo filtra i todo creati OGGI via
+            # @created_at:[...]; senza questo campo la query falla (SEARCH_SYNTAX) e il
+            # dedup dei todo resta silenziosamente inattivo. Coerente con memories/notes.
+            NumericField("$.created_at", as_name="created_at", sortable=True),
             TagField("$.status", as_name="status"),
             TagField("$.priority", as_name="priority"),
         )
