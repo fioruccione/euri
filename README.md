@@ -197,6 +197,14 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 
 ---
 
+## Localizzazione (uso in un'altra lingua)
+
+Euri parla italiano per default. La **lingua** delle risposte vive nei prompt (`config.SYSTEM_PROMPT`, l'hint della Silent Chat, EURI_CONTEXT.md): tradurli sposta la conversazione.
+
+Un punto merita attenzione a parte: l'**àncora temporale** iniettata nel contesto del modello a ogni turno (`core/brain.py`, "Data e ora corrente: …"). È resa **esplicitamente in italiano** dagli array `_GIORNI` e `_MESI` in `utils/date_utils.py` — *non* via `strftime('%A'/'%B')`. È una scelta deliberata: `strftime` segue il locale di sistema (spesso `C/POSIX` → giorno in inglese, es. "Saturday"), e un modello che risponde in italiano tende a ignorare un'àncora in lingua straniera, confabulando un cliché ("è venerdì sera") invece di leggere il dato. Scrivere la data nella lingua della conversazione la rende un'àncora forte. **Per un'altra lingua:** tradurre `_GIORNI`/`_MESI` (e l'etichetta "Data e ora corrente" in `brain.py`). `dt.weekday()` è 0=lunedì, quindi l'ordine degli array parte dal lunedì.
+
+---
+
 ## Changelog
 
 Versione corrente: **V2.20**. Lo storico completo delle modifiche è in [CHANGELOG.md](CHANGELOG.md).

@@ -70,6 +70,10 @@ def from_timestamp(ts: float | None) -> datetime | None:
     return datetime.fromtimestamp(ts, tz=config.TIMEZONE)
 
 
+# Giorni e mesi in italiano, espliciti. NON usiamo strftime('%A'/'%B') perché
+# dipendono dal locale di sistema (spesso C/POSIX → giorno in inglese). Per usare
+# Euri in un'altra lingua: tradurre questi due array (e vedere la nota nel README).
+_GIORNI = ["lunedì","martedì","mercoledì","giovedì","venerdì","sabato","domenica"]
 _MESI = ["gennaio","febbraio","marzo","aprile","maggio","giugno",
          "luglio","agosto","settembre","ottobre","novembre","dicembre"]
 
@@ -79,3 +83,20 @@ def format_datetime(dt: datetime | None) -> str:
         return "nessuna scadenza"
     mese = _MESI[dt.month - 1]
     return f"{dt.day} {mese} {dt.year} alle {dt.strftime('%H:%M')}"
+
+
+def format_datetime_full(dt: datetime | None) -> str:
+    """
+    Data e ora in italiano CON il giorno della settimana, per l'àncora temporale
+    iniettata nel contesto LLM (es. "sabato 13 giugno 2026, ore 17:18").
+
+    Esplicita di proposito: un'àncora resa via strftime('%A') esce nella lingua del
+    locale di sistema — tipicamente inglese ("Saturday") — e un modello che risponde
+    in italiano la ignora, preferendo un cliché ("è venerdì sera"). Scriverla nella
+    lingua della conversazione la rende un'àncora forte. dt.weekday(): 0=lunedì.
+    """
+    if dt is None:
+        return "data sconosciuta"
+    giorno = _GIORNI[dt.weekday()]
+    mese = _MESI[dt.month - 1]
+    return f"{giorno} {dt.day} {mese} {dt.year}, ore {dt.strftime('%H:%M')}"
