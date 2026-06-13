@@ -24,6 +24,7 @@ import config
 from utils.date_utils import now, to_timestamp
 from redis.commands.search.query import Query
 from utils.obsidian_sync import write_insight
+from core.pulse import pulse_emit
 
 
 class DreamEngine:
@@ -113,6 +114,7 @@ class DreamEngine:
     def _run_dream_cycle(self):
         """Esegue un ciclo completo di sogni (Loop 2b) e validazione (Loop 2c)."""
         logger.info("Dream Engine: inizio ciclo onirico")
+        pulse_emit(self._r, "dream", "intero", "cycle_start", salience=0.25)
         try:
             # 1. Trova domini unici
             domains = self._get_unique_domains()
@@ -497,6 +499,8 @@ Rispondi SOLO con SÌ o NO."""
                         self._r.delete(sid)
                         
                     logger.success(f"Dream Engine: Insight PROMOSSO! (convergenze: {convergences})")
+                    pulse_emit(self._r, "insight", "intero", "promoted",
+                               payload={"convergences": convergences}, salience=0.65)
                     promoted_count += 1
                     
                     # Scrivi nel vault di Obsidian
@@ -1135,6 +1139,8 @@ Rispondi SOLO con JSON valido:
                 # convergenza (opzione b) — torna a vivere solo se la realtà ti richiama.
                 self._r.json().set(doc.id, "$.demoted_once", True)
                 logger.info(f"Dream Engine: Insight retrocesso a candidate (ID: {doc.id})")
+                pulse_emit(self._r, "insight", "intero", "demoted",
+                           payload={"id": str(doc.id)[-12:]}, salience=0.5)
 
             # Gate 2: più vecchio di TTL_DAYS → elimina
             q_delete = Query(
@@ -1524,6 +1530,8 @@ Rispondi SOLO con la sintesi. Niente intestazioni."""
                     f"Loop 2e: consolidate {len(cluster)} memorie → {mid[:8]}… "
                     f"(dominio: {seed_domain})"
                 )
+                pulse_emit(self._r, "consolidation", "intero", "consolidated",
+                           payload={"n": len(cluster), "domain": seed_domain}, salience=0.4)
 
             if consolidated:
                 logger.info(f"Loop 2e: {consolidated} consolidazioni completate")

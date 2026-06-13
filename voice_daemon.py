@@ -25,6 +25,7 @@ from voice.tts import TTS
 from voice.visual_gate import VisualGate
 from voice.speaker_auth import SpeakerAuth, ENROLL_UTTERANCES
 
+from core.pulse import pulse_emit
 from core.intent_router import (
     Intent, classify, extract_content_after_trigger,
     TEACH_END_SIGNALS, TRANSLATE_END_SIGNALS,
@@ -1662,6 +1663,13 @@ class VoiceDaemon:
                     for low, high, eligible_fn, msg_fn in _LEVELS:
                         if low <= minutes_left <= high and eligible_fn(reminded, dt_since):
                             self.memory.mark_reminded(todo["id"])
+                            # Senso "orologio": una scadenza ha varcato una soglia. Più
+                            # vicina/scaduta → più saliente. source=extero (il tempo del mondo).
+                            pulse_emit(self.r, "clock", "extero", "threshold",
+                                       payload={"content": todo.get("content", "")[:60],
+                                                "minutes_left": round(minutes_left),
+                                                "present": user_present},
+                                       salience=max(0.3, min(0.95, 1 - minutes_left / 60)))
                             if user_present:
                                 msg = msg_fn(todo)
                                 logger.info(f"Reminder vocale: {todo['content'][:50]}")
@@ -1733,6 +1741,9 @@ class VoiceDaemon:
             while self._running:
                 # Saluto al rientro: VisualGate ha appena rilevato presenza dopo assenza
                 if self.visual_gate.consume_just_activated():
+                    # Senso "presenza": Stefano è rientrato nel campo visivo. source=extero.
+                    pulse_emit(self.r, "presence", "extero", "arrival",
+                               payload={"first": self._first_visual_activation}, salience=0.7)
                     if self._first_visual_activation:
                         # Prima rilevazione dall'avvio: silenzio, solo warm-up modello
                         self._first_visual_activation = False

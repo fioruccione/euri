@@ -268,6 +268,11 @@ EPISODE_MAX_INJECT = 3               # max episodi iniettati nel contesto Ollama
 OBSIDIAN_SYNC_ENABLED = True
 OBSIDIAN_VAULT_PATH = "/home/fio/EuriVault"
 
+# Euri Pulse (Fase 0 — bus afferente, solo osservazione)
+# I sensi esistenti emettono eventi tipizzati su euri:pulse; nessuno li consuma per
+# agire. Kill-switch: a False il polso tace (afferente puro, sicuro lasciarlo on).
+PULSE_ENABLED = True
+
 # CodeRunner — Data Orchestrator (Phase 4)
 # Genera ed esegue codice Python per manipolare file locali.
 CODE_RUNNER_ENABLED = True

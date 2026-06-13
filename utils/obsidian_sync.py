@@ -16,6 +16,7 @@ from watchdog.events import FileSystemEventHandler
 import config
 from utils.date_utils import from_timestamp
 from core.domain_gater import assign_domain
+from core.pulse import pulse_emit
 
 # Per evitare loop infiniti (Euri scrive -> Watchdog legge -> Euri scrive)
 # manteniamo un set dei file modificati da Euri negli ultimi secondi.
@@ -181,7 +182,12 @@ class ObsidianSyncManager:
         """Elabora un file markdown appena salvato dall'utente."""
         if filepath in _ignore_files:
             return
-            
+
+        # Senso "vault": una modifica dal mondo (Stefano edita una nota), non un
+        # self-write di Euri (già filtrato sopra). source=extero.
+        pulse_emit(self.r, "vault", "extero", "change",
+                   payload={"file": os.path.basename(filepath)}, salience=0.6)
+
         # Per evitare colli di bottiglia da salvataggi continui dell'editor,
         # facciamo un debounce o eseguiamo in un thread staccato.
         threading.Thread(target=self._process_file, args=(filepath,), daemon=True).start()
