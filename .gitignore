@@ -37,6 +37,9 @@ Thumbs.db
 *.tmp
 /tmp/
 
+# Screenshot/immagini scratch (nessun .png è tracciato; force-add se serve una figura)
+*.png
+
 # Backup vecchi
 codice aggiornato/
 backup_pre_migration_*/
