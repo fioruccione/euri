@@ -487,6 +487,9 @@ Rispondi SOLO con SÌ o NO."""
                             f"Dream Engine: re-promozione negata (demoto, mai validato "
                             f"dall'uso) — {doc.id[-8:]} con {convergences} convergenze"
                         )
+                        pulse_emit(self._r, "insight", "intero", "repromotion_denied",
+                                   payload={"id": str(doc.id)[-12:], "convergences": convergences},
+                                   salience=0.45)
                         continue
 
                     # Promuovi questo a PROMOTED
