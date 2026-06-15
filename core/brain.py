@@ -395,6 +395,17 @@ class Brain:
             logger.error(f"Errore extract_fact_from_exchange: {e}")
             return ""
 
+    # Header '# Memoria (2026-04-23 11:58:50)' che alcuni contenuti storici portano in
+    # testa: NON deve sopravvivere a una fusione, o la memoria fusa eredita una data vecchia
+    # (caso Realube 15/06: il merge trascinava il timestamp del 23/04, mis-datando il nodo).
+    _MEM_HEADER_RE = re.compile(r'#\s*Memoria\s*\([^)]*\)\s*')
+
+    @classmethod
+    def _strip_memory_header(cls, text: str) -> str:
+        if not text:
+            return text
+        return cls._MEM_HEADER_RE.sub('', text).strip()
+
     def merge_memories(self, existing: str, new: str) -> str:
         """
         Decide se ARRICCHIRE una memoria esistente con una nuova informazione.
@@ -406,6 +417,9 @@ class Brain:
         doppione (il doppione lo consolida il Loop 2e; la conflazione corrompe il dato).
         Su errore LLM ritorna 'DIVERSO' (il chiamante salva separato: nessuna perdita, nessuna conflazione).
         """
+        # Strip degli header '# Memoria (data)' dagli input: il modello non li vede → non li copia.
+        existing = self._strip_memory_header(existing)
+        new = self._strip_memory_header(new)
         prompt = (
             f"Memoria esistente B:\n{existing}\n\n"
             f"Nuova informazione C:\n{new}\n\n"
@@ -426,7 +440,9 @@ class Brain:
                 options={"temperature": 0.2, "num_predict": 2000},
                 think=True,
             )
-            return self._clean(response.message.content or "").strip()
+            # Rete: strip dell'header anche in uscita (se il modello lo rigenera). Innocuo
+            # su 'DIVERSO'/'NESSUNA AGGIUNTA' (non contengono l'header).
+            return self._strip_memory_header(self._clean(response.message.content or ""))
         except Exception as e:
             logger.error(f"Errore merge_memories: {e}")
             return "DIVERSO"
