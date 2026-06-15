@@ -164,8 +164,54 @@ class DreamEngine:
                 self._consolidation_pass()
                 self._consolidation_last_run = time.time()
 
+            # 9. Propagazione di provenienza (invariante A): in coda, così le supersessioni
+            # appena fatte dal 2f e i nodi appena consolidati dal 2e sono valutati nello
+            # stesso ciclo.
+            self._provenance_propagation_pass()
+
         except Exception as e:
             logger.error(f"Errore ciclo Dream Engine: {e}")
+
+    def _provenance_propagation_pass(self):
+        """
+        Invariante A — propagazione di provenienza. Un nodo derivato (`consolidated_from`)
+        la cui fondamenta è caduta — genitori superseded/spariti/da-verificare — viene
+        tenuto SOSPETTO: `provenance_stale=True` (down-rank nel retrieval, vedi
+        memory_manager.search_memories) + `requires_verification=True` (Euri si copre).
+        Fail-safe: si SEGNALA, non si cancella; si auto-guarisce se il rischio torna ok.
+        Ricalcola il rischio DAL VIVO ogni ciclo → propaga le supersessioni (2f/correzioni)
+        ai discendenti, anche quando la base è marcita DOPO la nascita del nodo.
+        """
+        if not getattr(config, "PROVENANCE_PROPAGATION_ENABLED", True):
+            return
+        staled = healed = 0
+        for key in self._r.scan_iter("euri:memory:*"):
+            try:
+                doc = self._r.json().get(key, "$")[0]
+            except Exception:
+                continue
+            parents = doc.get("consolidated_from")
+            if not parents or doc.get("superseded_by"):
+                continue
+            try:
+                risk = self._consolidation_source_risk(parents)
+                is_high = risk["level"] == "high"
+                was_stale = bool(doc.get("provenance_stale"))
+                if is_high and not was_stale:
+                    self._r.json().set(key, "$.provenance_stale", True)
+                    self._r.json().set(key, "$.requires_verification", True)
+                    self._r.json().set(key, "$.consolidation_risk", risk)
+                    staled += 1
+                elif not is_high and was_stale:
+                    self._r.json().set(key, "$.provenance_stale", False)
+                    self._r.json().set(key, "$.consolidation_risk", risk)
+                    healed += 1
+            except Exception as e:
+                logger.debug(f"provenance pass fallito per {key}: {e}")
+        if staled or healed:
+            logger.info(f"Provenienza: {staled} nodi marcati sospetti, {healed} risanati")
+            pulse_emit(self._r, "provenance", "intero", "propagated",
+                       payload={"staled": staled, "healed": healed}, salience=0.55)
 
     # ── Loop 2b: Sogni Onirici ─────────────────────────────────────────────
 

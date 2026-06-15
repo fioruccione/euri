@@ -199,6 +199,24 @@ class MemoryManager:
                 f"Search 3-livelli: {len(merged)} risultati "
                 f"(id:{len(identifiers)} token, semantic:{len(semantic)}, fill)"
             )
+
+            # Invariante A — down-rank di provenienza: un nodo la cui fondamenta è caduta
+            # (`provenance_stale`, propagato dal Dream Engine) viene demoto in fondo —
+            # demozione, NON esclusione → fail-safe: riappare solo se non c'è di meglio,
+            # ma smette di surclassare le ancore pulite. Leggo il flag solo per i pochi
+            # candidati finali; sort STABILE → preserva l'ordine entro i due gruppi.
+            def _prov_stale(rec):
+                if "provenance_stale" in rec:
+                    return bool(rec.get("provenance_stale"))
+                mid = rec.get("id", "")
+                k = mid if str(mid).startswith("euri:memory:") else f"euri:memory:{mid}"
+                try:
+                    v = self.r.json().get(k, "$.provenance_stale")
+                    return bool(v and v[0])
+                except Exception:
+                    return False
+            merged.sort(key=lambda rec: 1 if _prov_stale(rec) else 0)
+
             results = merged[:limit]
             if touch:
                 self._touch_memories(results)

@@ -273,6 +273,12 @@ OBSIDIAN_VAULT_PATH = "/home/fio/EuriVault"
 # agire. Kill-switch: a False il polso tace (afferente puro, sicuro lasciarlo on).
 PULSE_ENABLED = True
 
+# Propagazione di provenienza (invariante A della primitiva cognitiva).
+# Un nodo derivato (consolidated_from) la cui fondamenta è caduta — genitori
+# superseded/spariti/da-verificare — viene tenuto SOSPETTO: provenance_stale (down-rank
+# nel retrieval) + requires_verification (Euri si copre). Fail-safe: segnala, non cancella.
+PROVENANCE_PROPAGATION_ENABLED = True
+
 # CodeRunner — Data Orchestrator (Phase 4)
 # Genera ed esegue codice Python per manipolare file locali.
 CODE_RUNNER_ENABLED = True
