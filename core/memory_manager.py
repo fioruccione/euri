@@ -200,22 +200,8 @@ class MemoryManager:
                 f"(id:{len(identifiers)} token, semantic:{len(semantic)}, fill)"
             )
 
-            # Invariante A — down-rank di provenienza: un nodo la cui fondamenta è caduta
-            # (`provenance_stale`, propagato dal Dream Engine) viene demoto in fondo —
-            # demozione, NON esclusione → fail-safe: riappare solo se non c'è di meglio,
-            # ma smette di surclassare le ancore pulite. Leggo il flag solo per i pochi
-            # candidati finali; sort STABILE → preserva l'ordine entro i due gruppi.
-            def _prov_stale(rec):
-                if "provenance_stale" in rec:
-                    return bool(rec.get("provenance_stale"))
-                mid = rec.get("id", "")
-                k = mid if str(mid).startswith("euri:memory:") else f"euri:memory:{mid}"
-                try:
-                    v = self.r.json().get(k, "$.provenance_stale")
-                    return bool(v and v[0])
-                except Exception:
-                    return False
-            merged.sort(key=lambda rec: 1 if _prov_stale(rec) else 0)
+            # Invariante A — down-rank di provenienza (centralizzato in _demote_provenance_stale).
+            merged = self._demote_provenance_stale(merged)
 
             results = merged[:limit]
             if touch:
@@ -376,6 +362,30 @@ class MemoryManager:
             self._touch_memories(docs)
         return docs
 
+    def _demote_provenance_stale(self, results: list[dict]) -> list[dict]:
+        """
+        Invariante A — down-rank di provenienza, CENTRALIZZATO. Sposta in fondo i nodi
+        la cui fondamenta è caduta (`provenance_stale`, propagato dal Dream Engine) —
+        demozione, non esclusione (fail-safe). Applicato a TUTTI i path che iniettano
+        contesto (semantico, recency, temporale), non solo alla ricerca semantica: senza,
+        un nodo marcio poteva ancora affiorare per pura recenza prima delle ancore pulite
+        (gap trovato in review). Legge il flag solo per i candidati finali; sort stabile.
+        """
+        if not results:
+            return results
+        def _stale(rec):
+            if "provenance_stale" in rec:
+                return bool(rec.get("provenance_stale"))
+            mid = rec.get("id", "")
+            k = mid if str(mid).startswith("euri:memory:") else f"euri:memory:{mid}"
+            try:
+                v = self.r.json().get(k, "$.provenance_stale")
+                return bool(v and v[0])
+            except Exception:
+                return False
+        results.sort(key=lambda rec: 1 if _stale(rec) else 0)
+        return results
+
     def _touch_memories(self, memories: list[dict]):
         """Rinforza memorie realmente usate in retrieval cognitivo."""
         if not memories:
@@ -424,7 +434,12 @@ class MemoryManager:
         source_filter: list[str] | None = None,
         touch: bool = True,
     ) -> list[dict]:
-        return self._search_keyword("*", limit=limit, source_filter=source_filter, touch=touch)
+        # Down-rank di provenienza anche sulla recency (gap di review F3): la base
+        # iniettata da _build_context per pura recenza non deve far affiorare un nodo
+        # marcio prima delle ancore pulite.
+        return self._demote_provenance_stale(
+            self._search_keyword("*", limit=limit, source_filter=source_filter, touch=touch)
+        )
 
     def search_memories_by_timerange(
         self,
@@ -439,7 +454,7 @@ class MemoryManager:
                  .sort_by("created_at", asc=False)
                  .paging(0, limit))
             results = self.r.ft("idx:memories").search(q)
-            return self._hydrate(results.docs, touch=touch)
+            return self._demote_provenance_stale(self._hydrate(results.docs, touch=touch))
         except Exception as e:
             logger.error(f"Errore ricerca temporale: {e}")
             return []

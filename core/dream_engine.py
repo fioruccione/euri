@@ -199,12 +199,23 @@ class DreamEngine:
                 was_stale = bool(doc.get("provenance_stale"))
                 if is_high and not was_stale:
                     self._r.json().set(key, "$.provenance_stale", True)
-                    self._r.json().set(key, "$.requires_verification", True)
                     self._r.json().set(key, "$.consolidation_risk", risk)
+                    # requires_verification è MULTI-CAUSA (lo accende anche il contenuto
+                    # spec-heavy alla nascita). Lo settiamo SOLO se era spento, e marchiamo
+                    # che siamo stati NOI (rv_by_provenance) → così la guarigione potrà
+                    # azzerarlo senza cancellare una verifica dovuta ad altro (fix review F2).
+                    if not doc.get("requires_verification"):
+                        self._r.json().set(key, "$.requires_verification", True)
+                        self._r.json().set(key, "$.rv_by_provenance", True)
                     staled += 1
                 elif not is_high and was_stale:
                     self._r.json().set(key, "$.provenance_stale", False)
                     self._r.json().set(key, "$.consolidation_risk", risk)
+                    # Guarigione vera: azzera requires_verification SOLO se l'avevamo acceso
+                    # noi per la provenienza; se era acceso per conto suo, lo lasciamo.
+                    if doc.get("rv_by_provenance"):
+                        self._r.json().set(key, "$.requires_verification", False)
+                        self._r.json().set(key, "$.rv_by_provenance", False)
                     healed += 1
             except Exception as e:
                 logger.debug(f"provenance pass fallito per {key}: {e}")
