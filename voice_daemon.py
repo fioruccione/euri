@@ -156,6 +156,7 @@ class VoiceDaemon:
         self._web_pending: dict = {}  # contesto ultima ricerca web (per "approfondisci" / "salva")
         self._pending_todo: _PendingState | None = None   # todo in attesa di conferma (timeout 60s)
         self._pending_write: _PendingState | None = None  # richiesta scrittura file in attesa (timeout 120s)
+        self._awaiting_reaction: _PendingState | None = None  # insight su cui Euri ha chiesto conferma, in attesa della reazione di Stefano (timeout 300s)
         self._last_speech_content: str = ""      # ultima risposta lunga di Euri (per "scrivilo")
         self._last_speech_ts: float = 0.0        # timestamp di _last_speech_content (TTL 300s)
         self._last_user_text: str = ""           # ultimo prompt utente (Audit di Coerenza)
@@ -501,6 +502,15 @@ class VoiceDaemon:
 
     _DATA_FORMAT_RE = re.compile(r'\b(csv|excel|xlsx?|pdf|grafico|tabella|ods|odt|odp)\b', re.I)
 
+    # Trigger del briefing di curiosità (bootstrap): Stefano invita Euri a tirare fuori
+    # un suo "sogno"/insight. Volutamente stretto — è un'impalcatura, non si overfitta.
+    _DREAM_BRIEFING_RE = re.compile(
+        r'\b(cosa\s+hai\s+sognato|che\s+cosa\s+hai\s+sognato|hai\s+(?:\w+\s+){0,3}sognato'
+        r'|i\s+tuoi\s+sogni|i\s+tuoi\s+pensieri|una\s+(tua\s+)?intuizione'
+        r'|cosa\s+ti\s+(incuriosisce|frulla)|hai\s+(qualche\s+)?(dubbio|curiosità))\b',
+        re.IGNORECASE
+    )
+
     def _handle_pending_write(self, text: str):
         """Gestisce la risposta di conferma/dettaglio/annullamento per una richiesta di scrittura file."""
         _CANCEL = re.compile(r'\b(no|annulla|lascia\s+perdere|non\s+importa|non\s+voglio|scrap)\b', re.I)
@@ -538,6 +548,65 @@ class VoiceDaemon:
             self._speak(f"Documento creato e salvato come {fname}.")
         else:
             self._speak("Errore nella creazione del documento.")
+
+    def _handle_dream_briefing(self, topic: str | None = None):
+        """Bootstrap della curiosità: pesca un insight promosso non ancora groundato e lo
+        CHIEDE a Stefano come un bambino ('è vero che...?'). La sua risposta sarà catturata
+        come lezione ri-sognabile (vedi _handle_reaction). Additivo, fail-open.
+        `topic` valorizzato = richiesta dirigibile ("hai sognato sul Poseidon?")."""
+        from core.reaction import (pick_ungrounded_insight, formulate_curiosity_question,
+                                    gather_grounded_evidence, judge_topic_grounding)
+        # Familiarità RAG (porta, non muro): si recupera l'evidenza VISSUTA sul tema e la si
+        # mette DAVANTI a Gemma, che giudica ragionando solo su quella — non dalla sua testa
+        # (quello sarebbe il muro del plausibility-gate). Due livelli: (1) niente evidenza →
+        # ignoto, gate gratis senza modello; (2) c'è evidenza → Gemma scioglie il mix
+        # ("conosco i clienti ma non un Rossi").
+        evidence = None
+        if topic:
+            evidence = gather_grounded_evidence(self.r, topic, embedder=self.embedder)
+            if not evidence:
+                self._speak("Mmh, di questo non mi pare di avere traccia nei nostri discorsi — è una cosa nuova, o me la sono persa?")
+                return
+            verdict, msg = judge_topic_grounding(topic, evidence)
+            if verdict != "FAMILIARE":
+                self._speak(msg or "Su questo specifico non mi pare di avere traccia — è una cosa nuova?")
+                return
+        insight = pick_ungrounded_insight(self.r, topic=topic, embedder=self.embedder)
+        if not insight:
+            if topic:
+                self._speak("Su quello, per ora, non ho un sogno nuovo da chiederti.")
+            else:
+                self._speak("Per ora non ho un sogno nuovo su cui chiederti conferma.")
+            return
+        # Àncora la domanda al tema chiesto + evidenza vissuta (i sogni astraggono via il nome)
+        question = formulate_curiosity_question(insight, topic=topic, evidence=evidence)
+        if not question:
+            self._speak("Avevo qualcosa in mente ma adesso non riesco a metterlo a fuoco.")
+            return
+        self._awaiting_reaction = _PendingState({"insight": insight}, timeout=300)
+        self.memory.log_conversation("Euri", question)
+        self._speak(question)
+
+    def _handle_reaction(self, text: str):
+        """Stefano ha risposto alla domanda di curiosità. La risposta è la verità ESTERNA
+        che fonda o smentisce l'insight: la cattura (sintesi della lezione su Qwen, lenta)
+        gira in BACKGROUND per non bloccare la voce. Euri dà solo un cenno naturale."""
+        pending = self._awaiting_reaction
+        self._awaiting_reaction = None
+        if not pending:
+            return
+        insight = pending.data["insight"]
+        self.memory.log_conversation("Stefano", text)
+
+        def _bg(ins=insight, reaction=text):
+            try:
+                from core.reaction import capture_reaction
+                capture_reaction(self.memory, ins, reaction)
+            except Exception as e:
+                logger.error(f"Cattura reazione fallita: {e}")
+
+        threading.Thread(target=_bg, daemon=True).start()
+        self._speak("Ah, buono a sapersi. Ci rifletto su.")
 
     def _handle_save_note(self, text: str):
         from core.validator import validate_payload
@@ -1356,6 +1425,16 @@ class VoiceDaemon:
                 self._handle_pending_write(text)
                 return
 
+        # Reazione pending: Euri ha chiesto conferma su un suo insight (curiosità) e attende
+        # la risposta di Stefano per trasformarla in lezione ri-sognabile (timeout 300s).
+        if self._awaiting_reaction:
+            if self._awaiting_reaction.expired():
+                self._awaiting_reaction = None
+                logger.debug("Reaction pending scaduta (timeout 300s)")
+            else:
+                self._handle_reaction(text)
+                return
+
         # Audit memory: attende sì/no per cancellare le memorie rumore
         if self._audit_confirm_mode:
             self._handle_audit_confirm(text)
@@ -1398,6 +1477,28 @@ class VoiceDaemon:
             self._last_speech_ts = 0.0
             self.memory.log_conversation("Euri", reply)
             self._speak(reply)
+            return
+
+        # Briefing di curiosità (trigger/bootstrap): Stefano tira fuori i "sogni" di Euri →
+        # lei chiede da bambina se un suo insight non-groundato è vero ("è vero che...?").
+        # NON è ancora la primitiva di curiosità (sarebbe Euri a iniziare da sola): è
+        # l'impalcatura che genera le risposte da cui impararla. La reazione di Stefano
+        # rientra poi via _awaiting_reaction → _handle_reaction.
+        _briefing_m = self._DREAM_BRIEFING_RE.search(text)
+        if _briefing_m:
+            self.memory.log_conversation("Stefano", text)
+            # Richiesta STRUTTURATA: il tema è ciò che segue il trigger, ripulito dai
+            # connettori ("…sognato qualcosa SUL pallet Poseidon" → "pallet Poseidon").
+            _rest = text[_briefing_m.end():].strip(" ?.,;:")
+            _CONN = {"di", "su", "sul", "sulla", "sullo", "sui", "sugli", "del", "della",
+                     "dei", "degli", "riguardo", "a", "circa", "qualcosa", "altro", "tipo",
+                     "nuovo", "il", "lo", "la", "i", "gli", "le", "un", "uno", "una",
+                     "che", "cosa"}
+            _w = _rest.split()
+            while _w and _w[0].lower().strip(",.") in _CONN:
+                _w.pop(0)
+            _topic = " ".join(_w).strip()
+            self._handle_dream_briefing(topic=_topic if len(_topic) >= 3 else None)
             return
 
         _t_classify = time.perf_counter()
