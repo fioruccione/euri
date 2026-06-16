@@ -1,11 +1,22 @@
-# Euri — Sistema Cognitivo Adattivo
+# Euri
 
-Euri è un assistente personale intelligente, vocale e **completamente offline-first**, che evolve insieme a te.  
-Non si limita ad ascoltare e rispondere: memorizza, organizza, riflette sulle tue conversazioni per generare nuove intuizioni, e ora **può elaborare i tuoi file locali e analizzare immagini** tramite codice Python generato al volo.
+*Una mente artificiale che vive nel tempo: ricorda, riflette, e sa di poter sbagliare.*
 
-> **Deployment attuale:** Workstation Linux (Pop!_OS) con doppia GPU NVIDIA RTX 4060 Ti 16GB.  
+La maggior parte degli assistenti dimentica tutto quando chiudi la conversazione. **Euri no.** Ricorda quello che le dici — giorni, settimane dopo — ci pensa sopra quando non le parli, si forma idee proprie, e tiene traccia di *da dove* viene ciò che crede. Soprattutto: sa che un suo ricordo può essere sbagliato, e si lascia correggere.
+
+Non è un prodotto con una lista di funzioni. È un'**implementazione funzionante di cognizione persistente** — l'idea che una mente artificiale, per essere davvero utile a *una* persona, debba vivere nel tempo invece di ripartire da zero a ogni avvio. Gira **interamente in locale** (nessuna API, nessun cloud) e impara da un solo interlocutore reale, giorno dopo giorno.
+
+### Un momento, invece di una promessa
+
+Una notte, nel suo ciclo di consolidamento, Euri ha "sognato" una connessione su un progetto reale — un pallet in plastica riciclata. Il mattino dopo si è incuriosita e ha chiesto, esitando: *"ma è vero che per quel progetto ti serve integrare Obsidian… o è un'associazione che mi sono inventata io?"* La parte tecnica — la mescola di polimeri — era esatta. L'integrazione con Obsidian se l'era inventata. Glielo si è detto, e lei ha **separato il vero da ciò che aveva confabulato**, salvando la lezione come un ricordo nuovo: che un giorno potrà tornare a sognare.
+
+Nessun modello di linguaggio, da solo, fa questo. Euri lo fa perché sotto non c'è soltanto un LLM, ma un'**architettura di memoria** che gli dà ciò che gli manca: continuità nel tempo, provenienza di ciò che sa, e la possibilità di essere corretto senza riscrivere tutto.
+
+> **Dov'è in esecuzione oggi:** workstation Linux (Pop!_OS), doppia GPU NVIDIA RTX 4060 Ti 16GB — tutto in locale.
 
 ---
+
+*Quello che segue è* come *Euri fa tutto questo. Non è il contorno — è la prova.*
 
 ## Architettura Cognitiva (V2.20)
 
