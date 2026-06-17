@@ -899,6 +899,33 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
             logger.debug(f"Loop 2g: errore LLM classify — {e}")
             return "ambiguous"
 
+    def _synthesize_lesson_from_correction(self, prompt_orig: str, risposta_euri: str, correzione: str) -> str | None:
+        """Loop 2g: distilla la correzione di Stefano in una LEZIONE (il principio), come la
+        reaction-loop — non archivia il testo grezzo. Gira di notte → modello del sogno (Qwen),
+        think=False per affidabilità. Ritorna None se vuota (l'audit usa il grezzo come fallback)."""
+        msg = (
+            f"A una domanda di Stefano — «{(prompt_orig or '')[:300]}» — avevi risposto:\n"
+            f"«{(risposta_euri or '')[:500]}»\n\n"
+            f"Stefano ti ha CORRETTO:\n«{(correzione or '')[:500]}»\n\n"
+            f"Scrivi in prima persona la LEZIONE che ne ricavi: il principio concreto da non "
+            f"sbagliare più, e dove ti eri sbagliata. NON un riassunto della correzione, NON un "
+            f"ringraziamento — il punto che porti a casa e che potresti dover riaffrontare. Max 3 frasi."
+        )
+        try:
+            resp = self._ollama_chat(
+                model=config.DREAM_OLLAMA_MODEL,
+                messages=[{"role": "user", "content": msg}],
+                options={"temperature": 0.4, "num_predict": 2500},
+                think=False,
+            )
+            out = (resp.message.content or "")
+            if "<channel|>" in out:
+                out = out.split("<channel|>", 1)[-1]
+            return out.strip() or None
+        except Exception as e:
+            logger.debug(f"Loop 2g: sintesi lezione fallita — {e}")
+            return None
+
     def _audit_corrections_pass(self):
         """
         Loop 2g — Audit di Coerenza.
@@ -984,9 +1011,15 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
                             continue
 
                 elif verdict == "bad_reasoning" and self._memory_manager:
-                    # La correzione utente diventa una lesson — passive memory.
-                    lesson_text = doc.get("correzione_user", "").strip()
-                    if lesson_text and len(lesson_text) > 10:
+                    # COME la reaction-loop: distilla la correzione in una LEZIONE (il principio
+                    # da non sbagliare più), non archiviare il testo grezzo dello sfogo ("ti boccio,
+                    # secondo me viene 15") che non è richiamabile come regola. Fallback al grezzo
+                    # se la sintesi tace (fail-safe: non si perde mai la correzione).
+                    raw = doc.get("correzione_user", "").strip()
+                    if raw and len(raw) > 10:
+                        lesson_text = self._synthesize_lesson_from_correction(
+                            doc.get("prompt_original", ""), doc.get("risposta_euri", ""), raw
+                        ) or raw
                         try:
                             self._memory_manager.save_memory(
                                 content=lesson_text,
@@ -1427,6 +1460,14 @@ Rispondi SOLO con JSON valido:
                         continue
                     doc = d[0]
                     if doc.get("source") in SKIP_SOURCES:
+                        continue
+                    # Soft-delete: una foglia superseded NON deve rientrare nella consolidazione.
+                    # Loop 2e fa scan_iter grezzo + KNN con client raw → bypassa il filtro di
+                    # retrieval (_hydrate). Senza questo, una correzione a livello foglia veniva
+                    # DISFATTA: la foglia morta (es. collisione-cognome Stefano/Leonardo) veniva
+                    # ri-pescata e ri-cristallizzata ogni ciclo. Il filtro qui copre anche i vicini
+                    # KNN, che sono ristretti a qualified_by_id. (Costruzione, non foglia.)
+                    if doc.get("superseded_by"):
                         continue
                     if doc.get("requires_verification"):
                         continue
