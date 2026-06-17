@@ -502,12 +502,13 @@ class VoiceDaemon:
 
     _DATA_FORMAT_RE = re.compile(r'\b(csv|excel|xlsx?|pdf|grafico|tabella|ods|odt|odp)\b', re.I)
 
-    # Trigger del briefing di curiosità (bootstrap): Stefano invita Euri a tirare fuori
-    # un suo "sogno"/insight. Volutamente stretto — è un'impalcatura, non si overfitta.
-    _DREAM_BRIEFING_RE = re.compile(
-        r'\b(cosa\s+hai\s+sognato|che\s+cosa\s+hai\s+sognato|hai\s+(?:\w+\s+){0,3}sognato'
-        r'|i\s+tuoi\s+sogni|i\s+tuoi\s+pensieri|una\s+(tua\s+)?intuizione'
-        r'|cosa\s+ti\s+(incuriosisce|frulla)|hai\s+(qualche\s+)?(dubbio|curiosità))\b',
+    # Briefing di curiosità — NON più il regex robotico che decideva da solo (e scambiava
+    # "ultimamente" per un tema). Questo è solo un PRE-FILTRO LARGO (recall, ~0ms): la frase
+    # accenna a sogni/pensieri/intuizioni? Se sì, è il MODELLO a capire se è davvero una
+    # richiesta sui sogni di Euri e a estrarne il tema (vedi _understand_briefing).
+    _BRIEFING_HINT_RE = re.compile(
+        r'\b(sogn\w*|pensa\w*|pensi\w*|pensie\w*|pensat\w*|intui\w*|curios\w*|'
+        r'frull\w*|immagin\w*|elucubr\w*|fantastic\w*)',
         re.IGNORECASE
     )
 
@@ -549,6 +550,44 @@ class VoiceDaemon:
         else:
             self._speak("Errore nella creazione del documento.")
 
+    def _understand_briefing(self, text: str) -> tuple[bool, str | None]:
+        """Intent-LLM al posto del regex robotico: il MODELLO capisce se Stefano chiede dei
+        MIEI sogni/intuizioni (in qualunque modo lo dica) e ne estrae il TEMA capendolo, non
+        contando connettori. Fail-CLOSED: in dubbio NON è briefing — meglio una chat normale
+        che una domanda di curiosità a vuoto."""
+        prompt = (
+            f"Stefano ti ha detto: «{text.strip()}»\n\n"
+            f"Ti sta chiedendo a TE (Euri) cosa hai SOGNATO o intuito — i TUOI sogni o le "
+            f"connessioni che ti sono venute? (NON conta se racconta un SUO sogno, o parla di "
+            f"sogni in generale.)\n"
+            f"Se SÌ, su quale TEMA concreto te lo chiede (es. 'Poseidon', 'i clienti'), oppure "
+            f"è GENERICO?\n\n"
+            f"Rispondi in UNA riga ESATTA: «SI | <tema>» oppure «SI | -» (se generico) oppure «NO»."
+        )
+        try:
+            from core.ollama_client import chat_client
+            resp = chat_client.chat(
+                model=config.OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.0, "num_predict": 120},
+                think=False,
+            )
+            out = (resp.message.content or "")
+            if "<channel|>" in out:
+                out = out.split("<channel|>", 1)[-1]
+            out = out.strip()
+        except Exception as e:
+            logger.debug(f"_understand_briefing: {e}")
+            return (False, None)
+        head = out.split("|", 1)[0].strip().upper().rstrip(".")
+        if head not in ("SI", "SÌ"):
+            return (False, None)
+        topic = None
+        if "|" in out:
+            t = out.rsplit("|", 1)[-1].strip(" -.,;:")
+            topic = t if len(t) >= 3 else None
+        return (True, topic)
+
     def _handle_dream_briefing(self, topic: str | None = None):
         """Bootstrap della curiosità: pesca un insight promosso non ancora groundato e lo
         CHIEDE a Stefano come un bambino ('è vero che...?'). La sua risposta sarà catturata
@@ -583,7 +622,7 @@ class VoiceDaemon:
         if not question:
             self._speak("Avevo qualcosa in mente ma adesso non riesco a metterlo a fuoco.")
             return
-        self._awaiting_reaction = _PendingState({"insight": insight}, timeout=300)
+        self._awaiting_reaction = _PendingState({"insight": insight}, timeout=1800)  # 30 min: parli, ti distrai, torni — la reazione resta catturabile (era 300s, scadeva e ri-triggerava)
         self.memory.log_conversation("Euri", question)
         self._speak(question)
 
@@ -1484,22 +1523,16 @@ class VoiceDaemon:
         # NON è ancora la primitiva di curiosità (sarebbe Euri a iniziare da sola): è
         # l'impalcatura che genera le risposte da cui impararla. La reazione di Stefano
         # rientra poi via _awaiting_reaction → _handle_reaction.
-        _briefing_m = self._DREAM_BRIEFING_RE.search(text)
-        if _briefing_m:
-            self.memory.log_conversation("Stefano", text)
-            # Richiesta STRUTTURATA: il tema è ciò che segue il trigger, ripulito dai
-            # connettori ("…sognato qualcosa SUL pallet Poseidon" → "pallet Poseidon").
-            _rest = text[_briefing_m.end():].strip(" ?.,;:")
-            _CONN = {"di", "su", "sul", "sulla", "sullo", "sui", "sugli", "del", "della",
-                     "dei", "degli", "riguardo", "a", "circa", "qualcosa", "altro", "tipo",
-                     "nuovo", "il", "lo", "la", "i", "gli", "le", "un", "uno", "una",
-                     "che", "cosa"}
-            _w = _rest.split()
-            while _w and _w[0].lower().strip(",.") in _CONN:
-                _w.pop(0)
-            _topic = " ".join(_w).strip()
-            self._handle_dream_briefing(topic=_topic if len(_topic) >= 3 else None)
-            return
+        # Pre-filtro largo (recall): la frase accenna a sogni/pensieri? Se sì, il MODELLO
+        # decide se è davvero una richiesta sui sogni di Euri e ne estrae il TEMA — capendo,
+        # non contando connettori (così "cosa hai sognato ULTIMAMENTE" non scambia l'avverbio
+        # per un tema, e "hai pensato al Poseidon?" funziona senza la frase-magica).
+        if self._BRIEFING_HINT_RE.search(text):
+            _is_briefing, _topic = self._understand_briefing(text)
+            if _is_briefing:
+                self.memory.log_conversation("Stefano", text)
+                self._handle_dream_briefing(topic=_topic)
+                return
 
         _t_classify = time.perf_counter()
         intent, _ = classify(text)

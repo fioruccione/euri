@@ -149,44 +149,58 @@ def gather_grounded_evidence(r, topic: str, embedder=None, limit: int = 6) -> li
     if not docs:
         return []
 
-    # Semantico (embedder caldo): snippet concettualmente vicini al tema
+    # ENTITÀ prima (segnale forte): i termini DISTINTIVI del tema sono davvero nel vissuto?
+    # Un nome reale (Poseidon, Fanti) sta qui; il nonsense (Dracula, marmotte, alieni) no.
+    # La sola vicinanza di CONCETTO non basta — era quella che faceva passare tutto
+    # (Dracula -> timestamp, marmotte -> "litigare"/Simone): soglia 0.30 = no-op.
+    n = len(docs)
+    ceiling = max(1, int(0.35 * n))  # oltre il 35% = parola-cornice ubiquitaria, non entità
+    words = set(re.findall(r"\w{4,}", topic.lower()))
+    distinctive = {
+        w for w in words
+        if 0 < sum(1 for o in docs if re.search(rf"\b{re.escape(w)}\b", o["content"].lower())) <= ceiling
+    }
+    out, seen = [], set()
+    for i, o in enumerate(docs):
+        if any(re.search(rf"\b{re.escape(w)}\b", o["content"].lower()) for w in distinctive):
+            out.append(o["content"])
+            seen.add(i)
+            if len(out) >= limit:
+                return out
+
+    # SEMANTICO RELATIVO, non assoluto. e5-large è ANISOTROPO: qualunque query fa ~0.79 con
+    # qualunque testo (Dracula sta a 0.80 come tutto) → una soglia assoluta (0.55) prende tutto
+    # = no-op, ed è ESATTAMENTE perché il gate lasciava passare il nonsense. Un match VERO
+    # SPICCA sopra il rumore: conta lo scarto dal coseno MEDIO (max-mean), non il valore.
+    # Calibrato su dati veri/finti (17/06): finti max-mean ≤0.055, veri ≥0.091 → soglia 0.07.
     if embedder is not None and getattr(embedder, "available", False):
         import numpy as np
         q = embedder.encode(topic, mode="query")
         if q is not None:
             q = np.asarray(q, dtype=np.float32)
             q /= (np.linalg.norm(q) + 1e-9)
-            scored = []
+            sims = []
             for o in docs:
                 e = o.get("embedding")
                 if not e:
                     continue
                 v = np.asarray(e, dtype=np.float32)
                 v /= (np.linalg.norm(v) + 1e-9)
-                s = float(q @ v)
-                if s >= 0.30:
-                    scored.append((s, o["content"]))
-            scored.sort(key=lambda x: -x[0])
-            return [c for _, c in scored[:limit]]
-
-    # Keyword distintiva (IDF-like): termini presenti ma NON ubiquitari (entità, non cornice)
-    n = len(docs)
-    ceiling = max(1, int(0.35 * n))
-    words = set(re.findall(r"\w{4,}", topic.lower()))
-    distinctive = set()
-    for w in words:
-        cnt = sum(1 for o in docs if re.search(rf"\b{re.escape(w)}\b", o["content"].lower()))
-        if 0 < cnt <= ceiling:
-            distinctive.add(w)
-    if not distinctive:
-        return []
-    out = []
-    for o in docs:
-        cl = o["content"].lower()
-        if any(re.search(rf"\b{re.escape(w)}\b", cl) for w in distinctive):
-            out.append(o["content"])
-            if len(out) >= limit:
-                break
+                sims.append((float(q @ v), o["content"]))
+            if sims:
+                mean = sum(s for s, _ in sims) / len(sims)
+                sims.sort(key=lambda x: -x[0])
+                # familiare (concettualmente) solo se il top spicca abbastanza sopra il rumore
+                if sims[0][0] - mean >= 0.07:
+                    have = set(out)
+                    for s, c in sims:
+                        if s - mean < 0.07:
+                            break
+                        if c not in have:
+                            out.append(c)
+                            have.add(c)
+                            if len(out) >= limit:
+                                break
     return out
 
 
@@ -342,6 +356,34 @@ def synthesize_lesson(insight: dict, reaction_text: str) -> str | None:
         return None
 
 
+def classify_reaction_verdict(insight: dict, reaction_text: str) -> str:
+    """La reazione di Stefano CONFERMA o SMENTISCE il presupposto della connessione? È un
+    giudizio diretto sì/no (NON conoscenza di dominio) → dentro il soffitto di Gemma,
+    think=False, veloce. Ritorna CONFERMA | SMENTITA | PARZIALE. Fail-open: CONFERMA — non
+    si demota un insight per un errore del classificatore."""
+    prompt = (
+        f"Le avevi chiesto se era vero il presupposto di una tua connessione:\n"
+        f"\"{_insight_brief(insight)}\"\n\n"
+        f"Stefano ha risposto:\n\"{reaction_text.strip()}\"\n\n"
+        f"La sua risposta CONFERMA il presupposto, lo SMENTISCE del tutto, o ne conferma una "
+        f"parte e ne smentisce un'altra? Rispondi con UNA sola parola: CONFERMA, SMENTITA, PARZIALE."
+    )
+    try:
+        response = chat_client.chat(
+            model=config.OLLAMA_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0.0, "num_predict": 200},
+            think=False,
+        )
+        out = _clean(response.message.content or "").upper()
+        for v in ("SMENTITA", "PARZIALE", "CONFERMA"):
+            if v in out:
+                return v
+    except Exception as e:
+        logger.error(f"classify_reaction_verdict: {e}")
+    return "CONFERMA"
+
+
 def capture_reaction(memory, insight: dict, reaction_text: str, *, emit: bool = True) -> dict:
     """
     Cattura la reazione di Stefano a un insight e la trasforma in lezione ri-sognabile.
@@ -380,13 +422,26 @@ def capture_reaction(memory, insight: dict, reaction_text: str, *, emit: bool = 
         db = insight.get("domain_b")
         if db:
             r.json().set(key, "$.tags", [db])  # pescabile anche dall'altro polo
-        # 4) evidence-update sull'insight: la prima verità ESTERNA allo strato insight
+        # 4) evidence-update sull'insight: la prima verità ESTERNA allo strato insight, col VERDETTO
         if insight_id:
+            verdict = classify_reaction_verdict(insight, reaction_text)
             r.json().set(f"euri:insight:{insight_id}", "$.external_reaction", {
                 "reaction": reaction_text.strip(),
                 "lesson_id": lesson_id,
+                "verdict": verdict,
                 "ts": time.time(),
             })
+            out["verdict"] = verdict
+            # SMENTITA piena → DEMOTA col meccanismo del Dream Engine (status=candidate): esce
+            # da search_insights (promoted-only) → non più iniettato in RAG, si spegne al giorno
+            # 30. PARZIALE/CONFERMA restano (hanno un'ancora vera). È così che un insight
+            # contaminato (es. Leonardo/identità) smette di affiorare dopo la tua correzione.
+            if verdict == "SMENTITA":
+                try:
+                    r.json().set(f"euri:insight:{insight_id}", "$.status", "candidate")
+                    logger.info(f"Reaction: insight {insight_id[:8]} SMENTITO → demoto a candidate")
+                except Exception as e:
+                    logger.error(f"demote insight fallito: {e}")
         out["persisted"] = True
     except Exception as e:
         logger.error(f"capture_reaction: arricchimento nodo fallito (lezione salvata): {e}")
