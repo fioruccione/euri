@@ -1469,6 +1469,12 @@ Rispondi SOLO con JSON valido:
                     # KNN, che sono ristretti a qualified_by_id. (Costruzione, non foglia.)
                     if doc.get("superseded_by"):
                         continue
+                    # Opzione A — "speso, non cancellato": un frammento GIÀ consolidato resta in
+                    # retrieval normale ma NON rientra in future consolidazioni → niente stesso
+                    # contenuto copiato di nodo in nodo (era il meccanismo che teneva vivo il
+                    # Leonardo). Reversibile: togliere il campo lo ri-ammette.
+                    if doc.get("consolidated_into"):
+                        continue
                     if doc.get("requires_verification"):
                         continue
                     if doc.get("recalled_count", 0) < MIN_RECALLED:
@@ -1606,6 +1612,14 @@ Rispondi SOLO con la sintesi. Niente intestazioni."""
                 )
                 key = f"euri:memory:{mid}"
                 self._r.json().set(key, "$.consolidated_from", cluster_ids)
+                # Opzione A: marca i frammenti come "spesi" — restano richiamabili ma non
+                # rientrano in future consolidazioni (no riuso, no duplicazione nodo-per-nodo).
+                # Reversibile: togliere consolidated_into li ri-ammette.
+                for cid in cluster_ids:
+                    try:
+                        self._r.json().set(f"euri:memory:{cid}", "$.consolidated_into", mid)
+                    except Exception:
+                        pass
                 risk = self._consolidation_source_risk(cluster_ids, qualified_by_id)
                 self._r.json().set(key, "$.consolidation_risk", risk)
                 if risk["level"] != "ok":
