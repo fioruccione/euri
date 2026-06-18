@@ -506,11 +506,8 @@ class VoiceDaemon:
     # "ultimamente" per un tema). Questo è solo un PRE-FILTRO LARGO (recall, ~0ms): la frase
     # accenna a sogni/pensieri/intuizioni? Se sì, è il MODELLO a capire se è davvero una
     # richiesta sui sogni di Euri e a estrarne il tema (vedi _understand_briefing).
-    _BRIEFING_HINT_RE = re.compile(
-        r'\b(sogn\w*|pensa\w*|pensi\w*|pensie\w*|pensat\w*|intui\w*|curios\w*|'
-        r'frull\w*|immagin\w*|elucubr\w*|fantastic\w*)',
-        re.IGNORECASE
-    )
+    # Una sola verità: il pre-filtro è condiviso con la Silent Chat (core.reaction).
+    from core.reaction import BRIEFING_HINT_RE as _BRIEFING_HINT_RE
 
     def _handle_pending_write(self, text: str):
         """Gestisce la risposta di conferma/dettaglio/annullamento per una richiesta di scrittura file."""
@@ -551,80 +548,20 @@ class VoiceDaemon:
             self._speak("Errore nella creazione del documento.")
 
     def _understand_briefing(self, text: str) -> tuple[bool, str | None]:
-        """Intent-LLM al posto del regex robotico: il MODELLO capisce se Stefano chiede dei
-        MIEI sogni/intuizioni (in qualunque modo lo dica) e ne estrae il TEMA capendolo, non
-        contando connettori. Fail-CLOSED: in dubbio NON è briefing — meglio una chat normale
-        che una domanda di curiosità a vuoto."""
-        prompt = (
-            f"Stefano ti ha detto: «{text.strip()}»\n\n"
-            f"Ti sta chiedendo a TE (Euri) cosa hai SOGNATO o intuito — i TUOI sogni o le "
-            f"connessioni che ti sono venute? (NON conta se racconta un SUO sogno, o parla di "
-            f"sogni in generale.)\n"
-            f"Se SÌ, su quale TEMA concreto te lo chiede (es. 'Poseidon', 'i clienti'), oppure "
-            f"è GENERICO?\n\n"
-            f"Rispondi in UNA riga ESATTA: «SI | <tema>» oppure «SI | -» (se generico) oppure «NO»."
-        )
-        try:
-            from core.ollama_client import chat_client
-            resp = chat_client.chat(
-                model=config.OLLAMA_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                options={"temperature": 0.0, "num_predict": 120},
-                think=False,
-            )
-            out = (resp.message.content or "")
-            if "<channel|>" in out:
-                out = out.split("<channel|>", 1)[-1]
-            out = out.strip()
-        except Exception as e:
-            logger.debug(f"_understand_briefing: {e}")
-            return (False, None)
-        head = out.split("|", 1)[0].strip().upper().rstrip(".")
-        if head not in ("SI", "SÌ"):
-            return (False, None)
-        topic = None
-        if "|" in out:
-            t = out.rsplit("|", 1)[-1].strip(" -.,;:")
-            topic = t if len(t) >= 3 else None
-        return (True, topic)
+        """Delegato alla logica condivisa (core.reaction) — stessa di voce e Silent Chat."""
+        from core.reaction import understand_briefing
+        return understand_briefing(text)
 
     def _handle_dream_briefing(self, topic: str | None = None):
-        """Bootstrap della curiosità: pesca un insight promosso non ancora groundato e lo
-        CHIEDE a Stefano come un bambino ('è vero che...?'). La sua risposta sarà catturata
-        come lezione ri-sognabile (vedi _handle_reaction). Additivo, fail-open.
-        `topic` valorizzato = richiesta dirigibile ("hai sognato sul Poseidon?")."""
-        from core.reaction import (pick_ungrounded_insight, formulate_curiosity_question,
-                                    gather_grounded_evidence, judge_topic_grounding)
-        # Familiarità RAG (porta, non muro): si recupera l'evidenza VISSUTA sul tema e la si
-        # mette DAVANTI a Gemma, che giudica ragionando solo su quella — non dalla sua testa
-        # (quello sarebbe il muro del plausibility-gate). Due livelli: (1) niente evidenza →
-        # ignoto, gate gratis senza modello; (2) c'è evidenza → Gemma scioglie il mix
-        # ("conosco i clienti ma non un Rossi").
-        evidence = None
-        if topic:
-            evidence = gather_grounded_evidence(self.r, topic, embedder=self.embedder)
-            if not evidence:
-                self._speak("Mmh, di questo non mi pare di avere traccia nei nostri discorsi — è una cosa nuova, o me la sono persa?")
-                return
-            verdict, msg = judge_topic_grounding(topic, evidence)
-            if verdict != "FAMILIARE":
-                self._speak(msg or "Su questo specifico non mi pare di avere traccia — è una cosa nuova?")
-                return
-        insight = pick_ungrounded_insight(self.r, topic=topic, embedder=self.embedder)
-        if not insight:
-            if topic:
-                self._speak("Su quello, per ora, non ho un sogno nuovo da chiederti.")
-            else:
-                self._speak("Per ora non ho un sogno nuovo su cui chiederti conferma.")
-            return
-        # Àncora la domanda al tema chiesto + evidenza vissuta (i sogni astraggono via il nome)
-        question = formulate_curiosity_question(insight, topic=topic, evidence=evidence)
-        if not question:
-            self._speak("Avevo qualcosa in mente ma adesso non riesco a metterlo a fuoco.")
-            return
-        self._awaiting_reaction = _PendingState({"insight": insight}, timeout=1800)  # 30 min: parli, ti distrai, torni — la reazione resta catturabile (era 300s, scadeva e ri-triggerava)
-        self.memory.log_conversation("Euri", question)
-        self._speak(question)
+        """Bootstrap della curiosità: pesca un insight non groundato e lo CHIEDE a Stefano come
+        un bambino. Orchestrazione condivisa in core.reaction.run_briefing (stessa di Silent
+        Chat); qui si parla a voce e si mette in attesa-reazione via _PendingState (30 min)."""
+        from core.reaction import run_briefing
+        text, insight = run_briefing(self.r, self.embedder, topic)
+        self.memory.log_conversation("Euri", text)
+        self._speak(text)
+        if insight is not None:
+            self._awaiting_reaction = _PendingState({"insight": insight}, timeout=1800)
 
     def _handle_reaction(self, text: str):
         """Stefano ha risposto alla domanda di curiosità. La risposta è la verità ESTERNA

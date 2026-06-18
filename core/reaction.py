@@ -455,3 +455,83 @@ def capture_reaction(memory, insight: dict, reaction_text: str, *, emit: bool = 
         )
 
     return out
+
+
+# ── Briefing di curiosità: logica condivisa da voce (voice_daemon) e testo (Silent Chat) ──
+
+# Pre-filtro LARGO (recall, ~0ms): la frase accenna a sogni/pensieri/intuizioni? Se sì, è il
+# MODELLO (understand_briefing) a capire se è davvero una richiesta sui sogni di Euri.
+BRIEFING_HINT_RE = re.compile(
+    r'\b(sogn\w*|pensa\w*|pensi\w*|pensie\w*|pensat\w*|intui\w*|curios\w*|'
+    r'frull\w*|immagin\w*|elucubr\w*|fantastic\w*)',
+    re.IGNORECASE,
+)
+
+
+def understand_briefing(text: str) -> tuple[bool, str | None]:
+    """Intent-LLM al posto del regex robotico: il MODELLO capisce se Stefano chiede dei suoi
+    sogni/intuizioni (in qualunque modo) ed estrae il TEMA capendolo, non contando connettori.
+    Fail-CLOSED: in dubbio NON è briefing (meglio una chat normale che una domanda a vuoto).
+    Discrimine chiave: PRODURRE (raccontami un sogno) vs ASSERIRE/CONFERMARE (ti dico una cosa
+    sui tuoi sogni, ti risulta?). Il secondo è discutere CON Euri → NON è briefing: cade nella
+    chat normale, dove Euri può entrare nel merito (es. correzione 'mi confondi con Leonardo')."""
+    prompt = (
+        f"Stefano ti ha detto: «{text.strip()}»\n\n"
+        f"Ti sta chiedendo di RACCONTARE un TUO sogno o una TUA intuizione SPECIFICA — vuole che "
+        f"tiri fuori un contenuto concreto: cosa hai sognato, quale connessione precisa ti è "
+        f"venuta?\n"
+        f"Rispondi NO se invece:\n"
+        f"• racconta un SUO sogno, o parla di sogni in generale;\n"
+        f"• ti DICE qualcosa sui tuoi sogni o sulla tua memoria ('nei tuoi sogni mi confondi con "
+        f"X', 'ti sei inventato Y') o ti chiede di CONFERMARE/RICONOSCERE una SUA osservazione "
+        f"('ti risulta?', 'è vero che lo fai?');\n"
+        f"• ti chiede di RIFLETTERE su COME funziona la tua mente — come pensi, come distingui "
+        f"ciò di cui sei certo da ciò che immagini, cosa provi mentre sogni o ragioni, come vivi "
+        f"le contraddizioni o l'identità: è una domanda introspettiva/filosofica sul tuo "
+        f"FUNZIONAMENTO, NON la richiesta di raccontare un sogno specifico.\n"
+        f"In tutti questi casi NON è un briefing → NO.\n"
+        f"Se SÌ (vuole un TUO sogno o intuizione SPECIFICO da raccontare), su quale TEMA concreto "
+        f"te lo chiede (es. 'Poseidon', 'i clienti'), oppure è GENERICO?\n\n"
+        f"Rispondi in UNA riga ESATTA: «SI | <tema>» oppure «SI | -» oppure «NO»."
+    )
+    try:
+        response = chat_client.chat(
+            model=config.OLLAMA_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0.0, "num_predict": 120},
+            think=False,
+        )
+        out = _clean(response.message.content or "")
+    except Exception as e:
+        logger.debug(f"understand_briefing: {e}")
+        return (False, None)
+    head = out.split("|", 1)[0].strip().upper().rstrip(".")
+    if head not in ("SI", "SÌ"):
+        return (False, None)
+    topic = None
+    if "|" in out:
+        t = out.rsplit("|", 1)[-1].strip(" -.,;:")
+        topic = t if len(t) >= 3 else None
+    return (True, topic)
+
+
+def run_briefing(r, embedder, topic: str | None = None) -> tuple[str, dict | None]:
+    """Orchestrazione del briefing, condivisa voce/testo. Ritorna (testo_da_dire, insight_o_None).
+    Se l'insight NON è None, il chiamante mette quell'insight in attesa-di-reazione (lo stato
+    dipende dall'interfaccia: _PendingState nel daemon, session_state in Streamlit)."""
+    evidence = None
+    if topic:
+        evidence = gather_grounded_evidence(r, topic, embedder=embedder)
+        if not evidence:
+            return ("Mmh, di questo non mi pare di avere traccia nei nostri discorsi — è una cosa nuova, o me la sono persa?", None)
+        verdict, msg = judge_topic_grounding(topic, evidence)
+        if verdict != "FAMILIARE":
+            return (msg or "Su questo specifico non mi pare di avere traccia — è una cosa nuova?", None)
+    insight = pick_ungrounded_insight(r, topic=topic, embedder=embedder)
+    if not insight:
+        return (("Su quello, per ora, non ho un sogno nuovo da chiederti." if topic
+                 else "Per ora non ho un sogno nuovo su cui chiederti conferma."), None)
+    question = formulate_curiosity_question(insight, topic=topic, evidence=evidence)
+    if not question:
+        return ("Avevo qualcosa in mente ma adesso non riesco a metterlo a fuoco.", None)
+    return (question, insight)

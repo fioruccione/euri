@@ -489,6 +489,52 @@ with main_col:
 
         # Input utente
         if prompt := st.chat_input("Scrivi a Euri..."):
+            # ── Curiosity loop (Euri Pulse, ramo efferente) — versione scritta ───
+            # Stessa orchestrazione della voce (core.reaction, una sola verità), ma
+            # via tastiera: Stefano non deve parlare ad alta voce (zero costo sociale,
+            # vedi project_euri_initiative_engine). Due casi, ENTRAMBI prima del flusso
+            # normale di chat e con st.stop():
+            #   (1) reazione in attesa → questo prompt È la reazione all'insight chiesto
+            #       prima → si cattura come lezione ri-sognabile (capture_reaction);
+            #   (2) Stefano chiede dei MIEI sogni/intuizioni → briefing: pesco un insight
+            #       non groundato e glielo chiedo ("è vero che…?"), poi resto in attesa.
+            import core.reaction as _rx
+
+            _pending = st.session_state.pop("sc_awaiting", None)
+            if _pending is not None:
+                st.session_state.messages.append({"role": "user", "content": prompt})
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+                with st.chat_message("assistant"):
+                    with st.spinner("Euri assorbe…"):
+                        try:
+                            _rx.capture_reaction(memory_manager, _pending["insight"], prompt)
+                            ack = "Capito, me lo segno — lo lascio sedimentare e ci ri-sogno su."
+                        except Exception as e:
+                            ack = f"(Non sono riuscito a fissare la lezione: {e})"
+                    st.markdown(ack)
+                st.session_state.messages.append({"role": "assistant", "content": ack})
+                memory_manager.log_conversation("Stefano", prompt)
+                memory_manager.log_conversation("Euri", ack)
+                st.stop()
+
+            if _rx.BRIEFING_HINT_RE.search(prompt):
+                _is_brief, _topic = _rx.understand_briefing(prompt)
+                if _is_brief:
+                    st.session_state.messages.append({"role": "user", "content": prompt})
+                    with st.chat_message("user"):
+                        st.markdown(prompt)
+                    with st.chat_message("assistant"):
+                        with st.spinner("Euri cerca un sogno da chiederti…"):
+                            text, insight = _rx.run_briefing(memory_manager.r, embedder, _topic)
+                        st.markdown(text)
+                    st.session_state.messages.append({"role": "assistant", "content": text})
+                    memory_manager.log_conversation("Stefano", prompt)
+                    memory_manager.log_conversation("Euri", text)
+                    if insight is not None:
+                        st.session_state["sc_awaiting"] = {"insight": insight}
+                    st.stop()
+
             # ── Audit di Coerenza: capture correction signal ─────────────
             # Se il prompt è una correzione, salva il signal PRIMA del retrieval
             # del turno corrente (last_rag_ctx contiene ancora il ctx del turno corretto).
