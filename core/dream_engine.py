@@ -1449,6 +1449,18 @@ Rispondi SOLO con JSON valido:
         MIN_CLUSTER = 3
         MAX_PER_CYCLE = 3
         SKIP_SOURCES = {"loop2e", "campus", "web", "reflection"}
+        # Recency gate: il consolidamento vuole memorie ATTIVE, non fossili. recalled_count è
+        # un contatore MONOTÒNO (mai decade) → satura con l'età e smette di discriminare
+        # (misurato 19/06: i ≥6 hanno ~33gg di età e ultimo richiamo ~19gg fa; 75% delle
+        # memorie a ≥3). Stessa trappola dell'anisotropia: soglia ASSOLUTA su quantità che
+        # cresce = no-op col tempo. Cura di radice: NON forzare decay sul contatore (serve la
+        # semantica "è mai servita?" al pruning Loop 2d), ma instradare QUESTO consumatore al
+        # segnale di recency (last_recalled_at, già scritto su touch=True). Finestra 30gg:
+        # accomoda le fasi di test di produzione LUNGHE di Stefano (se ne parla oggi, la prova
+        # parte tra settimane → la memoria si riattiva e RIENTRA nel pool al momento giusto).
+        import time as _time
+        RECENCY_WINDOW_S = 30 * 86400
+        now_ts = _time.time()
 
         try:
             # 1. Raccogli candidati: recalled_count >= 3, no verifica numerica, no loop2e
@@ -1478,6 +1490,11 @@ Rispondi SOLO con JSON valido:
                     if doc.get("requires_verification"):
                         continue
                     if doc.get("recalled_count", 0) < MIN_RECALLED:
+                        continue
+                    # Recency: scarta i fossili (richiamati l'ultima volta oltre la finestra).
+                    # Non è perdita — la memoria resta in retrieval e rientra qui se si riattiva.
+                    lr = doc.get("last_recalled_at")
+                    if not lr or (now_ts - float(lr)) > RECENCY_WINDOW_S:
                         continue
                     candidates.append(doc)
                 except Exception:
