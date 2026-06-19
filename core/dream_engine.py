@@ -205,8 +205,12 @@ class DreamEngine:
                     # che siamo stati NOI (rv_by_provenance) → così la guarigione potrà
                     # azzerarlo senza cancellare una verifica dovuta ad altro (fix review F2).
                     if not doc.get("requires_verification"):
-                        self._r.json().set(key, "$.requires_verification", True)
+                        # mark-after-act (Codex #5): scrivi PRIMA il marcatore rv_by_provenance,
+                        # POI requires_verification. Se il secondo write fallisce la memoria non è
+                        # flaggata (safe); l'ordine inverso lasciava requires_verification acceso
+                        # SENZA marcatore → la guarigione (riga sotto) non poteva più spegnerlo.
                         self._r.json().set(key, "$.rv_by_provenance", True)
+                        self._r.json().set(key, "$.requires_verification", True)
                     staled += 1
                 elif not is_high and was_stale:
                     self._r.json().set(key, "$.provenance_stale", False)
@@ -297,6 +301,15 @@ class DreamEngine:
             return f"{int(days/365)} {'anno' if int(days/365)==1 else 'anni'} fa"
         except Exception:
             return ""
+
+    def _integrity_failure(self, kind: str, key: str, err) -> None:
+        """Path di scrittura dei loop notturni (mark-after-act): un fallimento di scrittura NON
+        deve sparire in debug. Delega a MemoryManager._record_integrity_failure (WARNING + stream
+        euri:integrity:failures) quando disponibile; altrimenti almeno un WARNING."""
+        if self._memory_manager:
+            self._memory_manager._record_integrity_failure(kind, key, err)
+        else:
+            logger.warning(f"INTEGRITÀ (dream) '{kind}' su {key}: {err}")
 
     def _generate_dream(self, domains: list[str]) -> dict | None:
         """Seleziona due memorie da domini diversi e cerca un'analogia."""
@@ -812,7 +825,15 @@ Non inventare dati non presenti nelle due voci. Rispondi solo col confronto."""
                         )
                         continue  # pair già in CHECKED: non si ripresenta
 
-                    self._r.json().set(f"euri:memory:{loser_id}", "$.superseded_by", winner_id)
+                    try:
+                        self._r.json().set(f"euri:memory:{loser_id}", "$.superseded_by", winner_id)
+                    except Exception as e:
+                        # mark-after-act (Codex #1): la coppia è già in CHECKED (marcata a monte),
+                        # ma il soft-delete è fallito → la contraddizione resta VIVA. Dis-marca così
+                        # si riprova, invece di seppellirla 180gg con la contraddizione attiva.
+                        self._r.srem(CHECKED_KEY, pair_key)
+                        self._integrity_failure("loop2f-supersede", f"euri:memory:{loser_id}", e)
+                        continue
                     logger.info(
                         f"Loop 2f: {loser_id[:8]}… superseded by {winner_id[:8]}… "
                         f"(conflitto risolto, tenuto il più recente)"
@@ -986,12 +1007,11 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
 
                 counts[verdict] = counts.get(verdict, 0) + 1
 
-                # Aggiorna lo status del signal. not_a_correction = soft-delete:
-                # status "dismissed" (audit preservato, niente azione, il signal
-                # evapora col suo TTL 30gg). Nessuna lesson generata: è il fix N1.
-                self._r.json().set(key, "$.status", "dismissed" if verdict == "not_a_correction" else "analyzed")
-                self._r.json().set(key, "$.verdict", verdict)
-                self._r.json().set(key, "$.analyzed_at", time.time())
+                # mark-after-act (Codex #2): lo status si scrive DOPO che l'effetto (audit_flag /
+                # lesson) è andato. not_a_correction = soft-delete (status "dismissed", audit
+                # preservato, evapora col TTL 30gg). Un effetto fallito NON deve marcare il signal
+                # 'analyzed' → sennò la correzione è persa senza retry.
+                effect_ok = True
 
                 # Azioni differenziate (not_a_correction e ambiguous: nessuna azione)
                 if verdict == "bad_memory":
@@ -1007,7 +1027,9 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
                             # stessa memoria non perdono più un incremento.
                             self._r.json().set(mkey, "$.audit_flag", 0, nx=True)
                             self._r.json().numincrby(mkey, "$.audit_flag", 1)
-                        except Exception:
+                        except Exception as e:
+                            effect_ok = False
+                            self._integrity_failure("loop2g-audit_flag", mkey, e)
                             continue
 
                 elif verdict == "bad_reasoning" and self._memory_manager:
@@ -1028,9 +1050,16 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
                                 source="passive",
                             )
                         except Exception as e:
-                            logger.debug(f"Loop 2g: errore salvataggio lesson — {e}")
+                            effect_ok = False
+                            self._integrity_failure("loop2g-lesson", key, e)
 
-                logger.info(f"Loop 2g: {key[-8:]} → {verdict}")
+                # Ora marca processato — SOLO se l'effetto è andato (o non c'era). Se fallito, il
+                # signal resta 'pending' → riprovato al prossimo ciclo, niente correzione persa.
+                if effect_ok:
+                    self._r.json().set(key, "$.status", "dismissed" if verdict == "not_a_correction" else "analyzed")
+                    self._r.json().set(key, "$.verdict", verdict)
+                    self._r.json().set(key, "$.analyzed_at", time.time())
+                logger.info(f"Loop 2g: {key[-8:]} → {verdict}" + ("" if effect_ok else " (effetto fallito → pending, retry)"))
 
             logger.info(
                 f"Loop 2g: {len(pending)} signal analizzati "
@@ -1635,8 +1664,11 @@ Rispondi SOLO con la sintesi. Niente intestazioni."""
                 for cid in cluster_ids:
                     try:
                         self._r.json().set(f"euri:memory:{cid}", "$.consolidated_into", mid)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        # mark-after-act (Codex #3): se il frammento non viene marcato "speso",
+                        # rientra in future consolidazioni → duplicato (il meccanismo che teneva
+                        # vivo il Leonardo). Non più silenzioso: tracciato.
+                        self._integrity_failure("loop2e-consolidated_into", f"euri:memory:{cid}", e)
                 risk = self._consolidation_source_risk(cluster_ids, qualified_by_id)
                 self._r.json().set(key, "$.consolidation_risk", risk)
                 if risk["level"] != "ok":

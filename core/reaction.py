@@ -437,11 +437,18 @@ def capture_reaction(memory, insight: dict, reaction_text: str, *, emit: bool = 
             # 30. PARZIALE/CONFERMA restano (hanno un'ancora vera). È così che un insight
             # contaminato (es. Leonardo/identità) smette di affiorare dopo la tua correzione.
             if verdict == "SMENTITA":
-                try:
-                    r.json().set(f"euri:insight:{insight_id}", "$.status", "candidate")
-                    logger.info(f"Reaction: insight {insight_id[:8]} SMENTITO → demoto a candidate")
-                except Exception as e:
-                    logger.error(f"demote insight fallito: {e}")
+                ikey = f"euri:insight:{insight_id}"
+                for _attempt in (1, 2):
+                    try:
+                        r.json().set(ikey, "$.status", "candidate")
+                        logger.info(f"Reaction: insight {insight_id[:8]} SMENTITO → demoto a candidate")
+                        break
+                    except Exception as e:
+                        if _attempt == 2:
+                            # mark-after-act (Codex #4): external_reaction dice SMENTITA ma la
+                            # demotion è fallita → l'insight resta promosso e il RAG lo usa ancora.
+                            # Non più silenzioso (era logger.error): tracciato in integrity:failures.
+                            memory._record_integrity_failure("reaction-demote", ikey, e)
         out["persisted"] = True
     except Exception as e:
         logger.error(f"capture_reaction: arricchimento nodo fallito (lezione salvata): {e}")

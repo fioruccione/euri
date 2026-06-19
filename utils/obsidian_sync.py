@@ -224,8 +224,19 @@ class ObsidianSyncManager:
                 # Aggiorniamo Redis
                 vec = self.embedder.encode(body)
                 if vec is not None:
-                    self.r.json().set(f"euri:memory:{doc_id}", "$.content", body)
-                    self.r.json().set(f"euri:memory:{doc_id}", "$.embedding", vec.tolist())
+                    # mark-after-act (Codex #6): content ed embedding sono DUE viste della stessa
+                    # memoria — se il secondo write fallisce divergono (keyword vede un testo, il
+                    # vector un altro). Pipeline transazionale: vanno insieme o niente.
+                    try:
+                        pipe = self.r.pipeline(transaction=True)
+                        pipe.json().set(f"euri:memory:{doc_id}", "$.content", body)
+                        pipe.json().set(f"euri:memory:{doc_id}", "$.embedding", vec.tolist())
+                        pipe.execute()
+                    except Exception as e:
+                        logger.warning(
+                            f"INTEGRITÀ Obsidian sync: content/embedding di {doc_id[:8]} "
+                            f"non aggiornati atomicamente: {e}"
+                        )
                 return
                 
             # 2. È un file nuovo inserito dall'utente (es. nella Dropzone)
