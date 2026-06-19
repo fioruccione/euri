@@ -16,6 +16,8 @@ dal passive learner (conservativo, niente auto-merge passivo).
 """
 import re
 
+from loguru import logger
+
 from core.validator import validate_payload
 from core.intent_router import extract_content_after_trigger, SAVE_MEMORY_TRIGGERS
 
@@ -155,7 +157,12 @@ def _save_or_merge(content: str, memory, brain) -> dict:
     new_id = memory.save_memory(merged, source="user")
     if not new_id:
         return {"saved": False, "merged": False, "reply": "Non sono riuscito a salvare.", "content": None}
-    memory.supersede_memory(match["id"], new_id)
+    if not memory.supersede_memory(match["id"], new_id):
+        # Merge PARZIALE (Codex #3): la fusa è salvata ma la vecchia non è stata ritirata →
+        # doppione transitorio (lo recupera Loop 2e/2f). Non più silenzioso: supersede_memory
+        # ha già loggato WARNING + tracciato in euri:integrity:failures. L'utente vede comunque
+        # l'info aggiornata, quindi 'saved' resta True.
+        logger.warning(f"Merge parziale: supersede di {match['id']} fallito → doppione transitorio")
     return {"saved": True, "merged": True, "reply": f"Ho aggiornato la memoria: {merged}", "content": merged}
 
 

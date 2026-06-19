@@ -126,7 +126,13 @@ class MemoryManager:
         }
         self.r.json().set(key, "$", doc)
         if expires_at:
-            self.r.expireat(key, expires_at)
+            # expireat è separato dal JSON.SET (Codex #1): se fallisce, la memoria resterebbe
+            # SENZA TTL (vive per sempre) mentre expires_at dice il contrario. Tracciato, non
+            # ingoiato; e NON facciamo crashare il save (meglio una memoria senza TTL che persa).
+            try:
+                self.r.expireat(key, expires_at)
+            except Exception as e:
+                self._record_integrity_failure("expireat-save", key, e)
         logger.info(f"Memory salvata: {mid}")
 
         # Sincronizza verso Obsidian Vault (se abilitato)
@@ -655,14 +661,39 @@ class MemoryManager:
             "similarity": 1.0 - cand.get("_vec_score", 1.0),
         }
 
-    def supersede_memory(self, old_id: str, new_id: str) -> None:
-        """Soft-delete della memoria vecchia puntando alla nuova (convenzione Loop 2f:
-        superseded_by = id stringa). Il retrieval esclude già i superseded."""
-        key = old_id if str(old_id).startswith("euri:memory:") else f"euri:memory:{old_id}"
+    def _record_integrity_failure(self, kind: str, key: str, err) -> None:
+        """Path di SCRITTURA della memoria: un fallimento NON deve sparire in DEBUG. Lo rende
+        RUMOROSO (WARNING) e TRACCIATO (stream euri:integrity:failures, cap 1000) — così
+        sappiamo QUANDO la memoria non ha fatto ciò che credeva di aver fatto. È il fratello
+        tecnico del 'say≠do': una scrittura fallita e ingoiata è corruzione invisibile, e
+        l'integrità della memoria è l'intera tesi. Fail-safe: se anche il tracking salta, il
+        WARNING è già uscito (non incateniamo i fallimenti)."""
+        logger.warning(f"INTEGRITÀ memoria: scrittura '{kind}' fallita su {key}: {err}")
         try:
-            self.r.json().set(key, "$.superseded_by", new_id)
-        except Exception as e:
-            logger.debug(f"supersede_memory fallito per {key}: {e}")
+            self.r.xadd(
+                "euri:integrity:failures",
+                {"kind": kind, "key": str(key), "err": str(err)[:300], "ts": to_timestamp(now())},
+                maxlen=1000, approximate=True,
+            )
+        except Exception:
+            pass
+
+    def supersede_memory(self, old_id: str, new_id: str) -> bool:
+        """Soft-delete della memoria vecchia puntando alla nuova (convenzione Loop 2f:
+        superseded_by = id stringa). Il retrieval esclude già i superseded.
+
+        Ritorna True se riuscito. Il fallimento NON è più silenzioso (era logger.debug →
+        invisibile): lascerebbe vecchia E nuova entrambe attive — merge parziale (Codex #3).
+        Un retry copre il blip Redis transitorio; poi traccia via _record_integrity_failure."""
+        key = old_id if str(old_id).startswith("euri:memory:") else f"euri:memory:{old_id}"
+        for attempt in (1, 2):
+            try:
+                self.r.json().set(key, "$.superseded_by", new_id)
+                return True
+            except Exception as e:
+                if attempt == 2:
+                    self._record_integrity_failure("supersede", key, e)
+        return False
 
     def supersede_duplicate_reflections(
         self,
