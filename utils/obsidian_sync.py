@@ -190,8 +190,15 @@ class ObsidianSyncManager:
 
         # Per evitare colli di bottiglia da salvataggi continui dell'editor,
         # facciamo un debounce o eseguiamo in un thread staccato.
-        threading.Thread(target=self._process_file, args=(filepath,), daemon=True).start()
-        
+        threading.Thread(target=self._process_file_locked, args=(filepath,), daemon=True).start()
+
+    def _process_file_locked(self, filepath: str):
+        # Serializza l'elaborazione dei file (Codex round 3 #5): più eventi FS sullo stesso file
+        # nuovo partivano in thread separati e potevano leggerlo PRIMA che il frontmatter-ID fosse
+        # scritto → due save_memory dello stesso file. Il _lock c'era ma non era usato: ora sì.
+        with self._lock:
+            self._process_file(filepath)
+
     def _process_file(self, filepath: str):
         time.sleep(1.0) # Debounce per permettere al file system di sbloccare il file
         try:
