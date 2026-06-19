@@ -1561,7 +1561,7 @@ class VoiceDaemon:
                         continue
                     if self.memory.is_duplicate_memory(clean, llm_probe_fn=self.brain.probe_same_meaning):
                         continue
-                    self.memory.save_memory(clean, category="passivo", source="passive")
+                    self.memory.save_memory(clean, category="passivo", source="passive", idempotent=True)
                     saved += 1
 
                 if saved:

@@ -43,7 +43,7 @@ class MemoryManager:
     # MEMORIES (ricordi a lungo termine)
     # ──────────────────────────────────────────
 
-    def save_memory(self, content: str, category: str = "personale", tags: list[str] = None, source: str = "user", expires_at: datetime | None = None) -> str | None:
+    def save_memory(self, content: str, category: str = "personale", tags: list[str] = None, source: str = "user", expires_at: datetime | None = None, idempotent: bool = False) -> str | None:
         # Memory Guard: scansione anti-poisoning sull'ingest. Da fonte non fidata
         # (web/mobile_in) un contenuto con injection/esfiltrazione viene rifiutato
         # (ritorna None); da fonte fidata si salva ma marcato in safety_flag.
@@ -55,22 +55,25 @@ class MemoryManager:
         mid = str(uuid.uuid4())
         key = f"euri:memory:{mid}"
 
-        # Idempotency cross-processo (Codex round 3 #1/#2): daemon vocale, UI streamlit e
-        # passive-inline possono salvare lo STESSO contenuto concorrentemente — il dedup
-        # check-then-save è TOCTOU (passive è molto attivo: ~487 nodi). Una chiave SET NX EX su
-        # (source, contenuto normalizzato) serializza in Redis: il secondo writer trova la chiave
-        # e ritorna l'id del VINCITORE invece di creare un doppione. Finestra breve = copre la
-        # race, non la storia (un re-save volontario dopo 2 min passa). Cattura solo i doppioni
-        # ESATTI (il dedup semantico resta a is_duplicate_memory); ma la race è quasi sempre
-        # testo identico (stessa estrazione passiva ripetuta).
-        import hashlib
-        _norm = " ".join((content or "").lower().split())
-        if _norm:
-            _idem = f"euri:idem:save:{source}:{hashlib.sha1(_norm.encode()).hexdigest()}"
-            if not self.r.set(_idem, mid, nx=True, ex=120):
-                _winner = self.r.get(_idem)
-                logger.debug(f"save_memory: idempotency skip — contenuto già in salvataggio (winner={_winner})")
-                return _winner or None
+        # Idempotency cross-processo (Codex round 3 #1/#2) — OPT-IN (idempotent=True).
+        # Daemon vocale, UI e passive-inline possono salvare lo STESSO contenuto concorrentemente
+        # (check-then-save TOCTOU; passive ~487 nodi). Una chiave SET NX EX su (source, contenuto
+        # normalizzato) serializza in Redis: il 2° writer trova la chiave e RITORNA L'ID DEL
+        # VINCITORE invece di creare un doppione. Finestra breve = copre la race, non la storia.
+        # ⚠️ OPT-IN di proposito (Codex round 3 bis): ritornare un id ESISTENTE rompe i chiamanti
+        # che post-mutano il nuovo id (reaction scrive reacted_to/tags, loop2e consolidated_*,
+        # obsidian forza il domain) → gli scriverebbero metadati di una memoria nuova sul nodo del
+        # vincitore. Abilitato SOLO dove la race è reale E il chiamante non post-muta: passive
+        # learner e save esplicito (user). Fail-mode sicuro: spento = resta il dedup best-effort.
+        if idempotent:
+            import hashlib
+            _norm = " ".join((content or "").lower().split())
+            if _norm:
+                _idem = f"euri:idem:save:{source}:{hashlib.sha1(_norm.encode()).hexdigest()}"
+                if not self.r.set(_idem, mid, nx=True, ex=120):
+                    _winner = self.r.get(_idem)
+                    logger.debug(f"save_memory: idempotency skip — contenuto già in salvataggio (winner={_winner})")
+                    return _winner or None
 
         ts = now()
 

@@ -131,7 +131,7 @@ def _save_or_merge(content: str, memory, brain) -> dict:
     match = memory.find_similar_memory(content)
     # Niente di abbastanza simile → memoria nuova
     if match is None or match.get("similarity", 0.0) < _SIM_MERGE_FLOOR:
-        new_id = memory.save_memory(content, source="user")
+        new_id = memory.save_memory(content, source="user", idempotent=True)
         if not new_id:
             return {"saved": False, "merged": False, "reply": "Non sono riuscito a salvare.", "content": None}
         return {"saved": True, "merged": False, "reply": brain.confirm_save("memory", content), "content": content}
@@ -149,12 +149,12 @@ def _save_or_merge(content: str, memory, brain) -> dict:
     if (not merged) or mu.startswith("DIVERSO"):
         # Soggetto diverso (o dubbio) → salva SEPARATO, niente supersede: meglio un
         # doppione (lo consolida il Loop 2e) che conflare due entità distinte.
-        new_id = memory.save_memory(content, source="user")
+        new_id = memory.save_memory(content, source="user", idempotent=True)
         if not new_id:
             return {"saved": False, "merged": False, "reply": "Non sono riuscito a salvare.", "content": None}
         return {"saved": True, "merged": False, "reply": brain.confirm_save("memory", content), "content": content}
     # Arricchimento reale (stesso soggetto) → salva la fusa, soft-delete della vecchia
-    new_id = memory.save_memory(merged, source="user")
+    new_id = memory.save_memory(merged, source="user", idempotent=True)
     if not new_id:
         return {"saved": False, "merged": False, "reply": "Non sono riuscito a salvare.", "content": None}
     if not memory.supersede_memory(match["id"], new_id):

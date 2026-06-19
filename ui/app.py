@@ -706,7 +706,7 @@ with main_col:
                                 continue
                             if memory_manager.is_duplicate_memory(clean, llm_probe_fn=brain.probe_same_meaning):
                                 continue
-                            memory_manager.save_memory(clean, category="passivo", source="passive")
+                            memory_manager.save_memory(clean, category="passivo", source="passive", idempotent=True)
                             saved += 1
                         if saved:
                             st.caption(f"Passive learner: {saved} fatto/i memorizzato/i.")
