@@ -164,10 +164,31 @@ class MemoryManager:
 
         return mid
 
-    # Identificatori specifici: acronimi (MFI, DCP), codici con trattino (TEST-ALPHA, PPR-738P), decimali (4.7, 0.35)
-    _IDENTIFIER_RE = re.compile(
-        r'\b[A-Z]{2,}(?:-[A-Z0-9]+)*\b|\b\d+[.,]\d+\b'
-    )
+    # Riconoscimento DOMAIN-AGNOSTIC di identificatori per la keyword-search (nessuna lista di
+    # materiali/codici cablata, nessun boost di dominio: conta la FORMA, non il contenuto):
+    #  - compositi multi-token con almeno una cifra: "03 PPR 738P", "T REX 001", "ROSA DAM 12"
+    #  - token singolo che mischia lettere E cifre: "03PPR738P", "738P", "043T"
+    #  - acronimi (MFI, DCP), codici con trattino (PPR-738P), decimali (4.7)
+    # I nomi propri in maiuscolo SENZA cifra NON sono codici ("Mario Rossi" → niente).
+    # Bug 20/06: la vecchia regex da "03 PPR 738P" estraeva solo "PPR" → l'identifier-first
+    # cercava TUTTI i prodotti "PPR" e soffocava la semantica buona.
+    _COMPOSITE_ID_RE = re.compile(r'\b[A-Z0-9]+(?:\s+[A-Z0-9]+){1,3}\b')
+    _SINGLE_ALNUM_RE = re.compile(r'\b(?=[A-Z0-9]*[0-9])(?=[A-Z0-9]*[A-Z])[A-Z0-9]{2,}\b')
+    _ACR_DEC_RE = re.compile(r'\b[A-Z]{2,}(?:-[A-Z0-9]+)*\b|\b\d+[.,]\d+\b')
+
+    def _extract_identifiers(self, query: str) -> list[str]:
+        """Identificatori per la keyword-search, dal più specifico. Vedi note su _COMPOSITE_ID_RE."""
+        ids: list[str] = []
+        for m in self._COMPOSITE_ID_RE.findall(query):          # compositi multi-token con cifra
+            if len(m.split()) >= 2 and any(c.isdigit() for c in m):
+                ids.append(m)
+        for m in self._ACR_DEC_RE.findall(query):               # acronimi / trattino / decimali
+            if not any(m in c for c in ids):
+                ids.append(m)
+        for m in self._SINGLE_ALNUM_RE.findall(query):          # token singolo lettere+cifre
+            if not any(m in c for c in ids):
+                ids.append(m)
+        return ids
 
     def search_memories(
         self,
@@ -191,12 +212,18 @@ class MemoryManager:
             merged: list[dict] = []
             seen_uuids: set[str] = set()
 
-            # Livello 1 — identifier-first keyword search
-            identifiers = self._IDENTIFIER_RE.findall(query)
+            # Livello 1 — identifier-first keyword search, CAPPATA.
+            # Un identificatore generico/ambiguo può matchare molti nodi: senza cap
+            # monopolizzerebbe gli slot e soffocherebbe la semantica (bug 20/06). Limitiamo
+            # il contributo identifier-first a ~1/3 degli slot, lasciando la maggioranza al
+            # livello semantico. I codici specifici restano comunque IN CIMA (precedenza),
+            # solo senza occupare tutto.
+            identifiers = self._extract_identifiers(query)
             if identifiers:
+                id_cap = max(1, limit // 3)
                 id_query = " | ".join(identifiers)
-                id_results = self._search_keyword(id_query, limit, source_filter=source_filter, touch=False)
-                for r in id_results:
+                id_results = self._search_keyword(id_query, id_cap, source_filter=source_filter, touch=False)
+                for r in id_results[:id_cap]:
                     uid = r.get("id", "")
                     if uid not in seen_uuids:
                         merged.append(r)
