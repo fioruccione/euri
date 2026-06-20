@@ -179,8 +179,10 @@ class MemoryManager:
     def _extract_identifiers(self, query: str) -> list[str]:
         """Identificatori per la keyword-search, dal più specifico. Vedi note su _COMPOSITE_ID_RE."""
         ids: list[str] = []
-        for m in self._COMPOSITE_ID_RE.findall(query):          # compositi multi-token con cifra
-            if len(m.split()) >= 2 and any(c.isdigit() for c in m):
+        for m in self._COMPOSITE_ID_RE.findall(query):          # compositi multi-token: cifra E lettera
+            # ≥2 token, almeno una cifra E almeno una lettera: i codici hanno lettere
+            # (PPR/REX/DAM), le date pure-numeriche no ("20 06 2026" → al path temporale, non qui).
+            if len(m.split()) >= 2 and any(c.isdigit() for c in m) and any(c.isalpha() for c in m):
                 ids.append(m)
         for m in self._ACR_DEC_RE.findall(query):               # acronimi / trattino / decimali
             if not any(m in c for c in ids):
