@@ -1026,7 +1026,14 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
                             # lo si incrementa con NUMINCRBY: due correzioni concorrenti sulla
                             # stessa memoria non perdono più un incremento.
                             self._r.json().set(mkey, "$.audit_flag", 0, nx=True)
-                            self._r.json().numincrby(mkey, "$.audit_flag", 1)
+                            _af = self._r.json().numincrby(mkey, "$.audit_flag", 1)
+                            # Pulse afferente (Fase 1): memoria marcata sospetta = evento interno
+                            # da osservare (intero → watch, non ask). audit_flag nel payload per lo
+                            # scorer. Fail-open (pulse_emit non solleva mai).
+                            pulse_emit(self._r, "audit", "intero", "flagged",
+                                       payload={"memory_id": mid,
+                                                "audit_flag": (_af[0] if isinstance(_af, list) and _af else _af)},
+                                       salience=0.6)
                         except Exception as e:
                             effect_ok = False
                             self._integrity_failure("loop2g-audit_flag", mkey, e)

@@ -16,6 +16,11 @@ import config
 from utils.date_utils import now, to_timestamp, from_timestamp, format_datetime
 from core.domain_gater import assign_domain, domain_aware_search, neighbor_domains
 from utils.obsidian_sync import write_memory
+from core.pulse import pulse_emit
+
+# Sorgenti di memoria che nascono da un'INTERAZIONE col mondo (→ polo extero del Pulse);
+# le altre (passive/loop2e/reflection/reaction…) sono elaborazione interna di Euri (→ intero).
+_EXTERO_MEMORY_SOURCES = {"user", "teach", "conversation", "episode", "mobile_in"}
 
 
 _TTL_BY_SOURCE: dict[str, int] = {
@@ -155,6 +160,20 @@ class MemoryManager:
             except Exception as e:
                 self._record_integrity_failure("expireat-save", key, e)
         logger.info(f"Memory salvata: {mid}")
+
+        # Pulse afferente (Fase 1): una memoria salvata è un evento percepibile. Polo dalla
+        # source (interazione→extero, processo interno→intero). I flag di rischio nel payload
+        # così lo scorer di tensione li legge senza dover ri-aprire il nodo. Fail-open.
+        pulse_emit(
+            self.r, "memory",
+            "extero" if source in _EXTERO_MEMORY_SOURCES else "intero", "saved",
+            payload={
+                "id": mid, "mem_source": source, "domain": domain_label,
+                "requires_verification": requires_verification,
+                "safety_flag": doc["safety_flag"],
+            },
+            salience=0.55 if (doc["safety_flag"] or requires_verification) else 0.35,
+        )
 
         # Sincronizza verso Obsidian Vault (se abilitato)
         try:
@@ -727,6 +746,11 @@ class MemoryManager:
             )
         except Exception:
             pass
+        # Pulse afferente (Fase 1): un fallimento d'integrità è alto-segnale (interno → intero).
+        # Lo scorer di tensione lo legge da sense=="integrity". Fail-open, separato dal tracking.
+        pulse_emit(self.r, "integrity", "intero", "failure",
+                   payload={"kind": kind, "key": str(key), "err": str(err)[:300]},
+                   salience=0.9)
 
     def supersede_memory(self, old_id: str, new_id: str) -> bool:
         """Soft-delete della memoria vecchia puntando alla nuova (convenzione Loop 2f:
@@ -1269,4 +1293,9 @@ class MemoryManager:
         self.r.json().set(key, "$", doc)
         self.r.expire(key, 30 * 86400)
         logger.info(f"Correction signal salvato: {sid[:8]} — '{correzione_user[:60]}'")
+        # Pulse afferente (Fase 1): una correzione viene dal mondo (→ extero). Il Loop 2g la
+        # consuma di notte; qui la rendiamo percepibile anche al polso. Fail-open.
+        pulse_emit(self.r, "correction", "extero", "signal",
+                   payload={"id": sid, "correction": correzione_user[:200]},
+                   salience=0.6)
         return sid
