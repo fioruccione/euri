@@ -101,3 +101,32 @@ def scrub_unbacked_action_claim(reply: str, turn_actions: set) -> str:
     cleaned = " ".join(kept).strip()
     tail = honest_correction()
     return f"{cleaned}\n\n{tail}" if cleaned else tail
+
+
+def emit_unbacked_action_commitment(r, reply: str, turn_actions: set, *, channel: str = "") -> bool:
+    """
+    Afferente puro: se Euri rivendica un'azione non coperta da un handler reale,
+    traccia il tentativo su Pulse come commitment/intero.
+
+    Non riconcilia, non corregge, non agisce. Lo scrub resta responsabilità di
+    scrub_unbacked_action_claim(). Qui registriamo solo il segnale osservabile.
+    """
+    if not needs_honest_correction(reply, turn_actions):
+        return False
+    try:
+        from core.pulse import pulse_emit
+        pulse_emit(
+            r,
+            "commitment",
+            "intero",
+            "unbacked_action_claim",
+            payload={
+                "channel": channel,
+                "claim": reply[:700],
+                "turn_actions": sorted(str(a) for a in (turn_actions or set())),
+            },
+            salience=0.65,
+        )
+    except Exception:
+        pass
+    return True

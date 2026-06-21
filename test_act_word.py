@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from core.act_word_check import (
+    emit_unbacked_action_commitment,
     needs_honest_correction,
     scrub_unbacked_action_claim,
     honest_correction,
@@ -80,6 +81,14 @@ SCRUB_CASES = [
 ]
 
 
+class _FakeRedis:
+    def __init__(self):
+        self.calls = []
+
+    def xadd(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+
+
 def main():
     ok = 0
     fails = []
@@ -102,7 +111,28 @@ def main():
             fails.append(desc)
         print(f"  {mark}  {desc}  →  {out!r}")
 
-    total = len(CASES) + len(SCRUB_CASES)
+    print("\n  --- emit_unbacked_action_commitment ---")
+    fake = _FakeRedis()
+    emitted = emit_unbacked_action_commitment(
+        fake, "Ho salvato il promemoria.", set(), channel="test"
+    )
+    passed = emitted and len(fake.calls) == 1
+    ok += passed
+    if not passed:
+        fails.append("emit commitment")
+    print(f"  {'✓' if passed else '✗ FAIL'}  claim non coperto → Pulse")
+
+    fake2 = _FakeRedis()
+    emitted2 = emit_unbacked_action_commitment(
+        fake2, "Ho salvato il promemoria.", {"save_todo"}, channel="test"
+    )
+    passed = not emitted2 and len(fake2.calls) == 0
+    ok += passed
+    if not passed:
+        fails.append("no emit su azione coperta")
+    print(f"  {'✓' if passed else '✗ FAIL'}  claim coperto da azione reale → niente Pulse")
+
+    total = len(CASES) + len(SCRUB_CASES) + 2
     print("\n" + "=" * 60)
     print(f"PASS: {ok}/{total}")
     if fails:

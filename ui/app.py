@@ -679,7 +679,13 @@ with main_col:
                             prompt, context_full, memory_manager, brain, _recent_hist
                         )
                         from core.honesty import scrub_unbacked_save_claim
+                        from core.act_word_check import (
+                            emit_unbacked_action_commitment,
+                            scrub_unbacked_action_claim,
+                        )
                         response = scrub_unbacked_save_claim(brain.respond(prompt, context=context_full))
+                        emit_unbacked_action_commitment(r, response, set(), channel="silent_chat")
+                        response = scrub_unbacked_action_claim(response, set())
                     st.markdown(response)
 
             # Salva risposta

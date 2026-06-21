@@ -42,7 +42,7 @@ from core.memory_manager import MemoryManager
 from core.brain import Brain
 from core.embedder import Embedder
 from core.honesty import scrub_unbacked_save_claim
-from core.act_word_check import scrub_unbacked_action_claim
+from core.act_word_check import emit_unbacked_action_commitment, scrub_unbacked_action_claim
 from core.ollama_client import chat_client
 from agent.executor import Executor, build_injected_context
 
@@ -639,6 +639,7 @@ class VoiceDaemon:
         with self._brain_lock:
             reply = self.brain.respond(text, context=context)
         reply = scrub_unbacked_save_claim(reply)  # pavimento di onestà: SEARCH non salva
+        emit_unbacked_action_commitment(self.r, reply, set(), channel="voice_search")
         reply = scrub_unbacked_action_claim(reply, set())  # SEARCH non agisce: niente claim d'azione
         self.memory.log_conversation("Euri", reply)
         self._speak(reply)
@@ -1215,6 +1216,7 @@ class VoiceDaemon:
         with self._brain_lock:
             reply = self.brain.respond(text, context=context)
         reply = scrub_unbacked_save_claim(reply)  # pavimento di onestà: CHAT non salva
+        emit_unbacked_action_commitment(self.r, reply, set(), channel="voice_chat")
         reply = scrub_unbacked_action_claim(reply, set())  # CHAT non agisce: niente claim d'azione
         self.memory.log_conversation("Euri", reply)
         if len(reply) > 150:
@@ -2007,6 +2009,7 @@ class VoiceDaemon:
                         with self._brain_lock:
                             response = self.brain.respond(text, context=context)
                         response = scrub_unbacked_save_claim(response)  # pavimento di onestà: mobile non salva
+                        emit_unbacked_action_commitment(self.r, response, set(), channel="mobile")
                         response = scrub_unbacked_action_claim(response, set())  # mobile non agisce: niente claim d'azione
 
                         self.memory.log_conversation("Euri", response)
