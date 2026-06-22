@@ -453,10 +453,17 @@ class VoiceDaemon:
             self._speak("L'ho già in lista.")
             return
         due_at = extract_due_date(text)
-        # Non salva subito — chiede conferma e dettagli
-        self._pending_todo = _PendingState({"content": content, "due_at": due_at}, timeout=60)
-        due_str = f", scadenza {format_datetime(due_at)}" if due_at else ""
-        self._speak(f"Segno: '{content}'{due_str}. Vuoi aggiungere dettagli o una scadenza? Oppure dimmi 'no' per annullare.")
+        if due_at:
+            # Contenuto + scadenza GIÀ chiari → salva diretto, niente giro di conferma.
+            # La verbosità ("vuoi aggiungere…?") serviva solo quando manca qualcosa: qui non manca.
+            self.memory.save_todo(content, due_at=due_at)
+            reply = self.brain.confirm_save("todo", content, format_datetime(due_at))
+            self.memory.log_conversation("Euri", reply)
+            self._speak(reply)
+            return
+        # Manca la scadenza → lì la domanda ha senso (resta il pending per la risposta).
+        self._pending_todo = _PendingState({"content": content, "due_at": None}, timeout=120)
+        self._speak(f"Segno: '{content}'. Per quando? (o 'no' per annullare)")
 
     def _handle_pending_todo(self, text: str):
         """Gestisce la risposta di conferma/dettaglio/annullamento per un todo in attesa."""
