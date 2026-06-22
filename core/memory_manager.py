@@ -283,13 +283,26 @@ class MemoryManager:
                 self._touch_memories(results)
             return results
 
-        return self._search_keyword(query, limit, source_filter=source_filter, touch=touch)
+        if query == "*":
+            return self._search_keyword(query, limit, source_filter=source_filter, touch=touch)
+        kw_list = self._safe_keywords(query)
+        kw_query = " | ".join(kw_list[:6]) if kw_list else query
+        return self._search_keyword(kw_query, limit, source_filter=source_filter, touch=touch)
 
     @staticmethod
     def _sanitize_query(text: str) -> str:
         """Rimuove caratteri speciali RediSearch da input utente grezzo."""
         clean = re.sub(r'[^\w\sàáâãäåèéêëìíîïòóôõöùúûüÀÁÂÃÄÅÈÉÊËÌÍÎÏÒÓÔÕÖÙÚÛÜ]', ' ', text)
         return ' '.join(clean.split()) or "*"
+
+    @classmethod
+    def _sanitize_query_or(cls, text: str) -> str:
+        """Sanitizza una query preservando OR espliciti costruiti dal codice (`a | b`)."""
+        if "|" not in (text or ""):
+            return cls._sanitize_query(text)
+        parts = [cls._sanitize_query(p) for p in text.split("|")]
+        parts = [p for p in parts if p and p != "*"]
+        return " | ".join(parts) if parts else "*"
 
     @staticmethod
     def _source_prefix(source_filter: list[str] | None) -> str:
@@ -308,7 +321,7 @@ class MemoryManager:
     ) -> list[dict]:
         try:
             prefix = self._source_prefix(source_filter).strip()
-            safe_query = query if query == "*" else self._sanitize_query(query)
+            safe_query = query if query == "*" else self._sanitize_query_or(query)
 
             # Se abbiamo sia un filtro source che una query testuale, li isoliamo con parentesi
             # altrimenti operatori testuali come '|' (OR) rompono l'AST di RediSearch.

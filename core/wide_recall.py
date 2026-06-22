@@ -49,8 +49,22 @@ def _gist(content: str, width: int = 90) -> str:
     return c if len(c) <= width else c[: width - 1].rstrip() + "…"
 
 
-def build_wide_recall_map(r, current_domain: str | None = None,
-                          max_current: int = 3, max_lateral: int = 12) -> list[str]:
+def _doc_id(doc: dict, key) -> str:
+    if doc.get("id"):
+        return str(doc["id"])
+    if isinstance(key, bytes):
+        key = key.decode("utf-8", errors="ignore")
+    return str(key).rsplit(":", 1)[-1]
+
+
+def build_wide_recall_map(
+    r,
+    current_domain: str | None = None,
+    max_current: int = 3,
+    max_lateral: int = 12,
+    *,
+    include_ids: bool = False,
+) -> list[str] | list[tuple[str, str]]:
     """
     Campione diversificato per dominio (read-only, touch=False — solo SCAN + JSON.GET).
     Ritorna righe "dominio — gist": fino a max_current dal dominio corrente + fino a
@@ -69,15 +83,16 @@ def build_wide_recall_map(r, current_domain: str | None = None,
             continue
         dom = doc.get("domain") or "generale"
         score = (_SRC_PRIORITY.get(doc.get("source") or "", 0), int(doc.get("recalled_count") or 0))
-        by_domain.setdefault(dom, []).append((score, doc))
+        by_domain.setdefault(dom, []).append((score, doc, _doc_id(doc, key)))
 
-    rows: list[str] = []
+    rows = []
     used: set[str] = set()
 
     # Dominio corrente: fino a max_current memorie (le meglio scoranti)
     if current_domain and current_domain in by_domain:
-        for score, doc in sorted(by_domain[current_domain], key=lambda x: x[0], reverse=True)[:max_current]:
-            rows.append(f"{current_domain} — {_gist(doc.get('content', ''))}")
+        for score, doc, mid in sorted(by_domain[current_domain], key=lambda x: x[0], reverse=True)[:max_current]:
+            row = f"{current_domain} — {_gist(doc.get('content', ''))}"
+            rows.append((mid, row) if include_ids else row)
         used.add(current_domain)
 
     # Laterali: un rappresentante per ALTRO dominio, ordinati per ricchezza (score)
@@ -86,8 +101,9 @@ def build_wide_recall_map(r, current_domain: str | None = None,
         if dom in used:
             continue
         best = max(items, key=lambda x: x[0])
-        laterals.append((best[0], dom, best[1]))
-    for score, dom, doc in sorted(laterals, key=lambda x: x[0], reverse=True)[:max_lateral]:
-        rows.append(f"{dom} — {_gist(doc.get('content', ''))}")
+        laterals.append((best[0], dom, best[1], best[2]))
+    for score, dom, doc, mid in sorted(laterals, key=lambda x: x[0], reverse=True)[:max_lateral]:
+        row = f"{dom} — {_gist(doc.get('content', ''))}"
+        rows.append((mid, row) if include_ids else row)
 
     return rows

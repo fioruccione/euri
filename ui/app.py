@@ -557,58 +557,20 @@ with main_col:
             with st.chat_message("user"):
                 st.markdown(prompt)
 
-            # Ricerca veloce su Redis per iniettare contesto
+            # Ricerca veloce su Redis per iniettare contesto — stesso builder della voce.
             with st.spinner("Cerco nella memoria..."):
-                import time as _time
-
-                def _age_label(ts):
-                    try:
-                        days = (_time.time() - float(ts)) / 86400 if ts else None
-                    except Exception:
-                        days = None
-                    if days is None: return ""
-                    if days < 1: return "oggi"
-                    if days < 7: return f"{int(days)}g fa"
-                    if days < 30: return f"{int(days/7)}sett fa"
-                    if days < 365: return f"{int(days/30)}mesi fa"
-                    return f"{int(days/365)}anni fa"
-
-                def _fmt(r):
-                    age = _age_label(r.get("created_at"))
-                    label = f"[{r.get('domain', 'generale')} | {age}]" if age else f"[{r.get('domain', 'generale')}]"
-                    return f"- {label} {r['content']}"
-
-                # Memorie recenti per timestamp (sempre — danno continuità dopo riavvio)
-                recent = memory_manager.get_recent_memories(limit=4)
-                recent_ids = {r.get("id") for r in recent}
-
-                # Memorie semanticamente rilevanti per la query corrente.
-                # limit=6 (non 3): la chat testuale non ha vincoli TTS e Stefano ci passa
-                # dati densi (manuali, schede) — più copertura riduce i falsi "non ce l'ho"
-                # quando il fatto È in memoria ma non entrava nei primi 3 (caso ICMA 01/06).
-                semantic = [r for r in memory_manager.search_memories(prompt, limit=6)
-                            if r.get("id") not in recent_ids]
-
-                insights = memory_manager.search_insights(prompt, limit=2)
-
-                # Audit di Coerenza: registra ID iniettati per eventuale correzione al prossimo turno
-                ctx_ids_now = [r.get("id") for r in recent if r.get("id")]
-                ctx_ids_now += [r.get("id") for r in semantic if r.get("id")]
+                from core.rag_context import build_rag_context, infer_context_mode
+                _context_mode = infer_context_mode(prompt, default="chat")
+                _recent_hist = [
+                    {"role": m["role"], "content": m["content"]}
+                    for m in st.session_state.messages[:-1]
+                ]
+                _rag = build_rag_context(
+                    prompt, memory_manager, mode=_context_mode, recent_history=_recent_hist
+                )
+                context = _rag.text
+                ctx_ids_now = list(_rag.ids)
                 memory_manager.set_last_rag_ctx(ctx_ids_now)
-
-                context = ""
-                if recent:
-                    context += "MEMORIE RECENTI (ultime per data):\n"
-                    context += "\n".join(_fmt(r) for r in recent) + "\n"
-                if semantic:
-                    context += "\nMEMORIE CORRELATE ALLA DOMANDA:\n"
-                    context += "\n".join(_fmt(r) for r in semantic) + "\n"
-                if insights:
-                    context += "\nPRINCIPI TRASVERSALI:\n"
-                    context += "\n".join(
-                        f"- [{i.get('domain_a','?')} ↔ {i.get('domain_b','?')}] {i['content']}"
-                        for i in insights
-                    ) + "\n"
 
             # Risposta Euri
             with st.chat_message("assistant"):
@@ -670,14 +632,19 @@ with main_col:
                         context_full = (context + "\n\n" + chat_hint) if context else chat_hint
                         # Gradino 2 — strategia di retrieval (wide/subject) sul modello caldo,
                         # solo quando la pre-gate cheap scatta; specific_search → invariato.
-                        from core.retrieval_strategy import augment_context
+                        from core.retrieval_strategy import augment_context_with_ids
                         _recent_hist = [
                             {"role": m["role"], "content": m["content"]}
                             for m in st.session_state.messages
                         ]
-                        context_full, _ = augment_context(
+                        context_full, _, augment_ids = augment_context_with_ids(
                             prompt, context_full, memory_manager, brain, _recent_hist
                         )
+                        # Audit di Coerenza: registra il ctx effettivo del turno corrente.
+                        # Include anche gli ID aggiunti dagli augment strategici: sono spesso
+                        # proprio quelli che causano una risposta poi corretta da Stefano.
+                        ctx_ids_effective = list(dict.fromkeys([*ctx_ids_now, *augment_ids]))
+                        memory_manager.set_last_rag_ctx(ctx_ids_effective)
                         from core.honesty import scrub_unbacked_save_claim
                         from core.act_word_check import (
                             emit_unbacked_action_commitment,

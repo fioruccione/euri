@@ -413,7 +413,13 @@ REGOLE:
                     "created_at": to_timestamp(now()),
                     "recalled_count": 0,
                     "embedding": vec.tolist() if vec is not None else None,
-                    "convergence_count": 1
+                    "convergence_count": 1,
+                    # Provenienza: i nodi VISSUTI da cui questo insight è nato (le due memorie
+                    # del sogno). Persistere qui rende l'insight groundabile seguendo gli archi,
+                    # invece di ri-recuperare per similarità (muro multi-hop, 22/06). Gli ID sono
+                    # già in mano e sul dream doc; mancavano solo qui. Lista per estendersi in
+                    # convergenza (union dei fratelli assorbiti — vedi promozione).
+                    "source_memory_ids": [mem_a["id"], mem_b["id"]],
                 }
                 self._r.json().set(f"euri:insight:{insight_id}", "$", insight_doc)
                 
@@ -562,9 +568,25 @@ Rispondi SOLO con SÌ o NO."""
                                    salience=0.45)
                         continue
 
+                    # Provenienza cumulativa: prima di cancellare i candidate assorbiti,
+                    # unisci i loro nodi sorgente a quelli del candidate promosso. I vecchi
+                    # insight pre-patch possono non avere il campo: in quel caso l'union è
+                    # parziale ma resta corretta per i dati disponibili.
+                    source_memory_ids = []
+                    for iid in [doc.id, *similar_ids]:
+                        try:
+                            raw_ids = self._r.json().get(iid, "$.source_memory_ids") or []
+                            for mid in (raw_ids[0] if raw_ids else []):
+                                if mid:
+                                    source_memory_ids.append(mid)
+                        except Exception:
+                            continue
+
                     # Promuovi questo a PROMOTED
                     self._r.json().set(doc.id, "$.status", "promoted")
                     self._r.json().set(doc.id, "$.convergence_count", convergences)
+                    if source_memory_ids:
+                        self._r.json().set(doc.id, "$.source_memory_ids", list(dict.fromkeys(source_memory_ids)))
                     self._r.json().set(doc.id, "$.promoted_at", time.time())
                     
                     # Rimuovi i duplicati assorbiti
@@ -626,13 +648,22 @@ Rispondi SOLO con: CONTRADDIZIONE, CONFRONTO, o NESSUNA."""
             logger.debug(f"Loop 2f: errore LLM classify pair — {e}")
             return "none"
 
-    def _make_comparison_memory(self, content_a: str, content_b: str, domain: str) -> None:
+    def _make_comparison_memory(
+        self,
+        content_a: str,
+        content_b: str,
+        domain: str,
+        *,
+        source_ids: list[str] | None = None,
+        requires_verification: bool = False,
+    ) -> None:
         """
         Idea di Stefano (01/06): quando il Loop 2f trova entità DIVERSE ma simili
         (due impianti, due clienti…), non sceglie un vincitore — genera una nota di
         CONFRONTO operativa (cosa in comune, in cosa differiscono, quando preferire
-        l'una o l'altra). È meta-conoscenza, NON un fatto grezzo: la salvo con
-        requires_verification=False così il Loop 2f non la ri-processa (no feedback loop).
+        l'una o l'altra). È meta-conoscenza, NON un fatto grezzo: resta fuori dal
+        Loop 2f tramite prefisso [confronto], ma eredita la fragilità epistemica dei
+        parent se nasce da memorie già `requires_verification`.
         """
         if not self._memory_manager:
             return
@@ -662,8 +693,19 @@ Non inventare dati non presenti nelle due voci. Rispondi solo col confronto."""
                 f"[confronto] {text}", category="conoscenza", source="reflection",
                 tags=["confronto", "loop2f", domain],
             )
-            if mid:  # meta-conoscenza → fuori dal Loop 2f, niente ri-processamento
-                self._r.json().set(f"euri:memory:{mid}", "$.requires_verification", False)
+            if mid:
+                key = f"euri:memory:{mid}"
+                if source_ids:
+                    self._r.json().set(key, "$.source_memory_ids", list(dict.fromkeys(source_ids)))
+                if requires_verification:
+                    self._r.json().set(key, "$.requires_verification", True)
+                    self._r.json().set(key, "$.consolidation_risk", {
+                        "level": "watch",
+                        "reason": "loop2f_comparison_from_unverified_parent",
+                        "source_ids": list(dict.fromkeys(source_ids or [])),
+                    })
+                else:
+                    self._r.json().set(key, "$.requires_verification", False)
                 logger.info(f"Loop 2f: nota di confronto generata {mid[:8]}… (dominio: {domain})")
         except Exception as e:
             logger.debug(f"Loop 2f: errore _make_comparison_memory — {e}")
@@ -694,6 +736,8 @@ Non inventare dati non presenti nelle due voci. Rispondi solo col confronto."""
                     if not d:
                         continue
                     doc = d[0]
+                    if (doc.get("content") or "").strip().lower().startswith("[confronto]"):
+                        continue
                     if not doc.get("requires_verification"):
                         continue
                     if doc.get("superseded_by"):
@@ -787,6 +831,10 @@ Non inventare dati non presenti nelle due voci. Rispondi solo col confronto."""
                         self._make_comparison_memory(
                             seed.get("content", ""), n_doc.get("content", ""),
                             seed.get("domain", "generale"),
+                            source_ids=[seed_id, n_id],
+                            requires_verification=bool(
+                                seed.get("requires_verification") or n_doc.get("requires_verification")
+                            ),
                         )
                         compared += 1
                         logger.info(

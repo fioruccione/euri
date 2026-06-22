@@ -145,7 +145,7 @@ class VoiceDaemon:
         self._enroll_segments: list = []
         self._running = False
         self._missed_reminders: list[str] = []  # promemoria scattati mentre eri assente
-        self._clock_emitted: set = set()         # todo-id già emessi su Pulse (clock) — afferente una-tantum
+        self._clock_emitted: set = set()         # fallback in-memory se Redis è giù; primario = set Redis (sopravvive ai restart)
         self._teach_recovery_mode = False        # in attesa di risposta su recovery TEACH
         self._teach_snapshot_content = ""
         self._teach_mode = False
@@ -632,7 +632,7 @@ class VoiceDaemon:
         self._last_user_text = text
 
         self.memory.log_conversation("Stefano", text)
-        context = self._build_context(text)
+        context = self._build_context(text, mode="search")
         # Gradino 2 — strategia di retrieval scelta dal modello caldo (wide/subject), solo
         # quando la pre-gate cheap sospetta una domanda non-specifica. NON tocca il retrieval
         # principale: lo affianca. Fail-safe a specific_search.
@@ -895,113 +895,23 @@ class VoiceDaemon:
         "mentre", "però", "comunque", "ricordi", "saper", "sapere",
     }
 
-    def _build_context(self, text: str) -> str:
+    _RECENT_CONTEXT_RE = re.compile(
+        r'\b(?:stavamo\s+parlando|parlavamo|dicevamo|detto\s+prima|poco\s+fa|'
+        r'prima\?|di\s+cosa\s+(?:stavamo\s+)?parlavamo)\b',
+        re.IGNORECASE,
+    )
+
+    def _build_context(self, text: str, *, mode: str = "chat") -> str:
         """Cerca in Redis contenuto rilevante da iniettare come contesto nella risposta."""
-        from utils.temporal import extract_temporal_range
-        from core.temporal_recall import prioritize_window
-        source_filter = config.DEMO_CONTEXT_SOURCES if config.DEMO_MODE else None
-
-        # Reflections da Loop 2a — solo fuori DEMO_MODE (source=reflection non è in DEMO_CONTEXT_SOURCES)
-        # touch=False: iniezione "ambient" a prescindere dalla query → NON è un richiamo
-        # meritato, non deve gonfiare recalled_count (vedi sotto).
-        reflection_lines = []
-        if not config.DEMO_MODE:
-            for r in self.memory.get_recent_reflections(limit=2, touch=False):
-                reflection_lines.append(f"- {r['content']}")
-
-        # Base recency: memorie iniettate per pura recenza, non perché rilevanti alla
-        # query → richiamo INIETTATO, touch=False. Solo i richiami MERITATI (match
-        # semantico più sotto, e finestra temporale query-driven) incrementano
-        # recalled_count, che nutre Loop 2d/2e e il lifecycle insight. Senza questo, la
-        # recency drogava le statistiche di richiamo dei nodi off-topic (caso Eurostampi:
-        # i nodi del ciclo Dream a recalled=6-12 in 30 min solo perché iniettati ogni turno).
-        results = self.memory.get_recent_memories(
-            limit=config.RAG_RECENCY_LIMIT, source_filter=source_filter, touch=False
-        )
-        seen_ids = {r.get("id") for r in results}
-
-        # Ricerca temporale: se la query contiene "ieri", "5 maggio", "lunedì" ecc.
-        # Su una domanda con riferimento di tempo, il DIARIO vissuto della finestra
-        # (user/passive/episode/teach/loop2e) viene PRIMA dei pensieri riflessivi su quel
-        # periodo: finestra ampia + prioritize_window mette le fonti vissute in testa e le
-        # reflection in coda. Cura il caso "cosa abbiamo fatto ieri?" in cui le reflection
-        # recenti e auto-rinforzate coprivano il diario. Nessun effetto senza riferimento
-        # temporale.
-        time_range = extract_temporal_range(text, now())
-        if time_range:
-            ts_start, ts_end = time_range
-            # limit alto: la finestra deve coprire TUTTA la giornata, non i soli N più
-            # recenti (che pendono verso le reflection serali). prioritize_window poi sceglie.
-            window = self.memory.search_memories_by_timerange(ts_start, ts_end, limit=200)
-            merged = []
-            merged_seen = set()
-            for r in prioritize_window(window) + results:
-                rid = r.get("id")
-                if rid not in merged_seen:
-                    merged.append(r)
-                    merged_seen.add(rid)
-            results = merged
-            seen_ids = merged_seen
-            # Niente sezione "Sintesi recenti" generica sulle query temporali: sono proprio
-            # le reflection auto-rinforzate che coprivano il diario. Le reflection in-finestra
-            # restano ammesse, ma in coda a results (prioritize_window le limita).
-            reflection_lines = []
-
-        words = re.findall(
-            r'\b[a-zA-ZàáâãäåèéêëìíîïòóôõöùúûüÀÁÂÃÄÅÈÉÊËÌÍÎÏÒÓÔÕÖÙÚÛÜ]{4,}\b', text
-        )
-        keywords = list(dict.fromkeys(
-            w for w in words if w.lower() not in self._STOP_WORDS
-        ))
-        if keywords:
-            extra_memories = self.memory.search_memories(text, limit=config.RAG_SEMANTIC_LIMIT, source_filter=source_filter)
-            kw_query = " | ".join(keywords[:8])
-            extra_notes = self.memory.search_notes(kw_query, limit=2)
-            for r in extra_memories + extra_notes:
-                if r.get("id") not in seen_ids:
-                    results.append(r)
-                    seen_ids.add(r.get("id"))
-
-        # Insights cross-domain rilevanti per la query corrente
-        insight_lines = []
-        if keywords:
-            for ins in self.memory.search_insights(text, limit=2):
-                dom_a = ins.get("domain_a", "?")
-                dom_b = ins.get("domain_b", "?")
-                insight_lines.append(f"- [{dom_a} ↔ {dom_b}] {ins['content']}")
-
-        sections = []
-        # Query temporale ("cosa abbiamo fatto ieri"): fetta di diario più ampia (10 vs 6),
-        # così oltre al parlato emergono anche le consolidazioni della giornata.
-        mem_cap = config.RAG_MEM_CAP_TEMPORAL if time_range else config.RAG_MEM_CAP
-        if reflection_lines:
-            sections.append("Sintesi recenti:\n" + "\n".join(reflection_lines))
-        if results:
-            mem_lines = []
-            for r in results[:mem_cap]:
-                age = self._relative_time(r.get("created_at"))
-                label = f"[{r.get('domain', 'generale')} | {age}]" if age else f"[{r.get('domain', 'generale')}]"
-                suffix = " [DATO NON VERIFICATO — contiene valori numerici]" if r.get("requires_verification") else ""
-                mem_lines.append(f"- {label} {r['content']}{suffix}")
-            sections.append("Ricordi/note rilevanti:\n" + "\n".join(mem_lines))
-        if insight_lines:
-            sections.append("Principi trasversali:\n" + "\n".join(insight_lines))
-
-        # Triade RAG: log dei nodi usati per tracciare l'origine delle risposte
-        if results:
-            node_tags = [
-                f"{r.get('source','?')}:{r.get('domain','?')}({r.get('id','')[:8]})"
-                for r in results[:mem_cap]
-            ]
-            logger.info(f"RAG ctx [{len(results)} nodi]: {' | '.join(node_tags)}")
-
-        # Audit di Coerenza: registra ID per analisi notturna di eventuali correzioni
+        from core.rag_context import build_rag_context
+        with self.brain.history_lock:
+            recent_history = list(self.brain._conversation_history)
+        rag = build_rag_context(text, self.memory, mode=mode, recent_history=recent_history)
         try:
-            self.memory.set_last_rag_ctx([r.get("id") for r in results[:mem_cap] if r.get("id")])
+            self.memory.set_last_rag_ctx(rag.ids)
         except Exception as e:
             logger.debug(f"set_last_rag_ctx fallito: {e}")
-
-        return "\n\n".join(sections)
+        return rag.text
 
     def _augment_context_by_strategy(self, text: str, context: str) -> str:
         """
@@ -1010,10 +920,13 @@ class VoiceDaemon:
         specific_search/recent_context → context invariato. Fail-safe: su errore, invariato.
         """
         try:
-            from core.retrieval_strategy import augment_context
+            from core.retrieval_strategy import augment_context_with_ids
             with self.brain.history_lock:
                 recent = list(self.brain._conversation_history)
-            context, note = augment_context(text, context, self.memory, self.brain, recent)
+            context, note, augment_ids = augment_context_with_ids(text, context, self.memory, self.brain, recent)
+            if augment_ids:
+                base_ids = self.memory.get_last_rag_ctx()
+                self.memory.set_last_rag_ctx(list(dict.fromkeys([*base_ids, *augment_ids])))
             if note:
                 logger.info(f"Retrieval strategy: {note}")
         except Exception as e:
@@ -1710,6 +1623,26 @@ class VoiceDaemon:
         return (f"Senti, ti ricordo: {content}" if not overdue
                 else f"Prima volevi {content[:120]} — ci sei riuscito?")
 
+    CLOCK_EMITTED_KEY = "euri:pulse:clock_emitted"
+
+    def _mark_clock_emitted(self, tid) -> bool:
+        """True solo alla PRIMA emissione clock/threshold per questo todo.
+
+        Dedup persistito su un set Redis, così un riavvio del daemon non ri-emette il
+        clock già visto (il set in-memory si azzerava al restart → dup sullo stream Pulse).
+        Fail-open: se Redis è irraggiungibile, ricade sul set in-memory — la consegna NON
+        dipende da qui (usa reminded_count), quindi al peggio ricompare una dup afferente.
+        """
+        if not tid:
+            return True
+        try:
+            return bool(self.r.sadd(self.CLOCK_EMITTED_KEY, str(tid)))
+        except Exception:
+            if tid in self._clock_emitted:
+                return False
+            self._clock_emitted.add(tid)
+            return True
+
     def _reminder_loop(self):
         """
         Thread proattivo (ogni 30s). Due piani distinti:
@@ -1750,9 +1683,9 @@ class VoiceDaemon:
                     minutes_left = (due - t).total_seconds() / 60
                     tid = todo.get("id")
 
-                    # AFFERENTE — clock/threshold UNA volta, all'ingresso in finestra (<=60 min)
-                    if minutes_left <= 60 and tid not in self._clock_emitted:
-                        self._clock_emitted.add(tid)
+                    # AFFERENTE — clock/threshold UNA volta, all'ingresso in finestra (<=60 min).
+                    # Dedup persistito su Redis: un restart del daemon non ri-emette il clock già visto.
+                    if minutes_left <= 60 and self._mark_clock_emitted(tid):
                         pulse_emit(self.r, "clock", "extero", "threshold",
                                    payload={"content": todo.get("content", "")[:60],
                                             "minutes_left": round(minutes_left),

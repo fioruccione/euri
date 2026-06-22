@@ -550,6 +550,7 @@ class Brain:
           - "specific_search": domanda specifica/fattuale → retrieval attuale, subject "".
           - "wide_recall"    : panoramica/autobiografica/progetti → campione ampio, subject "".
           - "subject_recall" : tutto su un soggetto nominato in modo aperto → subject = nome.
+          - "entity_recall"  : nomi/ruoli/chi fa cosa/relazioni tra entità → subject "".
           - "recent_context" : si risolve con la conversazione recente → subject "".
         {} su errore/parse fallito (→ il chiamante fa fallback a specific_search).
         """
@@ -569,10 +570,14 @@ class Brain:
             "- \"subject_recall\": vuole TUTTO su un SOGGETTO nominato in modo aperto (es. "
             "'parlami di Poseidon', 'cosa sai del macinato Seari') → subject = il nome del "
             "soggetto (es. 'Poseidon', 'macinato Seari').\n"
+            "- \"entity_recall\": chiede NOMI, RUOLI, chi fa cosa, composizione di un gruppo "
+            "o relazioni tra persone/entità, senza un singolo soggetto specifico da cercare "
+            "(es. 'chi lavora con noi?', 'quali nomi conosci?', 'che ruoli hanno?') → subject = \"\".\n"
             "- \"recent_context\": si risolve con ciò che vi siete detti POCO FA (es. "
             "'ricapitola', 'cosa stavamo dicendo') → subject = \"\".\n\n"
             "Distingui bene: 'quanto pesa il Poseidon?' è specific_search (un dato preciso), "
-            "'parlami di Poseidon' è subject_recall (tutto sul soggetto).\n"
+            "'parlami di Poseidon' è subject_recall (tutto sul soggetto), "
+            "'quali persone/ruoli conosci?' è entity_recall.\n"
             "confidence: da 0 a 1, quanto sei sicuro."
         )
         try:
