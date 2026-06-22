@@ -34,6 +34,26 @@ _FRAGMENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Numeri italiani scritti in lettere → cifra, MA solo se seguiti da un'unità di tempo
+# (così "un blend" / "tre prove" NON vengono toccati: si converte solo "tra TRE minuti").
+_WORD_NUM = {
+    "un": 1, "uno": 1, "una": 1, "due": 2, "tre": 3, "quattro": 4, "cinque": 5,
+    "sei": 6, "sette": 7, "otto": 8, "nove": 9, "dieci": 10, "undici": 11,
+    "dodici": 12, "quindici": 15, "venti": 20, "trenta": 30, "quaranta": 40, "sessanta": 60,
+}
+_TIME_UNIT = r"minut[io]|or[ae]|second[io]|giorn[io]|settiman[ae]|mes[ei]"
+_WORDNUM_RE = re.compile(
+    r"\b(" + "|".join(sorted(_WORD_NUM, key=len, reverse=True)) + r")\b['\s]+(" + _TIME_UNIT + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _digitize_relative_words(text: str) -> str:
+    """'tra tre minuti'→'tra 3 minuti', "tra un'ora"→'tra 1 ora', "mezz'ora"→'30 minuti'.
+    Converte il numero-parola SOLO davanti a un'unità di tempo (non tocca 'un blend')."""
+    text = re.sub(r"\bmezz[a']?\s*(or[ae])\b", "30 minuti", text, flags=re.IGNORECASE)
+    return _WORDNUM_RE.sub(lambda m: f"{_WORD_NUM[m.group(1).lower()]} {m.group(2)}", text)
+
 
 def extract_due_date(text: str) -> datetime | None:
     """
@@ -44,6 +64,7 @@ def extract_due_date(text: str) -> datetime | None:
     # "fra" e "tra" sono sinonimi — dateparser conosce solo "tra"
     normalized = _normalize_italian_time(text)
     normalized = re.sub(r'\bfra\b', 'tra', normalized, flags=re.IGNORECASE)
+    normalized = _digitize_relative_words(normalized)  # "tra tre minuti" → "tra 3 minuti"
 
     # 1. Espressioni relative ("tra 2 minuti", "tra 3 giorni")
     m = _RELATIVE_RE.search(normalized)

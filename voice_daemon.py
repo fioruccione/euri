@@ -145,6 +145,7 @@ class VoiceDaemon:
         self._enroll_segments: list = []
         self._running = False
         self._missed_reminders: list[str] = []  # promemoria scattati mentre eri assente
+        self._clock_emitted: set = set()         # todo-id già emessi su Pulse (clock) — afferente una-tantum
         self._teach_recovery_mode = False        # in attesa di risposta su recovery TEACH
         self._teach_snapshot_content = ""
         self._teach_mode = False
@@ -1671,88 +1672,93 @@ class VoiceDaemon:
             except Exception as e:
                 logger.error(f"Errore consolidation loop: {e}")
 
+    def _formulate_reminder(self, todo: dict, minutes_left: float) -> str:
+        """Promemoria FORMULATO naturalmente da Gemma, grounded sul contenuto del todo:
+        tesse la consegna, NON inventa la sostanza. Fallback non-template se l'LLM tace."""
+        content = (todo.get("content") or "").strip()
+        overdue = minutes_left < -1
+        timing = ("È già passata l'ora in cui voleva farlo: chiedigli con garbo se è riuscito."
+                  if overdue else "Scade tra poco.")
+        prompt = (
+            "Sei Euri, l'assistente di Stefano. Lui ti aveva chiesto di ricordargli questo:\n"
+            f"«{content}»\n\n"
+            f"{timing}\n"
+            "Diglielo come glielo diresti DI PERSONA: UNA frase, naturale e amichevole, "
+            "nessun elenco, nessun preambolo tipo 'Promemoria:' o 'Scaduto:'. "
+            "NON aggiungere fatti, numeri o dettagli che non sono già nel testo qui sopra."
+        )
+        try:
+            with self._brain_lock:
+                resp = chat_client.chat(
+                    model=config.OLLAMA_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    options={"temperature": 0.6, "num_predict": 200},
+                    think=False,
+                )
+            line = (resp.message.content or "").strip()
+            if line:
+                return line
+        except Exception as e:
+            logger.debug(f"_formulate_reminder fallback: {e}")
+        return (f"Senti, ti ricordo: {content}" if not overdue
+                else f"Prima volevi {content[:120]} — ci sei riuscito?")
+
     def _reminder_loop(self):
         """
-        Thread proattivo: ogni 30s controlla i todo con scadenza e parla con escalation.
-
-        Livelli:
-          L1 — 60 min prima  (1 avviso)
-          L2 — 30 min prima  (1 avviso)
-          L3 — 15 min prima  (1 avviso)
-          L4 — scadenza      (1 avviso)
-          L5 — scaduto       (1 avviso, solo se scaduto da meno di 2 ore)
-
-        Condizioni per parlare:
-          - Non in quiet hours (23:00–07:00)
-          - VisualGate: utente presente
-          - Nessun audio lock attivo
+        Thread proattivo (ogni 30s). Due piani distinti:
+          AFFERENTE (clock): quando una scadenza entra in finestra (<=60 min) emette UNA volta
+            euri:pulse clock/threshold — il tempo del mondo, osservato sempre.
+          EFFERENTE (consegna): ricorda UNA sola volta e SOLO quando Stefano è PRESENTE.
+            Presenza = lo VEDE (gate, solo se la webcam funziona) OPPURE ha parlato di recente.
+            La webcam fa fail-open quando è cieca (is_user_present sempre True): se cieca NON ci
+            si fida del gate, vale solo l'interazione recente. Presenza IGNOTA (cieco + nessuna
+            interazione) ≠ presente → non si consegna nel vuoto: si attende e si consegna al primo
+            momento di presenza, anche dopo la scadenza. La frase è FORMULATA da Gemma (grounded
+            sul todo), non un template a livelli.
         """
-        # Finestre in minuti: (min_left_low, min_left_high, eligible_fn, message_fn)
-        # eligible_fn(reminded_count, minutes_since_last_remind) → bool
-        # L4/L5 usano also il tempo dall'ultimo remind per evitare ripetizioni
-        _LEVELS = [
-            ( 55,  65, lambda c, dt: c == 0,          lambda t: f"Tra un'ora: {t['content']}."),
-            ( 25,  35, lambda c, dt: c <= 1,           lambda t: f"Fra mezz'ora: {t['content']}."),
-            ( 10,  20, lambda c, dt: c <= 2,           lambda t: f"Fra un quarto d'ora: {t['content']}."),
-            ( -3,   2, lambda c, dt: dt > 55,          lambda t: f"Adesso: {t['content']}."),
-            (-120,  -3, lambda c, dt: c <= 4 and dt > 55, lambda t: f"Scaduto: {t['content']}. L'hai fatto?"),
-        ]
+        LEAD_MIN = 15              # consegna da 15 min prima della scadenza
+        OVERDUE_CAP_MIN = 24 * 60  # ...fino a 24h dopo, in attesa di presenza
+        PRESENT_WINDOW = 300       # "interazione recente" = ultimi 5 min
 
         while self._running:
             try:
                 t = now()
-                hour = t.hour
-
-                # Quiet hours 23:00–07:00
-                if hour >= 23 or hour < 7:
+                if t.hour >= 23 or t.hour < 7:         # quiet hours 23:00–07:00
                     time.sleep(30)
                     continue
-
-                user_present = self.visual_gate.is_user_present()
-
-                # Euri sta parlando → aspetta
-                if self.r.exists("euri:audio:lock"):
+                if self.r.exists("euri:audio:lock"):   # Euri sta parlando → aspetta
                     time.sleep(5)
                     continue
 
-                todos = self.memory.get_pending_todos()
-                for todo in todos:
+                # Presenza: lo VEDE (gate affidabile) OPPURE ha interagito di recente (primario).
+                seen = (not self.visual_gate.is_blind()) and self.visual_gate.is_user_present()
+                spoke = (self._last_activity_ts > 0 and
+                         (time.time() - self._last_activity_ts) <= PRESENT_WINDOW)
+                present = seen or spoke
+
+                for todo in self.memory.get_pending_todos():
                     due = todo.get("_due_at")
                     if not due:
                         continue
-
                     minutes_left = (due - t).total_seconds() / 60
-                    reminded = todo.get("reminded_count", 0)
+                    tid = todo.get("id")
 
-                    # Minuti dall'ultimo remind (inf se mai ricordato)
-                    last_reminded_ts = todo.get("last_reminded_at")
-                    if last_reminded_ts:
-                        from utils.date_utils import from_timestamp
-                        last_reminded_dt = from_timestamp(last_reminded_ts)
-                        dt_since = (t - last_reminded_dt).total_seconds() / 60
-                    else:
-                        dt_since = float("inf")
+                    # AFFERENTE — clock/threshold UNA volta, all'ingresso in finestra (<=60 min)
+                    if minutes_left <= 60 and tid not in self._clock_emitted:
+                        self._clock_emitted.add(tid)
+                        pulse_emit(self.r, "clock", "extero", "threshold",
+                                   payload={"content": todo.get("content", "")[:60],
+                                            "minutes_left": round(minutes_left),
+                                            "present": present},
+                                   salience=max(0.3, min(0.95, 1 - minutes_left / 60)))
 
-                    for low, high, eligible_fn, msg_fn in _LEVELS:
-                        if low <= minutes_left <= high and eligible_fn(reminded, dt_since):
-                            self.memory.mark_reminded(todo["id"])
-                            # Senso "orologio": una scadenza ha varcato una soglia. Più
-                            # vicina/scaduta → più saliente. source=extero (il tempo del mondo).
-                            pulse_emit(self.r, "clock", "extero", "threshold",
-                                       payload={"content": todo.get("content", "")[:60],
-                                                "minutes_left": round(minutes_left),
-                                                "present": user_present},
-                                       salience=max(0.3, min(0.95, 1 - minutes_left / 60)))
-                            if user_present:
-                                msg = msg_fn(todo)
-                                logger.info(f"Reminder vocale: {todo['content'][:50]}")
-                                self._speak(msg)
-                            else:
-                                # Utente assente: beep + accoda per annuncio al rientro
-                                logger.info(f"Reminder beep (assente): {todo['content'][:50]}")
-                                self._play_beep()
-                                self._missed_reminders.append(todo["content"])
-                            break
+                    # EFFERENTE — consegna UNA volta, solo se presente, nella finestra
+                    if (todo.get("reminded_count", 0) == 0 and present and
+                            -OVERDUE_CAP_MIN <= minutes_left <= LEAD_MIN):
+                        self.memory.mark_reminded(tid)
+                        logger.info(f"Reminder (presente, naturale): {todo.get('content','')[:50]}")
+                        self._speak(self._formulate_reminder(todo, minutes_left))
+                        break   # un promemoria per giro, non sommergere
 
             except Exception as e:
                 logger.error(f"Errore reminder loop: {e}")

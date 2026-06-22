@@ -33,6 +33,10 @@ class VisualGate:
         self._last_seen: float = 0.0       # ultimo frame con faccia
         self._last_activity: float = 0.0   # ultimo STT o TTS
         self._just_activated = False       # one-shot: daemon fa il saluto
+        self._blind = False                # True = webcam non disponibile (fail-open):
+                                           # is_user_present() è sempre True e NON è un segnale
+                                           # di presenza affidabile → chi consuma deve ripiegare
+                                           # sull'interazione recente.
 
         self._lock = threading.Lock()
         self._running = False
@@ -64,6 +68,7 @@ class VisualGate:
         except Exception as e:
             logger.warning(f"VisualGate non disponibile ({e}) — Euri funziona senza gate visivo")
             self._gate_active = True   # fail-open: senza webcam, processa sempre
+            self._blind = True         # ...ma segnala che la presenza NON è osservabile
 
     def stop(self):
         self._running = False
@@ -72,6 +77,12 @@ class VisualGate:
         """True se il gate è attivo (processa voce)."""
         with self._lock:
             return self._gate_active
+
+    def is_blind(self) -> bool:
+        """True se la webcam non è disponibile (fail-open): is_user_present() vale sempre True
+        e NON va usato come prova di presenza — usare l'interazione recente come segnale primario."""
+        with self._lock:
+            return self._blind
 
     def notify_activity(self):
         """Chiamato dal daemon ad ogni STT trascritto o TTS pronunciato."""
@@ -100,6 +111,7 @@ class VisualGate:
             logger.warning("VisualGate: webcam non accessibile — gate disabilitato (fail-open)")
             with self._lock:
                 self._gate_active = True
+                self._blind = True
             self._running = False
             return
 
