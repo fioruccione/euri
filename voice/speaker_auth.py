@@ -61,8 +61,12 @@ class SpeakerAuth:
         if not self.is_enabled():
             return True  # fail-open
 
-        if len(audio) < sample_rate * 0.5:
-            return True  # troppo corto per analisi affidabile — lascia passare
+        # Sotto ~1.3s il GE2E non ha abbastanza voce per un d-vector stabile: le conferme brevi
+        # ("ok"/"sì"/"va bene") producevano similarity ballerine (0.48–0.66) e venivano RIFIUTATE,
+        # bloccando l'utente vero. Sotto la soglia di affidabilità del modello non si finge di
+        # verificare — si lascia passare (il costo-sicurezza di una clip <1.3s è minimo).
+        if len(audio) < sample_rate * 1.3:
+            return True  # troppo corto per una verifica affidabile — lascia passare
 
         try:
             embedding = self._embed(audio, sample_rate)
