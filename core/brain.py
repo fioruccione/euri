@@ -245,7 +245,7 @@ class Brain:
 
     def extract_passive_memories(self, conversation: list[dict]) -> list[str]:
         """
-        Analizza la conversazione recente ed estrae fatti su Stefano da salvare passivamente.
+        Analizza la conversazione recente ed estrae fatti autosufficienti da salvare passivamente.
         Ritorna una lista di fatti (stringhe), vuota se nulla di rilevante.
         """
         if len(conversation) < 4:
@@ -260,7 +260,17 @@ class Brain:
         prompt = (
             f"Analizza questa conversazione tra Stefano e il suo assistente.\n\n"
             f"{dialogue}\n\n"
-            f"Estrai SOLO i fatti concreti su Stefano che vale la pena ricordare per il futuro:\n"
+            f"Estrai SOLO fatti concreti e autosufficienti che vale la pena ricordare per il futuro.\n"
+            f"Ogni fatto deve nominare esplicitamente il soggetto a cui si riferisce "
+            f"(persona, azienda, cliente, prodotto, macchina, progetto, materiale...).\n"
+            f"Risolvi il soggetto dal contesto conversazionale solo quando è chiaro; NON "
+            f"defaultare mai a Stefano. Se il soggetto non è risolvibile con certezza, scarta il fatto.\n\n"
+            f"Esempi:\n"
+            f"- OK: 'Giada è una nuova collaboratrice di laboratorio con basi teoriche di chimica.'\n"
+            f"- OK: 'Stefano lavora da casa in modalità remota.'\n"
+            f"- NO: 'Lavora da casa in modalità remota.'\n"
+            f"- NO: 'Ha un collega di nome Leonardo.'\n\n"
+            f"Categorie utili:\n"
             f"- Preferenze personali (cibi, orari, abitudini, strumenti che usa)\n"
             f"- Progetti in corso o decisioni prese\n"
             f"- Dati su lavoro, fornitori, clienti, processi, risultati tecnici\n"
@@ -274,7 +284,7 @@ class Brain:
             f"decisioni hardware/software. Esempio: 'Se la vendita dei neutri va a buon fine, "
             f"Stefano userà i proventi per aggiornare la GPU della workstation.'\n\n"
             f"IGNORA: conversazione generica, saluti, test del sistema, domande senza risposta concreta, "
-            f"informazioni già ovvie (es. 'Stefano usa Euri').\n\n"
+            f"informazioni già ovvie (es. 'Stefano usa Euri'), frasi acefale senza soggetto esplicito.\n\n"
             f"Se trovi fatti utili: scrivi una lista numerata, un fatto per riga, max 6.\n"
             f"Se non c'è nulla di concreto da salvare: scrivi solo NOTHING."
         )
@@ -291,10 +301,26 @@ class Brain:
             # Parsa la lista numerata — estrae il testo dopo "1. ", "2. " ecc.
             import re
             facts = re.findall(r"^\d+\.\s*(.+)$", result, re.MULTILINE)
-            return [f.strip() for f in facts if len(f.strip()) > 10]
+            return [
+                f.strip()
+                for f in facts
+                if len(f.strip()) > 10 and not self._looks_acephalous_fact(f)
+            ]
         except Exception as e:
             logger.error(f"Errore extract_passive_memories: {e}")
             return []
+
+    _ACEPHALOUS_FACT_RE = re.compile(
+        r"^\s*(?:ha|aveva|avrà|lavora|lavorava|opera|gestisce|gestiva|collabora|"
+        r"collaborava|si\s+occupa|supervisiona|sta\s+\w+|deve|vuole|preferisce|"
+        r"è\s+(?:arrivat[oa]|coinvolt[oa]|responsabile|nuov[oa]|autonom[oa]))\b",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _looks_acephalous_fact(cls, fact: str) -> bool:
+        """Filtro conservativo: scarta fatti che iniziano con un predicato senza soggetto."""
+        return bool(cls._ACEPHALOUS_FACT_RE.search(fact or ""))
 
     _REFLECTION_SYSTEM = (
         "Sei un sistema di consolidamento memoria. Leggi le memorie recenti di Stefano "

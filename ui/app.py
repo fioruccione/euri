@@ -625,6 +625,10 @@ with main_col:
 
                     if tool_res is not None:
                         response = tool_res.get("output") or "Comando eseguito."
+                        # Il turno è stato risolto da un tool, non dal RAG. Evita che una
+                        # correzione successiva venga attribuita a memorie iniettate solo
+                        # incidentalmente prima del dispatch.
+                        memory_manager.set_last_rag_ctx([])
                     elif save_res is not None:
                         response = save_res["reply"]
                     else:

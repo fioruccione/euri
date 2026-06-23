@@ -708,6 +708,13 @@ class VoiceDaemon:
     def _handle_execute(self, text: str):
         """Esegue un tool di sistema tramite l'Executor sandbox."""
         self.memory.log_conversation("Stefano", text)
+        self._last_user_text = text
+        # Un tool non è una risposta basata su RAG: una correzione al turno successivo
+        # non deve ereditare i nodi memoria del turno precedente.
+        try:
+            self.memory.set_last_rag_ctx([])
+        except Exception as e:
+            logger.debug(f"clear last_rag_ctx EXECUTE fallito: {e}")
 
         # Reset stop_event per la nuova esecuzione
         self.executor.stop_event.clear()
@@ -747,6 +754,10 @@ class VoiceDaemon:
         result = self.executor.execute(call)
         spoken = result.output
         self.memory.log_conversation("Euri", spoken)
+        try:
+            self.memory.set_last_rag_ctx([])
+        except Exception as e:
+            logger.debug(f"clear last_rag_ctx EXECUTE result fallito: {e}")
 
         # Continuità conversazionale (V2.18.3 → fix V2.19): inietta il risultato del
         # tool nella history LLM del Brain, così i turn CHAT successivi lo "vedono"
@@ -1776,8 +1787,11 @@ class VoiceDaemon:
                             else:
                                 elenco = ", ".join(missed)
                                 self._speak(f"Bentornato Stefano. Hai perso {len(missed)} promemoria: {elenco}.")
-                        else:
-                            self._speak("Bentornato Stefano.")
+                        # Saluto a vuoto RIMOSSO (Stefano 23/06): la presenza-senza-contenuto
+                        # resta sul bus (pulse_emit sopra) ma NON diventa voce. Si parla solo con
+                        # un motivo grounded — reminder perso o TEACH da riprendere (Regola d'Oro).
+                        # Il "Bentornato Stefano." a vuoto era un arco riflesso (sente→parla) che
+                        # salutava la stanza vuota di notte; l'afferente presence resta prezioso.
                         # Controlla se c'è una sessione TEACH interrotta
                         snapshot = self.r.get("euri:teach:snapshot")
                         if snapshot and not self._teach_mode:

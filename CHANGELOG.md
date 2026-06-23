@@ -2,6 +2,17 @@
 
 Storico completo delle versioni di Euri. Il README riporta solo la versione corrente; qui la cronologia integrale.
 
+## Unreleased — Loop 2e attention ZSET: salienza separata dal payload
+
+Esperimento mirato ispirato al principio "indice leggero ordinato, payload completo solo dopo la selezione". Non sostituisce RediSearch/KNN e non tocca il retrieval conversazionale: applicato solo al pre-filtro candidati del Loop 2e.
+
+- **Baseline prima del fix:** 1299 memorie, 30.90 MB di RedisJSON complessivo, ma solo 0.46 MB di testo (`content`). Il Loop 2e selezionava 241 candidati scansionando e idratando tutti i JSON (`SCAN + JSON.GET`), con costo misurato ~1877 ms per la sola selezione candidati.
+- **Patch minima:** nuovo indice derivato `euri:idx:loop2e:candidates` (`ZSET`) mantenuto su `save_memory`, `touch` e sulle mutazioni che rendono un nodo non consolidabile (`requires_verification`, `audit_flag`, `superseded_by`, `consolidated_into`). Lo score combina `recalled_count` cappato, `last_recalled_at` e tie-break deterministico. Il documento JSON resta la fonte di verità: il Loop 2e rilegge e ri-valida ogni ID prima di usarlo; se lo ZSET manca o è vuoto, fallback allo scan canonico.
+- **Numeri dopo il fix:** `scripts/bench_loop2e_attention.py --rebuild --assert-equal --runs 5` → scan_count=241, zset_count=241, same_set=True, same_order=True. Selezione da ZSET + idratazione dei candidati: ~331 ms medi. Rebuild dello ZSET da scan: ~1739 ms, quindi il rebuild non è l'ottimizzazione; il valore sta nel mantenimento incrementale.
+- **Contro-casi:** `test_loop2e_attention.py` copre ingresso candidato valido, uscita su `requires_verification`, uscita su `consolidated_into`/`superseded_by`, esclusione di frammenti acefali o sotto soglia di richiamo, rimozione idempotente.
+- **Rischio accettato:** indice derivato potenzialmente stale. Mitigazione: revalidazione JSON a ogni lettura, rimozione opportunistica degli ID stale e fallback allo scan. Nessuna cancellazione, nessun cambio di KNN, nessun macronodo/checksum.
+- **Stabilità del prompt-gate 2e:** lo stesso ciclo live ha mostrato molti `output non parsabile → fail-closed seed-only`: sicuro per i dati, ma spreca il modello. Il gate SAME/DIFFERENT/UNKNOWN ora usa `format="json"` e `think=False` solo per questa micro-classificazione; dopo 3 parse-fail consecutivi il Loop 2e interrompe il consolidamento del ciclo. Un run forzato post-fix ha confermato che il parser regge e ha prodotto 2 consolidazioni, ma il gate può restare troppo selettivo; aggiunto cap a 30 tentativi di gate per ciclo, così lo ZSET propone i candidati migliori e il loop non consuma modello su tutta la coda. Tutti gli altri loop Dream e tool restano invariati.
+
 ## V2.20 (12/06/2026) — Onestà di ground-truth (P-GT)
 
 Minor release tematica: la trilogia **P-GT** ("il cognome di famiglia" della roadmap — l'output di Euri risponde a un fatto verificabile, non alla propria narrazione). Tre facce della stessa onestà, ciascuna con baseline misurato e contro-caso: **N1** non genera lesson dalle correzioni-fantasma, **N2** non afferma un'azione che non ha eseguito, **N3** non lascia che un atomo fattuale provato venga cancellato da una nota infedele. Prevenzione + cura in tutte e tre (gate/paraurti per il futuro, bonifica/riparazione del pregresso). Richiede un restart del daemon per attivare i gate notturni.

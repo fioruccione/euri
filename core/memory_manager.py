@@ -15,6 +15,8 @@ from redis.commands.search.query import Query
 import config
 from utils.date_utils import now, to_timestamp, from_timestamp, format_datetime
 from core.domain_gater import assign_domain, domain_aware_search, neighbor_domains
+from core.memory_attention import update_loop2e_candidate_index
+from core.memory_axes import analyze_memory_axes
 from utils.obsidian_sync import write_memory
 from core.pulse import pulse_emit
 
@@ -132,6 +134,9 @@ class MemoryManager:
             _re.IGNORECASE
         )
         requires_verification = bool(_NUM_PAT.search(content))
+        memory_axes = analyze_memory_axes(content, source=source, created_at=to_timestamp(ts))
+        if "acephalous_subject" in memory_axes.get("audit_reasons", []):
+            requires_verification = True
 
         doc = {
             "id": mid,
@@ -148,9 +153,11 @@ class MemoryManager:
             "tags": tags or [],
             "embedding": embedding,
             "context_meta": context_meta,
+            "memory_axes": memory_axes,
             "safety_flag": guard["safety_flag"],  # [] se pulito; categorie se contenuto sospetto da fonte fidata
         }
         self.r.json().set(key, "$", doc)
+        update_loop2e_candidate_index(self.r, doc)
         if expires_at:
             # expireat è separato dal JSON.SET (Codex #1): se fallisce, la memoria resterebbe
             # SENZA TTL (vive per sempre) mentre expires_at dice il contrario. Tracciato, non
@@ -170,6 +177,12 @@ class MemoryManager:
             payload={
                 "id": mid, "mem_source": source, "domain": domain_label,
                 "requires_verification": requires_verification,
+                "memory_axes": {
+                    "subject_status": memory_axes.get("subject_status"),
+                    "audit_reasons": memory_axes.get("audit_reasons", []),
+                    "fact_types": memory_axes.get("fact_types", []),
+                    "temporal_markers": memory_axes.get("temporal_markers", []),
+                },
                 "safety_flag": doc["safety_flag"],
             },
             salience=0.55 if (doc["safety_flag"] or requires_verification) else 0.35,
@@ -487,12 +500,17 @@ class MemoryManager:
             try:
                 self.r.json().numincrby(key, "$.recalled_count", 1)
                 self.r.json().set(key, "$.last_recalled_at", ts_now)
+                indexed = dict(item)
+                indexed["recalled_count"] = int(indexed.get("recalled_count") or 0) + 1
+                indexed["last_recalled_at"] = ts_now
                 ttl_days = _TTL_BY_SOURCE.get(item.get("source", ""))
                 if ttl_days:
                     from datetime import timedelta
                     new_exp_dt = now() + timedelta(days=ttl_days)
                     self.r.json().set(key, "$.expires_at", to_timestamp(new_exp_dt))
+                    indexed["expires_at"] = to_timestamp(new_exp_dt)
                     self.r.expireat(key, new_exp_dt)
+                update_loop2e_candidate_index(self.r, indexed)
             except Exception as e:
                 logger.debug(f"Touch memory fallito per {key}: {e}")
 
