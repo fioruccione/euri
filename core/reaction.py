@@ -474,6 +474,21 @@ BRIEFING_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 
+BRIEFING_FEEDBACK_RE = re.compile(
+    r'('
+    r'\b(mi\s+torna|non\s+mi\s+torna|troppo\s+forzat\w*|forzat\w*)\b.*'
+    r'\b(ragionamento|analog\w*|collegament\w*|sogn\w*|intuizion\w*)\b'
+    r'|'
+    r'\b(analog\w*|sogn\w*|intuizion\w*)\b.*'
+    r'\b(non\s+come|non\s+è|non\s+sono|non\s+collegat\w*|fatto\s+operativo|'
+    r'collegamento\s+tecnico|processo\s+diretto)\b'
+    r'|'
+    r'\b(tienil[oa]|trattal[oa]|consideral[oa])\b.*'
+    r'\b(analog\w*|sogn\w*|ipotes\w*|fatto\s+operativo)\b'
+    r')',
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 def understand_briefing(text: str) -> tuple[bool, str | None]:
     """Intent-LLM al posto del regex robotico: il MODELLO capisce se Stefano chiede dei suoi
@@ -482,6 +497,14 @@ def understand_briefing(text: str) -> tuple[bool, str | None]:
     Discrimine chiave: PRODURRE (raccontami un sogno) vs ASSERIRE/CONFERMARE (ti dico una cosa
     sui tuoi sogni, ti risulta?). Il secondo è discutere CON Euri → NON è briefing: cade nella
     chat normale, dove Euri può entrare nel merito (es. correzione 'mi confondi con Leonardo')."""
+    # Feedback epistemico su un sogno/analogia appena discusso: deve andare in chat
+    # normale o nel pending reaction già attivo, non aprire un nuovo briefing. Caso
+    # reale: "Tienilo come analogia o sogno, non come fatto operativo" conteneva
+    # "sogno" e il classifier ha aperto un altro insight invece di assimilare la
+    # risposta.
+    if BRIEFING_FEEDBACK_RE.search(text):
+        return (False, None)
+
     prompt = (
         f"Stefano ti ha detto: «{text.strip()}»\n\n"
         f"Ti sta chiedendo di RACCONTARE un TUO sogno o una TUA intuizione SPECIFICA — vuole che "
