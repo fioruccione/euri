@@ -625,6 +625,10 @@ with main_col:
 
                     if tool_res is not None:
                         response = tool_res.get("output") or "Comando eseguito."
+                        # Il turno è stato risolto da un tool, non dal RAG. Evita che una
+                        # correzione successiva venga attribuita a memorie iniettate solo
+                        # incidentalmente prima del dispatch.
+                        memory_manager.set_last_rag_ctx([])
                     elif save_res is not None:
                         response = save_res["reply"]
                     else:
@@ -673,13 +677,21 @@ with main_col:
                     if recent_msgs:
                         facts = brain.extract_passive_memories(recent_msgs)
                         saved = 0
-                        for fact in facts:
+                        for fact_item in facts:
+                            weak_support = isinstance(fact_item, dict) and fact_item.get("support") == "weak"
+                            fact = fact_item.get("content", "") if isinstance(fact_item, dict) else str(fact_item)
                             clean = validate_payload(fact, "memory")
                             if not clean:
                                 continue
                             if memory_manager.is_duplicate_memory(clean, llm_probe_fn=brain.probe_same_meaning):
                                 continue
-                            memory_manager.save_memory(clean, category="passivo", source="passive", idempotent=True)
+                            mid = memory_manager.save_memory(clean, category="passivo", source="passive", idempotent=True)
+                            if mid and weak_support:
+                                from core.memory_attention import remove_loop2e_candidate
+                                key = f"euri:memory:{mid}"
+                                memory_manager.r.json().set(key, "$.requires_verification", True)
+                                memory_manager.r.json().set(key, "$.passive_support", "tacit_acceptance")
+                                remove_loop2e_candidate(memory_manager.r, mid)
                             saved += 1
                         if saved:
                             st.caption(f"Passive learner: {saved} fatto/i memorizzato/i.")

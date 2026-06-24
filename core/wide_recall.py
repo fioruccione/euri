@@ -12,6 +12,8 @@ memorie); dichiarato nel context come CAMPIONE rappresentativo, non scansione co
 """
 import re
 
+from core.memory_risk import memory_risk_rank, memory_verification_suffix
+
 # Domande panoramiche/autobiografiche (generiche, non lessico di settore).
 _WIDE_RE = re.compile(
     r'\bcosa\s+(?:sai|ricordi|conosci)\s+(?:di|su)\s+me\b'
@@ -82,7 +84,12 @@ def build_wide_recall_map(
         if doc.get("superseded_by") or doc.get("source") == "web":
             continue
         dom = doc.get("domain") or "generale"
-        score = (_SRC_PRIORITY.get(doc.get("source") or "", 0), int(doc.get("recalled_count") or 0))
+        score = (
+            memory_risk_rank(doc),
+            -_SRC_PRIORITY.get(doc.get("source") or "", 0),
+            -int(doc.get("recalled_count") or 0),
+            -float(doc.get("created_at") or 0),
+        )
         by_domain.setdefault(dom, []).append((score, doc, _doc_id(doc, key)))
 
     rows = []
@@ -90,8 +97,8 @@ def build_wide_recall_map(
 
     # Dominio corrente: fino a max_current memorie (le meglio scoranti)
     if current_domain and current_domain in by_domain:
-        for score, doc, mid in sorted(by_domain[current_domain], key=lambda x: x[0], reverse=True)[:max_current]:
-            row = f"{current_domain} — {_gist(doc.get('content', ''))}"
+        for score, doc, mid in sorted(by_domain[current_domain], key=lambda x: x[0])[:max_current]:
+            row = f"{current_domain} — {_gist(doc.get('content', ''))}{memory_verification_suffix(doc)}"
             rows.append((mid, row) if include_ids else row)
         used.add(current_domain)
 
@@ -100,10 +107,10 @@ def build_wide_recall_map(
     for dom, items in by_domain.items():
         if dom in used:
             continue
-        best = max(items, key=lambda x: x[0])
+        best = min(items, key=lambda x: x[0])
         laterals.append((best[0], dom, best[1], best[2]))
-    for score, dom, doc, mid in sorted(laterals, key=lambda x: x[0], reverse=True)[:max_lateral]:
-        row = f"{dom} — {_gist(doc.get('content', ''))}"
+    for score, dom, doc, mid in sorted(laterals, key=lambda x: x[0])[:max_lateral]:
+        row = f"{dom} — {_gist(doc.get('content', ''))}{memory_verification_suffix(doc)}"
         rows.append((mid, row) if include_ids else row)
 
     return rows

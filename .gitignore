@@ -55,3 +55,6 @@ ssl/
 
 # Contesto operativo deployment-specifico (il template è EURI_CONTEXT.example.md)
 EURI_CONTEXT.md
+
+# backup dump del backfill memory_axes (grossi, non versionare)
+backups/

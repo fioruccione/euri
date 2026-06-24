@@ -15,6 +15,8 @@ from redis.commands.search.query import Query
 import config
 from utils.date_utils import now, to_timestamp, from_timestamp, format_datetime
 from core.domain_gater import assign_domain, domain_aware_search, neighbor_domains
+from core.memory_attention import update_loop2e_candidate_index
+from core.memory_axes import analyze_memory_axes
 from utils.obsidian_sync import write_memory
 from core.pulse import pulse_emit
 
@@ -132,6 +134,9 @@ class MemoryManager:
             _re.IGNORECASE
         )
         requires_verification = bool(_NUM_PAT.search(content))
+        memory_axes = analyze_memory_axes(content, source=source, created_at=to_timestamp(ts))
+        if "acephalous_subject" in memory_axes.get("audit_reasons", []):
+            requires_verification = True
 
         doc = {
             "id": mid,
@@ -148,9 +153,11 @@ class MemoryManager:
             "tags": tags or [],
             "embedding": embedding,
             "context_meta": context_meta,
+            "memory_axes": memory_axes,
             "safety_flag": guard["safety_flag"],  # [] se pulito; categorie se contenuto sospetto da fonte fidata
         }
         self.r.json().set(key, "$", doc)
+        update_loop2e_candidate_index(self.r, doc)
         if expires_at:
             # expireat è separato dal JSON.SET (Codex #1): se fallisce, la memoria resterebbe
             # SENZA TTL (vive per sempre) mentre expires_at dice il contrario. Tracciato, non
@@ -170,6 +177,12 @@ class MemoryManager:
             payload={
                 "id": mid, "mem_source": source, "domain": domain_label,
                 "requires_verification": requires_verification,
+                "memory_axes": {
+                    "subject_status": memory_axes.get("subject_status"),
+                    "audit_reasons": memory_axes.get("audit_reasons", []),
+                    "fact_types": memory_axes.get("fact_types", []),
+                    "temporal_markers": memory_axes.get("temporal_markers", []),
+                },
                 "safety_flag": doc["safety_flag"],
             },
             salience=0.55 if (doc["safety_flag"] or requires_verification) else 0.35,
@@ -487,12 +500,17 @@ class MemoryManager:
             try:
                 self.r.json().numincrby(key, "$.recalled_count", 1)
                 self.r.json().set(key, "$.last_recalled_at", ts_now)
+                indexed = dict(item)
+                indexed["recalled_count"] = int(indexed.get("recalled_count") or 0) + 1
+                indexed["last_recalled_at"] = ts_now
                 ttl_days = _TTL_BY_SOURCE.get(item.get("source", ""))
                 if ttl_days:
                     from datetime import timedelta
                     new_exp_dt = now() + timedelta(days=ttl_days)
                     self.r.json().set(key, "$.expires_at", to_timestamp(new_exp_dt))
+                    indexed["expires_at"] = to_timestamp(new_exp_dt)
                     self.r.expireat(key, new_exp_dt)
+                update_loop2e_candidate_index(self.r, indexed)
             except Exception as e:
                 logger.debug(f"Touch memory fallito per {key}: {e}")
 
@@ -1207,12 +1225,52 @@ class MemoryManager:
         "questo", "questa", "quello", "quella", "sono", "era", "erano", "sei",
         "hai", "ecco", "allora", "forse", "magari", "euri", "scusa", "senti",
     }
+    _CORRECTION_TARGET_STOP = {
+        "aggiungo", "aggiunta", "aggiunto", "memoria", "memorie", "memorie",
+        "collegamenti", "collegamento", "sbagliato", "sbagliata", "sbagliati",
+        "sbagliate", "correzione", "correzioni", "solo", "niente", "altro",
+        "nuova", "nuovo", "collaboratrice", "collaboratore", "apprendimento",
+        "laboratorio", "parte", "detto", "detta", "detti", "dette", "quello",
+        "quella", "quelli", "quelle", "dove", "qui", "lì", "li", "da", "del",
+        "della", "dei", "degli", "delle", "nel", "nella", "nelle", "sul",
+        "sulla", "sui", "sulle", "per", "con", "che", "hai", "fatto", "fatta",
+        "fatti", "fatte", "tue", "tuoi", "tua", "tuo", "questa", "questo",
+        "questa", "questioni", "invece", "anche", "non", "che", "come", "cosa",
+        "oppure", "ovvero", "team",
+    }
 
     @classmethod
     def _salient_tokens(cls, text: str) -> set[str]:
         return {
             m.group(1).lower() for m in cls._SALIENT_RE.finditer(text or "")
         } - cls._SALIENT_STOP
+
+    @classmethod
+    def correction_target_tokens(cls, text: str) -> list[str]:
+        """
+        Estrae i token utili a identificare il soggetto/bersaglio di una correzione.
+
+        Mantiene i termini specifici in ordine di apparizione e scarta il gergo
+        meta-correttivo e i riempitivi. Usata dal Loop 2g per passare da
+        correzione "contesto-based" a correzione "subject-targeted".
+        """
+        tokens: list[str] = []
+        for token in re.findall(r"\b[\wÀ-ü]{4,}\b", text or ""):
+            low = token.lower()
+            if low in cls._CORRECTION_TARGET_STOP:
+                continue
+            tokens.append(low)
+        return list(dict.fromkeys(tokens))
+
+    @classmethod
+    def correction_overlap_score(cls, reference: str, content: str) -> int:
+        """Quanti token utili della correzione compaiono nel contenuto."""
+        ref = set(cls.correction_target_tokens(reference))
+        cont = {
+            m.group(0).lower()
+            for m in re.finditer(r"\b[\wÀ-ü]{4,}\b", content or "")
+        }
+        return len(ref & cont)
 
     def detect_correction(self, text: str, last_euri_turn: str | None = None) -> bool:
         """True se il prompt utente assomiglia a una correzione di un turno precedente.

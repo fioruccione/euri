@@ -25,6 +25,12 @@ from utils.date_utils import now, to_timestamp
 from redis.commands.search.query import Query
 from utils.obsidian_sync import write_insight
 from core.pulse import pulse_emit
+from core.memory_attention import (
+    remove_loop2e_candidate,
+    scan_loop2e_candidates,
+    update_loop2e_candidate_index,
+    zset_loop2e_candidates,
+)
 
 
 class DreamEngine:
@@ -211,6 +217,7 @@ class DreamEngine:
                         # SENZA marcatore → la guarigione (riga sotto) non poteva più spegnerlo.
                         self._r.json().set(key, "$.rv_by_provenance", True)
                         self._r.json().set(key, "$.requires_verification", True)
+                        remove_loop2e_candidate(self._r, doc.get("id", ""))
                     staled += 1
                 elif not is_high and was_stale:
                     self._r.json().set(key, "$.provenance_stale", False)
@@ -220,6 +227,9 @@ class DreamEngine:
                     if doc.get("rv_by_provenance"):
                         self._r.json().set(key, "$.requires_verification", False)
                         self._r.json().set(key, "$.rv_by_provenance", False)
+                        healed_doc = dict(doc)
+                        healed_doc["requires_verification"] = False
+                        update_loop2e_candidate_index(self._r, healed_doc)
                     healed += 1
             except Exception as e:
                 logger.debug(f"provenance pass fallito per {key}: {e}")
@@ -875,6 +885,7 @@ Non inventare dati non presenti nelle due voci. Rispondi solo col confronto."""
 
                     try:
                         self._r.json().set(f"euri:memory:{loser_id}", "$.superseded_by", winner_id)
+                        remove_loop2e_candidate(self._r, loser_id)
                     except Exception as e:
                         # mark-after-act (Codex #1): la coppia è già in CHECKED (marcata a monte),
                         # ma il soft-delete è fallito → la contraddizione resta VIVA. Dis-marca così
@@ -995,6 +1006,98 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
             logger.debug(f"Loop 2g: sintesi lezione fallita — {e}")
             return None
 
+    def _correction_target_ids(self, doc: dict, ctx_memories: list[str]) -> list[str]:
+        """
+        Se la correzione nomina un soggetto, prova a colpire il nodo giusto invece di
+        limitarsi al contesto del turno. Fallback: usa il RAG context del turno.
+        """
+        if not self._memory_manager:
+            return list(dict.fromkeys(doc.get("rag_ctx_ids", []) or []))
+
+        correction_text = doc.get("correzione_user", "") or ""
+        prompt_original = doc.get("prompt_original", "") or ""
+        candidate_ids: list[str] = []
+        scored: list[tuple[int, float, str]] = []
+        seen: set[str] = set()
+
+        # Scansione completa ma cheap: il Loop 2g gira di notte, su max 10 signal.
+        # Prima ordinazione = overlap con la correzione; così un nodo che contiene
+        # "Giada" + i dettagli sbagliati ("Leonardo", "team", "casa") vince su
+        # un frammento corretto ma solo parzialmente allineato.
+        for key in self._r.scan_iter("euri:memory:*"):
+            try:
+                raw = self._r.json().get(key, "$")
+                if not raw:
+                    continue
+                doc_candidate = raw[0]
+            except Exception:
+                continue
+            if doc_candidate.get("superseded_by") or doc_candidate.get("source") == "web":
+                continue
+            mid = doc_candidate.get("id") or str(key).rsplit(":", 1)[-1]
+            if not mid or mid in seen:
+                continue
+            seen.add(mid)
+            content = doc_candidate.get("content") or ""
+            overlap = self._memory_manager.correction_overlap_score(correction_text, content)
+            if overlap <= 0:
+                continue
+            created_at = float(doc_candidate.get("created_at") or 0)
+            suspicion = 0
+            if doc_candidate.get("provenance_stale"):
+                suspicion += 2
+            if doc_candidate.get("requires_verification"):
+                suspicion += 1
+            if int(doc_candidate.get("audit_flag") or 0) > 0:
+                suspicion += 1
+            if doc_candidate.get("source") == "loop2e":
+                suspicion += 1
+            scored.append((overlap, suspicion, created_at, mid))
+
+        if not scored and prompt_original:
+            correction_text = prompt_original
+            for key in self._r.scan_iter("euri:memory:*"):
+                try:
+                    raw = self._r.json().get(key, "$")
+                    if not raw:
+                        continue
+                    doc_candidate = raw[0]
+                except Exception:
+                    continue
+                if doc_candidate.get("superseded_by") or doc_candidate.get("source") == "web":
+                    continue
+                mid = doc_candidate.get("id") or str(key).rsplit(":", 1)[-1]
+                if not mid or mid in seen:
+                    continue
+                seen.add(mid)
+                content = doc_candidate.get("content") or ""
+                overlap = self._memory_manager.correction_overlap_score(correction_text, content)
+                if overlap <= 0:
+                    continue
+                created_at = float(doc_candidate.get("created_at") or 0)
+                suspicion = 0
+                if doc_candidate.get("provenance_stale"):
+                    suspicion += 2
+                if doc_candidate.get("requires_verification"):
+                    suspicion += 1
+                if int(doc_candidate.get("audit_flag") or 0) > 0:
+                    suspicion += 1
+                if doc_candidate.get("source") == "loop2e":
+                    suspicion += 1
+                scored.append((overlap, suspicion, created_at, mid))
+
+        if not scored:
+            return list(dict.fromkeys(doc.get("rag_ctx_ids", []) or []))
+
+        scored.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+        best_overlap = scored[0][0]
+        best_suspicion = scored[0][1]
+        return [
+            mid
+            for overlap, suspicion, _created_at, mid in scored
+            if overlap == best_overlap and suspicion == best_suspicion
+        ][:3]
+
     def _audit_corrections_pass(self):
         """
         Loop 2g — Audit di Coerenza.
@@ -1063,7 +1166,10 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
 
                 # Azioni differenziate (not_a_correction e ambiguous: nessuna azione)
                 if verdict == "bad_memory":
-                    for mid in doc.get("rag_ctx_ids", []):
+                    target_ids = self._correction_target_ids(doc, ctx_memories)
+                    if not target_ids:
+                        target_ids = [mid for mid in (doc.get("rag_ctx_ids", []) or []) if mid]
+                    for mid in target_ids:
                         if not mid:
                             continue
                         mkey = mid if mid.startswith("euri:memory:") else f"euri:memory:{mid}"
@@ -1074,7 +1180,9 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
                             # lo si incrementa con NUMINCRBY: due correzioni concorrenti sulla
                             # stessa memoria non perdono più un incremento.
                             self._r.json().set(mkey, "$.audit_flag", 0, nx=True)
+                            self._r.json().set(mkey, "$.requires_verification", True)
                             _af = self._r.json().numincrby(mkey, "$.audit_flag", 1)
+                            remove_loop2e_candidate(self._r, mid)
                             # Pulse afferente (Fase 1): memoria marcata sospetta = evento interno
                             # da osservare (intero → watch, non ask). audit_flag nel payload per lo
                             # scorer. Fail-open (pulse_emit non solleva mai).
@@ -1086,6 +1194,9 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
                             effect_ok = False
                             self._integrity_failure("loop2g-audit_flag", mkey, e)
                             continue
+                    logger.info(
+                        f"Loop 2g: target subject-memory ids = {', '.join(t[-8:] for t in target_ids[:4])}"
+                    )
 
                 elif verdict == "bad_reasoning" and self._memory_manager:
                     # COME la reaction-loop: distilla la correzione in una LEZIONE (il principio
@@ -1274,6 +1385,7 @@ Rispondi SOLO con JSON valido:
                 self._r.json().set(key, "$.plausibility_flag", flag)
                 self._r.json().set(key, "$.audit_flag", 0, nx=True)
                 self._r.json().numincrby(key, "$.audit_flag", 1)
+                remove_loop2e_candidate(self._r, doc.get("id", ""))
                 flagged += 1
                 logger.info(
                     f"Plausibility gate: {doc.get('id', '')[:8]}… → {verdict} "
@@ -1471,11 +1583,13 @@ Rispondi SOLO con JSON valido:
         unico nodo (caso Poseidon↔Gamma: pallet a iniezione fuso con linea di estrusione).
         Filtra l'INPUT della sintesi → anche consolidated_from risulta coerente. Usa il
         modello notturno GIÀ CALDO (dream_client via _ollama_chat): niente secondo modello,
-        niente swap. Fail-open: su errore/risposta ambigua ritorna il cluster invariato.
+        niente swap. Fail-closed: su errore/risposta ambigua ritorna solo il seed, così
+        il consolidamento si ferma se non resta un cluster minimo.
 
         Il frammento 1 è SEMPRE il seed: il cluster viene riordinato col seed in testa (sort
         stabile), così non si dipende dall'ordine KNN. seed_id vuoto → ordine invariato.
         """
+        self._last_same_subject_gate_parse_failed = False
         ordered = sorted(cluster, key=lambda d: d.get("id") != seed_id) if seed_id else list(cluster)
         items = ordered[:5]
         if len(items) < 2:
@@ -1486,33 +1600,62 @@ Rispondi SOLO con JSON valido:
         )
         prompt = (
             f"Frammenti di memoria nel dominio \"{domain}\":\n{listing}\n\n"
-            f"Il frammento 1 fissa il SOGGETTO. Quali frammenti parlano dello STESSO "
-            f"soggetto/entità del frammento 1? Escludi quelli su entità diverse, anche se "
-            f"correlate (es. un prodotto vs un impianto diverso).\n"
-            f"Rispondi SOLO con gli indici da TENERE separati da virgola (includi sempre 1). "
-            f"Esempio: 1,3"
+            f"Il frammento 1 fissa il SOGGETTO/ENTITÀ del cluster. Classifica ogni frammento:\n"
+            f"- SAME: parla chiaramente dello stesso soggetto/entità del frammento 1.\n"
+            f"- DIFFERENT: parla chiaramente di un altro soggetto/entità.\n"
+            f"- UNKNOWN: il soggetto non è esplicito o non è risolvibile con certezza dal testo.\n\n"
+            f"Regole dure:\n"
+            f"- Un frammento senza soggetto esplicito NON eredita il soggetto del frammento 1.\n"
+            f"- Se dovresti tirare a indovinare, classifica UNKNOWN.\n"
+            f"- UNKNOWN va escluso dalla consolidazione.\n\n"
+            f"Rispondi SOLO con un oggetto JSON su una riga, dove le chiavi sono gli indici "
+            f"e i valori sono SAME, DIFFERENT o UNKNOWN. Esempio: {{\"1\":\"SAME\",\"2\":\"UNKNOWN\",\"3\":\"DIFFERENT\"}}"
         )
         try:
             resp = self._ollama_chat(
                 model=config.DREAM_OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                options={"temperature": 0, "num_predict": 20},
+                options={"temperature": 0, "num_predict": 300},
                 think=False,
+                format="json",
                 _timeout=60,
             )
             out = _re.sub(r"<think>.*?</think>", "", resp.message.content or "", flags=_re.DOTALL)
-            idxs = {int(n) for n in _re.findall(r"\d+", out)}
-            keep = [items[i - 1] for i in sorted(idxs) if 1 <= i <= len(items)]
-            # Fail-open: risposta vuota o che esclude il seed → non filtrare.
-            if not keep or 1 not in idxs:
-                return cluster
+            i, j = out.find("{"), out.rfind("}")
+            if i < 0 or j <= i:
+                self._last_same_subject_gate_parse_failed = True
+                logger.info("Loop 2e gate: output non parsabile → fail-closed seed-only")
+                return items[:1]
+            try:
+                verdicts = json.loads(out[i:j + 1])
+            except Exception:
+                self._last_same_subject_gate_parse_failed = True
+                logger.info("Loop 2e gate: JSON invalido → fail-closed seed-only")
+                return items[:1]
+            if not isinstance(verdicts, dict):
+                self._last_same_subject_gate_parse_failed = True
+                logger.info("Loop 2e gate: JSON non oggetto → fail-closed seed-only")
+                return items[:1]
+            keep = []
+            for idx, item in enumerate(items, 1):
+                label = str(verdicts.get(str(idx)) or verdicts.get(idx) or "").strip().upper()
+                if idx == 1:
+                    if label != "SAME":
+                        logger.info("Loop 2e gate: seed non SAME → fail-closed seed-only")
+                        return items[:1]
+                    keep.append(item)
+                elif label == "SAME":
+                    keep.append(item)
+            if not keep:
+                return items[:1]
             if len(keep) < len(items):
                 dropped = len(items) - len(keep)
                 logger.info(f"Loop 2e gate: {dropped} frammento/i di soggetto diverso esclusi dal consolidamento")
             return keep
         except Exception as e:
-            logger.debug(f"Loop 2e same-subject gate fallito (fail-open): {e}")
-            return cluster
+            self._last_same_subject_gate_parse_failed = True
+            logger.debug(f"Loop 2e same-subject gate fallito (fail-closed): {e}")
+            return items[:1]
 
     def _consolidation_pass(self):
         """
@@ -1532,7 +1675,6 @@ Rispondi SOLO con JSON valido:
         MIN_RECALLED = 3
         MIN_CLUSTER = 3
         MAX_PER_CYCLE = 3
-        SKIP_SOURCES = {"loop2e", "campus", "web", "reflection"}
         # Recency gate: il consolidamento vuole memorie ATTIVE, non fossili. recalled_count è
         # un contatore MONOTÒNO (mai decade) → satura con l'età e smette di discriminare
         # (misurato 19/06: i ≥6 hanno ~33gg di età e ultimo richiamo ~19gg fa; 75% delle
@@ -1542,47 +1684,17 @@ Rispondi SOLO con JSON valido:
         # segnale di recency (last_recalled_at, già scritto su touch=True). Finestra 30gg:
         # accomoda le fasi di test di produzione LUNGHE di Stefano (se ne parla oggi, la prova
         # parte tra settimane → la memoria si riattiva e RIENTRA nel pool al momento giusto).
-        import time as _time
-        RECENCY_WINDOW_S = 30 * 86400
-        now_ts = _time.time()
-
         try:
-            # 1. Raccogli candidati: recalled_count >= 3, no verifica numerica, no loop2e
-            candidates = []
-            for key in self._r.scan_iter("euri:memory:*"):
-                try:
-                    d = self._r.json().get(key, "$")
-                    if not d:
-                        continue
-                    doc = d[0]
-                    if doc.get("source") in SKIP_SOURCES:
-                        continue
-                    # Soft-delete: una foglia superseded NON deve rientrare nella consolidazione.
-                    # Loop 2e fa scan_iter grezzo + KNN con client raw → bypassa il filtro di
-                    # retrieval (_hydrate). Senza questo, una correzione a livello foglia veniva
-                    # DISFATTA: la foglia morta (es. collisione-cognome Stefano/Leonardo) veniva
-                    # ri-pescata e ri-cristallizzata ogni ciclo. Il filtro qui copre anche i vicini
-                    # KNN, che sono ristretti a qualified_by_id. (Costruzione, non foglia.)
-                    if doc.get("superseded_by"):
-                        continue
-                    # Opzione A — "speso, non cancellato": un frammento GIÀ consolidato resta in
-                    # retrieval normale ma NON rientra in future consolidazioni → niente stesso
-                    # contenuto copiato di nodo in nodo (era il meccanismo che teneva vivo il
-                    # Leonardo). Reversibile: togliere il campo lo ri-ammette.
-                    if doc.get("consolidated_into"):
-                        continue
-                    if doc.get("requires_verification"):
-                        continue
-                    if doc.get("recalled_count", 0) < MIN_RECALLED:
-                        continue
-                    # Recency: scarta i fossili (richiamati l'ultima volta oltre la finestra).
-                    # Non è perdita — la memoria resta in retrieval e rientra qui se si riattiva.
-                    lr = doc.get("last_recalled_at")
-                    if not lr or (now_ts - float(lr)) > RECENCY_WINDOW_S:
-                        continue
-                    candidates.append(doc)
-                except Exception:
-                    continue
+            # 1. Raccogli candidati: prima prova l'indice leggero ordinato, poi fallback allo
+            # scan canonico. Il JSON resta la fonte di verità: zset_loop2e_candidates rilegge e
+            # ri-valida ogni ID, rimuovendo gli stale. Se l'indice è assente/vuoto, comportamento
+            # identico al pre-ZSET (scan completo).
+            candidates, used_index = zset_loop2e_candidates(self._r)
+            if not used_index:
+                candidates = scan_loop2e_candidates(self._r)
+            logger.debug(
+                f"Loop 2e: candidati da {'ZSET' if used_index else 'SCAN'} = {len(candidates)}"
+            )
 
             if not candidates:
                 logger.debug("Loop 2e: nessun candidato qualificato")
@@ -1593,9 +1705,25 @@ Rispondi SOLO con JSON valido:
             qualified_by_id = {doc.get("id", ""): doc for doc in candidates}
 
             consolidated = 0
+            gate_parse_failures = 0
+            MAX_GATE_PARSE_FAILURES = 3
+            gate_attempts = 0
+            MAX_GATE_ATTEMPTS = 30
 
             for seed in candidates:
                 if consolidated >= MAX_PER_CYCLE:
+                    break
+                if gate_attempts >= MAX_GATE_ATTEMPTS:
+                    logger.info(
+                        f"Loop 2e gate: {gate_attempts} tentativi raggiunti → "
+                        "stop consolidamento per questo ciclo"
+                    )
+                    break
+                if gate_parse_failures >= MAX_GATE_PARSE_FAILURES:
+                    logger.info(
+                        f"Loop 2e gate: {gate_parse_failures} parse-fail consecutivi → "
+                        "stop consolidamento per questo ciclo"
+                    )
                     break
 
                 seed_id = seed.get("id", "")
@@ -1649,7 +1777,12 @@ Rispondi SOLO con JSON valido:
                 # 3b. GATE same-subject PRIMA della sintesi: filtra i frammenti che non
                 # parlano dello stesso soggetto del seed (anti-conflazione Poseidon↔Gamma).
                 # Così fingerprint, consolidated_from e sintesi usano solo i coerenti.
+                gate_attempts += 1
                 cluster = self._same_subject_gate(cluster, seed_domain, seed_id)
+                if getattr(self, "_last_same_subject_gate_parse_failed", False):
+                    gate_parse_failures += 1
+                else:
+                    gate_parse_failures = 0
                 if len(cluster) < MIN_CLUSTER:
                     continue
 
@@ -1680,6 +1813,7 @@ Regole:
 - Elimina ripetizioni e ridondanze
 - Scrivi in italiano, massimo 5 frasi dense
 - Nessuna interpretazione, solo sintesi dei fatti
+- Non attribuire a un soggetto attributi provenienti da un frammento con soggetto implicito o non chiaro
 - Non includere date o timestamp delle memorie sorgente
 - Se le memorie si contraddicono su un dato numerico, scrivi "dato non certo"
 Rispondi SOLO con la sintesi. Niente intestazioni."""
@@ -1719,6 +1853,7 @@ Rispondi SOLO con la sintesi. Niente intestazioni."""
                 for cid in cluster_ids:
                     try:
                         self._r.json().set(f"euri:memory:{cid}", "$.consolidated_into", mid)
+                        remove_loop2e_candidate(self._r, cid)
                     except Exception as e:
                         # mark-after-act (Codex #3): se il frammento non viene marcato "speso",
                         # rientra in future consolidazioni → duplicato (il meccanismo che teneva
@@ -1728,6 +1863,7 @@ Rispondi SOLO con la sintesi. Niente intestazioni."""
                 self._r.json().set(key, "$.consolidation_risk", risk)
                 if risk["level"] != "ok":
                     self._r.json().set(key, "$.source_audit_flags", risk["audit_flagged"])
+                    self._r.json().set(key, "$.requires_verification", True)
 
                 # Eredita requires_verification se almeno una memoria sorgente ce l'ha
                 sources_rv = any(
