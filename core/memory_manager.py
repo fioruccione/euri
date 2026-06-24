@@ -1225,12 +1225,52 @@ class MemoryManager:
         "questo", "questa", "quello", "quella", "sono", "era", "erano", "sei",
         "hai", "ecco", "allora", "forse", "magari", "euri", "scusa", "senti",
     }
+    _CORRECTION_TARGET_STOP = {
+        "aggiungo", "aggiunta", "aggiunto", "memoria", "memorie", "memorie",
+        "collegamenti", "collegamento", "sbagliato", "sbagliata", "sbagliati",
+        "sbagliate", "correzione", "correzioni", "solo", "niente", "altro",
+        "nuova", "nuovo", "collaboratrice", "collaboratore", "apprendimento",
+        "laboratorio", "parte", "detto", "detta", "detti", "dette", "quello",
+        "quella", "quelli", "quelle", "dove", "qui", "lì", "li", "da", "del",
+        "della", "dei", "degli", "delle", "nel", "nella", "nelle", "sul",
+        "sulla", "sui", "sulle", "per", "con", "che", "hai", "fatto", "fatta",
+        "fatti", "fatte", "tue", "tuoi", "tua", "tuo", "questa", "questo",
+        "questa", "questioni", "invece", "anche", "non", "che", "come", "cosa",
+        "oppure", "ovvero", "team",
+    }
 
     @classmethod
     def _salient_tokens(cls, text: str) -> set[str]:
         return {
             m.group(1).lower() for m in cls._SALIENT_RE.finditer(text or "")
         } - cls._SALIENT_STOP
+
+    @classmethod
+    def correction_target_tokens(cls, text: str) -> list[str]:
+        """
+        Estrae i token utili a identificare il soggetto/bersaglio di una correzione.
+
+        Mantiene i termini specifici in ordine di apparizione e scarta il gergo
+        meta-correttivo e i riempitivi. Usata dal Loop 2g per passare da
+        correzione "contesto-based" a correzione "subject-targeted".
+        """
+        tokens: list[str] = []
+        for token in re.findall(r"\b[\wÀ-ü]{4,}\b", text or ""):
+            low = token.lower()
+            if low in cls._CORRECTION_TARGET_STOP:
+                continue
+            tokens.append(low)
+        return list(dict.fromkeys(tokens))
+
+    @classmethod
+    def correction_overlap_score(cls, reference: str, content: str) -> int:
+        """Quanti token utili della correzione compaiono nel contenuto."""
+        ref = set(cls.correction_target_tokens(reference))
+        cont = {
+            m.group(0).lower()
+            for m in re.finditer(r"\b[\wÀ-ü]{4,}\b", content or "")
+        }
+        return len(ref & cont)
 
     def detect_correction(self, text: str, last_euri_turn: str | None = None) -> bool:
         """True se il prompt utente assomiglia a una correzione di un turno precedente.

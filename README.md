@@ -215,9 +215,18 @@ Crea una nota testuale nella cartella `EuriVault/Dropzone` in Obsidian e scrivi 
 
 ---
 
-## Localizzazione (uso in un'altra lingua)
+## Localizzazione e Personalizzazione
 
-Euri parla italiano per default. La **lingua** delle risposte vive nei prompt (`config.SYSTEM_PROMPT`, l'hint della Silent Chat, EURI_CONTEXT.md): tradurli sposta la conversazione.
+Euri e' nato come assistente personale per un utente reale, Stefano, e per una conversazione in italiano. Il repository non e' ancora un template neutro: lingua, nome dell'utente, tono, esempi operativi e alcune euristiche sono parte dell'ecologia locale del progetto.
+
+Chi vuole riusare Euri deve prima personalizzare almeno questi punti:
+
+- **Lingua:** prompt, istruzioni, regex/cue conversazionali, STT/TTS, messaggi UI e test sono pensati per l'italiano.
+- **Utente:** il nome `Stefano` compare in prompt, esempi, logica di memoria passiva e formulazioni di risposta. Va sostituito con il nome/profilo dell'utente reale, oppure parametrizzato.
+- **Persona di Euri:** genere, tono, voce TTS, formule di saluto e stile di conversazione sono scelte locali.
+- **Contesto operativo:** percorsi come `EuriVault`, domini ricorrenti, esempi aziendali e abitudini di lavoro riflettono l'installazione originale.
+
+Euri parla italiano per default. La **lingua** delle risposte vive nei prompt (`config.SYSTEM_PROMPT`, l'hint della Silent Chat, `EURI_CONTEXT.md`) e nelle euristiche di recall/conversazione: tradurli sposta la conversazione solo se vengono tradotti insieme anche cue, esempi e aspettative del modello.
 
 Un punto merita attenzione a parte: l'**àncora temporale** iniettata nel contesto del modello a ogni turno (`core/brain.py`, "Data e ora corrente: …"). È resa **esplicitamente in italiano** dagli array `_GIORNI` e `_MESI` in `utils/date_utils.py` — *non* via `strftime('%A'/'%B')`. È una scelta deliberata: `strftime` segue il locale di sistema (spesso `C/POSIX` → giorno in inglese, es. "Saturday"), e un modello che risponde in italiano tende a ignorare un'àncora in lingua straniera, confabulando un cliché ("è venerdì sera") invece di leggere il dato. Scrivere la data nella lingua della conversazione la rende un'àncora forte. **Per un'altra lingua:** tradurre `_GIORNI`/`_MESI` (e l'etichetta "Data e ora corrente" in `brain.py`). `dt.weekday()` è 0=lunedì, quindi l'ordine degli array parte dal lunedì.
 

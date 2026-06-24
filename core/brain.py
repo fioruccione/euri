@@ -243,10 +243,10 @@ class Brain:
             logger.error(f"Errore probe_question: {e}")
             return "Dimmi di più."
 
-    def extract_passive_memories(self, conversation: list[dict]) -> list[str]:
+    def extract_passive_memories(self, conversation: list[dict]) -> list[dict]:
         """
         Analizza la conversazione recente ed estrae fatti autosufficienti da salvare passivamente.
-        Ritorna una lista di fatti (stringhe), vuota se nulla di rilevante.
+        Ritorna una lista di {"content": str, "support": "strong|weak"}, vuota se nulla di rilevante.
         """
         if len(conversation) < 4:
             return []
@@ -265,8 +265,18 @@ class Brain:
             f"(persona, azienda, cliente, prodotto, macchina, progetto, materiale...).\n"
             f"Risolvi il soggetto dal contesto conversazionale solo quando è chiaro; NON "
             f"defaultare mai a Stefano. Se il soggetto non è risolvibile con certezza, scarta il fatto.\n\n"
+            f"Fonte epistemica:\n"
+            f"- FORTE: il fatto è detto, corretto, confermato o ripreso operativamente da Stefano.\n"
+            f"- DEBOLE: il fatto è detto da Euri e Stefano non lo contesta nel segmento; vale come "
+            f"consenso tacito, non come verità piena.\n"
+            f"- SCARTA: il fatto è solo una supposizione di Euri, o Stefano cambia argomento senza "
+            f"riusarlo, o c'è una correzione.\n\n"
+            f"Memorie aggiuntive: se il fatto aggiunge un nuovo asse a un soggetto già noto, "
+            f"formulalo come aggiunta, non come definizione esaustiva. Usa parole come 'anche' "
+            f"o 'inoltre' quando servono.\n\n"
             f"Esempi:\n"
             f"- OK: 'Giada è una nuova collaboratrice di laboratorio con basi teoriche di chimica.'\n"
+            f"- OK: 'Stefano si occupa anche di architetture agentiche e analisi DSC.'\n"
             f"- OK: 'Stefano lavora da casa in modalità remota.'\n"
             f"- NO: 'Lavora da casa in modalità remota.'\n"
             f"- NO: 'Ha un collega di nome Leonardo.'\n\n"
@@ -286,6 +296,8 @@ class Brain:
             f"IGNORA: conversazione generica, saluti, test del sistema, domande senza risposta concreta, "
             f"informazioni già ovvie (es. 'Stefano usa Euri'), frasi acefale senza soggetto esplicito.\n\n"
             f"Se trovi fatti utili: scrivi una lista numerata, un fatto per riga, max 6.\n"
+            f"Ogni riga deve iniziare con FORTE: oppure DEBOLE:.\n"
+            f"Esempio: 1. FORTE: Stefano si occupa anche di architetture agentiche e analisi DSC.\n"
             f"Se non c'è nulla di concreto da salvare: scrivi solo NOTHING."
         )
         try:
@@ -301,14 +313,43 @@ class Brain:
             # Parsa la lista numerata — estrae il testo dopo "1. ", "2. " ecc.
             import re
             facts = re.findall(r"^\d+\.\s*(.+)$", result, re.MULTILINE)
-            return [
-                f.strip()
-                for f in facts
-                if len(f.strip()) > 10 and not self._looks_acephalous_fact(f)
-            ]
+            parsed = []
+            for fact in facts:
+                item = self._parse_passive_fact_line(fact)
+                if not item:
+                    continue
+                if len(item["content"]) <= 10 or self._looks_acephalous_fact(item["content"]):
+                    continue
+                parsed.append(item)
+            return parsed
         except Exception as e:
             logger.error(f"Errore extract_passive_memories: {e}")
             return []
+
+    _PASSIVE_FACT_SUPPORT_RE = re.compile(
+        r"^\s*(?:\[(FORTE|DEBOLE|STRONG|WEAK)\]|(FORTE|DEBOLE|STRONG|WEAK))\s*:\s*(.+)$",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _parse_passive_fact_line(cls, line: str) -> dict | None:
+        """Parsa una riga dell'estrattore passivo preservando il supporto epistemico."""
+        text = (line or "").strip()
+        if not text:
+            return None
+        m = cls._PASSIVE_FACT_SUPPORT_RE.match(text)
+        if m:
+            label = (m.group(1) or m.group(2) or "").strip().lower()
+            content = (m.group(3) or "").strip()
+            support = "weak" if label in {"debole", "weak"} else "strong"
+        else:
+            # Compatibilità se il modello dimentica il prefisso: conserva il fatto,
+            # ma trattalo come debole perché manca la prova della fonte.
+            content = text
+            support = "weak"
+        if not content:
+            return None
+        return {"content": content, "support": support}
 
     _ACEPHALOUS_FACT_RE = re.compile(
         r"^\s*(?:ha|aveva|avrà|lavora|lavorava|opera|gestisce|gestiva|collabora|"

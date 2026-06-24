@@ -1006,6 +1006,98 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
             logger.debug(f"Loop 2g: sintesi lezione fallita — {e}")
             return None
 
+    def _correction_target_ids(self, doc: dict, ctx_memories: list[str]) -> list[str]:
+        """
+        Se la correzione nomina un soggetto, prova a colpire il nodo giusto invece di
+        limitarsi al contesto del turno. Fallback: usa il RAG context del turno.
+        """
+        if not self._memory_manager:
+            return list(dict.fromkeys(doc.get("rag_ctx_ids", []) or []))
+
+        correction_text = doc.get("correzione_user", "") or ""
+        prompt_original = doc.get("prompt_original", "") or ""
+        candidate_ids: list[str] = []
+        scored: list[tuple[int, float, str]] = []
+        seen: set[str] = set()
+
+        # Scansione completa ma cheap: il Loop 2g gira di notte, su max 10 signal.
+        # Prima ordinazione = overlap con la correzione; così un nodo che contiene
+        # "Giada" + i dettagli sbagliati ("Leonardo", "team", "casa") vince su
+        # un frammento corretto ma solo parzialmente allineato.
+        for key in self._r.scan_iter("euri:memory:*"):
+            try:
+                raw = self._r.json().get(key, "$")
+                if not raw:
+                    continue
+                doc_candidate = raw[0]
+            except Exception:
+                continue
+            if doc_candidate.get("superseded_by") or doc_candidate.get("source") == "web":
+                continue
+            mid = doc_candidate.get("id") or str(key).rsplit(":", 1)[-1]
+            if not mid or mid in seen:
+                continue
+            seen.add(mid)
+            content = doc_candidate.get("content") or ""
+            overlap = self._memory_manager.correction_overlap_score(correction_text, content)
+            if overlap <= 0:
+                continue
+            created_at = float(doc_candidate.get("created_at") or 0)
+            suspicion = 0
+            if doc_candidate.get("provenance_stale"):
+                suspicion += 2
+            if doc_candidate.get("requires_verification"):
+                suspicion += 1
+            if int(doc_candidate.get("audit_flag") or 0) > 0:
+                suspicion += 1
+            if doc_candidate.get("source") == "loop2e":
+                suspicion += 1
+            scored.append((overlap, suspicion, created_at, mid))
+
+        if not scored and prompt_original:
+            correction_text = prompt_original
+            for key in self._r.scan_iter("euri:memory:*"):
+                try:
+                    raw = self._r.json().get(key, "$")
+                    if not raw:
+                        continue
+                    doc_candidate = raw[0]
+                except Exception:
+                    continue
+                if doc_candidate.get("superseded_by") or doc_candidate.get("source") == "web":
+                    continue
+                mid = doc_candidate.get("id") or str(key).rsplit(":", 1)[-1]
+                if not mid or mid in seen:
+                    continue
+                seen.add(mid)
+                content = doc_candidate.get("content") or ""
+                overlap = self._memory_manager.correction_overlap_score(correction_text, content)
+                if overlap <= 0:
+                    continue
+                created_at = float(doc_candidate.get("created_at") or 0)
+                suspicion = 0
+                if doc_candidate.get("provenance_stale"):
+                    suspicion += 2
+                if doc_candidate.get("requires_verification"):
+                    suspicion += 1
+                if int(doc_candidate.get("audit_flag") or 0) > 0:
+                    suspicion += 1
+                if doc_candidate.get("source") == "loop2e":
+                    suspicion += 1
+                scored.append((overlap, suspicion, created_at, mid))
+
+        if not scored:
+            return list(dict.fromkeys(doc.get("rag_ctx_ids", []) or []))
+
+        scored.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+        best_overlap = scored[0][0]
+        best_suspicion = scored[0][1]
+        return [
+            mid
+            for overlap, suspicion, _created_at, mid in scored
+            if overlap == best_overlap and suspicion == best_suspicion
+        ][:3]
+
     def _audit_corrections_pass(self):
         """
         Loop 2g — Audit di Coerenza.
@@ -1074,7 +1166,10 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
 
                 # Azioni differenziate (not_a_correction e ambiguous: nessuna azione)
                 if verdict == "bad_memory":
-                    for mid in doc.get("rag_ctx_ids", []):
+                    target_ids = self._correction_target_ids(doc, ctx_memories)
+                    if not target_ids:
+                        target_ids = [mid for mid in (doc.get("rag_ctx_ids", []) or []) if mid]
+                    for mid in target_ids:
                         if not mid:
                             continue
                         mkey = mid if mid.startswith("euri:memory:") else f"euri:memory:{mid}"
@@ -1085,6 +1180,7 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
                             # lo si incrementa con NUMINCRBY: due correzioni concorrenti sulla
                             # stessa memoria non perdono più un incremento.
                             self._r.json().set(mkey, "$.audit_flag", 0, nx=True)
+                            self._r.json().set(mkey, "$.requires_verification", True)
                             _af = self._r.json().numincrby(mkey, "$.audit_flag", 1)
                             remove_loop2e_candidate(self._r, mid)
                             # Pulse afferente (Fase 1): memoria marcata sospetta = evento interno
@@ -1098,6 +1194,9 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
                             effect_ok = False
                             self._integrity_failure("loop2g-audit_flag", mkey, e)
                             continue
+                    logger.info(
+                        f"Loop 2g: target subject-memory ids = {', '.join(t[-8:] for t in target_ids[:4])}"
+                    )
 
                 elif verdict == "bad_reasoning" and self._memory_manager:
                     # COME la reaction-loop: distilla la correzione in una LEZIONE (il principio

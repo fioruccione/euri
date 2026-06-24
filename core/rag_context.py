@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from loguru import logger
 
 import config
+from core.memory_risk import memory_verification_suffix
 from utils.date_utils import now
 
 
@@ -190,7 +191,7 @@ def build_rag_context(
                 f"[{r.get('domain', 'generale')} | {age}]"
                 if age else f"[{r.get('domain', 'generale')}]"
             )
-            suffix = " [DATO NON VERIFICATO — contiene valori numerici]" if r.get("requires_verification") else ""
+            suffix = memory_verification_suffix(r)
             mem_lines.append(f"- {label} {r['content']}{suffix}")
         sections.append("Ricordi/note rilevanti:\n" + "\n".join(mem_lines))
     if insight_lines:

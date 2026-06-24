@@ -21,7 +21,8 @@ Vedi [[project_euri_memory_controller]].
 """
 import re
 
-from core.wide_recall import build_wide_recall_map, _SRC_PRIORITY, _gist
+from core.memory_risk import memory_risk_rank, memory_verification_suffix
+from core.wide_recall import build_wide_recall_map, _gist
 
 STRATEGIES = ("specific_search", "wide_recall", "subject_recall", "entity_recall", "recent_context")
 _CONF_FLOOR = 0.6
@@ -63,6 +64,18 @@ _ENTITY_SRC_PRIORITY = {
     "passive": 3,
     "loop2e": 1,
     "reflection": 1,
+    "web": 0,
+}
+
+_SUBJECT_SRC_PRIORITY = {
+    "user": 5,
+    "teach": 5,
+    "episode": 4,
+    "conversation": 4,
+    "passive": 4,
+    "reflection": 2,
+    "loop2e": 2,
+    "reaction": 1,
     "web": 0,
 }
 
@@ -150,14 +163,18 @@ def build_subject_recall(
             continue
         low = (doc.get("content") or "").lower()
         if any(tok in low for tok in tokens):
-            score = (_SRC_PRIORITY.get(doc.get("source") or "", 0),
-                     int(doc.get("recalled_count") or 0))
+            score = (
+                memory_risk_rank(doc),
+                -_SUBJECT_SRC_PRIORITY.get(doc.get("source") or "", 0),
+                -int(doc.get("recalled_count") or 0),
+                -float(doc.get("created_at") or 0),
+            )
             found.append((score, doc, _doc_id(doc, key)))
-    found.sort(key=lambda x: x[0], reverse=True)
+    found.sort(key=lambda x: x[0])
     rows = []
     for _score, doc, mid in found[:limit]:
         dom = doc.get("domain") or "generale"
-        row = f"[{dom}] {_gist(doc.get('content', ''), width=140)}"
+        row = f"[{dom}] {_gist(doc.get('content', ''), width=140)}{memory_verification_suffix(doc)}"
         rows.append((mid, row) if include_ids else row)
     return rows
 
@@ -209,19 +226,20 @@ def build_entity_recall(
             continue
         role_hits = len(_ROLE_MARKER_RE.findall(content))
         score = (
-            overlap,
-            _ENTITY_SRC_PRIORITY.get(source, 0),
-            role_hits,
-            float(doc.get("created_at") or 0),
-            int(doc.get("recalled_count") or 0),
+            memory_risk_rank(doc),
+            -overlap,
+            -_ENTITY_SRC_PRIORITY.get(source, 0),
+            -role_hits,
+            -float(doc.get("created_at") or 0),
+            -int(doc.get("recalled_count") or 0),
         )
         found.append((score, doc, _doc_id(doc, key)))
-    found.sort(key=lambda x: x[0], reverse=True)
+    found.sort(key=lambda x: x[0])
     rows = []
     for _score, doc, mid in found[:limit]:
         dom = doc.get("domain") or "generale"
         src = doc.get("source") or "?"
-        row = f"[{src}/{dom}] {_gist(doc.get('content', ''), width=150)}"
+        row = f"[{src}/{dom}] {_gist(doc.get('content', ''), width=150)}{memory_verification_suffix(doc)}"
         rows.append((mid, row) if include_ids else row)
     return rows
 

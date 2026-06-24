@@ -165,27 +165,27 @@ def domain_aware_search(query: str, embedder, r, limit: int = 5) -> list[dict]:
 
     items = []
     for doc in res_all.docs:
-        # Soft-delete (Loop 2f / correzioni): superseded_by NON è tra i return_fields
-        # dell'indice, quindi va letto a parte — altrimenti il filtro a valle in
-        # search_memories è un no-op e le memorie "superate" continuano a riemergere
-        # (bug del path domain-boosted dal V2.19: il soft-delete era inefficace qui).
         try:
-            sup = r.json().get(doc.id, "$.superseded_by")
+            raw_doc = r.json().get(doc.id, "$")
         except Exception:
-            sup = None
-        if sup and sup[0]:
+            raw_doc = None
+        if not raw_doc:
             continue
-        dom = getattr(doc, "domain", "generale")
+        item = raw_doc[0]
+        # Idratazione piena: il path domain-boosted deve portarsi dietro anche
+        # requires_verification/provenance_stale/audit_flag/consolidation_risk, altrimenti
+        # il prompt RAG perde proprio i flag epistemici che guidano la cautela.
+        if item.get("superseded_by"):
+            continue
+        dom = item.get("domain") or getattr(doc, "domain", "generale")
         raw = float(doc.score)
         in_domain = query_domain != "generale" and dom == query_domain
-        items.append({
-            "id": doc.id.replace("euri:memory:", ""),
-            "content": doc.content,
-            "score": raw,
-            "source": doc.source,
-            "domain": dom,
-            "_adj": raw * (DOMAIN_BOOST if in_domain else 1.0),
-        })
+        item = dict(item)
+        item["id"] = item.get("id") or doc.id.replace("euri:memory:", "")
+        item["score"] = raw
+        item["domain"] = dom
+        item["_adj"] = raw * (DOMAIN_BOOST if in_domain else 1.0)
+        items.append(item)
 
     items.sort(key=lambda x: x["_adj"])
     results = items[:limit]

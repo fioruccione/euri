@@ -1489,13 +1489,21 @@ class VoiceDaemon:
                     continue
 
                 saved = 0
-                for fact in facts:
+                for fact_item in facts:
+                    weak_support = isinstance(fact_item, dict) and fact_item.get("support") == "weak"
+                    fact = fact_item.get("content", "") if isinstance(fact_item, dict) else str(fact_item)
                     clean = validate_payload(fact, "memory")
                     if not clean:
                         continue
                     if self.memory.is_duplicate_memory(clean, llm_probe_fn=self.brain.probe_same_meaning):
                         continue
-                    self.memory.save_memory(clean, category="passivo", source="passive", idempotent=True)
+                    mid = self.memory.save_memory(clean, category="passivo", source="passive", idempotent=True)
+                    if mid and weak_support:
+                        from core.memory_attention import remove_loop2e_candidate
+                        key = f"euri:memory:{mid}"
+                        self.memory.r.json().set(key, "$.requires_verification", True)
+                        self.memory.r.json().set(key, "$.passive_support", "tacit_acceptance")
+                        remove_loop2e_candidate(self.memory.r, mid)
                     saved += 1
 
                 if saved:
