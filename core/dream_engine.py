@@ -658,6 +658,45 @@ Rispondi SOLO con: CONTRADDIZIONE, CONFRONTO, o NESSUNA."""
             logger.debug(f"Loop 2f: errore LLM classify pair — {e}")
             return "none"
 
+    @staticmethod
+    def _loop2f_is_comparison_doc(doc: dict) -> bool:
+        """True se il nodo e' una nota meta-comparativa generata dal Loop 2f."""
+        if not doc:
+            return False
+        content = (doc.get("content") or "").strip().lower()
+        if content.startswith("[confronto]"):
+            return True
+        tags = doc.get("tags") or []
+        if isinstance(tags, str):
+            tags = [tags]
+        tagset = {str(t).lower() for t in tags}
+        return "loop2f" in tagset and "confronto" in tagset
+
+    @staticmethod
+    def _loop2f_consolidation_risk_level(doc: dict) -> str:
+        cr = (doc or {}).get("consolidation_risk") or {}
+        if isinstance(cr, list):
+            cr = cr[0] if cr and isinstance(cr[0], dict) else {}
+        if isinstance(cr, dict):
+            return str(cr.get("level") or "ok").lower()
+        return "ok"
+
+    @classmethod
+    def _loop2f_source_allowed(cls, doc: dict) -> bool:
+        """
+        Fonti ammissibili come input primario del Loop 2f.
+
+        Le note [confronto] sono meta-conoscenza: possono orientare il RAG, ma non
+        devono generare confronti di confronti. I consolidati ad alto rischio restano
+        correggibili dal 2g/retrieval, ma non vanno usati per produrre nuova
+        metariflessione.
+        """
+        if cls._loop2f_is_comparison_doc(doc):
+            return False
+        if cls._loop2f_consolidation_risk_level(doc) == "high":
+            return False
+        return True
+
     def _make_comparison_memory(
         self,
         content_a: str,
@@ -685,7 +724,14 @@ B: "{content_b[:500]}"
 
 Scrivi un breve CONFRONTO operativo (2-4 frasi): cosa hanno in comune, in cosa
 DIFFERISCONO concretamente (valori/limiti), e quando conviene l'una rispetto all'altra.
-Non inventare dati non presenti nelle due voci. Rispondi solo col confronto."""
+Non inventare dati non presenti nelle due voci.
+Se una fonte e' incerta o richiede verifica, NON usare parole come "validato",
+"definitivo", "certo" o "pronto all'uso" a meno che siano scritte esplicitamente
+nella voce. In quel caso formula il confronto come ipotesi operativa da verificare.
+
+Fonte incerta o da verificare: {"SI" if requires_verification else "NO"}
+
+Rispondi solo col confronto."""
         try:
             resp = self._ollama_chat(
                 model=config.DREAM_OLLAMA_MODEL,
@@ -705,6 +751,7 @@ Non inventare dati non presenti nelle due voci. Rispondi solo col confronto."""
             )
             if mid:
                 key = f"euri:memory:{mid}"
+                remove_loop2e_candidate(self._r, mid)
                 if source_ids:
                     self._r.json().set(key, "$.source_memory_ids", list(dict.fromkeys(source_ids)))
                 if requires_verification:
@@ -746,7 +793,7 @@ Non inventare dati non presenti nelle due voci. Rispondi solo col confronto."""
                     if not d:
                         continue
                     doc = d[0]
-                    if (doc.get("content") or "").strip().lower().startswith("[confronto]"):
+                    if not self._loop2f_source_allowed(doc):
                         continue
                     if not doc.get("requires_verification"):
                         continue
@@ -820,6 +867,8 @@ Non inventare dati non presenti nelle due voci. Rispondi solo col confronto."""
                     if not n_raw:
                         continue
                     n_doc = n_raw[0]
+                    if not self._loop2f_source_allowed(n_doc):
+                        continue
                     if not n_doc.get("requires_verification"):
                         continue
                     if n_doc.get("superseded_by"):

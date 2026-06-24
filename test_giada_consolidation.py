@@ -156,6 +156,37 @@ def test_passive_fact_parser_marks_tacit_acceptance_as_weak():
     assert unmarked["support"] == "weak"
 
 
+def test_loop2f_does_not_feed_on_comparisons_or_high_risk():
+    comparison_by_prefix = {
+        "content": "[confronto] Due voci descrivono entita' diverse ma confrontabili.",
+        "source": "reflection",
+        "requires_verification": True,
+    }
+    comparison_by_tags = {
+        "content": "Due voci descrivono entita' diverse ma confrontabili.",
+        "source": "reflection",
+        "tags": ["confronto", "loop2f"],
+        "requires_verification": True,
+    }
+    high_risk_fact = {
+        "content": "Memoria consolidata fragile.",
+        "source": "loop2e",
+        "requires_verification": True,
+        "consolidation_risk": {"level": "high"},
+    }
+    watch_fact = {
+        "content": "Dato fattuale da verificare ma ancora confrontabile.",
+        "source": "passive",
+        "requires_verification": True,
+        "consolidation_risk": {"level": "watch"},
+    }
+
+    assert not DreamEngine._loop2f_source_allowed(comparison_by_prefix)
+    assert not DreamEngine._loop2f_source_allowed(comparison_by_tags)
+    assert not DreamEngine._loop2f_source_allowed(high_risk_fact)
+    assert DreamEngine._loop2f_source_allowed(watch_fact)
+
+
 if __name__ == "__main__":
     test_same_subject_gate_excludes_unknown_fragments()
     test_same_subject_gate_fails_closed_on_bad_output()
@@ -163,4 +194,5 @@ if __name__ == "__main__":
     test_correction_target_scoring_prefers_buggy_giada_node()
     test_subject_recall_demotes_risky_giada_consolidation()
     test_passive_fact_parser_marks_tacit_acceptance_as_weak()
+    test_loop2f_does_not_feed_on_comparisons_or_high_risk()
     print("test_giada_consolidation: OK")
