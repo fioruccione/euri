@@ -15,7 +15,7 @@ from redis.commands.search.query import Query
 import config
 from utils.date_utils import now, to_timestamp, from_timestamp, format_datetime
 from core.domain_gater import assign_domain, domain_aware_search, neighbor_domains
-from core.memory_attention import update_loop2e_candidate_index
+from core.memory_attention import remove_loop2e_candidate, update_loop2e_candidate_index
 from core.memory_axes import analyze_memory_axes
 from utils.obsidian_sync import write_memory
 from core.pulse import pulse_emit
@@ -759,6 +759,13 @@ class MemoryManager:
             "id": cand.get("id"),
             "content": cand.get("content", ""),
             "similarity": 1.0 - cand.get("_vec_score", 1.0),
+            "source": cand.get("source"),
+            "requires_verification": cand.get("requires_verification"),
+            "passive_support": cand.get("passive_support"),
+            "memory_axes": cand.get("memory_axes") or {},
+            "provenance_stale": cand.get("provenance_stale"),
+            "consolidation_risk": cand.get("consolidation_risk") or {},
+            "audit_flag": cand.get("audit_flag"),
         }
 
     def _record_integrity_failure(self, kind: str, key: str, err) -> None:
@@ -1238,6 +1245,20 @@ class MemoryManager:
         "questa", "questioni", "invece", "anche", "non", "che", "come", "cosa",
         "oppure", "ovvero", "team",
     }
+    _IMMEDIATE_QUARANTINE_RE = [
+        re.compile(p, re.IGNORECASE) for p in [
+            r"\bera\s+una\s+provocazione\b",
+            r"\bstavo\s+scherzando\b",
+            r"\bnon\s+(ho|avevo)\s+davvero\b",
+            r"\bnon\s+[èe]\s+vero\b",
+            r"\bti\s+correggo\b",
+            r"\bno\s*,?\s+ti\s+correggo\b",
+            r"\bno\s*,?\s+.*\bcorreggo\b",
+            r"\bti\s+sbagli\b",
+            r"\bhai\s+sbagliato\b",
+            r"\bhai\s+inventato\b",
+        ]
+    ]
 
     @classmethod
     def _salient_tokens(cls, text: str) -> set[str]:
@@ -1271,6 +1292,11 @@ class MemoryManager:
             for m in re.finditer(r"\b[\wÀ-ü]{4,}\b", content or "")
         }
         return len(ref & cont)
+
+    @classmethod
+    def _is_immediate_quarantine_correction(cls, text: str) -> bool:
+        """True solo per correzioni esplicite abbastanza forti da demuovere subito."""
+        return bool(text and any(p.search(text) for p in cls._IMMEDIATE_QUARANTINE_RE))
 
     def detect_correction(self, text: str, last_euri_turn: str | None = None) -> bool:
         """True se il prompt utente assomiglia a una correzione di un turno precedente.
@@ -1337,6 +1363,63 @@ class MemoryManager:
                 return entry.split("] Euri: ", 1)[1]
         return ""
 
+    def _quarantine_correction_targets(
+        self,
+        signal_id: str,
+        correzione_user: str,
+        rag_ctx_ids: list[str],
+        *,
+        created_at: float,
+    ) -> list[str]:
+        """Demote immediato e reversibile per il bersaglio evidente di una correzione.
+
+        Non sostituisce il Loop 2g: qui non decidiamo se la memoria sia "cattiva".
+        Evitiamo solo che una memoria appena corretta resti richiamabile come fatto
+        forte nella stessa sessione. La selezione è volutamente conservativa:
+        correzione forte + overlap lessicale sul contenuto del nodo.
+        """
+        if not self._is_immediate_quarantine_correction(correzione_user):
+            return []
+
+        scored: list[tuple[int, str, dict]] = []
+        for mid in rag_ctx_ids or []:
+            if not mid:
+                continue
+            mkey = mid if str(mid).startswith("euri:memory:") else f"euri:memory:{mid}"
+            try:
+                raw = self.r.json().get(mkey, "$")
+                doc = raw[0] if raw else {}
+            except Exception:
+                continue
+            content = doc.get("content") or ""
+            score = self.correction_overlap_score(correzione_user, content)
+            if score >= 2:
+                scored.append((score, str(mid).replace("euri:memory:", ""), doc))
+
+        if not scored:
+            return []
+
+        max_score = max(score for score, _, _ in scored)
+        targets = [(mid, doc) for score, mid, doc in scored if score == max_score][:3]
+        quarantined: list[str] = []
+        for mid, doc in targets:
+            mkey = f"euri:memory:{mid}"
+            try:
+                self.r.json().set(mkey, "$.correction_pending", True)
+                self.r.json().set(mkey, "$.correction_signal_id", signal_id)
+                self.r.json().set(mkey, "$.correction_pending_at", created_at)
+                self.r.json().set(
+                    mkey,
+                    "$.correction_pending_prev_requires_verification",
+                    bool(doc.get("requires_verification")),
+                )
+                self.r.json().set(mkey, "$.requires_verification", True)
+                remove_loop2e_candidate(self.r, mid)
+                quarantined.append(mid)
+            except Exception as e:
+                logger.debug(f"Correction quarantine fallita su {mid[:8]}: {e}")
+        return quarantined
+
     def save_correction_signal(
         self,
         prompt_originale: str,
@@ -1350,19 +1433,31 @@ class MemoryManager:
         """
         sid = str(uuid.uuid4())
         key = f"euri:correction:{sid}"
+        created_at = to_timestamp(now())
         doc = {
             "id": sid,
             "prompt_original": prompt_originale,
             "risposta_euri": risposta_euri,
             "correzione_user": correzione_user,
             "rag_ctx_ids": rag_ctx_ids or [],
+            "quarantined_memory_ids": [],
             "status": "pending",
             "verdict": None,
-            "created_at": to_timestamp(now()),
+            "created_at": created_at,
             "analyzed_at": None,
         }
         self.r.json().set(key, "$", doc)
         self.r.expire(key, 30 * 86400)
+        quarantined = self._quarantine_correction_targets(
+            sid, correzione_user, rag_ctx_ids or [], created_at=created_at
+        )
+        if quarantined:
+            self.r.json().set(key, "$.quarantined_memory_ids", quarantined)
+            logger.info(
+                "Correction quarantine: "
+                + ", ".join(mid[:8] for mid in quarantined)
+                + f" → requires_verification pending ({sid[:8]})"
+            )
         logger.info(f"Correction signal salvato: {sid[:8]} — '{correzione_user[:60]}'")
         # Pulse afferente (Fase 1): una correzione viene dal mondo (→ extero). Il Loop 2g la
         # consuma di notte; qui la rendiamo percepibile anche al polso. Fail-open.

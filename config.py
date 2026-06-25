@@ -33,7 +33,7 @@ OLLAMA_HOST = "http://localhost:11434"   # default condiviso (offline-first)
 CHAT_OLLAMA_HOST  = os.environ.get("CHAT_OLLAMA_HOST",  OLLAMA_HOST)
 DREAM_OLLAMA_HOST = os.environ.get("DREAM_OLLAMA_HOST", OLLAMA_HOST)
 OLLAMA_MODEL = "gemma4:26b"   # verifica con `ollama list`
-# Modello dedicato al Dream Engine (sogni notturni + insight).
+# Modello dedicato al Dream Engine (cicli offline/idle + insight).
 # Separato da OLLAMA_MODEL per poter usare un modello più capace per il ragionamento astratto.
 DREAM_OLLAMA_MODEL = "qwen3.6:35b"
 
@@ -95,10 +95,10 @@ SYSTEM_PROMPT = """Sei Euri, l'assistente personale locale di Stefano, in esecuz
 
 SELF-MODEL:
 - Giri su Linux (Pop!_OS), completamente offline e privato.
-- Usi Ollama con Gemma4 26B per il ragionamento in tempo reale (think=False) e Qwen3.6 35B per i cicli onirici notturni (think=True).
+- Usi Ollama con Gemma4 26B per il ragionamento in tempo reale (think=False) e Qwen3.6 35B per i cicli cognitivi offline/idle (think=True dove serve).
 - Memoria su Redis Stack con RediSearch. STT: faster-whisper large-v3 (CUDA float16). TTS: Piper/sherpa-onnx voce italiana Paola.
 - Non sei connesso a cloud, niente accesso esterno salvo ricerche web esplicite.
-- Hai una memoria persistente multi-livello: fatti estratti dalle conversazioni (source=passive), episodi compressi, riflessioni (Loop 2a), insight cross-domain generati di notte dal Dream Engine (Loop 2b/2c), conoscenza esplicita salvata da Stefano.
+- Hai una memoria persistente multi-livello: fatti estratti dalle conversazioni (source=passive), episodi compressi, riflessioni (Loop 2a), insight cross-domain generati dal Dream Engine in idle (Loop 2b/2c), conoscenza esplicita salvata da Stefano.
 
 IDENTITÀ E TONO:
 - Sei un analista tecnico diretto, pragmatico e fidato. Non un assistente servile.
@@ -209,12 +209,17 @@ DEFAULT_ALERT_RULES = {
     "inactivity_threshold_minutes": 120,
 }
 
-# Dream Engine (Loop 2b — Sogni, Loop 2c — Insight)
-# Gira solo quando Euri è idle da più di IDLE_HOURS consecutivi.
+# Dream Engine / cicli cognitivi in idle.
+# Non è più un componente "notturno": gira quando Euri è inattiva, con cadenze
+# separate per evitare che i pass leggeri aspettino la manutenzione giornaliera.
 # MIN_CONVERGENCES: sogni indipendenti necessari per promuovere CANDIDATE → PROMOTED.
 # INSIGHT_TTL_DAYS: gli Insight evaporano se non vengono mai richiamati in conversazione.
 DREAM_ENGINE_ENABLED = True
-DREAM_ENGINE_IDLE_HOURS = 2
+DREAM_ENGINE_IDLE_HOURS = 0.5  # compat: 30 minuti di inattività prima dei cicli idle
+DREAM_ENGINE_POLL_SECONDS = 300
+DREAM_LIGHT_CYCLE_INTERVAL_S = 20 * 60       # insight eval, correzioni, ipotesi 2i, provenienza
+DREAM_CREATIVE_CYCLE_INTERVAL_S = 90 * 60    # nuovo sogno cross-domain + promozione
+DREAM_MAINTENANCE_CYCLE_INTERVAL_S = 24 * 3600  # 2f/2h/cleanup/pruning/2e
 DREAM_INSIGHT_MIN_CONVERGENCES = 3   # era 2 — soglia alzata per ridurre promozioni facili
 INSIGHT_TTL_DAYS = 30
 INSIGHT_DEMOTE_DAYS = 14  # PROMOTED non richiamato entro X giorni → torna CANDIDATE
@@ -268,16 +273,39 @@ EPISODE_MAX_INJECT = 3               # max episodi iniettati nel contesto Ollama
 OBSIDIAN_SYNC_ENABLED = True
 OBSIDIAN_VAULT_PATH = "/home/fio/EuriVault"
 
-# Euri Pulse (Fase 0 — bus afferente, solo osservazione)
-# I sensi esistenti emettono eventi tipizzati su euri:pulse; nessuno li consuma per
-# agire. Kill-switch: a False il polso tace (afferente puro, sicuro lasciarlo on).
+# Euri Pulse (bus afferente)
+# I sensi esistenti emettono eventi tipizzati su euri:pulse. Il controller
+# proattivo sotto consuma solo un sottoinsieme stretto e idratato (oggi:
+# insight/promoted), lasciando il Pulse come ground truth osservabile.
 PULSE_ENABLED = True
+
+# Initiative controller — prima "scintilla" proattiva.
+# Il daemon ascolta euri:pulse da `$` (solo eventi nuovi dal boot), rilegge il
+# JSON reale collegato all'evento, valuta tensione e chiede al modello se vale
+# una domanda. La formulazione è sempre prompt-based; le costanti qui sono solo
+# guardrail anti-spam/sicurezza.
+INITIATIVE_ENABLED = True
+INITIATIVE_SHADOW_ONLY = False
+INITIATIVE_MIN_TENSION = 0.25
+INITIATIVE_IDLE_SECONDS = 90
+INITIATIVE_COOLDOWN_S = 3 * 3600
+INITIATIVE_PULSE_BLOCK_MS = 5000
+INITIATIVE_PENDING_MIN_AGE_S = 5  # stabilizza memory/saved prima di idratare (post-flag passive)
 
 # Propagazione di provenienza (invariante A della primitiva cognitiva).
 # Un nodo derivato (consolidated_from) la cui fondamenta è caduta — genitori
 # superseded/spariti/da-verificare — viene tenuto SOSPETTO: provenance_stale (down-rank
 # nel retrieval) + requires_verification (Euri si copre). Fail-safe: segnala, non cancella.
 PROVENANCE_PROPAGATION_ENABLED = True
+
+# Loop 2i — Ipotesi trasversali da episodi ripetuti.
+# Cerca pattern causa_sospetta→effetto ricorrenti in più memorie operative e genera
+# un insight promosso ma marcato `requires_verification`: non è una regola del mondo,
+# è una domanda buona da portare a Stefano.
+CROSS_EPISODE_HYPOTHESIS_ENABLED = True
+CROSS_EPISODE_MIN_CASES = 2
+CROSS_EPISODE_MAX_MEMORIES = 24
+CROSS_EPISODE_MIN_INTERVAL_S = 12 * 3600
 
 # CodeRunner — Data Orchestrator (Phase 4)
 # Genera ed esegue codice Python per manipolare file locali.

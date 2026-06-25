@@ -62,6 +62,17 @@ def test_requires_verification_exits_index():
     assert "mem-1" not in r.zsets[LOOP2E_ZSET]
 
 
+def test_correction_pending_exits_index():
+    r = _FakeRedis()
+    doc = _doc()
+    update_loop2e_candidate_index(r, doc)
+
+    doc["correction_pending"] = True
+    update_loop2e_candidate_index(r, doc)
+
+    assert "mem-1" not in r.zsets[LOOP2E_ZSET]
+
+
 def test_consolidated_or_superseded_exits_index():
     r = _FakeRedis()
     doc = _doc()
@@ -101,6 +112,7 @@ def test_explicit_remove_is_idempotent():
 if __name__ == "__main__":
     test_candidate_enters_index()
     test_requires_verification_exits_index()
+    test_correction_pending_exits_index()
     test_consolidated_or_superseded_exits_index()
     test_acephalous_or_untouched_does_not_enter()
     test_explicit_remove_is_idempotent()

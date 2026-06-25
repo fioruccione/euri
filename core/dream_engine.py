@@ -1,18 +1,17 @@
 """
-Dream Engine — Loop 2b (Sogni Onirici) e 2c (Insight e Promozione).
+Dream Engine — cicli cognitivi in idle.
 
-Il Dream Engine gira in background quando Euri è in idle (es. la notte).
-Simula il processo di consolidamento della memoria umana:
-- Prende memorie lontane semanticamente (da domini diversi)
-- Cerca isomorfismi e connessioni nascoste (Loop 2b)
-- Se trova un'analogia, crea un Insight CANDIDATE
-- Se più sogni indipendenti confermano l'Insight, diventa VALIDATED e poi PROMOTED (Loop 2c)
+Il Dream Engine gira in background quando Euri è inattiva. Non è più un blocco
+"notturno" unico: l'orchestratore separa pass leggeri, sogni creativi e
+manutenzione lenta, così correzioni/ipotesi possono maturare durante la giornata
+senza far partire sempre consolidamento e cleanup.
 """
 import time
 import threading
 import uuid
 import json
 import hashlib
+import re
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from loguru import logger
@@ -33,6 +32,78 @@ from core.memory_attention import (
 )
 
 
+CROSS_EPISODE_SEEN_KEY = "euri:cross_episode:seen"
+CROSS_EPISODE_LAST_RUN_KEY = "euri:cross_episode:last_run_ts"
+
+_CAUSAL_EPISODE_RE = re.compile(
+    r"\b(?:causa|causato|causata|causare|crea|creare|provoca|provocare|"
+    r"dipende|dovuto|dovuta|legato|legata|colpa|problema|effetto|"
+    r"sembra|rientrato|tornato\s+a\s+posto|migliora|peggiora)\b",
+    re.IGNORECASE,
+)
+
+_DERIVED_CROSS_EPISODE_TAGS = {"lesson", "from_correction"}
+
+
+def _case_has_causal_hint(text: str) -> bool:
+    """Prefiltro linguistico leggero, non-domain-specific: cerca forma causa/effetto."""
+    return bool(text and _CAUSAL_EPISODE_RE.search(text))
+
+
+def _as_list(value) -> list:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return [value]
+
+
+def _counts_as_cross_episode_evidence(doc: dict) -> bool:
+    """True solo per episodi abbastanza diretti da fondare una generalizzazione.
+
+    Lezioni da correzione, reflection e consolidamenti sono utili come contesto,
+    ma non devono contare come un secondo caso indipendente: spesso sono
+    metabolizzazioni dello stesso episodio.
+    """
+    source = doc.get("source") or ""
+    if source in {"reflection", "reaction", "insight", "system"}:
+        return False
+    tags = {str(t) for t in _as_list(doc.get("tags"))}
+    if tags & _DERIVED_CROSS_EPISODE_TAGS:
+        return False
+    if doc.get("consolidated_from") or doc.get("source_memory_ids"):
+        return False
+    return True
+
+
+def _parse_cross_episode_response(raw: str) -> dict:
+    if not raw:
+        return {"should_create": False, "reason": "empty_output"}
+    s = raw.strip()
+    start = s.find("{")
+    end = s.rfind("}")
+    if start >= 0 and end > start:
+        s = s[start:end + 1]
+    try:
+        data = json.loads(s)
+    except Exception:
+        return {"should_create": False, "reason": "json_parse_failed"}
+    return data if isinstance(data, dict) else {"should_create": False, "reason": "not_object"}
+
+
+def _ensure_hypothesis_wording(text: str) -> str:
+    """Rende esplicito che l'output è ipotesi, non fatto operativo acquisito."""
+    s = " ".join((text or "").split())
+    if not s:
+        return ""
+    low = s.lower()
+    if any(w in low for w in ("ipotesi", "potrebbe", "può", "da verificare", "da valutare")):
+        return s
+    return f"Ipotesi da verificare: {s}"
+
+
 class DreamEngine:
     def __init__(self, r, embedder, brain=None, memory=None):
         self._r = r
@@ -50,7 +121,11 @@ class DreamEngine:
         # Traccia l'ultimo activity (STT/TTS) globale di Euri
         # Usa time.time() (wall-clock) e non time.monotonic() perché
         # monotonic si resetta quando il PC va in sospensione.
-        self._last_activity = time.time()
+        boot_ts = time.time()
+        self._last_activity = boot_ts
+        self._light_last_run = boot_ts
+        self._creative_last_run = boot_ts
+        self._maintenance_last_run = boot_ts
         self._consolidation_last_run = 0.0  # timestamp ultimo Loop 2e
         
     def start(self):
@@ -76,15 +151,19 @@ class DreamEngine:
             self._last_activity = time.time()
             
     def _is_idle(self) -> bool:
-        """Controlla se il sistema è inattivo da sufficienti ore."""
+        """Controlla se il sistema è inattivo abbastanza per i cicli offline."""
         with self._lock:
-            elapsed_hours = (time.time() - self._last_activity) / 3600.0
-        return elapsed_hours >= config.DREAM_ENGINE_IDLE_HOURS
+            elapsed = time.time() - self._last_activity
+        idle_seconds = float(
+            getattr(config, "DREAM_ENGINE_IDLE_SECONDS", 0)
+            or getattr(config, "DREAM_ENGINE_IDLE_HOURS", 2) * 3600
+        )
+        return elapsed >= idle_seconds
 
     def _ollama_chat(self, **kwargs) -> ollama.ChatResponse:
-        """Wrapper con timeout (default 200s) attorno a ollama.chat — evita hang notturni.
+        """Wrapper con timeout (default 200s) attorno a ollama.chat — evita hang dei cicli idle.
         Antepone il contesto operativo (EURI_CONTEXT.md) come messaggio system a tutte le
-        chiamate notturne (sogno, sintesi, contraddizioni, plausibilità). Fail-open: se il
+        chiamate offline/idle (sogno, sintesi, contraddizioni, plausibilità). Fail-open: se il
         file manca, op_ctx è "" e i messaggi restano invariati."""
         timeout = kwargs.pop("_timeout", 200)
         op_ctx = load_operational_context()
@@ -99,55 +178,116 @@ class DreamEngine:
                 raise
 
     def _loop(self):
-        """Loop principale: controlla l'idle ogni 10 minuti."""
+        """Loop principale: controlla l'idle e lancia i sotto-cicli dovuti."""
         while self._running:
-            # Controllo ogni 10 minuti
-            for _ in range(600):
+            poll = int(getattr(config, "DREAM_ENGINE_POLL_SECONDS", 300))
+            for _ in range(max(1, poll)):
                 if not self._running:
                     return
                 time.sleep(1)
                 
             if self._is_idle():
-                self._run_dream_cycle()
-                
-                # Dopo un ciclo di sogno, aspetta almeno un'altra ora (se ancora idle)
-                # o finché non viene interrotto
-                for _ in range(3600):
-                    if not self._running or not self._is_idle():
-                        break
-                    time.sleep(1)
+                self._run_due_idle_cycles()
+
+    def _run_due_idle_cycles(self):
+        """Esegue solo i sotto-cicli scaduti mentre Euri è idle."""
+        ts = time.time()
+        light_due = ts - self._light_last_run >= float(getattr(config, "DREAM_LIGHT_CYCLE_INTERVAL_S", 20 * 60))
+        creative_due = ts - self._creative_last_run >= float(getattr(config, "DREAM_CREATIVE_CYCLE_INTERVAL_S", 90 * 60))
+        maintenance_due = ts - self._maintenance_last_run >= float(getattr(config, "DREAM_MAINTENANCE_CYCLE_INTERVAL_S", 24 * 3600))
+
+        if not (light_due or creative_due or maintenance_due):
+            return
+
+        logger.info(
+            "Dream Engine: ciclo idle "
+            f"(light={light_due}, creative={creative_due}, maintenance={maintenance_due})"
+        )
+        pulse_emit(
+            self._r, "dream", "intero", "idle_cycle",
+            payload={"light": light_due, "creative": creative_due, "maintenance": maintenance_due},
+            salience=0.25,
+        )
+
+        if creative_due:
+            try:
+                self._creative_cycle()
+                self._creative_last_run = time.time()
+            except Exception as e:
+                logger.error(f"Errore ciclo creativo Dream Engine: {e}")
+        if light_due:
+            try:
+                self._light_cycle()
+                self._light_last_run = time.time()
+            except Exception as e:
+                logger.error(f"Errore ciclo leggero Dream Engine: {e}")
+        if maintenance_due:
+            try:
+                self._maintenance_cycle()
+                self._maintenance_last_run = time.time()
+            except Exception as e:
+                logger.error(f"Errore ciclo manutentivo Dream Engine: {e}")
+
+    def _creative_cycle(self):
+        """Sogno cross-domain + promozione insight. Medio-costo, cadenza separata."""
+        domains = self._get_unique_domains()
+        if len(domains) < 2:
+            logger.debug("Dream Engine: non ci sono abbastanza domini per sognare")
+            return
+        self._generate_dream(domains)
+        self._evaluate_insights()
+
+    def _light_cycle(self):
+        """Pass leggeri/frequenti: metabolizza feedback e ipotesi senza consolidare."""
+        self._evaluate_insights()
+        self._audit_corrections_pass()
+        if getattr(config, "CROSS_EPISODE_HYPOTHESIS_ENABLED", True):
+            self._cross_episode_hypothesis_pass()
+        self._provenance_propagation_pass()
+
+    def _maintenance_cycle(self):
+        """Manutenzione lenta: pulizia, contraddizioni, consolidamento, self-observation."""
+        self._contradiction_resolution_pass()
+        if config.PLAUSIBILITY_GATE_ENABLED:
+            self._plausibility_gate_pass()
+        if self._self_observation:
+            try:
+                self._self_observation.run()
+            except Exception as e:
+                logger.error(f"Loop 2h: errore self-observation pass: {e}")
+        self._cleanup_expired_insights()
+        self._cleanup_stale_memories()
+        self._pruning_pass()
+        if time.time() - self._consolidation_last_run >= 86400:
+            self._consolidation_pass()
+            self._consolidation_last_run = time.time()
+        self._provenance_propagation_pass()
 
     def _run_dream_cycle(self):
-        """Esegue un ciclo completo di sogni (Loop 2b) e validazione (Loop 2c)."""
-        logger.info("Dream Engine: inizio ciclo onirico")
+        """Esegue un ciclo completo forzato (compatibile con force_full_cycle.py)."""
+        logger.info("Dream Engine: inizio ciclo cognitivo completo")
         pulse_emit(self._r, "dream", "intero", "cycle_start", salience=0.25)
         try:
-            # 1. Trova domini unici
-            domains = self._get_unique_domains()
-            if len(domains) < 2:
-                logger.debug("Dream Engine: non ci sono abbastanza domini per sognare")
-                return
+            # 1. Loop 2b/2c: sogno creativo + valutazione insight
+            self._creative_cycle()
                 
-            # 2. Loop 2b: Sogni Onirici
-            dream = self._generate_dream(domains)
-
-            # 3. Loop 2c: Valutazione Insight — sempre, non solo se il sogno ha prodotto un candidato.
-            # I candidati accumulati nei cicli precedenti vanno valutati indipendentemente.
-            self._evaluate_insights()
-                
-            # 4. Loop 2f: Contradiction resolution — soft-delete valori numerici obsoleti
+            # 2. Loop 2f: Contradiction resolution — soft-delete valori numerici obsoleti
             self._contradiction_resolution_pass()
 
-            # 4b. Loop 2g: Audit di Coerenza — analizza le correzioni ricevute durante il giorno
+            # 3. Loop 2g: Audit di Coerenza — analizza le correzioni ricevute
             self._audit_corrections_pass()
 
-            # 4c. Plausibility gate — ARCHIVIATO (kill-switch off, codice lasciato in repo).
+            # 4. Loop 2i: ipotesi trasversali da episodi ripetuti — genera domande, non fatti.
+            if getattr(config, "CROSS_EPISODE_HYPOTHESIS_ENABLED", True):
+                self._cross_episode_hypothesis_pass()
+
+            # 5. Plausibility gate — ARCHIVIATO (kill-switch off, codice lasciato in repo).
             # Negative result: 1 vero positivo / 3 falsi positivi su gemme di dominio vere,
             # anche col contesto operativo attivo → non chiamato di default. Vedi changelog.
             if config.PLAUSIBILITY_GATE_ENABLED:
                 self._plausibility_gate_pass()
 
-            # 4d. Loop 2h: Self-Observation — narrative di evoluzione dalle coppie superseded.
+            # 6. Loop 2h: Self-Observation — narrative di evoluzione dalle coppie superseded.
             # Additivo: NON modifica il Loop 2f (che continua a fare superseded_by), aggiunge
             # solo una voce narrativa in prima persona per ogni evoluzione mai raccontata prima.
             if self._self_observation:
@@ -156,21 +296,21 @@ class DreamEngine:
                 except Exception as e:
                     logger.error(f"Loop 2h: errore self-observation pass: {e}")
 
-            # 5. Pulizia Insight scaduti
+            # 7. Pulizia Insight scaduti
             self._cleanup_expired_insights()
 
-            # 6. Pulizia Memorie stantie (passive/reflection mai richiamate)
+            # 8. Pulizia Memorie stantie (passive/reflection mai richiamate)
             self._cleanup_stale_memories()
 
-            # 7. Loop 2d: Death-row gate per memorie in scadenza entro 7 giorni
+            # 9. Loop 2d: Death-row gate per memorie in scadenza entro 7 giorni
             self._pruning_pass()
 
-            # 8. Loop 2e: Memory Consolidation — max una volta ogni 24h
+            # 10. Loop 2e: Memory Consolidation — max una volta ogni 24h
             if time.time() - self._consolidation_last_run >= 86400:
                 self._consolidation_pass()
                 self._consolidation_last_run = time.time()
 
-            # 9. Propagazione di provenienza (invariante A): in coda, così le supersessioni
+            # 11. Propagazione di provenienza (invariante A): in coda, così le supersessioni
             # appena fatte dal 2f e i nodi appena consolidati dal 2e sono valutati nello
             # stesso ciclo.
             self._provenance_propagation_pass()
@@ -313,7 +453,7 @@ class DreamEngine:
             return ""
 
     def _integrity_failure(self, kind: str, key: str, err) -> None:
-        """Path di scrittura dei loop notturni (mark-after-act): un fallimento di scrittura NON
+        """Path di scrittura dei loop idle (mark-after-act): un fallimento di scrittura NON
         deve sparire in debug. Delega a MemoryManager._record_integrity_failure (WARNING + stream
         euri:integrity:failures) quando disponibile; altrimenti almeno un WARNING."""
         if self._memory_manager:
@@ -605,7 +745,12 @@ Rispondi SOLO con SÌ o NO."""
                         
                     logger.success(f"Dream Engine: Insight PROMOSSO! (convergenze: {convergences})")
                     pulse_emit(self._r, "insight", "intero", "promoted",
-                               payload={"convergences": convergences}, salience=0.65)
+                               payload={
+                                   "id": str(doc.id).replace("euri:insight:", ""),
+                                   "key": str(doc.id),
+                                   "convergences": convergences,
+                               },
+                               salience=0.65)
                     promoted_count += 1
                     
                     # Scrivi nel vault di Obsidian
@@ -618,6 +763,214 @@ Rispondi SOLO con SÌ o NO."""
                         
         except Exception as e:
             logger.error(f"Errore valutazione insights: {e}")
+
+    # ── Loop 2i: Ipotesi trasversali da episodi ripetuti ───────────────────
+
+    def _cross_episode_recently_ran(self) -> bool:
+        try:
+            raw = self._r.get(CROSS_EPISODE_LAST_RUN_KEY)
+            last = float(raw or 0)
+        except Exception:
+            return False
+        min_s = float(getattr(config, "CROSS_EPISODE_MIN_INTERVAL_S", 12 * 3600))
+        return bool(last and time.time() - last < min_s)
+
+    def _mark_cross_episode_run(self) -> None:
+        try:
+            self._r.set(CROSS_EPISODE_LAST_RUN_KEY, f"{time.time():.3f}", ex=7 * 86400)
+        except Exception:
+            pass
+
+    def _collect_cross_episode_cases(self) -> list[dict]:
+        """Raccoglie memorie operative con forma causa→effetto, senza hardcode di dominio."""
+        limit = int(getattr(config, "CROSS_EPISODE_MAX_MEMORIES", 24))
+        oversample = max(limit * 4, 50)
+        cases: list[dict] = []
+        try:
+            q = (
+                Query("*")
+                .sort_by("created_at", asc=False)
+                .paging(0, oversample)
+                .return_fields("id", "content", "source", "domain", "created_at")
+            )
+            res = self._r.ft("idx:memories").search(q)
+        except Exception as e:
+            logger.debug(f"Loop 2i: ricerca memorie fallita: {e}")
+            return cases
+
+        for row in res.docs:
+            if len(cases) >= limit:
+                break
+            key = row.id
+            try:
+                raw = self._r.json().get(key, "$")
+                doc = raw[0] if raw else {}
+            except Exception:
+                doc = {}
+            content = (doc.get("content") or getattr(row, "content", "") or "").strip()
+            if not content or not _case_has_causal_hint(content):
+                continue
+            if doc.get("superseded_by") or doc.get("consolidated_into"):
+                continue
+            if doc.get("provenance_stale") or int(doc.get("audit_flag") or 0) > 0:
+                continue
+            source = doc.get("source") or getattr(row, "source", "")
+            if source in {"web", "mobile", "mobile_in"}:
+                continue
+            if not _counts_as_cross_episode_evidence({**doc, "source": source}):
+                continue
+            # Le memorie passive deboli sono buone per chiedere conferma, non per
+            # fondare una generalizzazione trasversale.
+            if source == "passive" and (doc.get("passive_support") or doc.get("requires_verification")):
+                continue
+            cases.append({
+                "id": (doc.get("id") or str(key).replace("euri:memory:", "")),
+                "key": str(key),
+                "content": content[:500],
+                "source": source,
+                "domain": doc.get("domain") or getattr(row, "domain", "") or "generale",
+                "created_at": doc.get("created_at") or getattr(row, "created_at", None),
+            })
+        return cases
+
+    def _llm_cross_episode_hypothesis(self, cases: list[dict]) -> dict:
+        lines = []
+        for i, c in enumerate(cases, 1):
+            age = self._memory_age(c.get("created_at"))
+            meta = f"fonte={c.get('source','?')}, dominio={c.get('domain','?')}"
+            if age:
+                meta += f", {age}"
+            lines.append(f"CASO {i} ({meta})\n{c['content']}")
+        prompt = f"""\
+Analizza questi episodi operativi di memoria. Cerca SOLO pattern trasversali causa_sospetta→effetto che compaiono in almeno {getattr(config, "CROSS_EPISODE_MIN_CASES", 2)} CASI distinti.
+
+Regole:
+- Non cercare una bella analogia: cerca un'ipotesi pratica da verificare.
+- Non trasformare una coincidenza in verità. Se il pattern è debole, should_create=false.
+- Non generalizzare universalmente. Formula come "può/potrebbe essere una variabile da controllare", non come fatto certo.
+- Usa solo i casi qui sotto. Niente conoscenza del mondo, niente dominio hardcoded.
+- Se i casi sono duplicati dello stesso episodio o dicono tutti la stessa cosa ripetuta, should_create=false.
+
+EPISODI:
+{chr(10).join(lines)}
+
+Rispondi SOLO JSON valido:
+{{
+  "should_create": true/false,
+  "case_numbers": [1, 2],
+  "cause_pattern": "causa o variabile comune, breve",
+  "effect_pattern": "effetto ricorrente, breve",
+  "context": "contesto operativo dove vale la pena controllare",
+  "hypothesis": "ipotesi in italiano, cauta, da verificare",
+  "why": "motivo breve"
+}}"""
+        try:
+            resp = self._ollama_chat(
+                model=config.DREAM_OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.2, "num_predict": 900},
+                format="json",
+                think=False,
+            )
+            return _parse_cross_episode_response(resp.message.content or "")
+        except Exception as e:
+            logger.debug(f"Loop 2i: LLM fallito: {e}")
+            return {"should_create": False, "reason": f"llm_error:{str(e)[:80]}"}
+
+    def _format_cross_episode_insight(self, data: dict, selected: list[dict]) -> str:
+        domains = list(dict.fromkeys(c.get("domain") or "generale" for c in selected))
+        dom_a = domains[0] if domains else "episodi operativi"
+        dom_b = domains[1] if len(domains) > 1 else "ipotesi trasversale"
+        cause = " ".join(str(data.get("cause_pattern") or "variabile ricorrente").split())
+        effect = " ".join(str(data.get("effect_pattern") or "effetto ricorrente").split())
+        context = " ".join(str(data.get("context") or "casi simili futuri").split())
+        hypothesis = _ensure_hypothesis_wording(str(data.get("hypothesis") or ""))
+        if not hypothesis:
+            hypothesis = f"Ipotesi da verificare: {cause} potrebbe essere una variabile da controllare quando compare {effect}."
+        return (
+            f"Nel dominio [{dom_a}] succede: più episodi collegano {cause} a {effect}.\n"
+            f"Nel dominio [{dom_b}] succede: il contesto operativo ricorrente è {context}.\n"
+            f"La connessione operativa non ovvia è: {hypothesis}"
+        )
+
+    def _cross_episode_hypothesis_pass(self) -> None:
+        if self._cross_episode_recently_ran():
+            return
+        cases = self._collect_cross_episode_cases()
+        min_cases = int(getattr(config, "CROSS_EPISODE_MIN_CASES", 2))
+        if len(cases) < min_cases:
+            return
+        self._mark_cross_episode_run()
+
+        data = self._llm_cross_episode_hypothesis(cases)
+        if not data.get("should_create"):
+            logger.debug(f"Loop 2i: nessuna ipotesi trasversale ({data.get('reason') or data.get('why') or 'no'})")
+            return
+
+        selected: list[dict] = []
+        for n in data.get("case_numbers") or []:
+            try:
+                idx = int(n) - 1
+            except (TypeError, ValueError):
+                continue
+            if 0 <= idx < len(cases):
+                selected.append(cases[idx])
+        # Dedup preservando ordine
+        selected = list({c["id"]: c for c in selected}.values())
+        if len(selected) < min_cases:
+            logger.debug("Loop 2i: output scartato, source insufficienti")
+            return
+
+        source_ids = [c["id"] for c in selected]
+        fp = hashlib.sha1("|".join(sorted(source_ids)).encode()).hexdigest()
+        try:
+            if self._r.sismember(CROSS_EPISODE_SEEN_KEY, fp):
+                logger.debug("Loop 2i: ipotesi già emersa per queste fonti")
+                return
+        except Exception:
+            pass
+
+        content = self._format_cross_episode_insight(data, selected)
+        if not self._has_required_structure(content):
+            logger.debug("Loop 2i: ipotesi scartata, formato insight non valido")
+            return
+        vec = self._embedder.encode(content, mode="passage") if self._embedder else None
+        insight_id = str(uuid.uuid4())
+        domains = list(dict.fromkeys(c.get("domain") or "generale" for c in selected))
+        now_ts = to_timestamp(now())
+        insight_doc = {
+            "id": insight_id,
+            "content": content,
+            "status": "promoted",
+            "domain_a": domains[0] if domains else "episodi operativi",
+            "domain_b": domains[1] if len(domains) > 1 else "ipotesi trasversale",
+            "created_at": now_ts,
+            "promoted_at": now_ts,
+            "recalled_count": 0,
+            "embedding": vec.tolist() if vec is not None else None,
+            "convergence_count": len(selected),
+            "source_memory_ids": source_ids,
+            "requires_verification": True,
+            "verification_status": "hypothesis_to_test",
+            "hypothesis_kind": "cross_episode_pattern",
+        }
+        key = f"euri:insight:{insight_id}"
+        try:
+            self._r.json().set(key, "$", insight_doc)
+            self._r.sadd(CROSS_EPISODE_SEEN_KEY, fp)
+            self._r.expire(CROSS_EPISODE_SEEN_KEY, 180 * 86400)
+        except Exception as e:
+            self._integrity_failure("loop2i-create-insight", key, e)
+            return
+
+        logger.success(f"Loop 2i: ipotesi trasversale PROMOSSA → {insight_id[:8]}…")
+        pulse_emit(self._r, "insight", "intero", "promoted",
+                   payload={"id": insight_id, "key": key, "convergences": len(selected)},
+                   salience=0.68)
+        try:
+            write_insight(insight_doc)
+        except Exception as e:
+            logger.debug(f"Loop 2i: sync insight su Obsidian fallita: {e}")
 
     def _llm_classify_pair(self, content_a: str, content_b: str) -> str:
         """
@@ -694,6 +1047,21 @@ Rispondi SOLO con: CONTRADDIZIONE, CONFRONTO, o NESSUNA."""
         if cls._loop2f_is_comparison_doc(doc):
             return False
         if cls._loop2f_consolidation_risk_level(doc) == "high":
+            return False
+        return True
+
+    @classmethod
+    def _loop2f_candidate_allowed(cls, doc: dict, *, skip_sources: set[str] | None = None) -> bool:
+        """Gate completo per memorie che possono essere lavorate dal Loop 2f."""
+        if not cls._loop2f_source_allowed(doc):
+            return False
+        if doc.get("correction_pending"):
+            return False
+        if not doc.get("requires_verification"):
+            return False
+        if doc.get("superseded_by"):
+            return False
+        if skip_sources and doc.get("source") in skip_sources:
             return False
         return True
 
@@ -793,13 +1161,7 @@ Rispondi solo col confronto."""
                     if not d:
                         continue
                     doc = d[0]
-                    if not self._loop2f_source_allowed(doc):
-                        continue
-                    if not doc.get("requires_verification"):
-                        continue
-                    if doc.get("superseded_by"):
-                        continue
-                    if doc.get("source") in SKIP_SOURCES:
+                    if not self._loop2f_candidate_allowed(doc, skip_sources=SKIP_SOURCES):
                         continue
                     candidates.append(doc)
                 except Exception:
@@ -867,11 +1229,7 @@ Rispondi solo col confronto."""
                     if not n_raw:
                         continue
                     n_doc = n_raw[0]
-                    if not self._loop2f_source_allowed(n_doc):
-                        continue
-                    if not n_doc.get("requires_verification"):
-                        continue
-                    if n_doc.get("superseded_by"):
+                    if not self._loop2f_candidate_allowed(n_doc, skip_sources=SKIP_SOURCES):
                         continue
 
                     # 4. Classifica la relazione: contraddizione / confronto / nessuna
@@ -1030,7 +1388,7 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
 
     def _synthesize_lesson_from_correction(self, prompt_orig: str, risposta_euri: str, correzione: str) -> str | None:
         """Loop 2g: distilla la correzione di Stefano in una LEZIONE (il principio), come la
-        reaction-loop — non archivia il testo grezzo. Gira di notte → modello del sogno (Qwen),
+        reaction-loop — non archivia il testo grezzo. Gira in idle → modello del sogno (Qwen),
         think=False per affidabilità. Ritorna None se vuota (l'audit usa il grezzo come fallback)."""
         msg = (
             f"A una domanda di Stefano — «{(prompt_orig or '')[:300]}» — avevi risposto:\n"
@@ -1069,7 +1427,7 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
         scored: list[tuple[int, float, str]] = []
         seen: set[str] = set()
 
-        # Scansione completa ma cheap: il Loop 2g gira di notte, su max 10 signal.
+        # Scansione completa ma cheap: il Loop 2g gira in idle, su max 10 signal.
         # Prima ordinazione = overlap con la correzione; così un nodo che contiene
         # "Giada" + i dettagli sbagliati ("Leonardo", "team", "casa") vince su
         # un frammento corretto ma solo parzialmente allineato.
@@ -1271,6 +1629,7 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
                 # Ora marca processato — SOLO se l'effetto è andato (o non c'era). Se fallito, il
                 # signal resta 'pending' → riprovato al prossimo ciclo, niente correzione persa.
                 if effect_ok:
+                    self._settle_correction_quarantine(doc, verdict)
                     self._r.json().set(key, "$.status", "dismissed" if verdict == "not_a_correction" else "analyzed")
                     self._r.json().set(key, "$.verdict", verdict)
                     self._r.json().set(key, "$.analyzed_at", time.time())
@@ -1284,6 +1643,34 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
 
         except Exception as e:
             logger.error(f"Errore Loop 2g audit corrections: {e}")
+
+    def _settle_correction_quarantine(self, doc: dict, verdict: str) -> None:
+        """Chiude la quarantena immediata aperta al capture del correction signal.
+
+        Il capture demuove subito il nodo più probabile per evitare richiamo forte
+        nella stessa sessione. Qui il giudizio 2g decide se ripristinare o lasciare
+        prudente: bad_memory/ambiguous mantengono requires_verification, mentre
+        not_a_correction/bad_reasoning ripristinano il valore precedente.
+        """
+        sid = doc.get("id")
+        for mid in doc.get("quarantined_memory_ids") or []:
+            if not mid:
+                continue
+            mkey = mid if str(mid).startswith("euri:memory:") else f"euri:memory:{mid}"
+            try:
+                raw = self._r.json().get(mkey, "$")
+                mem = raw[0] if raw else {}
+                if mem.get("correction_signal_id") != sid:
+                    continue
+                prev = bool(mem.get("correction_pending_prev_requires_verification"))
+                mem["correction_pending"] = False
+                self._r.json().set(mkey, "$.correction_pending", False)
+                if verdict in {"not_a_correction", "bad_reasoning"} and int(mem.get("audit_flag") or 0) <= 0:
+                    mem["requires_verification"] = prev
+                    self._r.json().set(mkey, "$.requires_verification", prev)
+                update_loop2e_candidate_index(self._r, mem)
+            except Exception as e:
+                self._integrity_failure("loop2g-settle-quarantine", mkey, e)
 
     # ── Plausibility Gate: flag-only su fatti tecnici ──────────────────────
 
@@ -1305,7 +1692,7 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
 
     def _llm_plausibility_check(self, content: str, domain: str) -> dict:
         """
-        Chiede al modello notturno già caldo se una memoria tecnica contiene un fatto
+        Chiede al modello offline/idle già caldo se una memoria tecnica contiene un fatto
         fisicamente/chimicamente/tecnicamente implausibile. Non corregge: produce solo un
         giudizio strutturato che il pass userà come soft flag.
         """
@@ -1355,7 +1742,7 @@ Rispondi SOLO con JSON valido:
         Plausibility gate — flag-only.
 
         Cerca poche memorie tecniche/numeriche non ancora controllate e chiede al modello
-        notturno se contengono impossibilità oggettive. Non modifica il contenuto, non
+        offline/idle se contengono impossibilità oggettive. Non modifica il contenuto, non
         supersede, non cancella: alza plausibility_flag + audit_flag solo ad alta confidenza.
 
         Questo colma il buco emerso dal caso 332e18b6: Qwen sa che il bicarbonato di calcio
@@ -1631,7 +2018,7 @@ Rispondi SOLO con JSON valido:
         parlano dello STESSO soggetto del seed, per non consolidare entità distinte in un
         unico nodo (caso Poseidon↔Gamma: pallet a iniezione fuso con linea di estrusione).
         Filtra l'INPUT della sintesi → anche consolidated_from risulta coerente. Usa il
-        modello notturno GIÀ CALDO (dream_client via _ollama_chat): niente secondo modello,
+        modello offline/idle GIÀ CALDO (dream_client via _ollama_chat): niente secondo modello,
         niente swap. Fail-closed: su errore/risposta ambigua ritorna solo il seed, così
         il consolidamento si ferma se non resta un cluster minimo.
 
@@ -2029,7 +2416,7 @@ Rispondi SOLO con la sintesi. Niente intestazioni."""
         """
         Ritorna True se esiste già un nodo loop2e semanticamente quasi identico
         nello stesso dominio (distanza cosine < 0.15).
-        Previene la proliferazione di nodi ridondanti tra cicli notturni.
+        Previene la proliferazione di nodi ridondanti tra cicli idle.
         """
         try:
             import redis as _redis_mod

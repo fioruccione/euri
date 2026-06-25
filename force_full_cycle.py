@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Force-run di un ciclo Dream Engine completo, senza aspettare l'idle notturno.
+Force-run di un ciclo Dream Engine completo, senza aspettare l'idle.
 Esegue in ordine: Loop 2b (sogni) → Loop 2c (insight eval) → Loop 2f
 (contraddizioni) → Loop 2g (correzioni) → plausibility gate (flag-only)
 → cleanup expired/stale → Loop 2d (pruning) → Loop 2e (consolidation,

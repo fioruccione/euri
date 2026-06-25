@@ -41,10 +41,42 @@ _MIN_FACT_LEN = 12        # sotto questa lunghezza un testo è un frammento, non
 _SIM_MERGE_FLOOR = 0.70   # ≥ → zona di fusione costruttiva (tutto: niente gate cieco); sotto → memoria nuova
 _SAVE_CONFIDENCE_FLOOR = 0.6  # sotto → il risolutore semantico cede al fallback a regex
 
+_TRUSTED_MERGE_SOURCES = {"user", "teach"}
+
 
 def _norm(s: str) -> str:
     """Normalizza per confronto di identità testuale (minuscole + spazi collassati)."""
     return " ".join((s or "").lower().split())
+
+
+def _match_is_epistemically_weak(match: dict) -> bool:
+    """
+    True se la memoria simile NON è una base sicura per fondere un save esplicito.
+
+    Il save esplicito dell'utente può correggere una memoria passiva o sintetica: in quel
+    caso usare la vecchia come ingrediente del merge reintroduce proprio il fatto debole
+    che l'utente sta restringendo/correggendo. Non trattiamo `requires_verification` da
+    solo come debole: sulle memorie user spesso indica solo presenza di numeri/misure.
+    """
+    if match.get("correction_pending"):
+        return True
+    source = (match.get("source") or "").strip()
+    if source and source not in _TRUSTED_MERGE_SOURCES:
+        return True
+    if match.get("passive_support"):
+        return True
+    axes = match.get("memory_axes") or {}
+    audit_reasons = axes.get("audit_reasons") or []
+    if "acephalous_subject" in audit_reasons:
+        return True
+    if match.get("provenance_stale"):
+        return True
+    if match.get("audit_flag"):
+        return True
+    risk = match.get("consolidation_risk") or {}
+    if risk.get("level") and risk.get("level") != "ok":
+        return True
+    return False
 
 
 def is_anaphoric(content: str) -> bool:
@@ -141,6 +173,16 @@ def _save_or_merge(content: str, memory, brain) -> dict:
     # cieco sui save espliciti.
     if _norm(content) == _norm(match["content"]):
         return {"saved": False, "merged": False, "reply": "Lo avevo già segnato, ma grazie per la conferma.", "content": content}
+    if _match_is_epistemically_weak(match):
+        # Save esplicito > memoria debole. Non fondere: il merge LLM tende a conservare
+        # dettagli vecchi anche quando l'utente sta restringendo il fatto (caso nastro
+        # adesivizzato: una memoria passiva ha reintrodotto "impostazioni macchina").
+        new_id = memory.save_memory(content, source="user", idempotent=True)
+        if not new_id:
+            return {"saved": False, "merged": False, "reply": "Non sono riuscito a salvare.", "content": None}
+        if not memory.supersede_memory(match["id"], new_id):
+            logger.warning(f"Merge evitato su base debole, ma supersede di {match['id']} fallito")
+        return {"saved": True, "merged": False, "reply": brain.confirm_save("memory", content), "content": content}
     # Zona grigia → fusione costruttiva a 3 vie (sostituisce il vecchio probe sì/no)
     merged = (brain.merge_memories(match["content"], content) or "").strip()
     mu = merged.upper()

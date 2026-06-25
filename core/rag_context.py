@@ -169,7 +169,14 @@ def build_rag_context(
         for ins in memory.search_insights(text, limit=2):
             dom_a = ins.get("domain_a", "?")
             dom_b = ins.get("domain_b", "?")
-            insight_lines.append(f"- [{dom_a} ↔ {dom_b}] {ins['content']}")
+            ext = ins.get("external_reaction") or {}
+            tentative = (
+                bool(ins.get("requires_verification"))
+                or ins.get("verification_status") == "hypothesis_to_test"
+                or ext.get("verdict") == "DA_VALUTARE"
+            )
+            marker = "[IPOTESI DA VERIFICARE] " if tentative else ""
+            insight_lines.append(f"- {marker}[{dom_a} ↔ {dom_b}] {ins['content']}")
 
     sections: list[str] = []
     if recent_context_query:

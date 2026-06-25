@@ -10,7 +10,7 @@ logger.remove()
 logger.add(sys.stderr, level="DEBUG")
 
 import config
-# MIN_CONVERGENCES dal config — stesso comportamento del Dream Engine notturno
+# MIN_CONVERGENCES dal config — stesso comportamento del Dream Engine in idle
 
 import redis
 from core.embedder import Embedder

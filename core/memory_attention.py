@@ -37,6 +37,8 @@ def is_loop2e_candidate(doc: dict[str, Any], *, now_ts: float | None = None) -> 
         return False
     if doc.get("superseded_by") or doc.get("consolidated_into"):
         return False
+    if doc.get("correction_pending"):
+        return False
     if doc.get("requires_verification"):
         return False
     axes = doc.get("memory_axes") or {}

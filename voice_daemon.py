@@ -1724,6 +1724,169 @@ class VoiceDaemon:
 
             time.sleep(30)
 
+    def _initiative_block_reason(self) -> str:
+        """Ritorna "" se Euri può iniziare una domanda proattiva adesso."""
+        if self._awaiting_reaction:
+            return "awaiting_reaction"
+        if any([
+            self._pending_todo,
+            self._pending_write,
+            self._teach_recovery_mode,
+            self._teach_mode,
+            self._teach_confirm_mode,
+            self._translate_bidir,
+            self._dictation_mode,
+            self._audit_confirm_mode,
+            self._enroll_mode,
+        ]):
+            return "modal_state_active"
+        try:
+            if self.r.exists("euri:audio:lock"):
+                return "audio_lock"
+        except Exception:
+            pass
+
+        now_ts = time.time()
+        idle = (now_ts - self._last_activity_ts) if self._last_activity_ts else 999999
+        if idle < getattr(config, "INITIATIVE_IDLE_SECONDS", 90):
+            return f"recent_activity:{idle:.0f}s"
+
+        try:
+            last_raw = self.r.get("euri:initiative:last_ask_ts")
+            last_ask = float(last_raw or 0)
+        except Exception:
+            last_ask = 0.0
+        cooldown = getattr(config, "INITIATIVE_COOLDOWN_S", 3 * 3600)
+        if last_ask and now_ts - last_ask < cooldown:
+            return f"cooldown:{int(cooldown - (now_ts - last_ask))}s"
+
+        # Presenza: come nei reminder, non basta il fail-open del gate cieco.
+        try:
+            seen = (not self.visual_gate.is_blind()) and self.visual_gate.is_user_present()
+        except Exception:
+            seen = False
+        spoke_recently = self._last_activity_ts > 0 and (now_ts - self._last_activity_ts) <= 300
+        if not (seen or spoke_recently):
+            return "user_not_present"
+
+        return ""
+
+    def _handle_initiative_candidate(self, event_id: str, event: dict, *, from_pending: bool = False) -> bool:
+        """Valuta un evento Pulse e, se maturo, fa parlare Euri.
+
+        Ritorna True se il candidato è stato chiuso (parlato/scartato), False se
+        resta pendente per una condizione temporanea.
+        """
+        from core.initiative import (
+            build_candidate,
+            clear_pending,
+            generate_question,
+            mark_seen,
+            record_candidate,
+            store_event_pending,
+            store_pending,
+            was_seen,
+        )
+
+        if was_seen(self.r, event_id) and not from_pending:
+            return True
+
+        if (not from_pending
+                and str(event.get("sense") or "") == "memory"
+                and str(event.get("kind") or "") == "saved"):
+            # `save_memory` emette il Pulse prima che alcuni caller post-marchino il
+            # nodo (es. passive_support=tacit_acceptance). Prima di decidere, lascia
+            # stabilizzare il JSON e rivaluta dal pending.
+            store_event_pending(self.r, event_id, event)
+            return False
+
+        candidate = build_candidate(self.r, event_id, event)
+        if not candidate.eligible:
+            record_candidate(self.r, candidate, decision="skip", reason=candidate.reason)
+            clear_pending(self.r, event_id)
+            mark_seen(self.r, event_id)
+            return True
+
+        block_reason = self._initiative_block_reason()
+        if block_reason:
+            if not from_pending:
+                store_pending(self.r, candidate)
+                record_candidate(self.r, candidate, decision="defer", reason=block_reason)
+            return False
+
+        if getattr(config, "INITIATIVE_SHADOW_ONLY", False):
+            record_candidate(self.r, candidate, decision="shadow", reason="shadow_only")
+            clear_pending(self.r, event_id)
+            mark_seen(self.r, event_id)
+            return True
+
+        with self._brain_lock:
+            proposal = generate_question(candidate)
+
+        if not proposal.get("should_ask"):
+            record_candidate(self.r, candidate, decision="skip", reason="llm_declined", proposal=proposal)
+            clear_pending(self.r, event_id)
+            mark_seen(self.r, event_id)
+            return True
+
+        question = str(proposal.get("question") or "").strip()
+        if not question:
+            record_candidate(self.r, candidate, decision="skip", reason="empty_question", proposal=proposal)
+            clear_pending(self.r, event_id)
+            mark_seen(self.r, event_id)
+            return True
+
+        try:
+            self.r.set("euri:initiative:last_ask_ts", str(time.time()), ex=7 * 24 * 3600)
+        except Exception:
+            pass
+
+        # La risposta dell'utente rientra nello stesso circuito già usato dal briefing
+        # manuale: capture_reaction salva la lezione e aggiorna l'insight.
+        if str(candidate.event.get("sense") or "") == "insight":
+            self._awaiting_reaction = _PendingState({"insight": candidate.related}, timeout=1800)
+
+        record_candidate(self.r, candidate, decision="spoken", proposal=proposal)
+        clear_pending(self.r, event_id)
+        mark_seen(self.r, event_id)
+        self.memory.log_conversation("Euri", question)
+        self._speak(question)
+        return True
+
+    def _initiative_worker(self):
+        """Consuma Pulse e fa emergere poche domande proattive, prompt-based."""
+        if not getattr(config, "INITIATIVE_ENABLED", False):
+            logger.info("Initiative controller disabilitato da config")
+            return
+
+        from core.initiative import PULSE_STREAM, clear_pending, iter_pending
+
+        last_id = "$"  # niente replay massivo al boot: solo eventi nuovi + pending espliciti
+        logger.info("Initiative controller: in ascolto su euri:pulse")
+        while self._running:
+            try:
+                for event_id, event in iter_pending(
+                    self.r,
+                    limit=3,
+                    min_age_s=getattr(config, "INITIATIVE_PENDING_MIN_AGE_S", 0),
+                ):
+                    closed = self._handle_initiative_candidate(event_id, event, from_pending=True)
+                    if closed:
+                        clear_pending(self.r, event_id)
+
+                streams = self.r.xread(
+                    {PULSE_STREAM: last_id},
+                    count=10,
+                    block=getattr(config, "INITIATIVE_PULSE_BLOCK_MS", 5000),
+                )
+                for _stream, entries in streams:
+                    for event_id, fields in entries:
+                        last_id = event_id
+                        self._handle_initiative_candidate(event_id, fields)
+            except Exception as e:
+                logger.error(f"Initiative controller: errore loop: {e}")
+                time.sleep(5)
+
     def run(self):
         self._running = True
 
@@ -1762,6 +1925,10 @@ class VoiceDaemon:
         # Thread mobile worker — gestisce richieste dalla pagina Streamlit via Redis Stream
         t_mobile = threading.Thread(target=self._mobile_worker, daemon=True)
         t_mobile.start()
+
+        # Thread initiative controller — Pulse → tension → domanda prompt-based.
+        t_initiative = threading.Thread(target=self._initiative_worker, daemon=True)
+        t_initiative.start()
 
         # Avvia Dream Engine (Loop 2b/2c)
         if hasattr(self, 'dream_engine'):

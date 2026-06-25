@@ -357,16 +357,22 @@ def synthesize_lesson(insight: dict, reaction_text: str) -> str | None:
 
 
 def classify_reaction_verdict(insight: dict, reaction_text: str) -> str:
-    """La reazione di Stefano CONFERMA o SMENTISCE il presupposto della connessione? È un
-    giudizio diretto sì/no (NON conoscenza di dominio) → dentro il soffitto di Gemma,
-    think=False, veloce. Ritorna CONFERMA | SMENTITA | PARZIALE. Fail-open: CONFERMA — non
-    si demota un insight per un errore del classificatore."""
+    """La reazione di Stefano aggiorna lo stato epistemico della connessione.
+
+    Ritorna CONFERMA | SMENTITA | PARZIALE | DA_VALUTARE. Fail-open: DA_VALUTARE:
+    non demota per errore del classificatore, ma non trasforma un'ipotesi in fatto.
+    """
     prompt = (
         f"Le avevi chiesto se era vero il presupposto di una tua connessione:\n"
         f"\"{_insight_brief(insight)}\"\n\n"
         f"Stefano ha risposto:\n\"{reaction_text.strip()}\"\n\n"
-        f"La sua risposta CONFERMA il presupposto, lo SMENTISCE del tutto, o ne conferma una "
-        f"parte e ne smentisce un'altra? Rispondi con UNA sola parola: CONFERMA, SMENTITA, PARZIALE."
+        f"Classifica lo stato epistemico della risposta:\n"
+        f"- CONFERMA: Stefano dice che il presupposto è vero o già utile operativamente.\n"
+        f"- SMENTITA: Stefano dice che il presupposto è falso o inventato.\n"
+        f"- PARZIALE: una parte è vera e una parte è falsa.\n"
+        f"- DA_VALUTARE: Stefano dice che è interessante, possibile, da provare o da valutare, "
+        f"ma NON la conferma come fatto o decisione.\n\n"
+        f"Rispondi con UNA sola parola: CONFERMA, SMENTITA, PARZIALE, DA_VALUTARE."
     )
     try:
         response = chat_client.chat(
@@ -376,12 +382,43 @@ def classify_reaction_verdict(insight: dict, reaction_text: str) -> str:
             think=False,
         )
         out = _clean(response.message.content or "").upper()
-        for v in ("SMENTITA", "PARZIALE", "CONFERMA"):
+        for v in ("SMENTITA", "DA_VALUTARE", "PARZIALE", "CONFERMA"):
             if v in out:
                 return v
     except Exception as e:
         logger.error(f"classify_reaction_verdict: {e}")
-    return "CONFERMA"
+    return "DA_VALUTARE"
+
+
+def _apply_reaction_verdict(memory, insight_id: str, verdict: str) -> None:
+    if not insight_id:
+        return
+    r = memory.r
+    ikey = f"euri:insight:{insight_id}"
+
+    # SMENTITA piena → DEMOTA col meccanismo del Dream Engine (status=candidate): esce
+    # da search_insights (promoted-only) → non più iniettato in RAG, si spegne al giorno
+    # 30. PARZIALE/CONFERMA restano (hanno un'ancora vera). DA_VALUTARE resta promosso
+    # ma non verificato: ipotesi utile da testare, non fatto operativo.
+    if verdict == "SMENTITA":
+        for attempt in (1, 2):
+            try:
+                r.json().set(ikey, "$.status", "candidate")
+                logger.info(f"Reaction: insight {insight_id[:8]} SMENTITO → demoto a candidate")
+                break
+            except Exception as e:
+                if attempt == 2:
+                    # mark-after-act (Codex #4): external_reaction dice SMENTITA ma la
+                    # demotion è fallita → l'insight resta promosso e il RAG lo usa ancora.
+                    # Non più silenzioso (era logger.error): tracciato in integrity:failures.
+                    memory._record_integrity_failure("reaction-demote", ikey, e)
+    elif verdict == "DA_VALUTARE":
+        try:
+            r.json().set(ikey, "$.requires_verification", True)
+            r.json().set(ikey, "$.verification_status", "hypothesis_to_test")
+            logger.info(f"Reaction: insight {insight_id[:8]} DA_VALUTARE → requires_verification")
+        except Exception as e:
+            memory._record_integrity_failure("reaction-mark-hypothesis", ikey, e)
 
 
 def capture_reaction(memory, insight: dict, reaction_text: str, *, emit: bool = True) -> dict:
@@ -432,23 +469,7 @@ def capture_reaction(memory, insight: dict, reaction_text: str, *, emit: bool = 
                 "ts": time.time(),
             })
             out["verdict"] = verdict
-            # SMENTITA piena → DEMOTA col meccanismo del Dream Engine (status=candidate): esce
-            # da search_insights (promoted-only) → non più iniettato in RAG, si spegne al giorno
-            # 30. PARZIALE/CONFERMA restano (hanno un'ancora vera). È così che un insight
-            # contaminato (es. Leonardo/identità) smette di affiorare dopo la tua correzione.
-            if verdict == "SMENTITA":
-                ikey = f"euri:insight:{insight_id}"
-                for _attempt in (1, 2):
-                    try:
-                        r.json().set(ikey, "$.status", "candidate")
-                        logger.info(f"Reaction: insight {insight_id[:8]} SMENTITO → demoto a candidate")
-                        break
-                    except Exception as e:
-                        if _attempt == 2:
-                            # mark-after-act (Codex #4): external_reaction dice SMENTITA ma la
-                            # demotion è fallita → l'insight resta promosso e il RAG lo usa ancora.
-                            # Non più silenzioso (era logger.error): tracciato in integrity:failures.
-                            memory._record_integrity_failure("reaction-demote", ikey, e)
+            _apply_reaction_verdict(memory, insight_id, verdict)
         out["persisted"] = True
     except Exception as e:
         logger.error(f"capture_reaction: arricchimento nodo fallito (lezione salvata): {e}")
