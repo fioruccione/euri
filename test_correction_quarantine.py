@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from core.memory_manager import MemoryManager
 from core.dream_engine import DreamEngine
+from core.memory_risk import memory_verification_suffix
 
 
 class FakeJSON:
@@ -86,6 +87,24 @@ def test_explicit_same_context_correction_quarantines_only_matching_memory():
     assert docs["euri:memory:food"]["correction_pending_prev_requires_verification"] is False
     assert docs["euri:memory:other"].get("correction_pending") is None
     assert docs["euri:memory:other"]["requires_verification"] is False
+
+
+def test_joke_clarification_is_detected_as_correction_signal():
+    memory = MemoryManager(FakeRedis({}), embedder=None)
+
+    assert memory.detect_correction(
+        "No, stavo scherzando, ti prendevo in giro, dovrebbe essere una schifezza."
+    )
+
+
+def test_correction_pending_suffix_is_stronger_than_generic_verification():
+    suffix = memory_verification_suffix({
+        "requires_verification": True,
+        "correction_pending": True,
+    })
+
+    assert "DATO DA VERIFICARE" in suffix
+    assert "correzione in sospeso" in suffix
 
 
 def test_soft_correction_does_not_quarantine_immediately():
@@ -318,6 +337,8 @@ def test_partial_crash_without_signal_link_is_not_settled():
 
 if __name__ == "__main__":
     test_explicit_same_context_correction_quarantines_only_matching_memory()
+    test_joke_clarification_is_detected_as_correction_signal()
+    test_correction_pending_suffix_is_stronger_than_generic_verification()
     test_soft_correction_does_not_quarantine_immediately()
     test_tied_max_score_quarantines_all_tied_targets()
     test_settle_not_a_correction_preserves_preexisting_requires_verification_true()

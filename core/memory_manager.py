@@ -1197,6 +1197,13 @@ class MemoryManager:
             # intercettata perché il blocco precedente copriva solo il verbo.
             r'\bcorrezion[ei]\b',
             r'\bmi\s+correggo\b',
+            # Correzioni pragmatiche: l'utente chiarisce che il turno precedente era
+            # scherzo/provocazione, quindi una memoria estratta letteralmente va
+            # contestata come fatto (non è dominio-specifico).
+            r'\bstavo\s+scherzando\b',
+            r'\bera\s+(?:uno\s+scherzo|una\s+provocazione)\b',
+            r'\bti\s+prendevo\s+in\s+giro\b',
+            r'\bnon\s+(?:ho|avevo)\s+davvero\b',
         ]
     ]
 

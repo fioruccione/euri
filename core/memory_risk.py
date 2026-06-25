@@ -27,6 +27,8 @@ def memory_risk_rank(doc: dict) -> int:
     risk = 0
     if doc.get("safety_flag"):
         risk += 100
+    if doc.get("correction_pending"):
+        risk += 90
     if doc.get("provenance_stale"):
         risk += 80
     cr = doc.get("consolidation_risk") or {}
@@ -48,6 +50,8 @@ def memory_verification_suffix(doc: dict) -> str:
     if not doc:
         return ""
     reasons: list[str] = []
+    if doc.get("correction_pending"):
+        reasons.append("contestato nel contesto, correzione in sospeso")
     if doc.get("provenance_stale"):
         reasons.append("provenienza fragile")
     cr = doc.get("consolidation_risk") or {}
