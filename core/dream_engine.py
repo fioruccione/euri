@@ -1352,7 +1352,8 @@ MESSAGGIO SUCCESSIVO DELL'UTENTE (da analizzare):
 
 PRIMA stabilisci: questo messaggio è davvero una CORREZIONE di un errore dell'assistente?
 È una correzione SOLO se l'utente afferma che l'assistente ha sbagliato un fatto, un ricordo o un ragionamento, e indica (anche implicitamente) la versione giusta.
-NON è una correzione se l'utente: fa una domanda o chiede un ricordo ("ti ricordi di X?", "cosa sai di Y?"), aggiunge o elabora informazioni proprie, concorda ("esatto", "sì"), pensa ad alta voce, cambia argomento, scherza, o commenta in generale il comportamento dell'assistente — anche se il messaggio contiene "no", "non è", "in realtà".
+È correzione anche se l'utente dice che un fatto appena trattato o memorizzato era uno scherzo/provocazione/non vero: sta rettificando lo stato epistemico del fatto.
+NON è una correzione se l'utente: fa una domanda o chiede un ricordo ("ti ricordi di X?", "cosa sai di Y?"), aggiunge o elabora informazioni proprie, concorda ("esatto", "sì"), pensa ad alta voce, cambia argomento, scherza senza rettificare un fatto, o commenta in generale il comportamento dell'assistente — anche se il messaggio contiene "no", "non è", "in realtà".
 
 Se NON è una correzione → rispondi NOT_A_CORRECTION.
 Se È una correzione, classifica l'origine dell'errore:
@@ -1653,6 +1654,13 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
         not_a_correction/bad_reasoning ripristinano il valore precedente.
         """
         sid = doc.get("id")
+        try:
+            from core.memory_manager import MemoryManager
+            deterministic_retraction = bool(doc.get("quarantined_memory_ids")) and MemoryManager._is_immediate_quarantine_correction(
+                doc.get("correzione_user", "") or ""
+            )
+        except Exception:
+            deterministic_retraction = False
         for mid in doc.get("quarantined_memory_ids") or []:
             if not mid:
                 continue
@@ -1665,7 +1673,12 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
                 prev = bool(mem.get("correction_pending_prev_requires_verification"))
                 mem["correction_pending"] = False
                 self._r.json().set(mkey, "$.correction_pending", False)
-                if verdict in {"not_a_correction", "bad_reasoning"} and int(mem.get("audit_flag") or 0) <= 0:
+                can_restore = (
+                    verdict in {"not_a_correction", "bad_reasoning"}
+                    and int(mem.get("audit_flag") or 0) <= 0
+                    and not deterministic_retraction
+                )
+                if can_restore:
                     mem["requires_verification"] = prev
                     self._r.json().set(mkey, "$.requires_verification", prev)
                 update_loop2e_candidate_index(self._r, mem)

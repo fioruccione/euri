@@ -231,6 +231,33 @@ def test_settle_is_idempotent_for_same_signal():
     assert engine._r.integrity_failures == []
 
 
+def test_settle_not_a_correction_does_not_restore_explicit_fact_retraction():
+    docs = {
+        "euri:memory:m1": {
+            "id": "m1",
+            "content": "Stefano ha scoperto che fragole e cipolla sono di suo gradimento.",
+            "requires_verification": True,
+            "correction_pending": True,
+            "correction_signal_id": "s1",
+            "correction_pending_prev_requires_verification": False,
+            "audit_flag": 0,
+        }
+    }
+    engine = _engine_with_docs(docs)
+
+    engine._settle_correction_quarantine(
+        {
+            "id": "s1",
+            "quarantined_memory_ids": ["m1"],
+            "correzione_user": "Era una provocazione: non ho davvero scoperto che mi piace.",
+        },
+        "not_a_correction",
+    )
+
+    assert docs["euri:memory:m1"]["correction_pending"] is False
+    assert docs["euri:memory:m1"]["requires_verification"] is True
+
+
 def test_settle_bad_reasoning_restores_like_not_a_correction():
     docs = {
         "euri:memory:m1": {
@@ -344,6 +371,7 @@ if __name__ == "__main__":
     test_settle_not_a_correction_preserves_preexisting_requires_verification_true()
     test_settle_skips_requires_restore_when_audit_flag_present_but_closes_pending()
     test_settle_is_idempotent_for_same_signal()
+    test_settle_not_a_correction_does_not_restore_explicit_fact_retraction()
     test_settle_bad_reasoning_restores_like_not_a_correction()
     test_settle_bad_memory_or_ambiguous_keeps_requires_verification_true()
     test_settle_reindexes_loop2e_when_memory_becomes_candidate_again()
