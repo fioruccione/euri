@@ -158,6 +158,7 @@ class VoiceDaemon:
         self._pending_todo: _PendingState | None = None   # todo in attesa di conferma (timeout 60s)
         self._pending_write: _PendingState | None = None  # richiesta scrittura file in attesa (timeout 120s)
         self._awaiting_reaction: _PendingState | None = None  # insight su cui Euri ha chiesto conferma, in attesa della reazione di Stefano (timeout 300s)
+        self._last_created_file: str | None = None  # ultimo file creato da Euri (per "aprilo")
         self._last_speech_content: str = ""      # ultima risposta lunga di Euri (per "scrivilo")
         self._last_speech_ts: float = 0.0        # timestamp di _last_speech_content (TTL 300s)
         self._last_user_text: str = ""           # ultimo prompt utente (Audit di Coerenza)
@@ -549,6 +550,7 @@ class VoiceDaemon:
         from agent.tools.text_writer import tool_write_text
         res = tool_write_text({"text": composed})
         if res.success:
+            self._last_created_file = res.raw_data.get("filepath")   # per "aprilo"
             fname = res.raw_data.get("filepath", "file").split("/")[-1]
             self.memory.log_conversation("Euri", f"[Documento salvato: {fname}]")
             self._speak(f"Documento creato e salvato come {fname}.")
@@ -826,6 +828,7 @@ class VoiceDaemon:
         if result.get("ok"):
             parts = ["Ho appena eseguito un workflow per Stefano."]
             if result.get("path"):
+                self._last_created_file = result["path"]   # per "aprilo"
                 parts.append(
                     f"Ho creato e salvato una bozza nel file {result['path']} "
                     "(non inviata, è per la revisione)."
@@ -837,6 +840,28 @@ class VoiceDaemon:
         self.memory.log_conversation("Euri", result["spoken"])
         self._speak(result["spoken"])
         return True
+
+    def _handle_open_file(self, text: str = ""):
+        """Apre l'ultimo file creato da Euri nell'app di sistema (xdg-open) —
+        '.md o altro'. Chiude il giro 'salva per revisione → aprila per revisione'."""
+        import os
+        import subprocess
+        path = self._last_created_file
+        if not path or not os.path.exists(path):
+            self._speak("Non ho un file recente da aprire.")
+            return
+        name = os.path.basename(path)
+        try:
+            subprocess.Popen(
+                ["xdg-open", path],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            reply = f"Apro {name}."
+        except Exception as e:
+            logger.error(f"Apertura file fallita ({path}): {e}")
+            reply = "Non sono riuscita ad aprirlo."
+        self.memory.log_conversation("Euri", reply)
+        self._speak(reply)
 
     def _handle_audit_memory(self, text: str):
         """Audit vocale delle memorie: analizza con LLM e propone cancellazione del rumore."""
@@ -1136,6 +1161,7 @@ class VoiceDaemon:
                 from agent.tools.text_writer import tool_write_text
                 res = tool_write_text({"text": full_text})
                 if res.success:
+                    self._last_created_file = res.raw_data.get("filepath")   # per "aprilo"
                     fname = res.raw_data.get("filepath", "file").split("\\")[-1]
                     results.append(f"salvato in {fname}")
                 else:
@@ -1462,6 +1488,16 @@ class VoiceDaemon:
             if _is_briefing:
                 self.memory.log_conversation("Stefano", text)
                 self._handle_dream_briefing(topic=_topic)
+                return
+
+        # "Aprilo / apri la bozza appena creata": apre l'ultimo file prodotto da
+        # Euri (xdg-open). Prima della classify perché "apri ... documento" verrebbe
+        # catturato da read_document (cartella di input), non dall'artefatto creato.
+        if self._last_created_file:
+            from core.utterance_pragmatics import is_open_created_file_request
+            if is_open_created_file_request(text):
+                self.memory.log_conversation("Stefano", text)
+                self._handle_open_file(text)
                 return
 
         # Workflow composto (planner): "leggi il documento, riassumilo e preparami

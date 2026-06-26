@@ -26,6 +26,34 @@ _WHICH = re.compile(
 )
 
 
+# ── "apri il file che hai appena creato" ──
+# Verbo di apertura + riferimento all'artefatto appena prodotto. Conservativo:
+# "apri il documento" generico (senza 'creato'/'bozza') NON scatta → resta
+# read_document sulla cartella di input. Solo il riferimento esplicito al
+# creato, o il clitico ("aprilo/aprila"), apre l'ultimo artefatto.
+_OPEN_VERB = re.compile(
+    r"\b(apri\w*|mostra\w*|visualizz\w*|fammi\s+(veder\w*|apri\w*))\b", re.IGNORECASE)
+_OPEN_CLITIC = re.compile(r"\b(apri|mostra)(lo|la|melo|mela|telo|tela)\b", re.IGNORECASE)
+_CREATED_REF = re.compile(
+    r"\b((la\s+)?bozza|"
+    r"(il\s+|quel\s+)?(file|documento)\s+(appena\s+)?(creat\w+|salvat\w+|fatt\w+)|"
+    r"(quello|ci[oò])\s+che\s+(hai|abbiamo)\s+(appena\s+)?(creat\w+|fatt\w+|salvat\w+)|"
+    r"appena\s+(creat\w+|salvat\w+|fatt\w+))\b", re.IGNORECASE)
+
+
+def is_open_created_file_request(text: str) -> bool:
+    """
+    True se il turno chiede di APRIRE l'ultimo file creato da Euri. Conservativo
+    per non rubare 'apri il documento' generico a read_document.
+    """
+    if not text:
+        return False
+    t = text.strip()
+    if _OPEN_CLITIC.search(t):
+        return True
+    return bool(_OPEN_VERB.search(t) and _CREATED_REF.search(t))
+
+
 def is_clarification_request(text: str) -> bool:
     """
     True se il turno è (probabilmente) una RICHIESTA DI CHIARIMENTO e non una
