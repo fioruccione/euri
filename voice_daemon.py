@@ -572,7 +572,7 @@ class VoiceDaemon:
         self.memory.log_conversation("Euri", text)
         self._speak(text)
         if insight is not None:
-            self._awaiting_reaction = _PendingState({"insight": insight}, timeout=1800)
+            self._awaiting_reaction = _PendingState({"insight": insight, "question": text}, timeout=1800)
 
     def _handle_reaction(self, text: str):
         """Stefano ha risposto alla domanda di curiosità. La risposta è la verità ESTERNA
@@ -583,14 +583,16 @@ class VoiceDaemon:
             return
 
         # Guardia chiarimento: se Stefano CHIEDE invece di rispondere ("di quale
-        # insight parli?"), NON consumare il turno come verdetto — altrimenti un
-        # non-risposta diventa un mezzo-verdetto (DA_VALUTARE → requires_verification,
-        # finding 26/06). Euri ri-nomina l'insight e RI-ARMA l'attesa.
-        from core.utterance_pragmatics import is_clarification_request
-        if is_clarification_request(text):
+        # insight parli?", "non capisco cosa intendi"), NON consumare il turno come
+        # verdetto — altrimenti un non-risposta diventa un mezzo-verdetto (DA_VALUTARE
+        # → requires_verification, finding 26/06). Classificatore pragmatico via Gemma
+        # (non regex: capisce il fraseggio nuovo). Euri ri-nomina l'insight e RI-ARMA.
+        from core.utterance_pragmatics import classify_reply_type
+        if classify_reply_type(pending.data.get("question", ""), text) == "CLARIFICATION":
             self.memory.log_conversation("Stefano", text)
             ins = pending.data.get("insight", {})
-            self._awaiting_reaction = _PendingState({"insight": ins}, timeout=1800)
+            question = pending.data.get("question", "")
+            self._awaiting_reaction = _PendingState({"insight": ins, "question": question}, timeout=1800)
             content = (ins.get("content") or "").strip()
             snippet = content[:220] if content else "il pensiero che ti ho appena condiviso"
             reply = f"Mi riferivo a questo: {snippet}. Secondo te regge, o è una forzatura?"

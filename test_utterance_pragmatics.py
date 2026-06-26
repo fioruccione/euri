@@ -7,6 +7,25 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from core.utterance_pragmatics import is_clarification_request as clar
 from core.utterance_pragmatics import is_open_created_file_request as openf
+from core.utterance_pragmatics import classify_reply_type as crt
+
+
+class _Msg:
+    def __init__(self, c):
+        self.message = type("M", (), {"content": c})
+
+
+class FakeChat:
+    def __init__(self, c):
+        self._c = c
+
+    def chat(self, **k):
+        return _Msg(self._c)
+
+
+class RaisingChat:
+    def chat(self, **k):
+        raise RuntimeError("Gemma giù")
 
 
 def test_clarification_questions():
@@ -56,8 +75,22 @@ def test_open_created_file():
     print("ok open_created_file")
 
 
+def test_classify_reply_type():
+    # Gemma capisce un chiarimento che il regex NON prende
+    assert crt("regge?", "boh, in che modo si lega al processo?",
+               chat=FakeChat("CHIARIMENTO")) == "CLARIFICATION"
+    # Gemma riconosce una risposta vera
+    assert crt("regge?", "sì secondo me regge", chat=FakeChat("RISPOSTA")) == "ANSWER"
+    # fast-path regex: chiarimento ovvio → Gemma NON viene nemmeno chiamato
+    assert crt("regge?", "non capisco cosa intendi", chat=RaisingChat()) == "CLARIFICATION"
+    # fallback: replica non-ovvia + Gemma giù → ANSWER (conservativo: cattura)
+    assert crt("regge?", "mah, vedremo", chat=RaisingChat()) == "ANSWER"
+    print("ok classify_reply_type")
+
+
 if __name__ == "__main__":
     test_clarification_questions()
     test_real_answers_pass_through()
     test_open_created_file()
+    test_classify_reply_type()
     print("\nTUTTI I TEST OK")

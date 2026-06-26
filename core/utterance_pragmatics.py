@@ -10,6 +10,8 @@ pragmatica generale.
 """
 import re
 
+from loguru import logger
+
 # Marcatori FORTI di non-comprensione: bastano da soli, anche senza punto
 # interrogativo (la STT spesso lo perde). Volutamente larghi: meglio ri-chiedere
 # di troppo che consumare un chiarimento come verdetto (il fallimento osservato).
@@ -76,3 +78,50 @@ def is_clarification_request(text: str) -> bool:
     if t.endswith("?") and _WHICH.search(t):
         return True
     return False
+
+
+# ── Classificatore pragmatico via Gemma (non embedding) ──
+# I tentativi falliti col classificatore intent erano con gli EMBEDDING (e5-large
+# anisotropo + Welford, selection bias): servivano a EVITARE Gemma per latenza.
+# Gemma come classificatore funziona già (è il maestro dell'harvest). Per decisioni
+# RARE (il chiarimento scatta solo dopo una domanda di curiosità) la latenza si paga
+# pochissime volte → usiamo Gemma direttamente. Il regex resta come fast-path
+# (chiarimento ovvio → niente latenza) e come fallback se Gemma non risponde.
+def classify_reply_type(question: str, reply: str, *, chat=None, model: str = None) -> str:
+    """
+    Ritorna 'ANSWER' o 'CLARIFICATION': la replica dell'utente è una risposta alla
+    domanda di Euri o una richiesta di chiarimento? Capisce, non matcha parole.
+    Fast-path: chiarimento ovvio via regex (zero latenza). Poi Gemma. Fallback su
+    regex se Gemma è giù.
+    """
+    if is_clarification_request(reply):
+        return "CLARIFICATION"
+    try:
+        if chat is None:
+            from core.ollama_client import chat_client
+            chat = chat_client
+        import config
+        prompt = (
+            "Euri (un assistente) ha fatto una domanda all'utente per validare una sua idea.\n"
+            f'DOMANDA DI EURI: "{question or "(una domanda su una sua intuizione)"}"\n'
+            f'REPLICA DELL\'UTENTE: "{reply}"\n\n'
+            "La replica è una RISPOSTA alla domanda (conferma, smentita, valutazione, "
+            "opinione, anche parziale) oppure una RICHIESTA DI CHIARIMENTO (l'utente non "
+            "ha capito, chiede di cosa si parla, chiede di rispiegare)?\n"
+            "Rispondi con UNA sola parola: RISPOSTA oppure CHIARIMENTO."
+        )
+        r = chat.chat(
+            model=model or config.OLLAMA_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0.0, "num_predict": 8},
+            think=False,
+        )
+        out = (r.message.content or "").strip().upper()
+        if "CHIARIMENT" in out:
+            return "CLARIFICATION"
+        if "RISPOST" in out:
+            return "ANSWER"
+        logger.debug(f"classify_reply_type: output Gemma ambiguo '{out}' → ANSWER")
+    except Exception as e:
+        logger.warning(f"classify_reply_type: Gemma fallito ({e}) → fallback regex")
+    return "ANSWER"
