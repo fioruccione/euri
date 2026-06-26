@@ -18,6 +18,9 @@ def test_clarification_questions():
     assert clar("non ho capito")          # marcatore forte, anche senza '?'
     assert clar("non ho capito a cosa ti riferisci")
     assert clar("di cosa stai parlando?")
+    assert clar("Non capisco bene cosa intendi.")   # caso reale sfuggito (26/06)
+    assert clar("non comprendo")
+    assert clar("non mi è chiaro")
     print("ok clarification rilevate")
 
 
@@ -40,13 +43,13 @@ def test_open_created_file():
     assert openf("aprila")
     assert openf("aprimela")
     assert openf("mostramelo")
-    # verbo + riferimento al creato
+    # verbo di apertura + target documento/file/bozza (recency gestita nel dispatch)
     assert openf("apri la bozza")
     assert openf("apri il file appena creato")
     assert openf("mostrami il documento creato")
-    assert openf("fammi vedere quello che hai appena creato")
-    # NON deve rubare 'apri/leggi il documento' generico a read_document
-    assert not openf("apri il documento")
+    assert openf("mi apri il documento?")          # caso reale sfuggito (26/06)
+    assert openf("apri il documento")               # ora sì (la recency disambigua a valle)
+    # 'leggi' NON è apertura → resta read_document; target non-file → no
     assert not openf("leggi il documento")
     assert not openf("apri il browser")
     assert not openf("come stai")

@@ -159,6 +159,7 @@ class VoiceDaemon:
         self._pending_write: _PendingState | None = None  # richiesta scrittura file in attesa (timeout 120s)
         self._awaiting_reaction: _PendingState | None = None  # insight su cui Euri ha chiesto conferma, in attesa della reazione di Stefano (timeout 300s)
         self._last_created_file: str | None = None  # ultimo file creato da Euri (per "aprilo")
+        self._last_created_file_ts: float = 0.0  # quando — recency per disambiguare "apri il documento"
         self._last_speech_content: str = ""      # ultima risposta lunga di Euri (per "scrivilo")
         self._last_speech_ts: float = 0.0        # timestamp di _last_speech_content (TTL 300s)
         self._last_user_text: str = ""           # ultimo prompt utente (Audit di Coerenza)
@@ -550,7 +551,7 @@ class VoiceDaemon:
         from agent.tools.text_writer import tool_write_text
         res = tool_write_text({"text": composed})
         if res.success:
-            self._last_created_file = res.raw_data.get("filepath")   # per "aprilo"
+            self._remember_created_file(res.raw_data.get("filepath"))   # per "aprilo"
             fname = res.raw_data.get("filepath", "file").split("/")[-1]
             self.memory.log_conversation("Euri", f"[Documento salvato: {fname}]")
             self._speak(f"Documento creato e salvato come {fname}.")
@@ -828,7 +829,7 @@ class VoiceDaemon:
         if result.get("ok"):
             parts = ["Ho appena eseguito un workflow per Stefano."]
             if result.get("path"):
-                self._last_created_file = result["path"]   # per "aprilo"
+                self._remember_created_file(result["path"])   # per "aprilo"
                 parts.append(
                     f"Ho creato e salvato una bozza nel file {result['path']} "
                     "(non inviata, è per la revisione)."
@@ -840,6 +841,12 @@ class VoiceDaemon:
         self.memory.log_conversation("Euri", result["spoken"])
         self._speak(result["spoken"])
         return True
+
+    def _remember_created_file(self, path: str | None):
+        """Registra l'ultimo file creato + quando (per "aprilo" con recency)."""
+        if path:
+            self._last_created_file = path
+            self._last_created_file_ts = time.time()
 
     def _handle_open_file(self, text: str = ""):
         """Apre l'ultimo file creato da Euri nell'app di sistema (xdg-open) —
@@ -1161,7 +1168,7 @@ class VoiceDaemon:
                 from agent.tools.text_writer import tool_write_text
                 res = tool_write_text({"text": full_text})
                 if res.success:
-                    self._last_created_file = res.raw_data.get("filepath")   # per "aprilo"
+                    self._remember_created_file(res.raw_data.get("filepath"))   # per "aprilo"
                     fname = res.raw_data.get("filepath", "file").split("\\")[-1]
                     results.append(f"salvato in {fname}")
                 else:
@@ -1493,7 +1500,7 @@ class VoiceDaemon:
         # "Aprilo / apri la bozza appena creata": apre l'ultimo file prodotto da
         # Euri (xdg-open). Prima della classify perché "apri ... documento" verrebbe
         # catturato da read_document (cartella di input), non dall'artefatto creato.
-        if self._last_created_file:
+        if self._last_created_file and time.time() - self._last_created_file_ts < 600:
             from core.utterance_pragmatics import is_open_created_file_request
             if is_open_created_file_request(text):
                 self.memory.log_conversation("Stefano", text)
