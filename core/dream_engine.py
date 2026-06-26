@@ -125,9 +125,34 @@ class DreamEngine:
         self._last_activity = boot_ts
         self._light_last_run = boot_ts
         self._creative_last_run = boot_ts
-        self._maintenance_last_run = boot_ts
+        # Il clock della manutenzione (cadenza 24h) vive in Redis, non solo in RAM:
+        # così NON si azzera a ogni riavvio. Senza, restart frequenti (fase di sviluppo)
+        # starvano per sempre la fascia maintenance — 2e/2f/2h/cleanup/pruning — perché
+        # il clock riparte dal boot a ogni avvio. Vedi _run_due_idle_cycles.
+        self._maintenance_last_run = self._load_maintenance_clock(boot_ts)
         self._consolidation_last_run = 0.0  # timestamp ultimo Loop 2e
-        
+
+    _MAINTENANCE_CLOCK_KEY = "euri:dream:maintenance_last_run"
+
+    def _load_maintenance_clock(self, default_ts: float) -> float:
+        """Last-run della manutenzione letto da Redis (default boot_ts se assente)."""
+        try:
+            raw = self._r.get(self._MAINTENANCE_CLOCK_KEY)
+            if raw is not None:
+                if isinstance(raw, (bytes, bytearray)):
+                    raw = raw.decode()
+                return float(raw)
+        except Exception as e:
+            logger.debug(f"Dream Engine: clock manutenzione non letto: {e}")
+        return default_ts
+
+    def _persist_maintenance_clock(self, ts: float):
+        """Scrive il last-run della manutenzione su Redis, così sopravvive ai restart."""
+        try:
+            self._r.set(self._MAINTENANCE_CLOCK_KEY, ts)
+        except Exception as e:
+            logger.debug(f"Dream Engine: clock manutenzione non persistito: {e}")
+
     def start(self):
         if not config.DREAM_ENGINE_ENABLED:
             logger.info("Dream Engine disabilitato da config")
@@ -225,6 +250,7 @@ class DreamEngine:
             try:
                 self._maintenance_cycle()
                 self._maintenance_last_run = time.time()
+                self._persist_maintenance_clock(self._maintenance_last_run)
             except Exception as e:
                 logger.error(f"Errore ciclo manutentivo Dream Engine: {e}")
 
