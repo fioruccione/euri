@@ -349,3 +349,11 @@ TOOL_VECTORSET_THRESHOLD = 0.85
 # Negative result: 1 vero positivo / 3 falsi positivi su gemme di dominio vere, anche col
 # contesto operativo attivo. Vedi changelog V2.19 e [[project_euri_plausibility_gate]].
 PLAUSIBILITY_GATE_ENABLED = False
+
+# Workflow Planner — strato sottile sopra i tool esistenti che trasforma una
+# richiesta operativa naturale e COMPOSTA ("leggi il documento, riassumilo e
+# preparami una bozza di mail, non inviarla") in un piano ordinato di poche
+# capability e lo esegue incatenando gli output. Non aggiunge tool nuovi.
+# Fail-open: se il planner è incerto, si torna al dispatch attuale.
+WORKFLOW_PLANNER_ENABLED = True
+WORKFLOW_REVIEW_DIR = str(Path.home() / "Documents" / "Euri" / "Revisione")
