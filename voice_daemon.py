@@ -779,6 +779,32 @@ class VoiceDaemon:
             self._speak(spoken)
 
 
+    def _handle_workflow(self, text: str) -> bool:
+        """
+        Esegue una richiesta operativa COMPOSTA via Workflow Planner.
+        Ritorna True se l'ha gestita (piano ≥2 step), False per lasciar
+        proseguire il dispatch normale (piano vuoto o monostep → fail-open).
+        """
+        from core import workflow_planner
+        steps = workflow_planner.plan(text)
+        if len(steps) < 2:
+            return False  # non è un vero workflow → dispatch normale
+
+        caps = " → ".join(s["cap"].lower() for s in steps)
+        logger.info(f"Workflow: {len(steps)} step ({caps}) — '{text}'")
+        self.memory.log_conversation("Stefano", text)
+        self._speak("Va bene, procedo per passi.")
+        try:
+            self.memory.set_last_rag_ctx([])
+        except Exception as e:
+            logger.debug(f"clear last_rag_ctx WORKFLOW fallito: {e}")
+
+        engine = workflow_planner.WorkflowEngine(self.executor, self.brain)
+        result = engine.run(steps)
+        self.memory.log_conversation("Euri", result["spoken"])
+        self._speak(result["spoken"])
+        return True
+
     def _handle_audit_memory(self, text: str):
         """Audit vocale delle memorie: analizza con LLM e propone cancellazione del rumore."""
         import json as _json
@@ -1403,6 +1429,15 @@ class VoiceDaemon:
             if _is_briefing:
                 self.memory.log_conversation("Stefano", text)
                 self._handle_dream_briefing(topic=_topic)
+                return
+
+        # Workflow composto (planner): "leggi il documento, riassumilo e preparami
+        # una bozza di mail, non inviarla". Pre-gate economico → planner; se è un
+        # vero multi-step (≥2) lo esegue incatenando i tool esistenti, altrimenti
+        # torna al dispatch normale (fail-open). Kill-switch in config.
+        if config.WORKFLOW_PLANNER_ENABLED:
+            from core import workflow_planner
+            if workflow_planner.looks_like_workflow(text) and self._handle_workflow(text):
                 return
 
         _t_classify = time.perf_counter()
