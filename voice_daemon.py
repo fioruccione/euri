@@ -818,6 +818,22 @@ class VoiceDaemon:
 
         engine = workflow_planner.WorkflowEngine(self.executor, self.brain)
         result = engine.run(steps)
+
+        # Filo conduttore: il workflow deve restare nel thread, come _handle_execute.
+        # Senza, Euri "non sa di aver fatto quello che ha fatto" (es. "apri il documento
+        # appena creato" → non lo collega). Inietta cosa ha prodotto + dove nella history
+        # del Brain, così i turni CHAT successivi lo vedono.
+        if result.get("ok"):
+            parts = ["Ho appena eseguito un workflow per Stefano."]
+            if result.get("path"):
+                parts.append(
+                    f"Ho creato e salvato una bozza nel file {result['path']} "
+                    "(non inviata, è per la revisione)."
+                )
+            if result.get("text"):
+                parts.append(f"Contenuto della bozza:\n{result['text'][:1500]}")
+            self.brain.inject_tool_result(text, "\n".join(parts))
+
         self.memory.log_conversation("Euri", result["spoken"])
         self._speak(result["spoken"])
         return True
