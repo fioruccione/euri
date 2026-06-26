@@ -77,6 +77,8 @@ def _plan_prompt(utterance: str) -> str:
         "(N = numero del passo, 1-based), oppure null se non serve input.\n"
         "- Se la richiesta è una sola azione semplice, restituisci un solo passo.\n"
         "- DRAFT non invia mai; se l'utente vuole una mail, è sempre una bozza.\n"
+        "- Dopo una DRAFT aggiungi sempre SAVE_FOR_REVIEW come ultimo passo, "
+        "tranne se l'utente chiede esplicitamente di leggerla ad alta voce.\n"
         '- Per DRAFT puoi indicare il tipo in args, es. {"kind": "mail"}.\n\n'
         "Rispondi SOLO con un array JSON, niente altro. Esempio:\n"
         '[{"cap":"READ","args":{},"input":null},'
@@ -163,6 +165,7 @@ class WorkflowEngine:
             {"ok": bool, "text": str, "path": str|None, "spoken": str}
         Si ferma al primo errore bloccante (conservativo).
         """
+        steps = self._ensure_review(steps)
         outputs: dict[str, dict] = {}
         for i, step in enumerate(steps, 1):
             cap = step["cap"]
@@ -183,6 +186,23 @@ class WorkflowEngine:
             "path": last.get("path"),
             "spoken": self._spoken(steps, last),
         }
+
+    # ── normalizzazione del piano ──
+    @staticmethod
+    def _ensure_review(steps: list[dict]) -> list[dict]:
+        """
+        Una bozza è un artefatto DA RIVEDERE: se il piano finisce con DRAFT e non
+        salva, appendi SAVE_FOR_REVIEW d'ufficio. Il modello è incostante su questo
+        passo (stesso input → a volte lo mette, a volte no): qui diventa un
+        invariante strutturale dell'engine, non una decisione del planner. Evita
+        anche che Euri legga ad alta voce una bozza lunga invece di salvarla.
+        """
+        if not steps:
+            return steps
+        caps = [s["cap"] for s in steps]
+        if caps[-1] == "DRAFT" and "SAVE_FOR_REVIEW" not in caps:
+            return steps + [{"cap": "SAVE_FOR_REVIEW", "args": {}, "input": f"${len(steps)}"}]
+        return steps
 
     # ── input chaining ──
     @staticmethod

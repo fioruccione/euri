@@ -116,6 +116,45 @@ def test_engine_chains_and_drafts(tmp_review):
     print("ok engine chain + draft-not-sent")
 
 
+def test_ensure_review_appends_save():
+    # piano che finisce con DRAFT → SAVE_FOR_REVIEW appeso d'ufficio
+    steps = [{"cap": "READ", "input": None}, {"cap": "DRAFT", "args": {"kind": "mail"}, "input": "$1"}]
+    out = WorkflowEngine._ensure_review(steps)
+    assert [s["cap"] for s in out] == ["READ", "DRAFT", "SAVE_FOR_REVIEW"]
+    assert out[-1]["input"] == "$2"  # salva l'output della DRAFT
+    # già presente → invariato
+    has = steps + [{"cap": "SAVE_FOR_REVIEW", "input": "$2"}]
+    assert WorkflowEngine._ensure_review(has) == has
+    # non finisce con DRAFT → invariato
+    only_read = [{"cap": "READ", "input": None}]
+    assert WorkflowEngine._ensure_review(only_read) == only_read
+    print("ok ensure_review")
+
+
+def test_engine_3step_draft_gets_saved(tmp_review):
+    config.WORKFLOW_REVIEW_DIR = tmp_review
+
+    class E(WorkflowEngine):
+        def _llm(self, prompt, **k):
+            return "BOZZA"
+
+        def _summarize(self, text):
+            return "SUM"
+
+    eng = E(FakeExecutor("DOC"), FakeBrain())
+    # piano "incostante" senza SAVE → l'engine lo salva comunque
+    steps = [
+        {"cap": "READ", "args": {}, "input": None},
+        {"cap": "SUMMARIZE", "args": {}, "input": "$1"},
+        {"cap": "DRAFT", "args": {"kind": "mail"}, "input": "$2"},
+    ]
+    res = eng.run(steps)
+    assert res["ok"] and res["path"] and Path(res["path"]).exists()
+    assert Path(res["path"]).read_text() == "BOZZA"
+    assert "non l'ho inviata" in res["spoken"]
+    print("ok 3step draft auto-saved")
+
+
 def test_engine_stops_on_read_error(tmp_review):
     config.WORKFLOW_REVIEW_DIR = tmp_review
     eng = WorkflowEngine(FailExecutor(), FakeBrain())
@@ -128,7 +167,9 @@ if __name__ == "__main__":
     test_looks_like_workflow()
     test_extract_and_validate()
     test_plan_with_fake_llm()
+    test_ensure_review_appends_save()
     with tempfile.TemporaryDirectory() as d:
         test_engine_chains_and_drafts(d)
+        test_engine_3step_draft_gets_saved(d)
         test_engine_stops_on_read_error(d)
     print("\nTUTTI I TEST OK")
