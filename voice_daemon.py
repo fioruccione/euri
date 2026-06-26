@@ -576,9 +576,26 @@ class VoiceDaemon:
         che fonda o smentisce l'insight: la cattura (sintesi della lezione su Qwen, lenta)
         gira in BACKGROUND per non bloccare la voce. Euri dà solo un cenno naturale."""
         pending = self._awaiting_reaction
-        self._awaiting_reaction = None
         if not pending:
             return
+
+        # Guardia chiarimento: se Stefano CHIEDE invece di rispondere ("di quale
+        # insight parli?"), NON consumare il turno come verdetto — altrimenti un
+        # non-risposta diventa un mezzo-verdetto (DA_VALUTARE → requires_verification,
+        # finding 26/06). Euri ri-nomina l'insight e RI-ARMA l'attesa.
+        from core.utterance_pragmatics import is_clarification_request
+        if is_clarification_request(text):
+            self.memory.log_conversation("Stefano", text)
+            ins = pending.data.get("insight", {})
+            self._awaiting_reaction = _PendingState({"insight": ins}, timeout=1800)
+            content = (ins.get("content") or "").strip()
+            snippet = content[:220] if content else "il pensiero che ti ho appena condiviso"
+            reply = f"Mi riferivo a questo: {snippet}. Secondo te regge, o è una forzatura?"
+            self.memory.log_conversation("Euri", reply)
+            self._speak(reply)
+            return
+
+        self._awaiting_reaction = None
         insight = pending.data["insight"]
         self.memory.log_conversation("Stefano", text)
 
