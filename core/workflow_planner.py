@@ -64,17 +64,29 @@ def looks_like_workflow(text: str) -> bool:
 # PLANNER (puro)
 # ──────────────────────────────────────────
 
-def _plan_prompt(utterance: str) -> str:
+def _plan_prompt(utterance: str, history_brief: str = "") -> str:
     cat = "\n".join(f"- {k}: {v}" for k, v in CAPABILITIES.items())
+    convo = ""
+    if history_brief.strip():
+        convo = (
+            "\nConversazione recente (la FONTE se la richiesta si riferisce a "
+            "'questo'/'quanto detto'):\n" + history_brief.strip() + "\n"
+        )
     return (
         "Sei il pianificatore operativo di Euri. Trasforma la richiesta dell'utente "
         "in una sequenza ORDINATA di passi, usando SOLO queste capability:\n"
-        f"{cat}\n\n"
+        f"{cat}\n"
+        f"{convo}\n"
         f'Richiesta: "{utterance}"\n\n'
         "Regole:\n"
         "- Usa solo le capability elencate, in ordine logico.\n"
         '- Ogni passo prende in input l\'output del passo precedente con "$N" '
         "(N = numero del passo, 1-based), oppure null se non serve input.\n"
+        "- Se la richiesta si riferisce a quanto appena detto nella conversazione "
+        "(es. 'scrivimi una mail su questo', 'riassumi quello che ho detto'), la FONTE "
+        "è la CONVERSAZIONE: usa direttamente DRAFT/SUMMARIZE con input null (l'engine "
+        "inietta la conversazione), NON READ né CHECK (non c'è un documento da leggere).\n"
+        "- READ/CHECK servono solo quando c'è un DOCUMENTO/file da elaborare.\n"
         "- Se la richiesta è una sola azione semplice, restituisci un solo passo.\n"
         "- DRAFT non invia mai; se l'utente vuole una mail, è sempre una bozza.\n"
         "- Dopo una DRAFT aggiungi sempre SAVE_FOR_REVIEW come ultimo passo, "
@@ -119,10 +131,11 @@ def _validate(steps) -> list[dict]:
     return clean
 
 
-def plan(utterance: str, *, chat=None, model: str = None) -> list[dict]:
+def plan(utterance: str, *, history_brief: str = "", chat=None, model: str = None) -> list[dict]:
     """
     1 LLM-call → piano. PURO (nessun effetto). Fail-open: [] su errore/incertezza.
-    `chat`/`model` injectabili per test (default: chat_client + config.OLLAMA_MODEL).
+    `history_brief` = conversazione recente, così il planner sa che la FONTE può essere
+    il discorso (non un documento). `chat`/`model` injectabili per test.
     """
     if not utterance or not utterance.strip():
         return []
@@ -132,7 +145,7 @@ def plan(utterance: str, *, chat=None, model: str = None) -> list[dict]:
             chat = chat_client
         resp = chat.chat(
             model=model or config.OLLAMA_MODEL,
-            messages=[{"role": "user", "content": _plan_prompt(utterance)}],
+            messages=[{"role": "user", "content": _plan_prompt(utterance, history_brief)}],
             options={"temperature": 0.1, "num_predict": 400, "num_ctx": 4096},
             think=False,
         )
@@ -155,9 +168,10 @@ class WorkflowEngine:
     l'output dello step N.
     """
 
-    def __init__(self, executor, brain):
+    def __init__(self, executor, brain, conversation: str = ""):
         self._executor = executor
         self._brain = brain
+        self._conversation = conversation or ""   # fonte quando non c'è un documento
 
     def run(self, steps: list[dict]) -> dict:
         """
@@ -216,6 +230,10 @@ class WorkflowEngine:
 
     # ── dispatch capability → primitivo esistente ──
     def _run_cap(self, cap: str, args: dict, src: str) -> dict:
+        # Fonte-conversazione: se un passo generativo non ha input incatenato né documento,
+        # la fonte è il discorso appena avvenuto (fix 01/07: la bozza ignorava la conversazione).
+        if not src and self._conversation and cap in ("DRAFT", "SUMMARIZE", "CHECK"):
+            src = self._conversation
         if cap == "READ":
             return {"text": self._read(), "path": None}
         if cap == "SUMMARIZE":

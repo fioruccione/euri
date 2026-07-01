@@ -808,7 +808,19 @@ class VoiceDaemon:
         proseguire il dispatch normale (piano vuoto o monostep → fail-open).
         """
         from core import workflow_planner
-        steps = workflow_planner.plan(text)
+        # Conversazione recente come FONTE del workflow (fix 01/07: la bozza ignorava
+        # il discorso — "scrivimi una mail su questo" perdeva il contesto appena detto).
+        try:
+            with self.brain.history_lock:
+                hist = list(self.brain._conversation_history)[-16:]
+            convo_text = "\n".join(
+                f"{'Stefano' if m.get('role') == 'user' else 'Euri'}: {m.get('content', '')}"
+                for m in hist if m.get("content")
+            )[-4000:]
+        except Exception as e:
+            logger.debug(f"workflow: brief history fallito: {e}")
+            convo_text = ""
+        steps = workflow_planner.plan(text, history_brief=convo_text)
         if len(steps) < 2:
             return False  # non è un vero workflow → dispatch normale
 
@@ -821,7 +833,7 @@ class VoiceDaemon:
         except Exception as e:
             logger.debug(f"clear last_rag_ctx WORKFLOW fallito: {e}")
 
-        engine = workflow_planner.WorkflowEngine(self.executor, self.brain)
+        engine = workflow_planner.WorkflowEngine(self.executor, self.brain, conversation=convo_text)
         result = engine.run(steps)
 
         # Filo conduttore: il workflow deve restare nel thread, come _handle_execute.
