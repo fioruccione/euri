@@ -116,6 +116,22 @@ def hydrate_related(r, event: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     return "", {}
 
 
+def _hydrate_tension_nodes(r, ids: list[Any]) -> tuple[list[dict[str, Any]], bool]:
+    """Read-only: rilegge i nodi citati da una tensione della mappa del pensiero.
+    Scarta quelli ritirati (superseded/consolidati) — se restano <2 vivi la tensione
+    si è risolta da sola (anti-nag naturale). has_primary = c'è un nodo DETTO-DA-STEFANO."""
+    nodes, has_primary = [], False
+    for mid in list(ids)[:8]:
+        doc = _json_get_one(r, _memory_key(str(mid)))
+        if not doc or doc.get("superseded_by") or doc.get("consolidated_into"):
+            continue
+        src = doc.get("source")
+        if src in {"user", "teach", "obsidian_vault"}:
+            has_primary = True
+        nodes.append({"id": str(mid)[:8], "source": src, "content": (doc.get("content") or "")[:300]})
+    return nodes, has_primary
+
+
 def build_candidate(r, event_id: str, event: dict[str, Any]) -> InitiativeCandidate:
     payload = parse_payload(event.get("payload"))
     related_key, related = hydrate_related(r, event)
@@ -149,6 +165,22 @@ def build_candidate(r, event_id: str, event: dict[str, Any]) -> InitiativeCandid
         else:
             eligible = True
             reason = clarify_reason
+            goal = "ask_memory_clarification"
+    elif sense == "thought_map" and kind == "tension":
+        # Contraddizione tra memorie trovata dal riorganizzatore. È un gap epistemico REALE
+        # per costruzione → non si gate sul tension score generico; il filtro è: i nodi in
+        # conflitto esistono ancora (≥2 vivi). Se la tua parola ne ha superseduto uno, la
+        # tensione sparisce da sola (anti-nag). related idratato qui (hydrate_related non copre).
+        nodes, has_primary = _hydrate_tension_nodes(r, payload.get("ids") or [])
+        if len(nodes) < 2:
+            reason = "tension_resolved_or_gone"
+        else:
+            related = {"subject": payload.get("subject"),
+                       "description": payload.get("description"),
+                       "nodes": nodes,
+                       "has_stefano_claim": bool(payload.get("has_stefano_claim") or has_primary)}
+            eligible = True
+            reason = "tension_vs_stefano_claim" if related["has_stefano_claim"] else "tension_derived_only"
             goal = "ask_memory_clarification"
 
     return InitiativeCandidate(
@@ -347,6 +379,17 @@ def generate_question(candidate: InitiativeCandidate) -> dict[str, Any]:
             "- Per una memoria passiva incerta, chiedi conferma/correzione del fatto specifico.\n"
             "- La domanda deve aiutare a fissare o correggere la memoria, non commentarla.\n"
             "- Se il fatto è banale, troppo generico o non vale interrompere Stefano, should_ask=false."
+        )
+    elif str(event.get("sense") or "") == "thought_map":
+        subj = related.get("subject") or "una cosa"
+        conflitto = "\n".join(f"  - [{n.get('source')}] {n.get('content')}" for n in related.get("nodes", []))
+        event_text = f"Tensione su «{subj}»: {related.get('description','')}\nNote in conflitto:\n{conflitto}"[:1400]
+        event_label = "contraddizione tra memorie (trovata dal riorganizzatore)"
+        specific_contract = (
+            "- È una contraddizione REALE tra note di memoria sullo stesso soggetto.\n"
+            "- Chiedi a Stefano QUALE versione è corretta, o di confermare il dato, nominando il soggetto in modo naturale.\n"
+            "- NON dire tu quale è giusta; NON elencare id o citare 'note': parla come a voce.\n"
+            "- should_ask=false se la contraddizione è banale o non risolvibile con una frase."
         )
     else:
         event_text = str(related.get("content") or candidate.payload)[:1200]
