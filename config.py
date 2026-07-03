@@ -292,6 +292,20 @@ INITIATIVE_COOLDOWN_S = 3 * 3600
 INITIATIVE_PULSE_BLOCK_MS = 5000
 INITIATIVE_PENDING_MIN_AGE_S = 5  # stabilizza memory/saved prima di idratare (post-flag passive)
 
+# FaceAuth — riconoscimento facciale locale (sorella visiva di SpeakerAuth).
+# Il VisualGate distingue due segnali che prima collassavano in uno:
+#   "qualcuno è presente"  → basta per ASCOLTARE (SpeakerAuth protegge i comandi)
+#   "il proprietario è presente" → serve per PARLARE PER PRIMI (initiative, reminder, saluto)
+# Il laboratorio è usato di notte dai capoturno: una faccia qualunque non deve
+# far parlare Euri. Detection YuNet + embedding SFace (OpenCV, tutto locale);
+# i faceprint sono dati biometrici: restano su disco locale, mai i frame.
+FACE_AUTH_ENABLED = True
+FACE_AUTH_OWNER = "stefano"           # identità che abilita l'efferente
+FACE_AUTH_THRESHOLD = 0.363           # cosine SFace (soglia canonica OpenCV)
+FACE_DETECT_MODEL = str(Path.home() / "euri" / "models" / "face_detection_yunet_2023mar.onnx")
+FACE_RECOG_MODEL = str(Path.home() / "euri" / "models" / "face_recognition_sface_2021dec.onnx")
+FACEPRINT_DIR = str(Path.home() / "euri" / "models" / "faceprints")
+
 # Propagazione di provenienza (invariante A della primitiva cognitiva).
 # Un nodo derivato (consolidated_from) la cui fondamenta è caduta — genitori
 # superseded/spariti/da-verificare — viene tenuto SOSPETTO: provenance_stale (down-rank

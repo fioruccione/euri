@@ -23,6 +23,7 @@ from voice.vad import VAD
 from voice.stt import STT
 from voice.tts import TTS
 from voice.visual_gate import VisualGate
+from voice.face_auth import FaceAuth
 from voice.speaker_auth import SpeakerAuth, ENROLL_UTTERANCES
 
 from core.pulse import pulse_emit
@@ -139,7 +140,8 @@ class VoiceDaemon:
         self.vad = VAD()
         self.stt = STT()
         self.tts = TTS()
-        self.visual_gate = VisualGate()
+        self.face_auth = FaceAuth()
+        self.visual_gate = VisualGate(face_auth=self.face_auth)
         self.speaker_auth = SpeakerAuth()
         self._enroll_mode = False
         self._enroll_segments: list = []
@@ -169,6 +171,9 @@ class VoiceDaemon:
         self._audit_confirm_mode = False       # Euri ha fatto l'audit, attende sì/no per cancellare
         self._audit_rumore: list[dict] = []    # memorie segnate come rumore dall'ultimo audit
         self._last_activity_ts: float = 0.0   # timestamp ultima attività vocale (per passive learner)
+        self._last_auth_voice_ts: float = 0.0  # ultima voce AUTENTICATA (SpeakerAuth ok) — prova
+                                               # d'identità per l'efferente quando la faccia non basta.
+                                               # NON aggiornato dal TTS di Euri (niente auto-rinfresco).
         self._passive_history_len: int = 0     # lunghezza history già analizzata
         self._consolidation_last_run: float = 0.0  # timestamp ultimo Loop 2a
         self._brain_lock = threading.Lock()  # protegge brain tra main loop e mobile worker
@@ -191,6 +196,7 @@ class VoiceDaemon:
         self.vad.load()
         self.stt.load()
         self.tts.load()
+        self.face_auth.load()
         self.visual_gate.start()
         self.speaker_auth.load()
         self.embedder.load()
@@ -1792,13 +1798,13 @@ class VoiceDaemon:
         Thread proattivo (ogni 30s). Due piani distinti:
           AFFERENTE (clock): quando una scadenza entra in finestra (<=60 min) emette UNA volta
             euri:pulse clock/threshold — il tempo del mondo, osservato sempre.
-          EFFERENTE (consegna): ricorda UNA sola volta e SOLO quando Stefano è PRESENTE.
-            Presenza = lo VEDE (gate, solo se la webcam funziona) OPPURE ha parlato di recente.
-            La webcam fa fail-open quando è cieca (is_user_present sempre True): se cieca NON ci
-            si fida del gate, vale solo l'interazione recente. Presenza IGNOTA (cieco + nessuna
-            interazione) ≠ presente → non si consegna nel vuoto: si attende e si consegna al primo
-            momento di presenza, anche dopo la scadenza. La frase è FORMULATA da Gemma (grounded
-            sul todo), non un template a livelli.
+          EFFERENTE (consegna): ricorda UNA sola volta e SOLO quando STEFANO è presente —
+            non "qualcuno": il laboratorio di notte è dei capoturno. Presenza di Stefano =
+            RICONOSCIUTO in faccia (is_owner_present, FaceAuth) OPPURE voce AUTENTICATA di
+            recente (SpeakerAuth). Il vecchio is_user_present (una faccia qualunque) non
+            basta più per parlare. Presenza IGNOTA ≠ presente → non si consegna nel vuoto:
+            si attende e si consegna al primo momento di presenza, anche dopo la scadenza.
+            La frase è FORMULATA da Gemma (grounded sul todo), non un template a livelli.
         """
         LEAD_MIN = 15              # consegna da 15 min prima della scadenza
         OVERDUE_CAP_MIN = 24 * 60  # ...fino a 24h dopo, in attesa di presenza
@@ -1814,10 +1820,10 @@ class VoiceDaemon:
                     time.sleep(5)
                     continue
 
-                # Presenza: lo VEDE (gate affidabile) OPPURE ha interagito di recente (primario).
-                seen = (not self.visual_gate.is_blind()) and self.visual_gate.is_user_present()
-                spoke = (self._last_activity_ts > 0 and
-                         (time.time() - self._last_activity_ts) <= PRESENT_WINDOW)
+                # Presenza di STEFANO: riconosciuto in faccia OPPURE voce autenticata recente.
+                seen = self.visual_gate.is_owner_present()
+                spoke = (self._last_auth_voice_ts > 0 and
+                         (time.time() - self._last_auth_voice_ts) <= PRESENT_WINDOW)
                 present = seen or spoke
 
                 for todo in self.memory.get_pending_todos():
@@ -1885,14 +1891,17 @@ class VoiceDaemon:
         if last_ask and now_ts - last_ask < cooldown:
             return f"cooldown:{int(cooldown - (now_ts - last_ask))}s"
 
-        # Presenza: come nei reminder, non basta il fail-open del gate cieco.
+        # Presenza di STEFANO, non di "qualcuno": la faccia del capoturno di notte
+        # attiva l'ascolto ma non deve far partire una domanda proattiva. Conta il
+        # riconoscimento facciale (owner) o la voce autenticata recente — non
+        # _last_activity_ts, che viene rinfrescato anche dal TTS di Euri stessa.
         try:
-            seen = (not self.visual_gate.is_blind()) and self.visual_gate.is_user_present()
+            seen = self.visual_gate.is_owner_present()
         except Exception:
             seen = False
-        spoke_recently = self._last_activity_ts > 0 and (now_ts - self._last_activity_ts) <= 300
+        spoke_recently = self._last_auth_voice_ts > 0 and (now_ts - self._last_auth_voice_ts) <= 300
         if not (seen or spoke_recently):
-            return "user_not_present"
+            return "owner_not_present"
 
         return ""
 
@@ -2069,35 +2078,39 @@ class VoiceDaemon:
         with AudioCapture() as mic:
             logger.info("── Euri in ascolto ──")
             while self._running:
-                # Saluto al rientro: VisualGate ha appena rilevato presenza dopo assenza
+                # Qualcuno è arrivato nel campo visivo: SOLO afferente (pulse) — non
+                # sappiamo ancora CHI è (il riconoscimento arriva 1-2s dopo), e di
+                # notte può essere un capoturno: nessuna voce su questo segnale.
                 if self.visual_gate.consume_just_activated():
-                    # Senso "presenza": Stefano è rientrato nel campo visivo. source=extero.
                     pulse_emit(self.r, "presence", "extero", "arrival",
                                payload={"first": self._first_visual_activation}, salience=0.7)
                     if self._first_visual_activation:
                         # Prima rilevazione dall'avvio: silenzio, solo warm-up modello
                         self._first_visual_activation = False
                         threading.Thread(target=self._warmup_model, daemon=True).start()
-                    else:
-                        if self._missed_reminders:
-                            missed = self._missed_reminders.copy()
-                            self._missed_reminders.clear()
-                            if len(missed) == 1:
-                                self._speak(f"Bentornato Stefano. Hai perso un promemoria: {missed[0]}.")
-                            else:
-                                elenco = ", ".join(missed)
-                                self._speak(f"Bentornato Stefano. Hai perso {len(missed)} promemoria: {elenco}.")
-                        # Saluto a vuoto RIMOSSO (Stefano 23/06): la presenza-senza-contenuto
-                        # resta sul bus (pulse_emit sopra) ma NON diventa voce. Si parla solo con
-                        # un motivo grounded — reminder perso o TEACH da riprendere (Regola d'Oro).
-                        # Il "Bentornato Stefano." a vuoto era un arco riflesso (sente→parla) che
-                        # salutava la stanza vuota di notte; l'afferente presence resta prezioso.
-                        # Controlla se c'è una sessione TEACH interrotta
-                        snapshot = self.r.get("euri:teach:snapshot")
-                        if snapshot and not self._teach_mode:
-                            self._teach_snapshot_content = snapshot
-                            self._teach_recovery_mode = True
-                            self._speak("Ho trovato una sessione di insegnamento non completata. Vuoi riprendere da dove eravamo?")
+
+                # STEFANO è arrivato (riconosciuto in faccia): qui vive l'efferente di
+                # rientro — reminder persi e ripresa TEACH si dicono solo a lui.
+                # (Saluto a vuoto RIMOSSO, Stefano 23/06: si parla solo con un motivo
+                # grounded — la Regola d'Oro resta.)
+                if self.visual_gate.consume_owner_arrived():
+                    pulse_emit(self.r, "presence", "extero", "owner_arrival",
+                               payload={"identity": self.visual_gate.present_identity()},
+                               salience=0.75)
+                    if self._missed_reminders:
+                        missed = self._missed_reminders.copy()
+                        self._missed_reminders.clear()
+                        if len(missed) == 1:
+                            self._speak(f"Bentornato Stefano. Hai perso un promemoria: {missed[0]}.")
+                        else:
+                            elenco = ", ".join(missed)
+                            self._speak(f"Bentornato Stefano. Hai perso {len(missed)} promemoria: {elenco}.")
+                    # Controlla se c'è una sessione TEACH interrotta
+                    snapshot = self.r.get("euri:teach:snapshot")
+                    if snapshot and not self._teach_mode:
+                        self._teach_snapshot_content = snapshot
+                        self._teach_recovery_mode = True
+                        self._speak("Ho trovato una sessione di insegnamento non completata. Vuoi riprendere da dove eravamo?")
 
                 # Salta se proactive_agent sta parlando
                 if self.r.exists("euri:audio:lock"):
@@ -2154,6 +2167,10 @@ class VoiceDaemon:
                 if hasattr(self, 'dream_engine'):
                     self.dream_engine.notify_activity()
                 self._last_activity_ts = time.time()
+                if not self._translate_bidir:
+                    # La voce ha passato SpeakerAuth: prova d'identità per l'efferente.
+                    # In modalità interprete le voci esterne non contano come Stefano.
+                    self._last_auth_voice_ts = time.time()
                 self.vad.reset()
 
                 if not text:

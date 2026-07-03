@@ -190,7 +190,7 @@ main_col, term_col = st.columns([2.5, 1.5], gap="large")
 # Sidebar
 st.sidebar.title("Euri Control Room 🧠")
 st.sidebar.markdown("---")
-page = st.sidebar.radio("Navigazione", ["🎙️ Voce", "Telemetria & Welford", "Silent Chat", "RAG Explorer"])
+page = st.sidebar.radio("Navigazione", ["🎙️ Voce", "Telemetria & Welford", "Silent Chat", "RAG Explorer", "🪪 Volti & Accessi"])
 
 st.sidebar.markdown("---")
 st.sidebar.info(f"**Modello:** {config.OLLAMA_MODEL}\n\n**Vault:** {config.OBSIDIAN_VAULT_PATH}")
@@ -791,3 +791,116 @@ with main_col:
                             r.delete(f"euri:todo:{tid}")
                             st.success("Eliminato!")
                             st.rerun()
+
+    # ── PAGE 4: VOLTI & ACCESSI ──────────────────────────────────────────────────
+    elif page == "🪪 Volti & Accessi":
+        import time as _time
+        import cv2 as _cv2
+        from datetime import datetime as _dt
+
+        st.title("🪪 Volti & Accessi")
+        st.markdown(
+            "Gestione delle persone che Euri **riconosce in faccia**. "
+            "Solo il proprietario abilita l'efferente (Euri che parla per prima); "
+            "gli altri abilitati attivano l'ascolto. Una faccia sconosciuta non fa parlare Euri."
+        )
+        st.warning(
+            "**Il faceprint è un dato biometrico.** Registra solo persone che sanno di essere "
+            "registrate e sono d'accordo — sul posto di lavoro non è un dettaglio (GDPR). "
+            "Resta tutto locale: si salva solo il vettore matematico del volto, mai le foto. "
+            "La rimozione qui sotto revoca ed elimina il dato."
+        )
+
+        @st.cache_resource
+        def get_face_auth():
+            from voice.face_auth import FaceAuth
+            fa = FaceAuth()
+            fa.load()
+            return fa
+
+        @st.cache_resource
+        def get_face_detector():
+            return _cv2.FaceDetectorYN_create(config.FACE_DETECT_MODEL, "", (640, 480), 0.8)
+
+        face_auth = get_face_auth()
+        face_auth.reload_faceprints()
+
+        if not face_auth._recognizer:
+            st.error("Modello SFace non disponibile — controlla FACE_RECOG_MODEL in config.py.")
+        else:
+            # ── Persone registrate ────────────────────────────────────────────
+            st.subheader("Persone registrate")
+            names = face_auth.enrolled_names()
+            if not names:
+                st.info("Nessun faceprint registrato. Il daemon riconosce solo dopo l'enrollment.")
+            for name in names:
+                fpath = Path(config.FACEPRINT_DIR) / f"{name}.npy"
+                created = _dt.fromtimestamp(fpath.stat().st_mtime).strftime("%d/%m/%Y %H:%M") if fpath.exists() else "?"
+                owner_badge = " 👑 proprietario" if name == config.FACE_AUTH_OWNER else ""
+                c1, c2 = st.columns([4, 1])
+                with c1:
+                    st.write(f"**{name}**{owner_badge} — registrato il {created}")
+                with c2:
+                    if st.button("🗑️ Revoca", key=f"face_del_{name}"):
+                        face_auth.remove(name)
+                        st.success(f"Faceprint '{name}' eliminato. Il daemon lo dimentica entro 30 secondi.")
+                        st.rerun()
+
+            # ── Nuovo enrollment ─────────────────────────────────────────────
+            st.markdown("---")
+            st.subheader("Registra una persona")
+            st.caption(
+                "Servono almeno 3 scatti con angolazioni leggermente diverse. "
+                "Un solo volto per scatto. Usa la fotocamera del dispositivo da cui apri "
+                "questa pagina (non entra in conflitto con la webcam del daemon)."
+            )
+
+            new_name = st.text_input("Nome (minuscolo, senza spazi)", key="face_enroll_name").strip().lower()
+            consent = st.checkbox("La persona è informata e d'accordo alla registrazione del suo faceprint.")
+
+            if "face_enroll_embs" not in st.session_state:
+                st.session_state.face_enroll_embs = []
+
+            if new_name and consent:
+                photo = st.camera_input(f"Scatto {len(st.session_state.face_enroll_embs) + 1}",
+                                        key=f"face_cam_{len(st.session_state.face_enroll_embs)}")
+                if photo is not None:
+                    img = _cv2.imdecode(np.frombuffer(photo.getvalue(), np.uint8), _cv2.IMREAD_COLOR)
+                    # Normalizza la dimensione: le foto da browser possono essere enormi
+                    if img.shape[1] > 960:
+                        scale = 960 / img.shape[1]
+                        img = _cv2.resize(img, None, fx=scale, fy=scale)
+                    det = get_face_detector()
+                    det.setInputSize((img.shape[1], img.shape[0]))
+                    _, faces = det.detect(img)
+                    if faces is None or len(faces) == 0:
+                        st.error("Nessun volto rilevato — riprova con più luce, viso frontale.")
+                    elif len(faces) > 1:
+                        st.error("Più volti nello scatto — dev'esserci solo la persona da registrare.")
+                    else:
+                        emb = face_auth.embed(img, faces[0])
+                        if emb is None:
+                            st.error("Volto rilevato ma embedding fallito — riprova.")
+                        else:
+                            st.session_state.face_enroll_embs.append(emb)
+                            st.rerun()
+
+                n = len(st.session_state.face_enroll_embs)
+                if n:
+                    st.progress(min(n / 3, 1.0), text=f"{n} scatti validi raccolti (minimo 3)")
+                c1, c2 = st.columns(2)
+                with c1:
+                    if n >= 3 and st.button(f"💾 Salva faceprint di '{new_name}'"):
+                        if face_auth.enroll_from_embeddings(new_name, st.session_state.face_enroll_embs):
+                            st.session_state.face_enroll_embs = []
+                            st.success(f"'{new_name}' registrato. Il daemon lo riconosce entro 30 secondi.")
+                            _time.sleep(1.5)
+                            st.rerun()
+                        else:
+                            st.error("Salvataggio fallito — riprova.")
+                with c2:
+                    if n and st.button("↩️ Ricomincia gli scatti"):
+                        st.session_state.face_enroll_embs = []
+                        st.rerun()
+            elif new_name and not consent:
+                st.info("Spunta la casella del consenso per procedere con gli scatti.")
