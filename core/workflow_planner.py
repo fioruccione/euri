@@ -244,10 +244,12 @@ class WorkflowEngine:
                 "senza riscrivere il contenuto:\n\n" + src), "path": None}
         if cap == "DRAFT":
             kind = (args or {}).get("kind", "testo")
+            # Budget largo: una bozza è il PENSIERO INTERO di Euri, non un riassunto —
+            # con 800 token la relazione del 03/07 si è troncata a metà frase.
             return {"text": self._llm(
                 f"Scrivi una bozza di {kind} in italiano basata su quanto segue. "
                 "Solo la bozza, pronta da revisionare, senza commenti né preamboli:\n\n"
-                + src), "path": None}
+                + src, num_predict=2500), "path": None}
         if cap == "SAVE_FOR_REVIEW":
             from agent.tools.draft_writer import save_review
             return {"text": src, "path": save_review(src)}
@@ -278,13 +280,31 @@ class WorkflowEngine:
 
     def _llm(self, prompt: str, *, num_predict: int = 800) -> str:
         from core.ollama_client import chat_client
-        r = chat_client.chat(
-            model=config.OLLAMA_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0.3, "num_predict": num_predict, "num_ctx": 16384},
-            think=False,
-        )
-        return self._brain._clean(r.message.content or "")
+        base = [{"role": "user", "content": prompt}]
+        parts: list[str] = []
+        # Il budget token è un tetto tecnico, non la fine del pensiero: se Ollama
+        # taglia (done_reason=length) si CONTINUA da dove si è fermato invece di
+        # consegnare un moncone (bozza troncata a metà frase, 03/07). Max 2 riprese:
+        # oltre, meglio un documento lungo interrotto con traccia nel log che un loop.
+        for _round in range(3):
+            msgs = base if not parts else base + [
+                {"role": "assistant", "content": "".join(parts)},
+                {"role": "user", "content": "Continua ESATTAMENTE da dove ti sei "
+                                            "interrotto, senza ripetere nulla e senza commenti."},
+            ]
+            r = chat_client.chat(
+                model=config.OLLAMA_MODEL,
+                messages=msgs,
+                options={"temperature": 0.3, "num_predict": num_predict, "num_ctx": 16384},
+                think=False,
+            )
+            parts.append(r.message.content or "")
+            if getattr(r, "done_reason", None) != "length":
+                break
+            logger.info(f"WorkflowEngine._llm: output al tetto di {num_predict} token → continuo la scrittura")
+        else:
+            logger.warning("WorkflowEngine._llm: ancora troncato dopo 2 riprese — consegno com'è")
+        return self._brain._clean("".join(parts))
 
     # ── voce finale ──
     @staticmethod
