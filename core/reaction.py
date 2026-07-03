@@ -404,7 +404,14 @@ def _apply_reaction_verdict(memory, insight_id: str, verdict: str) -> None:
         for attempt in (1, 2):
             try:
                 r.json().set(ikey, "$.status", "candidate")
-                logger.info(f"Reaction: insight {insight_id[:8]} SMENTITO → demoto a candidate")
+                # La smentita esplicita è una demozione più FORTE di quella anagrafica
+                # (Gate 1), non più debole: senza demoted_once il gate di ri-promozione
+                # non la vede e la sola ri-convergenza può resuscitare un insight che
+                # Stefano ha bocciato nel merito (caso pallet/CO2, 03/07). Il timestamp
+                # è provenienza: distingue "bocciato dall'utente" da "invecchiato".
+                r.json().set(ikey, "$.demoted_once", True)
+                r.json().set(ikey, "$.refuted_by_user_at", time.time())
+                logger.info(f"Reaction: insight {insight_id[:8]} SMENTITO → demoto a candidate (demoted_once)")
                 break
             except Exception as e:
                 if attempt == 2:

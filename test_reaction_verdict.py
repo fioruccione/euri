@@ -88,9 +88,21 @@ def test_smentita_still_demotes():
     assert ("euri:insight:abc", "$.status", "candidate") in memory.r.j.sets
 
 
+def test_smentita_sets_demoted_once():
+    """La smentita dell'utente è una demozione più forte di quella anagrafica:
+    senza demoted_once il gate di ri-promozione non la vede e la sola
+    ri-convergenza può resuscitare un insight bocciato (caso pallet/CO2 03/07)."""
+    memory = _FakeMemory()
+    reaction._apply_reaction_verdict(memory, "abc", "SMENTITA")
+    assert ("euri:insight:abc", "$.demoted_once", True) in memory.r.j.sets
+    assert any(k == "euri:insight:abc" and p == "$.refuted_by_user_at"
+               for k, p, _v in memory.r.j.sets)
+
+
 if __name__ == "__main__":
     test_da_valutare_is_parsed()
     test_classifier_fail_open_is_hypothesis_not_confirmation()
     test_da_valutare_marks_insight_requires_verification()
     test_smentita_still_demotes()
+    test_smentita_sets_demoted_once()
     print("test_reaction_verdict: OK")

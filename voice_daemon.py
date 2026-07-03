@@ -600,7 +600,15 @@ class VoiceDaemon:
             question = pending.data.get("question", "")
             self._awaiting_reaction = _PendingState({"insight": ins, "question": question}, timeout=1800)
             content = (ins.get("content") or "").strip()
-            snippet = content[:220] if content else "il pensiero che ti ho appena condiviso"
+            if content:
+                # L'insight ha struttura fissa a 3 righe e la TESI è la terza: il vecchio
+                # taglio cieco [:220] la mangiava (due volte dal vivo, 02-03/07) e Stefano
+                # finiva per "confermare" un claim mai pronunciato — che la cattura della
+                # reazione poi registrava come validato. Si legge TUTTO: la reazione può
+                # fondare solo ciò che è stato davvero detto.
+                snippet = " ".join(line.strip() for line in content.splitlines() if line.strip())
+            else:
+                snippet = "il pensiero che ti ho appena condiviso"
             reply = f"Mi riferivo a questo: {snippet}. Secondo te regge, o è una forzatura?"
             self.memory.log_conversation("Euri", reply)
             self._speak(reply)
