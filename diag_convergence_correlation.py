@@ -104,12 +104,26 @@ def main():
         cur_rc = None
         if outcome == "promoted":
             cur_rc = _f(r.execute_command("JSON.GET", seed, "$.recalled_count"))
-        rows.append(dict(outcome=outcome, conv=conv, ncert=ncert, claim_conv=claim_conv,
-                         cur_rc=cur_rc, age_days=(now - ts) / 86400 if ts else None))
+        rows.append(dict(seed=seed, ts=ts, outcome=outcome, conv=conv, ncert=ncert,
+                         claim_conv=claim_conv, cur_rc=cur_rc,
+                         age_days=(now - ts) / 86400 if ts else None))
+
+    # dedup per seed: una sola decisione per candidate — preferisci la TERMINALE, poi la più
+    # recente (lo stesso seed è ri-valutato/loggato più volte; robusto anche ai dati vecchi).
+    TERMINAL = {"promoted", "denied_format", "denied_repromotion"}
+    best = {}
+    for r_ in rows:
+        rank = (1 if r_["outcome"] in TERMINAL else 0, r_["ts"])
+        prev = best.get(r_["seed"])
+        if prev is None or rank > prev[0]:
+            best[r_["seed"]] = (rank, r_)
+    n_raw = len(rows)
+    rows = [v[1] for v in best.values()]
 
     # ── Report ─────────────────────────────────────────────
     from collections import Counter
-    print(f"Trace entries: {len(rows)}  |  μ_claim={muC:.4f}  soglia claim={thr:.4f}\n")
+    print(f"Trace: {n_raw} entry grezze → {len(rows)} candidate distinti (dedup per seed)"
+          f"  |  μ_claim={muC:.4f}  soglia claim={thr:.4f}\n")
     print("=== distribuzione esiti ===")
     for oc, n in Counter(r["outcome"] for r in rows).most_common():
         print(f"  {oc:22s} {n}")

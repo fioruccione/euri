@@ -651,6 +651,15 @@ Rispondi SOLO con SÌ o NO."""
         if not getattr(config, "CONVERGENCE_TRACE_ENABLED", True):
             return
         try:
+            # below_threshold è ri-valutato ogni ciclo per lo stesso candidate → dedup per
+            # (seed, convergences) con marcatore TTL: una entry per LIVELLO di convergenza
+            # raggiunto (traiettoria), non a ogni ciclo. Le decisioni TERMINALI
+            # (promoted/denied_*) si loggano SEMPRE — sono l'evento raro e prezioso per la
+            # correlazione convergenza↔uso, che il rumore below_threshold non deve sfrattare.
+            if outcome == "below_threshold":
+                seen_key = f"euri:convergence:seen:{doc.id}:{convergences}"
+                if not self._r.set(seen_key, "1", nx=True, ex=7 * 86400):
+                    return
             import json as _json
             g = lambda p, d=None: (self._r.json().get(doc.id, p) or [d])[0]
             self._r.xadd("euri:convergence:trace", {
@@ -665,7 +674,7 @@ Rispondi SOLO con SÌ o NO."""
                 "outcome": outcome,
                 "seed_content": (getattr(doc, "content", "") or "")[:600],
                 "neighbors": _json.dumps(neighbor_trace, ensure_ascii=False)[:4000],
-            }, maxlen=10000, approximate=True)
+            }, maxlen=50000, approximate=True)
         except Exception as e:
             logger.debug(f"trace convergence fallito (non-critico): {e}")
 
