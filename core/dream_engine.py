@@ -640,6 +640,35 @@ Rispondi SOLO con SÌ o NO."""
             logger.debug(f"Errore LLM judge insight: {e}")
             return False
 
+    def _trace_convergence(self, doc, convergences, n_certain, neighbor_trace, outcome):
+        """Instrumentazione ADDITIVA (read-only sulla decisione): registra la convergenza
+        AL MOMENTO DELLA DECISIONE su euri:convergence:trace, per correlarla OFFLINE col
+        recall futuro — test convergenza↔uso su dati NON selezionati (promossi E scartati),
+        che il pool dei soli promossi non permette (selection bias).
+        Non altera nessuna decisione. Fail-safe: non rompe mai il ciclo. Disattivabile via
+        config.CONVERGENCE_TRACE_ENABLED. neighbor_trace = [(id, score, content[:400])] per
+        ricalcolare offline qualsiasi metrica (es. claim-embedding + soglia relativa)."""
+        if not getattr(config, "CONVERGENCE_TRACE_ENABLED", True):
+            return
+        try:
+            import json as _json
+            g = lambda p, d=None: (self._r.json().get(doc.id, p) or [d])[0]
+            self._r.xadd("euri:convergence:trace", {
+                "ts": repr(time.time()),
+                "seed_id": str(doc.id),
+                "domain": f"{g('$.domain_a')}×{g('$.domain_b')}",
+                "created_at": repr(g("$.created_at")),
+                "demoted_once": "1" if g("$.demoted_once", False) else "0",
+                "recalled_count_at_decision": str(g("$.recalled_count", 0) or 0),
+                "convergences": str(convergences),
+                "n_certain": str(n_certain),
+                "outcome": outcome,
+                "seed_content": (getattr(doc, "content", "") or "")[:600],
+                "neighbors": _json.dumps(neighbor_trace, ensure_ascii=False)[:4000],
+            }, maxlen=10000, approximate=True)
+        except Exception as e:
+            logger.debug(f"trace convergence fallito (non-critico): {e}")
+
     def _evaluate_insights(self):
         """Valuta i candidate insights per la promozione (convergenza)."""
         try:
@@ -688,16 +717,20 @@ Rispondi SOLO con SÌ o NO."""
                 stored_cc = self._r.json().get(doc.id, "$.convergence_count")
                 convergences = int(stored_cc[0]) if stored_cc else 1
                 similar_ids = []
+                neighbor_trace = []   # (id, score, content[:400]) — instrumentazione offline
+                n_certain = 0         # vicini auto-contati (score<0.15), la parte anisotropia-sensibile
 
                 for sim in res_sim.docs:
                     if sim.id == doc.id:
                         continue  # Salta se stesso
                     score = float(sim.score)
+                    sim_content = getattr(sim, "content", None)
+                    neighbor_trace.append((str(sim.id), round(score, 4), (sim_content or "")[:400]))
                     if score < 0.15:
                         convergences += 1
+                        n_certain += 1
                         similar_ids.append(sim.id)
                     elif score < 0.40:
-                        sim_content = getattr(sim, "content", None)
                         if sim_content and self._llm_judge_same_insight(doc.content, sim_content):
                             logger.debug(f"Dream Engine: judge LLM ha confermato convergenza (score={score:.2f})")
                             convergences += 1
@@ -717,6 +750,7 @@ Rispondi SOLO con SÌ o NO."""
                             f"Dream Engine: promozione bloccata (formato non operativo) — "
                             f"{doc.id[-8:]} con {convergences} convergenze"
                         )
+                        self._trace_convergence(doc, convergences, n_certain, neighbor_trace, "denied_format")
                         continue
 
                     # Gate di ri-promozione (V2.19, opzione b): la PRIMA promozione è
@@ -742,6 +776,7 @@ Rispondi SOLO con SÌ o NO."""
                         pulse_emit(self._r, "insight", "intero", "repromotion_denied",
                                    payload={"id": str(doc.id)[-12:], "convergences": convergences},
                                    salience=0.45)
+                        self._trace_convergence(doc, convergences, n_certain, neighbor_trace, "denied_repromotion")
                         continue
 
                     # Provenienza cumulativa: prima di cancellare i candidate assorbiti,
@@ -777,6 +812,7 @@ Rispondi SOLO con SÌ o NO."""
                                    "convergences": convergences,
                                },
                                salience=0.65)
+                    self._trace_convergence(doc, convergences, n_certain, neighbor_trace, "promoted")
                     promoted_count += 1
                     
                     # Scrivi nel vault di Obsidian
@@ -786,7 +822,11 @@ Rispondi SOLO con SÌ o NO."""
                             write_insight(doc_promoted[0])
                     except Exception as e:
                         logger.debug(f"Errore sync insight su Obsidian: {e}")
-                        
+
+                else:
+                    # Convergenza sotto soglia: nessuna promozione (il ramo più comune).
+                    self._trace_convergence(doc, convergences, n_certain, neighbor_trace, "below_threshold")
+
         except Exception as e:
             logger.error(f"Errore valutazione insights: {e}")
 

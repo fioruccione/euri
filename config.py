@@ -221,6 +221,11 @@ DREAM_LIGHT_CYCLE_INTERVAL_S = 20 * 60       # insight eval, correzioni, ipotesi
 DREAM_CREATIVE_CYCLE_INTERVAL_S = 90 * 60    # nuovo sogno cross-domain + promozione
 DREAM_MAINTENANCE_CYCLE_INTERVAL_S = 24 * 3600  # 2f/2h/cleanup/pruning/2e
 DREAM_INSIGHT_MIN_CONVERGENCES = 3   # era 2 — soglia alzata per ridurre promozioni facili
+# Instrumentazione ADDITIVA: logga la convergenza-al-momento-della-decisione su
+# euri:convergence:trace (ogni esito: promoted/denied_format/denied_repromotion/below_threshold),
+# per correlarla OFFLINE col recall futuro — misura convergenza↔uso su dati NON selezionati.
+# Non altera nessuna promozione. Read-only sulla decisione. Vedi analisi diag_convergence_*.
+CONVERGENCE_TRACE_ENABLED = True
 INSIGHT_TTL_DAYS = 30
 INSIGHT_DEMOTE_DAYS = 14  # PROMOTED non richiamato entro X giorni → torna CANDIDATE
 
