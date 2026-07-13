@@ -517,6 +517,25 @@ class DreamEngine:
         label_a = f"dominio: {dom_a}" + (f", {age_a}" if age_a else "")
         label_b = f"dominio: {dom_b}" + (f", {age_b}" if age_b else "")
 
+        # Esperimento dream_trace (continuità 2b): residuo di STRATEGIA del ciclo
+        # precedente, iniettato come sezione marcata. Serve a non ripercorrere i TIPI
+        # di ponte già trovati deboli — mai a continuarli. A flag spento: sezione
+        # vuota, prompt bit-identico all'attuale.
+        trace_txt = None
+        if getattr(config, "DREAM_TRACE_ENABLED", False):
+            try:
+                trace_txt = self._r.get("euri:dream_trace:latest")
+            except Exception:
+                trace_txt = None
+        trace_section = ""
+        if trace_txt:
+            trace_section = (
+                "\n[TRACCIA DEL CICLO PRECEDENTE — strategie di connessione già tentate e trovate deboli:\n"
+                f"{trace_txt}\n"
+                "Serve solo a NON ripercorrere: se la connessione che stai per proporre ricade in una di "
+                "queste strategie deboli, cambia tipo di ponte o rispondi NESSUN INSIGHT.]\n"
+            )
+
         prompt = f"""\
 Hai due memorie da domini diversi. Il tuo compito è trovare una connessione operativa non ovvia — qualcosa che non emerge guardando un solo dominio.
 
@@ -525,7 +544,7 @@ Memoria A ({label_a}):
 
 Memoria B ({label_b}):
 "{mem_b['content']}"
-
+{trace_section}
 Se esiste una connessione genuina, rispondi ESATTAMENTE in questo formato (tre righe, niente altro):
 Nel dominio [{dom_a}] succede: [descrivi cosa succede concretamente, con i dettagli specifici della memoria A]
 Nel dominio [{dom_b}] succede: [descrivi cosa succede concretamente, con i dettagli specifici della memoria B]
@@ -545,11 +564,20 @@ REGOLE:
                 think=True,
             )
             text = response.message.content or ""
+            import re
+            # Il CoT va colto PRIMA dello strip: è la materia prima del residuo di
+            # esplorazione. A seconda della versione ollama vive in message.thinking
+            # oppure inline nel blocco <think> del content.
+            raw_cot = ""
+            if getattr(config, "DREAM_TRACE_ENABLED", False):
+                raw_cot = getattr(response.message, "thinking", "") or ""
+                if not raw_cot:
+                    m = re.search(r"<think>(.*?)</think>", text, flags=re.DOTALL)
+                    raw_cot = m.group(1) if m else ""
             if "<channel|>" in text:
                 text = text.split("<channel|>", 1)[-1]
-            import re
             text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-            
+
             status = "discarded"
             insight_content = ""
 
@@ -597,13 +625,69 @@ REGOLE:
                     # convergenza (union dei fratelli assorbiti — vedi promozione).
                     "source_memory_ids": [mem_a["id"], mem_b["id"]],
                 }
+                if getattr(config, "DREAM_TRACE_ENABLED", False):
+                    # Braccio sperimentale: candidate nato CON residuo iniettato (True)
+                    # o senza (False: primo ciclo, o residuo scaduto). A flag spento il
+                    # campo non esiste → nessuna differenza col comportamento attuale.
+                    insight_doc["trace_injected"] = bool(trace_txt)
                 self._r.json().set(f"euri:insight:{insight_id}", "$", insight_doc)
-                
+
+            # Il residuo si distilla ANCHE dai sogni scartati: "perché era debole" è
+            # proprio l'informazione che il ciclo dopo deve avere. Fail-open, dopo il
+            # salvataggio del sogno: un fallimento qui non tocca il ciclo.
+            if getattr(config, "DREAM_TRACE_ENABLED", False) and raw_cot:
+                self._update_dream_trace(raw_cot, dom_a, dom_b)
+
             return dream_doc
             
         except Exception as e:
             logger.error(f"Errore generazione sogno: {e}")
             return None
+
+    def _update_dream_trace(self, cot: str, dom_a: str, dom_b: str) -> None:
+        """Esperimento continuità 2b: distilla dal CoT appena scartato un residuo di
+        ESPLORAZIONE (max 5 righe) e lo persiste con TTL su euri:dream_trace:latest.
+
+        Il residuo vive al livello della STRATEGIA ("che tipo di ponte ho provato e
+        perché era debole"), non della coppia di domini: con ~145 domini e pairing
+        random la coppia non si ripete quasi mai, un residuo per-coppia sarebbe inerte.
+        Povero di proposito: troppo ricco → il ciclo dopo converge invece di esplorare
+        (ruminazione). think=False: il thinking consumerebbe num_predict e tornerebbe
+        vuoto (failure noto, caso synthesize_lesson). Il modello del sogno è già caldo
+        in VRAM → chiamata economica. NON è una memoria: niente embedding, niente
+        dominio, mai nel retrieval. Fail-open: non rompe mai il sogno."""
+        try:
+            if not cot or len(cot.strip()) < 80:
+                return
+            prompt = (
+                f"Hai appena cercato una connessione tra i domini '{dom_a}' e '{dom_b}'. "
+                "Questo è il tuo ragionamento grezzo:\n\n"
+                f"{cot[:6000]}\n\n"
+                "Riassumi in MASSIMO 5 righe quali TIPI di collegamento hai tentato e perché "
+                "erano deboli. Descrivi le STRATEGIE (es. 'analogia di processo', 'stesso "
+                "vincolo fisico', 'proxy di misura'), NON i contenuti specifici dei due domini "
+                "e NON l'insight finale. Formato: una riga per strategia, "
+                "'ho provato <tipo di ponte>: debole perché <ragione>'. Niente altro."
+            )
+            resp = self._ollama_chat(
+                model=config.DREAM_OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.2, "num_predict": 400},
+                think=False,
+            )
+            text = resp.message.content or ""
+            if "<channel|>" in text:
+                text = text.split("<channel|>", 1)[-1]
+            import re as _re
+            text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL).strip()
+            lines = [ln.strip() for ln in text.splitlines() if ln.strip()][:5]
+            residue = "\n".join(lines)
+            if residue:
+                self._r.setex("euri:dream_trace:latest",
+                              getattr(config, "DREAM_TRACE_TTL_S", 48 * 3600), residue)
+                logger.info(f"Dream trace aggiornata ({len(lines)} righe)")
+        except Exception as e:
+            logger.debug(f"dream_trace non aggiornata (non-critico): {e}")
 
     # ── Loop 2c: Insight e Promozione ──────────────────────────────────────
 
@@ -674,6 +758,11 @@ Rispondi SOLO con SÌ o NO."""
                 "outcome": outcome,
                 "seed_content": (getattr(doc, "content", "") or "")[:600],
                 "neighbors": _json.dumps(neighbor_trace, ensure_ascii=False)[:4000],
+                # Braccio esperimento dream_trace: "1"/"0" se il candidate è nato
+                # con/senza residuo iniettato; "" per i candidate pre-esperimento.
+                # È il join che permette l'audit baseline/trattamento SULLA trace,
+                # senza log paralleli.
+                "trace_injected": {True: "1", False: "0"}.get(g("$.trace_injected"), ""),
             }, maxlen=50000, approximate=True)
         except Exception as e:
             logger.debug(f"trace convergence fallito (non-critico): {e}")

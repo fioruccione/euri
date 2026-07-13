@@ -226,6 +226,13 @@ DREAM_INSIGHT_MIN_CONVERGENCES = 3   # era 2 — soglia alzata per ridurre promo
 # per correlarla OFFLINE col recall futuro — misura convergenza↔uso su dati NON selezionati.
 # Non altera nessuna promozione. Read-only sulla decisione. Vedi analisi diag_convergence_*.
 CONVERGENCE_TRACE_ENABLED = True
+# Esperimento continuità 2b (dream_trace): tra un ciclo creativo e il successivo persiste
+# un residuo di ESPLORAZIONE a livello di STRATEGIA (tipi di ponte tentati e trovati deboli,
+# max 5 righe, mai contenuti né conclusioni). Con ~145 domini e pairing random la coppia non
+# si ripete quasi mai → un residuo per-coppia sarebbe inerte; quello per-strategia trasferisce.
+# Pre-registrazione e criteri: ESPERIMENTO_DREAM_TRACE.md. A flag spento: zero differenze.
+DREAM_TRACE_ENABLED = True  # ON dal 13/07 (ok Stefano) — raccolta braccio trattamento
+DREAM_TRACE_TTL_S = 48 * 3600  # residuo stantio dopo 2 giorni di fermo → scade, non contamina
 INSIGHT_TTL_DAYS = 30
 INSIGHT_DEMOTE_DAYS = 14  # PROMOTED non richiamato entro X giorni → torna CANDIDATE
 
