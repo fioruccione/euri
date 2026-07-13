@@ -659,15 +659,26 @@ REGOLE:
         try:
             if not cot or len(cot.strip()) < 80:
                 return
+            # NB 13/07 sera: la v1 di questo prompt aveva 3 etichette d'esempio → il
+            # modello le pappagallava a ogni ciclo, e la traccia iniettata nel sogno
+            # rientrava dal CoT nel residuo (eco a punto fisso, quasi-verbatim tra
+            # cicli su domini diversi). Ora: niente esempi, ignorare esplicitamente
+            # la traccia precedente, e "NIENTE DA SEGNALARE" se non c'è esplorazione
+            # vera (meglio nessun residuo di un residuo finto).
             prompt = (
                 f"Hai appena cercato una connessione tra i domini '{dom_a}' e '{dom_b}'. "
                 "Questo è il tuo ragionamento grezzo:\n\n"
                 f"{cot[:6000]}\n\n"
-                "Riassumi in MASSIMO 5 righe quali TIPI di collegamento hai tentato e perché "
-                "erano deboli. Descrivi le STRATEGIE (es. 'analogia di processo', 'stesso "
-                "vincolo fisico', 'proxy di misura'), NON i contenuti specifici dei due domini "
-                "e NON l'insight finale. Formato: una riga per strategia, "
-                "'ho provato <tipo di ponte>: debole perché <ragione>'. Niente altro."
+                "Riassumi in MASSIMO 5 righe i tentativi di collegamento che HAI FATTO in "
+                "QUESTO ragionamento e perché non reggevano. Regole:\n"
+                "- il TIPO di ponte descrivilo con parole tue, prese dal ragionamento vero — "
+                "niente etichette generiche di repertorio;\n"
+                "- se nel ragionamento compare una [TRACCIA DEL CICLO PRECEDENTE], IGNORALA: "
+                "non riassumerla, non riusarne etichette o frasi;\n"
+                "- niente contenuti specifici dei due domini, niente insight finale;\n"
+                "- una riga per tentativo: 'ho provato <tipo di ponte>: debole perché <ragione>'.\n"
+                "Se in questo ragionamento non hai esplorato strade alternative reali, "
+                "rispondi solo: NIENTE DA SEGNALARE."
             )
             resp = self._ollama_chat(
                 model=config.DREAM_OLLAMA_MODEL,
@@ -680,6 +691,8 @@ REGOLE:
                 text = text.split("<channel|>", 1)[-1]
             import re as _re
             text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL).strip()
+            if "NIENTE DA SEGNALARE" in text.upper():
+                return  # nessuna esplorazione vera → non sovrascrivere (il TTL smaltisce)
             lines = [ln.strip() for ln in text.splitlines() if ln.strip()][:5]
             residue = "\n".join(lines)
             if residue:

@@ -113,3 +113,19 @@ bozza web era sotto il rumore: 0.6 σ):
   candidato a de-boilerplate, ma è il fix V2.6, va trattato con rispetto.
 - Gate di promozione: la convergenza-per-ripetizione non misura contenuto (analisi
   04–13/07) — ripensarlo è il lavoro grosso a parte, legato a uso/external_reaction.
+
+## NOTA DI RACCOLTA (13/07 sera) — eco a punto fisso, distillazione rifinita
+
+I primi 2 residui reali (13:07 e ~16:40) hanno mostrato il failure mode previsto al
+punto 3 della procedura, in forma aggravata: **stesse 3 etichette in entrambi (2 erano
+gli esempi del prompt di distillazione), terza riga quasi-verbatim tra cicli su domini
+diversi** ("errore di codifica…scalabilità" ricopiato su un sogno trading×QC dove non
+c'entrava). Diagnosi: la traccia iniettata rientra dal CoT nel residuo → eco a punto
+fisso, non esplorazione. Fix (in-perimetro, previsto dalla prereg): prompt di
+distillazione senza esempi (venivano pappagallati), istruzione esplicita di IGNORARE
+la [TRACCIA DEL CICLO PRECEDENTE] nel CoT, e "NIENTE DA SEGNALARE" → non si scrive
+(meglio nessun residuo di un residuo finto). Attivo al prossimo restart del daemon.
+
+**Regola di esclusione per l'audit:** i candidate `trace_injected="1"` generati PRIMA
+del restart col fix (finestra 13/07 ~14:30 → restart) sono ESCLUSI dal braccio
+trattamento (residuo degenere ≠ intervento testato). Filtro: created_at < ts restart.
