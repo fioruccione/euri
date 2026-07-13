@@ -158,6 +158,7 @@ class VoiceDaemon:
         self._teach_pending_save = ""
         self._web_pending: dict = {}  # contesto ultima ricerca web (per "approfondisci" / "salva")
         self._pending_todo: _PendingState | None = None   # todo in attesa di conferma (timeout 60s)
+        self._pending_reschedule: _PendingState | None = None  # impegno da spostare, manca la data (timeout 120s)
         self._pending_write: _PendingState | None = None  # richiesta scrittura file in attesa (timeout 120s)
         self._awaiting_reaction: _PendingState | None = None  # insight su cui Euri ha chiesto conferma, in attesa della reazione di Stefano (timeout 300s)
         self._last_created_file: str | None = None  # ultimo file creato da Euri (per "aprilo")
@@ -184,6 +185,13 @@ class VoiceDaemon:
         self._IMPLICIT_ACTIONS = [
             (re.compile(r'\b(controllo|verifico|guardo)\b.{0,30}\b(todo|task|scadenz)', re.IGNORECASE),
              lambda t, r: self._handle_list_today("controlla i todo")),
+            # Claim di riprogrammazione non backed (caso Poseidon 13/07: "Impegno
+            # aggiornato" detto da CHAT senza tool) → esegue lo spostamento VERO,
+            # pescando la data dal testo utente o, in fallback, dal claim stesso.
+            (re.compile(r'\bimpegno\s+(aggiornato|spostato|riprogrammato)\b|'
+                        r'\bho\s+(spostato|riprogrammato|aggiornato)\b.{0,30}\b(impegno|promemoria|scadenza)',
+                        re.IGNORECASE),
+             lambda t, r: self._handle_reschedule(t, reply_hint=r)),
             (re.compile(r'\b(leggo|guardo|controllo)\b.{0,20}\blog\b', re.IGNORECASE),
              lambda t, r: self._handle_execute("leggi il log")),
             (re.compile(r'\b(controllo|verifico)\b.{0,20}\b(cpu|ram|disco|spazio)\b', re.IGNORECASE),
@@ -708,6 +716,100 @@ class VoiceDaemon:
         todo = candidates[0]
         self.memory.complete_todo(todo["id"])
         reply = self.brain.complete_todo_response(todo["content"])
+        self.memory.log_conversation("Euri", reply)
+        self._speak(reply)
+
+    # Ore in lettere ("alle nove" → "alle 9:00") e rumore da togliere dalla query
+    # di targeting (verbi del gesto + riferimenti temporali: identificano l'AZIONE,
+    # non l'impegno). Forme strutturali dell'italiano, nessun idioma di settore.
+    _HOUR_WORDS = {"una": 1, "due": 2, "tre": 3, "quattro": 4, "cinque": 5, "sei": 6,
+                   "sette": 7, "otto": 8, "nove": 9, "dieci": 10, "undici": 11,
+                   "dodici": 12, "tredici": 13, "quattordici": 14, "quindici": 15,
+                   "sedici": 16, "diciassette": 17, "diciotto": 18, "diciannove": 19,
+                   "venti": 20, "ventuno": 21, "ventidue": 22, "ventitre": 23}
+    _RESCHED_NOISE = {"sposta", "spostalo", "spostala", "spostami", "rimanda", "rimandalo",
+                      "rimandala", "posticipa", "rinvia", "riprogramma", "impegno",
+                      "promemoria", "scadenza", "appuntamento", "aggiornato", "spostato",
+                      "riprogrammato", "spostata", "riprogrammata", "lunedì", "martedì",
+                      "mercoledì", "giovedì", "venerdì", "sabato", "domenica", "domani",
+                      "dopodomani", "oggi", "stasera", "stamattina", "settimana",
+                      "settimane", "giorno", "giorni", "mese", "mesi", "prossimo",
+                      "prossima", "mattina", "pomeriggio", "sera", "adesso", "subito"}
+
+    @classmethod
+    def _extract_reschedule_date(cls, text: str):
+        """extract_due_date + tre normalizzazioni per gli spostamenti:
+        'rimandalo DI una settimana' → 'tra una settimana'; 'alle nove' → 'alle 9:00'
+        (forme strutturali italiane, non idiomi di settore); giorno senza orario →
+        default 09:00 (una scadenza a mezzanotte non è mai l'intento di un impegno)."""
+        if not text:
+            return None
+        from core.time_parser import extract_due_date
+        t = re.sub(r"\b(?:di|per)\s+((?:un[oa]?|\d+)\s+(?:giorn[io]|settiman[ae]|or[ae]|mes[ei]))\b",
+                   r"tra \1", text, flags=re.IGNORECASE)
+        t = re.sub(r"\b(alle?)\s+(" + "|".join(cls._HOUR_WORDS) + r")\b",
+                   lambda m: f"alle {cls._HOUR_WORDS[m.group(2).lower()]}:00", t,
+                   flags=re.IGNORECASE)
+        due = extract_due_date(t)
+        if due is not None and due.hour == 0 and due.minute == 0:
+            due = due.replace(hour=9)
+        return due
+
+    def _find_reschedule_target(self, *texts):
+        """Individua l'impegno da spostare: keyword OR sui testi (utente prima, claim
+        di Euri come fallback), spogliati dei verbi del gesto e delle parole temporali.
+        La frase intera sanitizzata sarebbe un AND di tutti i token: non trova mai."""
+        for t in texts:
+            if not t:
+                continue
+            kw = [w for w in self.memory._safe_keywords(t) if w not in self._RESCHED_NOISE]
+            if not kw:
+                continue
+            candidates = self.memory.find_todo_by_content(" | ".join(kw[:5]))
+            if candidates:
+                return candidates[0]
+        return None
+
+    def _handle_reschedule(self, text: str, reply_hint: str = ""):
+        """Sposta la scadenza di un impegno — il gesto che backa i claim di
+        riprogrammazione (prima esisteva solo la parola, non l'azione)."""
+        self.memory.log_conversation("Stefano", text)
+        pending = self.memory.get_pending_todos()
+        if not pending:
+            self._speak("Non ho impegni in agenda da spostare.")
+            return
+        # Target: con un solo pending è lui; altrimenti keyword-match su utente+claim
+        target = pending[0] if len(pending) == 1 else self._find_reschedule_target(text, reply_hint)
+        if target is None:
+            self._speak("Quale impegno devo spostare? Dimmi qualche parola del contenuto.")
+            return
+        # Data: dal testo dell'utente; in fallback dal claim di Euri (implicit action)
+        new_due = self._extract_reschedule_date(text) or self._extract_reschedule_date(reply_hint)
+        if new_due is None:
+            self._pending_reschedule = _PendingState(
+                {"id": target["id"], "content": target.get("content", "")}, timeout=120)
+            self._speak(f"A quando sposto: {target.get('content', '')[:70]}?")
+            return
+        self._apply_reschedule(target, new_due)
+
+    def _handle_pending_reschedule(self, text: str):
+        """Risposta alla domanda 'a quando lo sposto?'."""
+        pending = self._pending_reschedule
+        self._pending_reschedule = None
+        if re.search(r"\b(annulla|lascia\s+stare|lascia\s+perdere|niente|no)\b", text.lower()):
+            self._speak("Ok, la scadenza resta com'è.")
+            return
+        new_due = self._extract_reschedule_date(text)
+        if new_due is None:
+            self._speak("Non ho capito la data — la scadenza resta com'era.")
+            return
+        self._apply_reschedule(pending.data, new_due)
+
+    def _apply_reschedule(self, todo: dict, new_due):
+        if self.memory.reschedule_todo(todo["id"], new_due):
+            reply = f"Fatto. Spostato a {format_datetime(new_due)}: {todo.get('content', '')[:80]}"
+        else:
+            reply = "Non riesco a spostarlo — quell'impegno non lo trovo più."
         self.memory.log_conversation("Euri", reply)
         self._speak(reply)
 
@@ -1446,6 +1548,15 @@ class VoiceDaemon:
                 self._handle_pending_todo(text)
                 return
 
+        # Riprogrammazione pending: Euri ha chiesto "a quando lo sposto?" (timeout 120s)
+        if self._pending_reschedule:
+            if self._pending_reschedule.expired():
+                self._pending_reschedule = None
+                logger.debug("Reschedule pending scaduto (timeout 120s)")
+            else:
+                self._handle_pending_reschedule(text)
+                return
+
         # Write pending: attende conferma/dettagli/annullamento (timeout 120s)
         if self._pending_write:
             if self._pending_write.expired():
@@ -1569,6 +1680,7 @@ class VoiceDaemon:
             Intent.SEARCH: self._handle_search,
             Intent.LIST_TODAY: self._handle_list_today,
             Intent.COMPLETE: self._handle_complete,
+            Intent.RESCHEDULE: self._handle_reschedule,
             Intent.SILENCE_MODE: self._handle_silence_mode,
             Intent.RESTORE_ALERTS: self._handle_restore_alerts,
             Intent.STATUS: self._handle_status,
@@ -1869,6 +1981,7 @@ class VoiceDaemon:
             return "awaiting_reaction"
         if any([
             self._pending_todo,
+            self._pending_reschedule,
             self._pending_write,
             self._teach_recovery_mode,
             self._teach_mode,

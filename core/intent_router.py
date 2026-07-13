@@ -17,6 +17,7 @@ class Intent(str, Enum):
     SEARCH = "SEARCH"
     LIST_TODAY = "LIST_TODAY"
     COMPLETE = "COMPLETE"
+    RESCHEDULE = "RESCHEDULE"
     SILENCE_MODE = "SILENCE_MODE"
     RESTORE_ALERTS = "RESTORE_ALERTS"
     STATUS = "STATUS"
@@ -64,6 +65,12 @@ _PATTERNS: list[tuple[Intent, list[str]]] = [
         r"cancella\s+(il\s+)?(promemoria|todo|task)",
         r"segna\s+(come\s+)?(fatto|completato)",
         r"rimuovi\s+(il\s+)?promemoria",
+    ]),
+    (Intent.RESCHEDULE, [
+        # verbi strutturali di spostamento + parola-impegno vicina, o utterance che
+        # inizia col verbo ("spostalo a lunedì"). Niente idiomi di settore.
+        r"(sposta|rimanda|posticipa|rinvia|riprogramma)\b.{0,40}\b(impegno|promemoria|todo|scadenza|prova|appuntamento)",
+        r"^(sposta|rimanda|posticipa|rinvia|riprogramma)(lo|la|mi|melo|mela)?\b",
     ]),
     (Intent.SAVE_TODO, [
         r"ricordami\s+(?:\w+\s+){0,3}(?:di|del|dello|della|dei|degli)\b",

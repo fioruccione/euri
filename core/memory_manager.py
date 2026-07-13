@@ -617,8 +617,27 @@ class MemoryManager:
         logger.info(f"Impegno completato: {todo_id}")
         return True
 
+    def reschedule_todo(self, todo_id: str, new_due: datetime) -> bool:
+        """Sposta la scadenza di un impegno e riarma consegna e clock afferente:
+        una scadenza nuova è un evento nuovo — va riannunciata (marcatore
+        euri:pulse:clock_emitted rimosso) e riconsegnata (reminded_count azzerato)."""
+        key = f"euri:memory:{todo_id}"
+        if not self.r.exists(key):
+            return False
+        self.r.json().set(key, "$.due_at", to_timestamp(new_due))
+        self.r.json().set(key, "$.reminded_count", 0)
+        self.r.json().set(key, "$.last_reminded_at", None)
+        try:
+            self.r.srem("euri:pulse:clock_emitted", todo_id)
+        except Exception:
+            pass  # fail-open: al peggio il clock afferente non ri-emette, la consegna va comunque
+        logger.info(f"Impegno riprogrammato: {todo_id} → {format_datetime(new_due)}")
+        return True
+
     def find_todo_by_content(self, query: str) -> list[dict]:
-        return self._query_todos(f"({self._sanitize_query(query)}) @status:{{pending}}", limit=3)
+        # _sanitize_query_or preserva gli OR espliciti ("a | b") costruiti dai chiamanti:
+        # una frase intera sanitizzata diventa AND di tutti i token e non trova mai nulla.
+        return self._query_todos(f"({self._sanitize_query_or(query)}) @status:{{pending}}", limit=3)
 
     @staticmethod
     def _safe_keywords(content: str) -> list[str]:
