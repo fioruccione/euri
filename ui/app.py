@@ -423,7 +423,7 @@ with main_col:
             ins_count = 0
             
         try:
-            todo_count = r.ft("idx:todos").info()["num_docs"]
+            todo_count = len(memory_manager.get_pending_todos())
         except Exception:
             todo_count = 0
             
@@ -769,16 +769,17 @@ with main_col:
                 tid = todo.get("id", "")
                 content = todo.get("content", "")
                 due = todo.get("_due_at")
-                priority = todo.get("priority", "media")
                 due_str = due.strftime("%d/%m %H:%M") if due else "nessuna scadenza"
-                badge = "🔴" if priority == "alta" else "🟡" if priority == "media" else "🟢"
 
-                with st.expander(f"{badge} {content[:60]} | {due_str}"):
+                with st.expander(f"⏰ {content[:60]} | {due_str}"):
                     new_content = st.text_input("Contenuto", value=content, key=f"edit_{tid}")
                     c1, c2, c3 = st.columns(3)
                     with c1:
                         if st.button("💾 Salva", key=f"save_{tid}"):
-                            r.json().set(f"euri:todo:{tid}", "$.content", new_content)
+                            # Nota: l'embedding resta quello del contenuto originale;
+                            # per ritocchi minori è accettabile, riscritture profonde
+                            # meglio farle a voce (nuovo impegno).
+                            r.json().set(f"euri:memory:{tid}", "$.content", new_content)
                             st.success("Aggiornato!")
                             st.rerun()
                     with c2:
@@ -788,7 +789,7 @@ with main_col:
                             st.rerun()
                     with c3:
                         if st.button("🗑️ Elimina", key=f"del_{tid}"):
-                            r.delete(f"euri:todo:{tid}")
+                            r.delete(f"euri:memory:{tid}")
                             st.success("Eliminato!")
                             st.rerun()
 

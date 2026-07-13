@@ -164,6 +164,36 @@ def build_rag_context(
                 results.append(r)
                 seen_ids.add(rid)
 
+    # Impegni aperti (TUTTI i pending, anche futuri): stato reale, iniettato in modo
+    # deterministico — il retrieval semantico non copre le domande temporali
+    # ("cosa è scaduto?", "che appuntamenti ho?") e perde il nodo-impegno nella
+    # competizione coi vicini (13/07: "scadenza Poseidon" negata con l'impegno vivo
+    # a domani). I pending sono pochi per natura → il blocco resta compatto e compare
+    # solo quando l'agenda non è vuota; niente diluizione degli slot.
+    commitment_lines: list[str] = []
+    commitment_ids: set = set()
+    try:
+        for t in memory.get_pending_todos()[:5]:
+            tid = t.get("id")
+            if tid in commitment_ids:
+                continue
+            commitment_ids.add(tid)
+            due = t.get("_due_at")
+            state = "senza scadenza"
+            if due:
+                delta_days = (due.date() - now().date()).days
+                if delta_days < 0:
+                    state = f"SCADUTO da {-delta_days} {'giorno' if delta_days == -1 else 'giorni'}"
+                elif delta_days == 0:
+                    state = f"scade oggi alle {due.strftime('%H:%M')}"
+                elif delta_days == 1:
+                    state = f"scade domani alle {due.strftime('%H:%M')}"
+                else:
+                    state = f"scade il {due.strftime('%d/%m alle %H:%M')}"
+            commitment_lines.append(f"- [{state}] {t['content']}")
+    except Exception as e:
+        logger.debug(f"RAG impegni aperti non disponibili: {e}")
+
     insight_lines: list[str] = []
     if keywords and not history_resolves_query:
         for ins in memory.search_insights(text, limit=2):
@@ -190,9 +220,16 @@ def build_rag_context(
     mem_cap = config.RAG_MEM_CAP_TEMPORAL if time_range else config.RAG_MEM_CAP
     if reflection_lines:
         sections.append("Sintesi recenti:\n" + "\n".join(reflection_lines))
+    if commitment_lines:
+        sections.append(
+            "Impegni aperti (stato reale in agenda, non ricordi):\n"
+            + "\n".join(commitment_lines)
+        )
     if results:
         mem_lines = []
         for r in results[:mem_cap]:
+            if r.get("id") in commitment_ids:
+                continue  # già nel blocco impegni, non duplicare
             age = _relative_time(r.get("created_at"))
             label = (
                 f"[{r.get('domain', 'generale')} | {age}]"
@@ -200,7 +237,8 @@ def build_rag_context(
             )
             suffix = memory_verification_suffix(r)
             mem_lines.append(f"- {label} {r['content']}{suffix}")
-        sections.append("Ricordi/note rilevanti:\n" + "\n".join(mem_lines))
+        if mem_lines:
+            sections.append("Ricordi/note rilevanti:\n" + "\n".join(mem_lines))
     if insight_lines:
         sections.append("Principi trasversali:\n" + "\n".join(insight_lines))
 

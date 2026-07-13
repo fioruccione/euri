@@ -184,13 +184,26 @@ class Brain:
         return self.respond(prompt)
 
     def format_today_summary(self, todos: list[dict], overdue: list[dict]) -> str:
-        """Genera riepilogo mattutino vocale."""
+        """Genera riepilogo mattutino vocale. Gli scaduti vanno NOMINATI, non contati:
+        un conteggio senza contenuto non è rispondibile né azionabile ("1 cosa scaduta"
+        ripetuto per settimane, caso Poseidon 13/07)."""
         if not todos and not overdue:
             return "Agenda libera oggi. Niente di programmato."
 
         lines = []
         if overdue:
-            lines.append(f"{len(overdue)} {'cosa scaduta' if len(overdue) == 1 else 'cose scadute'}.")
+            lines.append(f"{'Un impegno scaduto' if len(overdue) == 1 else str(len(overdue)) + ' impegni scaduti'}:")
+            for t in overdue[:3]:  # max 3 per voce
+                due = t.get("_due_at")
+                age = ""
+                if due:
+                    days = max(0, (now() - due).days)
+                    age = f", da {days} {'giorno' if days == 1 else 'giorni'}" if days else ", da oggi"
+                lines.append(f"{t['content']}{age}.")
+            if len(overdue) > 3:
+                lines.append(f"E {len(overdue) - 3} altri.")
+            lines.append("Dimmi se li chiudo o li riprogrammo." if len(overdue) > 1
+                         else "Dimmi se lo chiudo o lo riprogrammo.")
         if todos:
             lines.append(f"Oggi hai {len(todos)} {'impegno' if len(todos) == 1 else 'impegni'}.")
             for t in todos[:3]:  # max 3 per voce

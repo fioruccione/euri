@@ -50,7 +50,7 @@ class MemoryManager:
     # MEMORIES (ricordi a lungo termine)
     # ──────────────────────────────────────────
 
-    def save_memory(self, content: str, category: str = "personale", tags: list[str] = None, source: str = "user", expires_at: datetime | None = None, idempotent: bool = False) -> str | None:
+    def save_memory(self, content: str, category: str = "personale", tags: list[str] = None, source: str = "user", expires_at: datetime | None = None, idempotent: bool = False, due_at: datetime | None = None, status: str | None = None) -> str | None:
         # Memory Guard: scansione anti-poisoning sull'ingest. Da fonte non fidata
         # (web/mobile_in) un contenuto con injection/esfiltrazione viene rifiutato
         # (ritorna None); da fonte fidata si salva ma marcato in safety_flag.
@@ -146,7 +146,7 @@ class MemoryManager:
             "domain": domain_label,
             "requires_verification": requires_verification,
             "created_at": to_timestamp(ts),
-            "due_at": None,
+            "due_at": to_timestamp(due_at),
             "expires_at": to_timestamp(expires_at) if expires_at else None,
             "recalled_count": 0,
             "last_recalled_at": None,
@@ -156,6 +156,13 @@ class MemoryManager:
             "memory_axes": memory_axes,
             "safety_flag": guard["safety_flag"],  # [] se pulito; categorie se contenuto sospetto da fonte fidata
         }
+        # Impegno (todo assorbito): una memoria con scadenza e stato pending/done.
+        # Le memorie normali restano senza status → invisibili a @status:{pending}.
+        if status:
+            doc["status"] = status
+            doc["reminded_count"] = 0
+            doc["last_reminded_at"] = None
+            doc["completed_at"] = None
         self.r.json().set(key, "$", doc)
         update_loop2e_candidate_index(self.r, doc)
         if expires_at:
@@ -570,28 +577,18 @@ class MemoryManager:
         return self._search_keyword("*", limit=limit, source_filter=["reflection"], touch=touch)
 
     # ──────────────────────────────────────────
-    # TODOS (promemoria con scadenza)
+    # IMPEGNI (todo assorbiti nel modello memoria: memorie con due_at + status)
     # ──────────────────────────────────────────
 
-    def save_todo(self, content: str, due_at: datetime = None, priority: str = "media", tags: list[str] = None) -> str:
-        tid = str(uuid.uuid4())
-        key = f"euri:todo:{tid}"
-        ts = now()
-        doc = {
-            "id": tid,
-            "content": content,
-            "created_at": to_timestamp(ts),
-            "due_at": to_timestamp(due_at),
-            "completed_at": None,
-            "priority": priority,
-            "status": "pending",
-            "reminded_count": 0,
-            "last_reminded_at": None,
-            "tags": tags or [],
-        }
-        self.r.json().set(key, "$", doc)
-        logger.info(f"Todo salvato: {tid} — scadenza: {format_datetime(due_at)}")
-        return tid
+    def save_todo(self, content: str, due_at: datetime = None, tags: list[str] = None) -> str | None:
+        """Un impegno è una memoria di prima classe con scadenza e stato pending/done:
+        passa dall'hardened path di save_memory (guard, axes, embedding, pulse, vault)
+        e il piano conversazionale la vede come qualsiasi altro ricordo."""
+        mid = self.save_memory(content, category="impegno", tags=tags, source="user",
+                               due_at=due_at, status="pending")
+        if mid:
+            logger.info(f"Impegno salvato: {mid} — scadenza: {format_datetime(due_at)}")
+        return mid
 
     def get_todos_today(self) -> list[dict]:
         t = now()
@@ -606,30 +603,22 @@ class MemoryManager:
     def get_pending_todos(self) -> list[dict]:
         return self._query_todos("@status:{pending}")
 
-    def get_due_todos_now(self, window_seconds: int = 60) -> list[dict]:
-        """Todo in scadenza entro i prossimi window_seconds (default: entro questo minuto)."""
-        ts_now = now().timestamp()
-        ts_end = ts_now + window_seconds
-        return self._query_todos(
-            f"@due_at:[{ts_now - window_seconds} {ts_end}] @status:{{pending}} @reminded_count:[0 0]"
-        )
-
     def mark_reminded(self, todo_id: str):
-        key = f"euri:todo:{todo_id}"
+        key = f"euri:memory:{todo_id}"
         self.r.json().numincrby(key, "$.reminded_count", 1)
         self.r.json().set(key, "$.last_reminded_at", to_timestamp(now()))
 
     def complete_todo(self, todo_id: str) -> bool:
-        key = f"euri:todo:{todo_id}"
+        key = f"euri:memory:{todo_id}"
         if not self.r.exists(key):
             return False
         self.r.json().set(key, "$.status", "done")
         self.r.json().set(key, "$.completed_at", to_timestamp(now()))
-        logger.info(f"Todo completato: {todo_id}")
+        logger.info(f"Impegno completato: {todo_id}")
         return True
 
     def find_todo_by_content(self, query: str) -> list[dict]:
-        return self._query_todos(self._sanitize_query(query), limit=3)
+        return self._query_todos(f"({self._sanitize_query(query)}) @status:{{pending}}", limit=3)
 
     @staticmethod
     def _safe_keywords(content: str) -> list[str]:
@@ -938,20 +927,22 @@ class MemoryManager:
         }
 
     def _query_todos(self, query: str, limit: int = 20) -> list[dict]:
+        """Query sugli impegni: memorie con status pending/done in idx:memories."""
         try:
             q = Query(query).paging(0, limit).sort_by("due_at", asc=True)
-            results = self.r.ft("idx:todos").search(q)
+            results = self.r.ft("idx:memories").search(q)
             docs = []
             for doc in results.docs:
                 data = self.r.json().get(doc.id, "$")
                 if data:
                     item = data[0]
+                    item.pop("embedding", None)  # inutile ai consumatori, pesante nei log
                     item["_due_at"] = from_timestamp(item.get("due_at"))
                     item["_created_at"] = from_timestamp(item.get("created_at"))
                     docs.append(item)
             return docs
         except Exception as e:
-            logger.error(f"Errore query todos: {e}")
+            logger.error(f"Errore query impegni: {e}")
             return []
 
     # ──────────────────────────────────────────
