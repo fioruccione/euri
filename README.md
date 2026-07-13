@@ -48,6 +48,7 @@ Quando non gli parli per un po', Euri entra in cicli cognitivi offline. Non è p
 - **Ciclo manutentivo** (~24h): risoluzione contraddizioni, self-observation, cleanup, pruning e consolidamento semantico.
 - Pesca due memorie appartenenti a due domini *completamente diversi*.
 - **Loop 2b** — Chiede a **Qwen3.6 35B** (*thinking attivo*, modello dedicato) di cercare isomorfismi strutturali tra i due concetti usando un processo in 3 passi: astrazione logica → ricerca della dinamica condivisa → formulazione del principio generale. Qwen3.6 è separato da Gemma4: più lento ma con ragionamento astratto superiore, usato nei cicli offline senza vincoli di latenza realtime.
+- **dream_trace (esperimento, dietro flag):** tra un ciclo creativo e il successivo sopravvive un **residuo di esplorazione** distillato dal chain-of-thought del sogno appena concluso — max 5 righe, a livello di *strategia* ("che tipo di ponte ho provato e perché era debole"), mai contenuti né conclusioni. Il ciclo dopo lo riceve con l'istruzione di **non ripercorrere** i tipi di connessione già trovati deboli. Stato effimero (TTL 48h), mai nel retrieval né nelle memorie. Ipotesi pre-registrata e criteri di misura (audit cieco sui candidate): `ESPERIMENTO_DREAM_TRACE.md`.
 - Se l'analogia è forte, genera un **CANDIDATE Insight**.
 - **Loop 2c** — La promozione CANDIDATE→PROMOTED usa un sistema a due livelli: distanza cosine vettoriale (fast path) + **LLM judge con thinking** per la zona grigia (score 0.15–0.40). Il judge valuta se due insight formulati diversamente esprimono lo stesso principio strutturale profondo — un giudizio che il solo vettore cosine non può dare.
 - Se abbastanza sogni indipendenti convergono, l'insight viene **PROMOSSO** e scritto permanentemente in Obsidian.
@@ -209,7 +210,7 @@ cd /home/fio/Euri
 - **Memoria anaforica:** *"memorizza questo / queste informazioni"* — salva l'ultimo scambio (sintesi fedele), non le parole del comando.
 - **Memoria su un soggetto discusso (V2.19):** *"ricordati il macinato di Seari"* — il modello caldo capisce che rimandi a un tema appena affrontato e cattura la **sostanza** della conversazione su quel soggetto, invece di salvare la sola etichetta presente nel comando.
 - **Arricchimento (merge):** se aggiungi un dettaglio nuovo a qualcosa di già salvato, Euri **arricchisce** la memoria esistente e te lo annuncia ("Ho aggiornato la memoria: …") invece di scartarlo come duplicato o crearne uno doppio. Se invece è un soggetto diverso, salva separato.
-- **Todo con scadenza:** *"Devo fare X fra 5 minuti"*
+- **Impegni con scadenza:** *"Devo fare X fra 5 minuti"* — un impegno è una **memoria di prima classe** con `due_at` e stato pending/done (niente più silo separato): passa dallo stesso path hardened delle memorie, il piano conversazionale lo vede sempre (*"che impegni ho?"*, *"cosa è scaduto?"* rispondono col contenuto reale, anche per scadenze future), e il promemoria viene consegnato **una volta sola, quando sei presente**, formulato naturalmente. Gli scaduti vengono nominati, non contati.
 - **Passive Learner:** Euri ascolta passivamente e dopo 45 secondi di silenzio salva informazioni utili in background.
 - **Stessa cosa in Silent Chat:** i comandi di salvataggio funzionano identici nella chat testuale (stesso coordinatore), senza più fingere il salvataggio.
 
