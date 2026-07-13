@@ -77,3 +77,20 @@ GO pre-registrato: ≥80% dei giorni con S o ~ senza fantasmi in cima.
 - **0.42** [chimica industriale] Stefano ha confermato che l'ancora logica del mio insight è vera: il controllo della sciss  
   _(nato da reaction 13/07 08:06, rinforzato 0×)_
 
+
+---
+
+## ESITO (13/07/2026, audit fatto a voce con Stefano)
+
+**GO — 7/7 giorni riconosciuti** ("mi sembrano tutti frutto delle mie conversazioni,
+sono sicuramente mie conversazioni con Euri"). Nessun fantasma in cima.
+
+Sfumatura onesta: Stefano ha validato la PROVENIENZA ("sono le mie conversazioni"),
+con la nota che "per capire meglio servirebbe più contesto" — le etichette a una riga
+sono magre. Requisito per il runtime: il focus deve portare più contesto del solo
+seme (periodo di attività, numero di conversazioni che l'hanno alimentato, ultimo
+rinforzo). Il ranking di salienza per-giorno non è stato validato in dettaglio:
+da riverificare in esercizio.
+
+Prossimo passo: design runtime (core/focus.py, flag FOCUS_ENABLED) DOPO la fine
+della raccolta dream_trace (~18/07), come pre-registrato.
