@@ -470,25 +470,26 @@ class CodeRunner:
             budget -= len(txt)
         return "\n\n".join(blocks)
 
-    def _wrap_cmd(self, script_path: Path) -> list[str]:
-        """Confinamento OS del subprocess via bubblewrap (punto 2 hardening): difesa
-        RUNTIME, non solo scansione AST. Il processo gira in un namespace mount dove
-        il filesystem è read-only tranne sandbox+output, /tmp è isolato, e $HOME/etc
-        NON esistono — quindi `open('/etc/shadow')`, os.open, ctypes, path da variabile
-        sono tutti tagliati dal kernel, non dal testo del codice. Lo SecurityScanner AST
-        resta come prima barriera (errori chiari). Fallback: se bwrap manca (altra
-        macchina) si degrada al lancio diretto + scanner, con warning una-tantum."""
-        direct = [sys.executable, "-u", str(script_path)]
-        if not getattr(config, "CODE_RUNNER_BWRAP_ENABLED", True):
-            return direct
-        bwrap = shutil.which("bwrap")
-        if not bwrap:
-            if not getattr(self, "_bwrap_warned", False):
-                logger.warning("CodeRunner: bwrap non disponibile — sandbox OS degradata "
-                               "a solo-scanner. Installa 'bubblewrap' per il confinamento runtime.")
-                self._bwrap_warned = True
-            return direct
-        venv = str(Path(sys.executable).parent.parent)  # .../venv
+    @staticmethod
+    def _subprocess_env() -> dict[str, str]:
+        """Ambiente minimo per il codice generato: nessun segreto dal daemon."""
+        return {
+            "HOME": "/tmp",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "MPLCONFIGDIR": "/tmp",
+            "PATH": f"{Path(sys.executable).parent}:/usr/local/bin:/usr/bin:/bin",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONNOUSERSITE": "1",
+            "TMPDIR": "/tmp",
+        }
+
+    def _bwrap_base_cmd(self, bwrap: str) -> list[str]:
+        """Namespace usato sia dal preflight sia dall'esecuzione reale."""
+        venv = str(Path(sys.executable).parent.parent)
+        env_args = []
+        for key, value in self._subprocess_env().items():
+            env_args.extend(("--setenv", key, value))
         return [
             bwrap,
             "--ro-bind", "/usr", "/usr",
@@ -497,14 +498,94 @@ class CodeRunner:
             "--ro-bind-try", "/etc/ld.so.cache", "/etc/ld.so.cache",
             "--ro-bind", venv, venv,
             "--bind", str(self._sandbox_dir), str(self._sandbox_dir),
-            "--ro-bind-try", str(self._input_dir), str(self._input_dir),   # dati: read-only
-            "--bind-try", str(self._output_dir), str(self._output_dir),    # artefatti: read-write
+            "--ro-bind-try", str(self._input_dir), str(self._input_dir),
+            "--bind-try", str(self._output_dir), str(self._output_dir),
             "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
-            "--setenv", "HOME", "/tmp", "--setenv", "MPLCONFIGDIR", "/tmp",
+            "--clearenv", *env_args,
             "--unshare-all", "--die-with-parent", "--new-session",
             "--chdir", str(self._sandbox_dir),
-            sys.executable, "-u", str(script_path),
         ]
+
+    def _probe_bwrap(self, bwrap: str) -> tuple[bool, str]:
+        """Verifica una volta che il namespace reale sia creabile su questo host."""
+        try:
+            probe = subprocess.run(
+                self._bwrap_base_cmd(bwrap) + ["/usr/bin/true"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                env=self._subprocess_env(),
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return False, str(exc)
+        if probe.returncode == 0:
+            return True, ""
+        reason = probe.stderr.decode("utf-8", errors="replace").strip()
+        return False, reason or f"exit={probe.returncode}"
+
+    def _usable_bwrap(self) -> str | None:
+        """Ritorna il binario solo dopo un preflight positivo, con esito in cache."""
+        if hasattr(self, "_bwrap_usable_cache"):
+            return self._bwrap_usable_cache
+
+        bwrap = shutil.which("bwrap")
+        reason = "binario non trovato"
+        if bwrap:
+            usable, reason = self._probe_bwrap(bwrap)
+            if usable:
+                self._bwrap_usable_cache = bwrap
+                return bwrap
+
+        self._bwrap_usable_cache = None
+        logger.warning(
+            "CodeRunner: bwrap non utilizzabile ({}) — sandbox OS degradata "
+            "a solo-scanner.",
+            reason,
+        )
+        return None
+
+    def _wrap_cmd(self, script_path: Path) -> list[str]:
+        """Confinamento OS del subprocess via bubblewrap (punto 2 hardening): difesa
+        RUNTIME, non solo scansione AST. Il processo gira in un namespace mount dove
+        il filesystem è read-only tranne sandbox+output, /tmp è isolato, e $HOME/etc
+        NON esistono — quindi `open('/etc/shadow')`, os.open, ctypes, path da variabile
+        sono tutti tagliati dal kernel, non dal testo del codice. Lo SecurityScanner AST
+        resta come prima barriera (errori chiari). Fallback: se bwrap manca (altra
+        macchina o non supera il preflight) si degrada al lancio diretto + scanner,
+        con warning una-tantum."""
+        direct = [sys.executable, "-u", str(script_path)]
+        if not getattr(config, "CODE_RUNNER_BWRAP_ENABLED", True):
+            return direct
+        bwrap = self._usable_bwrap()
+        if not bwrap:
+            return direct
+        return self._bwrap_base_cmd(bwrap) + [sys.executable, "-u", str(script_path)]
+
+    @staticmethod
+    def _terminate_process_group(process: subprocess.Popen, grace: float = 3) -> None:
+        """Termina l'intero job; dopo la grazia SIGTERM forza sempre SIGKILL."""
+        try:
+            pgid = os.getpgid(process.pid)
+        except ProcessLookupError:
+            process.wait()
+            return
+
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=grace)
+            return
+        except subprocess.TimeoutExpired:
+            logger.warning("CodeRunner: subprocess resistente a SIGTERM — invio SIGKILL")
+
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
 
     def _execute_code(self, code: str, stop_event: threading.Event,
                       timeout: int) -> CodeResult:
@@ -517,15 +598,9 @@ class CodeRunner:
             script_path.write_text(code, encoding="utf-8")
             logger.info(f"CodeRunner: esecuzione {script_path.name} (timeout={timeout}s)")
 
-            # Ambiente: eredita l'env del processo padre (necessario per venv/site-packages),
-            # ma rimuove variabili sensibili
-            env = dict(os.environ)
-            # Rimuovi credenziali/token se presenti
-            for sensitive_key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "HF_TOKEN",
-                                  "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
-                                  "GOOGLE_API_KEY", "REDIS_PASSWORD"):
-                env.pop(sensitive_key, None)
-            env["PYTHONIOENCODING"] = "utf-8"
+            # Allowlist, non denylist: il codice generato non eredita token o
+            # variabili applicative sconosciute dal processo Euri.
+            env = self._subprocess_env()
 
             # Snapshot dei file già presenti in output_dir: dopo il run ci serve
             # per capire QUALI file lo script ha prodotto/aggiornato e rileggerli
@@ -555,8 +630,7 @@ class CodeRunner:
                 # Check interruzione vocale
                 if stop_event.is_set():
                     logger.warning("CodeRunner: INTERRUPT — killing subprocess")
-                    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-                    process.wait(timeout=3)
+                    self._terminate_process_group(process)
                     return CodeResult(
                         success=False,
                         output="Esecuzione interrotta.",
@@ -568,8 +642,7 @@ class CodeRunner:
                 elapsed = time.monotonic() - start_time
                 if elapsed > timeout:
                     logger.warning(f"CodeRunner: TIMEOUT dopo {timeout}s")
-                    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-                    process.wait(timeout=3)
+                    self._terminate_process_group(process)
                     return CodeResult(
                         success=False,
                         output=f"Lo script ha impiegato troppo tempo, l'ho fermato dopo {timeout} secondi.",

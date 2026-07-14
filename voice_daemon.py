@@ -173,7 +173,7 @@ class VoiceDaemon:
         self._audit_confirm_mode = False       # Euri ha fatto l'audit, attende sì/no per cancellare
         self._audit_rumore: list[dict] = []    # memorie segnate come rumore dall'ultimo audit
         self._last_activity_ts: float = 0.0   # timestamp ultima attività vocale (per passive learner)
-        self._last_auth_voice_ts: float = 0.0  # ultima voce AUTENTICATA (SpeakerAuth ok) — prova
+        self._last_auth_voice_ts: float = 0.0  # ultima voce AUTENTICATA e accettata dal guard — prova
                                                # d'identità per l'efferente quando la faccia non basta.
                                                # NON aggiornato dal TTS di Euri (niente auto-rinfresco).
         self._passive_history_len: int = 0     # lunghezza history già analizzata
@@ -1870,34 +1870,29 @@ class VoiceDaemon:
                 if not new_history:
                     continue
 
-                facts = self.brain.extract_passive_memories(new_history)
-                if not facts:
-                    continue
-
-                # Punto 3 hardening: la wake word è un segnale di affidabilità. Se il
-                # segmento non contiene NESSUNA interazione rivolta esplicitamente a Euri
-                # (parlato ambient dentro-finestra), i fatti si degradano a DEBOLE anche
-                # se l'LLM li giudica FORTE — non si scarta, si marca l'incerto.
-                segment_addressed = any(m.get("trusted") for m in new_history)
-
                 saved = 0
-                for fact_item in facts:
-                    support = fact_item.get("support") if isinstance(fact_item, dict) else None
-                    weak_support = self._passive_weak_support(support, segment_addressed)
-                    fact = fact_item.get("content", "") if isinstance(fact_item, dict) else str(fact_item)
-                    clean = validate_payload(fact, "memory")
-                    if not clean:
-                        continue
-                    if self.memory.is_duplicate_memory(clean, llm_probe_fn=self.brain.probe_same_meaning):
-                        continue
-                    mid = self.memory.save_memory(clean, category="passivo", source="passive", idempotent=True)
-                    if mid and weak_support:
-                        from core.memory_attention import remove_loop2e_candidate
-                        key = f"euri:memory:{mid}"
-                        self.memory.r.json().set(key, "$.requires_verification", True)
-                        self.memory.r.json().set(key, "$.passive_support", "tacit_acceptance")
-                        remove_loop2e_candidate(self.memory.r, mid)
-                    saved += 1
+                # Non mischiare nel medesimo prompt scambi rivolti esplicitamente a
+                # Euri e parlato ambient: un solo messaggio trusted non deve rendere
+                # FORTE un fatto estratto dalla parte ambient del batch.
+                for segment_addressed, segment_history in self._passive_extraction_batches(new_history):
+                    facts = self.brain.extract_passive_memories(segment_history) or []
+                    for fact_item in facts:
+                        support = fact_item.get("support") if isinstance(fact_item, dict) else None
+                        weak_support = self._passive_weak_support(support, segment_addressed)
+                        fact = fact_item.get("content", "") if isinstance(fact_item, dict) else str(fact_item)
+                        clean = validate_payload(fact, "memory")
+                        if not clean:
+                            continue
+                        if self.memory.is_duplicate_memory(clean, llm_probe_fn=self.brain.probe_same_meaning):
+                            continue
+                        mid = self.memory.save_memory(clean, category="passivo", source="passive", idempotent=True)
+                        if mid and weak_support:
+                            from core.memory_attention import remove_loop2e_candidate
+                            key = f"euri:memory:{mid}"
+                            self.memory.r.json().set(key, "$.requires_verification", True)
+                            self.memory.r.json().set(key, "$.passive_support", "tacit_acceptance")
+                            remove_loop2e_candidate(self.memory.r, mid)
+                        saved += 1
 
                 if saved:
                     logger.info(f"Passive learner: {saved} fatto/i salvato/i silenziosamente")
@@ -2427,55 +2422,16 @@ class VoiceDaemon:
                 _t_stt = time.perf_counter()
                 text, detected_lang = self.stt.transcribe(segment, force_lang=force_lang)
                 logger.info(f"[TIMING] STT: {(time.perf_counter()-_t_stt)*1000:.0f}ms")
+                self.vad.reset()
+
+                accepted = self._accept_voice_transcript(text)
+                if accepted is None:
+                    continue
+                text, has_wake_word = accepted
+
                 self.visual_gate.notify_activity()
                 if hasattr(self, 'dream_engine'):
                     self.dream_engine.notify_activity()
-                # Il wake-word guard misura la finestra di conversazione dal turno
-                # PRECEDENTE: catturiamo il valore prima di sovrascriverlo, altrimenti
-                # `since_last ≈ 0` sempre → `in_conversation` sempre True → il guard
-                # non scatta mai e qualsiasi voce autenticata è processata senza "Euri"
-                # (bug consenso conversazionale: interviene non chiamata). I consumer
-                # idle/passive/presence continuano a leggere il timestamp aggiornato.
-                _prev_activity_ts = self._last_activity_ts
-                self._last_activity_ts = time.time()
-                if not self._translate_bidir:
-                    # La voce ha passato SpeakerAuth: prova d'identità per l'efferente.
-                    # In modalità interprete le voci esterne non contano come Stefano.
-                    self._last_auth_voice_ts = time.time()
-                self.vad.reset()
-
-                if not text:
-                    continue
-
-                # Filtro garbage STT: Whisper a volte alucina caratteri ripetuti su rumore di fondo.
-                # Se >60% delle parole sono identiche (es. "č č č č...") scartiamo senza LLM.
-                _words = text.split()
-                if len(_words) >= 6:
-                    _most_common_word_ratio = max(
-                        _words.count(w) for w in set(_words)
-                    ) / len(_words)
-                    if _most_common_word_ratio > 0.60:
-                        logger.debug(f"Garbage STT scartato (ratio={_most_common_word_ratio:.2f}): '{text[:40]}'")
-                        continue
-
-                # Correzione misrecognition comuni Whisper (IT) — skip in modalità traduzione/interprete
-                if not self._translate_bidir:
-                    _text_lower = text.lower()
-                    for wrong, right in _STT_CORRECTIONS.items():
-                        if wrong in _text_lower:
-                            _text_lower = _text_lower.replace(wrong, right)
-                            text = _text_lower
-                            break
-
-                # Wake word guard: in ambienti rumorosi risponde solo se:
-                # - sente "Euri" nel testo, oppure
-                # - è dentro una conversazione attiva (< CONVERSATION_WINDOW_SEC dall'ultima risposta)
-                # Eccezione: modalità traduzione/interprete (parla anche l'interlocutore)
-                has_wake_word = bool(_WAKE_WORD_RE.search(text))
-                since_last = time.time() - _prev_activity_ts
-                if not self._utterance_is_addressed(has_wake_word, since_last):
-                    logger.debug(f"Wake word assente e fuori finestra ({since_last:.0f}s) — ignorato: '{text[:40]}'")
-                    continue
 
                 # Trusted = wake word esplicito. Scambi ambient (solo finestra) non analizzati dal passive learner.
                 self.brain._next_trusted = has_wake_word
@@ -2484,6 +2440,32 @@ class VoiceDaemon:
                 self._dispatch(text, detected_lang=detected_lang)
 
         logger.info("Euri spento.")
+
+    @staticmethod
+    def _partition_passive_history(history: list[dict]) -> list[tuple[bool, list[dict]]]:
+        """Separa per provenienza mantenendo ordine e coppie user/assistant."""
+        buckets: dict[bool, list[dict]] = {}
+        order: list[bool] = []
+        for message in history:
+            addressed = bool(message.get("trusted"))
+            if addressed not in buckets:
+                buckets[addressed] = []
+                order.append(addressed)
+            buckets[addressed].append(message)
+        return [(addressed, buckets[addressed]) for addressed in order]
+
+    @classmethod
+    def _passive_extraction_batches(cls, history: list[dict]) -> list[tuple[bool, list[dict]]]:
+        """Evita contaminazione FORTE senza creare nuove perdite su batch piccoli.
+
+        L'estrattore richiede almeno quattro messaggi. Se una partizione mista
+        scende sotto la soglia, conserva il batch intero ma lo marca non rivolto:
+        tutti i fatti risultanti vengono quindi degradati a DEBOLE.
+        """
+        partitions = cls._partition_passive_history(history)
+        if len(partitions) > 1 and any(len(batch) < 4 for _, batch in partitions):
+            return [(False, history)]
+        return partitions
 
     @staticmethod
     def _passive_weak_support(support: str | None, segment_addressed: bool) -> bool:
@@ -2501,6 +2483,46 @@ class VoiceDaemon:
         if self._translate_bidir or self._dictation_mode:
             return True
         return has_wake_word or since_last < _CONVERSATION_WINDOW_SEC
+
+    @staticmethod
+    def _is_garbage_transcript(text: str) -> tuple[bool, float]:
+        """Rileva l'allucinazione Whisper composta quasi solo da parole ripetute."""
+        words = text.split()
+        if len(words) < 6:
+            return False, 0.0
+        ratio = max(words.count(word) for word in set(words)) / len(words)
+        return ratio > 0.60, ratio
+
+    def _accept_voice_transcript(self, text: str, now_ts: float | None = None) -> tuple[str, bool] | None:
+        """Valida consenso e STT; solo una voce accettata rinnova l'attività."""
+        if not text:
+            return None
+
+        garbage, ratio = self._is_garbage_transcript(text)
+        if garbage:
+            logger.debug(f"Garbage STT scartato (ratio={ratio:.2f}): '{text[:40]}'")
+            return None
+
+        if not self._translate_bidir:
+            text_lower = text.lower()
+            for wrong, right in _STT_CORRECTIONS.items():
+                if wrong in text_lower:
+                    text = text_lower.replace(wrong, right)
+                    break
+
+        now_ts = time.time() if now_ts is None else now_ts
+        has_wake_word = bool(_WAKE_WORD_RE.search(text))
+        since_last = now_ts - self._last_activity_ts
+        if not self._utterance_is_addressed(has_wake_word, since_last):
+            logger.debug(
+                f"Wake word assente e fuori finestra ({since_last:.0f}s) — ignorato: '{text[:40]}'"
+            )
+            return None
+
+        self._last_activity_ts = now_ts
+        if not self._translate_bidir:
+            self._last_auth_voice_ts = now_ts
+        return text, has_wake_word
 
     def _mobile_worker(self):
         """

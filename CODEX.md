@@ -67,6 +67,23 @@ Findings da riprendere:
    `SIGTERM` al process group e fa `wait(timeout=3)`, ma non ha fallback
    `SIGKILL` se il gruppo non muore.
 
+## Chiusura finding hardening — 2026-07-14
+
+I sei finding sopra sono stati corretti:
+
+- passive learner: batch trusted/ambient separati; sui misti troppo piccoli per
+  l'estrattore il batch resta intero ma tutti i fatti sono DEBOLI;
+- CodeRunner: environment allowlist + `bwrap --clearenv`;
+- `bwrap`: preflight cached e fallback se installato ma non utilizzabile;
+- activity vocale: vuoto, garbage STT e voce fuori-finestra non aggiornano piu'
+  `_last_activity_ts` o `_last_auth_voice_ts`;
+- `test_wake_guard.py`: nessun `sys.exit` anticipato e import hardware stubbed;
+- cleanup processi: `SIGTERM`, grazia, poi `SIGKILL`, coperto per timeout e interrupt.
+
+Verifiche passate: `test_wake_guard.py`, `test_coderunner_sandbox.py`,
+`test_executor_routing.py`, `test_initiative.py`,
+`test_save_service_merge_guard.py`, `pip check`, `git diff --check`.
+
 Note:
 
 - Il fix 1 come idea e' corretto: misurare da `_prev_activity_ts` chiude il bug
