@@ -39,8 +39,17 @@ Chiusa anche la fase outbox durevole:
 - regressioni in `test_memory_outbox.py`; script verificati su Redis reale e
   chiavi di test eliminate.
 
-Restano come fasi separate: supervisione dei loop e separazione CI
-unit/integration/live.
+Chiusa anche la fase supervisione:
+
+- sei worker del daemon gestiti da `core/worker_supervisor.py`, con nome,
+  health/heartbeat, restart con backoff, stop event e join complessivo;
+- sleep dei loop sostituiti con attese interrompibili;
+- shutdown vocale e segnali convergono sullo stesso teardown idempotente;
+- `DreamEngine.stop()` interrompe il poll e attende il thread; watcher Obsidian
+  con deadline;
+- regressioni in `test_worker_supervisor.py` e `test_dream_schedule.py`.
+
+Resta come fase separata la classificazione CI unit/integration/live.
 
 ## Stato repo al close
 

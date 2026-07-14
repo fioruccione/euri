@@ -178,7 +178,9 @@ class ObsidianSyncManager:
     def stop_watcher(self):
         if self.observer:
             self.observer.stop()
-            self.observer.join()
+            self.observer.join(timeout=5)
+            if self.observer.is_alive():
+                logger.warning("Obsidian Sync: watcher non terminato entro la deadline")
             
     def handle_file_event(self, filepath: str):
         """Elabora un file markdown appena salvato dall'utente."""

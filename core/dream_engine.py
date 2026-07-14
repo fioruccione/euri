@@ -112,6 +112,7 @@ class DreamEngine:
         self._memory_manager = memory  # usato dal Bridge Synthesis
         self._running = False
         self._thread = None
+        self._stop_event = threading.Event()
         self._lock = threading.Lock()
         # Loop 2h — Self-Observation: istanziato solo se memory è disponibile
         # (in test isolati può essere None).
@@ -162,13 +163,20 @@ class DreamEngine:
             if self._running:
                 return
             self._running = True
+            self._stop_event.clear()
             self._thread = threading.Thread(target=self._loop, daemon=True, name="dream-engine")
             self._thread.start()
             logger.info("Dream Engine avviato (background)")
 
-    def stop(self):
+    def stop(self, timeout: float = 8.0):
         with self._lock:
             self._running = False
+            self._stop_event.set()
+            thread = self._thread
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout)
+            if thread.is_alive():
+                logger.warning("Dream Engine: thread non terminato entro la deadline")
             
     def notify_activity(self):
         """Chiamato da voice_daemon ad ogni STT/TTS per resettare l'idle timer."""
@@ -206,10 +214,8 @@ class DreamEngine:
         """Loop principale: controlla l'idle e lancia i sotto-cicli dovuti."""
         while self._running:
             poll = int(getattr(config, "DREAM_ENGINE_POLL_SECONDS", 300))
-            for _ in range(max(1, poll)):
-                if not self._running:
-                    return
-                time.sleep(1)
+            if self._stop_event.wait(max(1, poll)):
+                return
                 
             if self._is_idle():
                 self._run_due_idle_cycles()

@@ -45,6 +45,7 @@ from core.embedder import Embedder
 from core.honesty import scrub_unbacked_save_claim
 from core.act_word_check import emit_unbacked_action_commitment, scrub_unbacked_action_claim
 from core.ollama_client import chat_client
+from core.worker_supervisor import WorkerSupervisor
 from agent.executor import Executor, build_injected_context
 
 
@@ -146,6 +147,10 @@ class VoiceDaemon:
         self._enroll_mode = False
         self._enroll_segments: list = []
         self._running = False
+        self._workers = WorkerSupervisor()
+        self._stop_event = self._workers.stop_event
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_done = False
         self._missed_reminders: list[str] = []  # promemoria scattati mentre eri assente
         self._clock_emitted: set = set()         # fallback in-memory se Redis è giù; primario = set Redis (sopravvive ai restart)
         self._teach_recovery_mode = False        # in attesa di risposta su recovery TEACH
@@ -409,13 +414,54 @@ class VoiceDaemon:
     def _handle_shutdown(self, text: str = ""):
         logger.info("Shutdown vocale richiesto")
         self._speak_simple("Chiudo.")
+        self._request_shutdown()
+
+    def _wait_or_stop(self, seconds: float) -> bool:
+        """True se e' stato richiesto lo stop durante l'attesa."""
+        return self._stop_event.wait(seconds)
+
+    def background_health(self) -> dict[str, dict]:
+        """Snapshot diagnostico dei worker, incluso il Dream Engine."""
+        health = self._workers.health()
+        if hasattr(self, "dream_engine"):
+            thread = getattr(self.dream_engine, "_thread", None)
+            health["dream-engine"] = {
+                "state": "running" if getattr(self.dream_engine, "_running", False) else "stopped",
+                "alive": bool(thread and thread.is_alive()),
+            }
+        return health
+
+    def _request_shutdown(self) -> None:
         self._running = False
-        self.visual_gate.stop()
+        self._stop_event.set()
         try:
             import sounddevice as _sd
             _sd.stop()
         except Exception:
             pass
+
+    def _shutdown_components(self) -> None:
+        """Teardown idempotente con join dei loop prima dell'uscita del processo."""
+        with self._shutdown_lock:
+            if self._shutdown_done:
+                return
+            self._shutdown_done = True
+
+        self._request_shutdown()
+        components = []
+        if hasattr(self, "dream_engine"):
+            components.append(("dream-engine", self.dream_engine.stop))
+        if hasattr(self, "obsidian_sync"):
+            components.append(("obsidian", self.obsidian_sync.stop_watcher))
+        components.append(("visual-gate", self.visual_gate.stop))
+        for name, stop in components:
+            try:
+                stop()
+            except Exception as exc:
+                logger.warning(f"Shutdown {name} fallito: {exc}")
+        alive = self._workers.shutdown(timeout=8)
+        if alive:
+            logger.warning(f"Shutdown: worker non terminati entro deadline: {', '.join(alive)}")
 
     def _play_beep(self):
         """Segnale acustico breve — usato quando l'utente non è in frame ma c'è un reminder."""
@@ -1850,7 +1896,9 @@ class VoiceDaemon:
         MIN_NEW_EXCHANGES = 1   # scambi minimi dall'ultima analisi (era 2)
 
         while self._running:
-            time.sleep(20)
+            self._workers.heartbeat("passive-learner")
+            if self._wait_or_stop(20):
+                break
             try:
                 # Solo se c'è stata attività recente che ora è ferma
                 if self._last_activity_ts == 0:
@@ -1920,7 +1968,9 @@ class VoiceDaemon:
         EXCLUDE_SOURCES = {"campus", "web", "reflection"}
 
         while self._running:
-            time.sleep(CHECK_INTERVAL)
+            self._workers.heartbeat("consolidation")
+            if self._wait_or_stop(CHECK_INTERVAL):
+                break
             try:
                 if self._last_activity_ts == 0:
                     continue
@@ -2070,13 +2120,16 @@ class VoiceDaemon:
         PRESENT_WINDOW = 300       # "interazione recente" = ultimi 5 min
 
         while self._running:
+            self._workers.heartbeat("reminder")
             try:
                 t = now()
                 if t.hour >= 23 or t.hour < 7:         # quiet hours 23:00–07:00
-                    time.sleep(30)
+                    if self._wait_or_stop(30):
+                        break
                     continue
                 if self.r.exists("euri:audio:lock"):   # Euri sta parlando → aspetta
-                    time.sleep(5)
+                    if self._wait_or_stop(5):
+                        break
                     continue
 
                 # Presenza di STEFANO: riconosciuto in faccia OPPURE voce autenticata recente.
@@ -2112,7 +2165,8 @@ class VoiceDaemon:
             except Exception as e:
                 logger.error(f"Errore reminder loop: {e}")
 
-            time.sleep(30)
+            if self._wait_or_stop(30):
+                break
 
     def _initiative_block_reason(self) -> str:
         """Ritorna "" se Euri può iniziare una domanda proattiva adesso."""
@@ -2259,6 +2313,7 @@ class VoiceDaemon:
         last_id = "$"  # niente replay massivo al boot: solo eventi nuovi + pending espliciti
         logger.info("Initiative controller: in ascolto su euri:pulse")
         while self._running:
+            self._workers.heartbeat("initiative")
             try:
                 for event_id, event in iter_pending(
                     self.r,
@@ -2280,62 +2335,53 @@ class VoiceDaemon:
                         self._handle_initiative_candidate(event_id, fields)
             except Exception as e:
                 logger.error(f"Initiative controller: errore loop: {e}")
-                time.sleep(5)
+                if self._wait_or_stop(5):
+                    break
 
     def _memory_outbox_loop(self):
         """Recupera gli effetti derivati rimasti pendenti dopo save o crash."""
         from core.memory_outbox import drain_memory_outbox
 
         while self._running:
+            self._workers.heartbeat("memory-outbox")
             _ok, failed = drain_memory_outbox(self.r, limit=20)
-            time.sleep(5 if failed else 1)
+            if self._wait_or_stop(5 if failed else 1):
+                break
 
     def run(self):
+        self._workers.prepare()
+        self._shutdown_done = False
         self._running = True
 
         # Intercetta Ctrl+C
         def _shutdown(sig, frame):
             logger.info("Shutdown segnalato...")
-            self._running = False
-            self.visual_gate.stop()
-            if hasattr(self, 'dream_engine'):
-                self.dream_engine.stop()
-            if hasattr(self, 'obsidian_sync'):
-                self.obsidian_sync.stop_watcher()
-            # Sblocca eventuale sd.wait() ancora appeso in background
-            # per evitare segfault durante il teardown di PortAudio
-            try:
-                import sounddevice as _sd
-                _sd.stop()
-            except Exception:
-                pass
+            self._request_shutdown()
 
         signal.signal(signal.SIGINT, _shutdown)
         signal.signal(signal.SIGTERM, _shutdown)
 
         # Thread proattivo reminder
-        t = threading.Thread(target=self._reminder_loop, daemon=True)
-        t.start()
+        self._workers.start("reminder", self._reminder_loop)
 
         # Thread passive learner — analizza conversazioni in idle silenziosamente
-        t2 = threading.Thread(target=self._passive_learner_loop, daemon=True)
-        t2.start()
+        self._workers.start("passive-learner", self._passive_learner_loop)
 
         # Thread Loop 2a — consolidamento silenzioso (reflection) in idle
-        t3 = threading.Thread(target=self._consolidation_loop, daemon=True)
-        t3.start()
+        self._workers.start("consolidation", self._consolidation_loop)
 
         # Thread mobile worker — gestisce richieste dalla pagina Streamlit via Redis Stream
-        t_mobile = threading.Thread(target=self._mobile_worker, daemon=True)
-        t_mobile.start()
+        self._workers.start("mobile", self._mobile_worker)
 
         # Thread initiative controller — Pulse → tension → domanda prompt-based.
-        t_initiative = threading.Thread(target=self._initiative_worker, daemon=True)
-        t_initiative.start()
+        self._workers.start(
+            "initiative",
+            self._initiative_worker,
+            enabled=getattr(config, "INITIATIVE_ENABLED", False),
+        )
 
         # Outbox memoria — TTL, indice attenzione, Pulse e Obsidian replayabili.
-        t_outbox = threading.Thread(target=self._memory_outbox_loop, daemon=True)
-        t_outbox.start()
+        self._workers.start("memory-outbox", self._memory_outbox_loop)
 
         # Avvia Dream Engine (Loop 2b/2c)
         if hasattr(self, 'dream_engine'):
@@ -2450,6 +2496,7 @@ class VoiceDaemon:
                 # Dispatch
                 self._dispatch(text, detected_lang=detected_lang, trusted=has_wake_word)
 
+        self._shutdown_components()
         logger.info("Euri spento.")
 
     @staticmethod
@@ -2556,6 +2603,7 @@ class VoiceDaemon:
         logger.info("Mobile worker: in ascolto su euri:mobile:in")
 
         while self._running:
+            self._workers.heartbeat("mobile")
             try:
                 msgs = self.r.xread({STREAM_IN: last_id}, count=1, block=3000)
                 if not msgs:
@@ -2628,7 +2676,8 @@ class VoiceDaemon:
 
             except Exception as e:
                 logger.error(f"Mobile worker: {e}")
-                time.sleep(1)
+                if self._wait_or_stop(1):
+                    break
 
     def _morning_brief_if_needed(self):
         """Riepilogo mattutino alla prima interazione del giorno."""
@@ -2655,4 +2704,7 @@ if __name__ == "__main__":
 
     daemon = VoiceDaemon()
     daemon.setup()
-    daemon.run()
+    try:
+        daemon.run()
+    finally:
+        daemon._shutdown_components()
