@@ -18,6 +18,7 @@ class Intent(str, Enum):
     LIST_TODAY = "LIST_TODAY"
     COMPLETE = "COMPLETE"
     RESCHEDULE = "RESCHEDULE"
+    READ_BACK = "READ_BACK"
     SILENCE_MODE = "SILENCE_MODE"
     RESTORE_ALERTS = "RESTORE_ALERTS"
     STATUS = "STATUS"
@@ -71,6 +72,12 @@ _PATTERNS: list[tuple[Intent, list[str]]] = [
         # inizia col verbo ("spostalo a lunedì"). Niente idiomi di settore.
         r"(sposta|rimanda|posticipa|rinvia|riprogramma)\b.{0,40}\b(impegno|promemoria|todo|scadenza|prova|appuntamento)",
         r"^(sposta|rimanda|posticipa|rinvia|riprogramma)(lo|la|mi|melo|mela)?\b",
+    ]),
+    (Intent.READ_BACK, [
+        # rilettura fedele dell'ultima memoria salvata (gesto di audit). Solo le forme
+        # ovvie: la varietà di linguaggio la copre il classificatore LLM (Layer 2).
+        r"(leggi|rileggi|leggimi|rileggimi|recita)\w*\b.{0,40}\b(ultim[ae]|appena)\b.{0,30}\b(memori[ae]|lezion[ei]|nota|salvat)",
+        r"(cosa|che\s+cosa)\s+hai\s+(appena\s+)?(salvato|memorizzato|scritto)\b",
     ]),
     (Intent.SAVE_TODO, [
         r"ricordami\s+(?:\w+\s+){0,3}(?:di|del|dello|della|dei|degli)\b",

@@ -159,6 +159,7 @@ class VoiceDaemon:
         self._web_pending: dict = {}  # contesto ultima ricerca web (per "approfondisci" / "salva")
         self._pending_todo: _PendingState | None = None   # todo in attesa di conferma (timeout 60s)
         self._pending_reschedule: _PendingState | None = None  # impegno da spostare, manca la data (timeout 120s)
+        self._pending_readback: _PendingState | None = None   # memoria riletta, attesa correzione/aggiunta (180s)
         self._pending_write: _PendingState | None = None  # richiesta scrittura file in attesa (timeout 120s)
         self._awaiting_reaction: _PendingState | None = None  # insight su cui Euri ha chiesto conferma, in attesa della reazione di Stefano (timeout 300s)
         self._last_created_file: str | None = None  # ultimo file creato da Euri (per "aprilo")
@@ -810,6 +811,100 @@ class VoiceDaemon:
             reply = f"Fatto. Spostato a {format_datetime(new_due)}: {todo.get('content', '')[:80]}"
         else:
             reply = "Non riesco a spostarlo — quell'impegno non lo trovo più."
+        self.memory.log_conversation("Euri", reply)
+        self._speak(reply)
+
+    # ── Gesto di rilettura (audit a voce della memoria appena scritta) ─────────
+    # Nato dal caso 14/07 08:14: "leggimi l'ultima memoria su questa riflessione" →
+    # SEARCH semantico → deriva sul tema "memoria/AI" → risposta CONFABULATA (recitata
+    # l'intestazione del contesto come fosse il ricordo). La rilettura è
+    # un'INTERROGAZIONE (ultimo nodo per created_at), non una conversazione: qui
+    # l'LLM non tocca il contenuto — decide solo il routing (Layer 2) e la cura dopo.
+
+    _READBACK_SRC_HINTS = [
+        # (parole nella richiesta) → filtro source; l'ordine conta, il primo che matcha vince
+        (re.compile(r"\b(lezion|riflession|correzion|reazion)", re.IGNORECASE), ["reaction", "reflection"]),
+        (re.compile(r"\b(impegn|promemoria|scadenz)", re.IGNORECASE), None),  # gestito a parte via status
+        (re.compile(r"\b(insegnat|teach|studiat)", re.IGNORECASE), ["teach"]),
+    ]
+
+    def _find_readback_target(self, text: str) -> dict | None:
+        """L'ultima memoria per created_at, con filtro-fonte se la richiesta lo suggerisce
+        ("l'ultima lezione" → reaction/reflection) e restringimento per keyword se nomina
+        un soggetto. Deterministico: niente semantica, niente LLM."""
+        source_filter = None
+        for pat, filt in self._READBACK_SRC_HINTS:
+            if pat.search(text):
+                source_filter = filt
+                break
+        recent = self.memory.get_recent_memories(limit=10, source_filter=source_filter, touch=False)
+        if not recent:
+            return None
+        kw = [w for w in self.memory._safe_keywords(text)
+              if w not in {"memoria", "memorie", "lezione", "lezioni", "riflessione",
+                           "ultima", "ultime", "appena", "salvato", "salvata",
+                           "memorizzato", "scritto", "creato", "creata", "leggi",
+                           "leggimi", "rileggi", "rileggimi", "grado", "proposito",
+                           "risposta", "questa", "sentire"}]
+        if kw:
+            for m in recent:
+                low = (m.get("content") or "").lower()
+                if any(w in low for w in kw):
+                    return m
+        return recent[0]
+
+    def _handle_read_back(self, text: str):
+        self.memory.log_conversation("Stefano", text)
+        mem = self._find_readback_target(text)
+        if not mem:
+            self._speak("Non trovo memorie recenti da rileggerti.")
+            return
+        content = re.sub(r"^#\s*Memoria\s*\([^)]*\)\s*", "", (mem.get("content") or "")).strip()
+        when = ""
+        try:
+            from utils.date_utils import from_timestamp
+            dt = mem.get("_created_at") or from_timestamp(mem.get("created_at"))
+            if dt:
+                when = f", salvata alle {dt.strftime('%H:%M')} del {dt.strftime('%d/%m')}"
+        except Exception:
+            pass
+        src = mem.get("source", "?")
+        reply = (f"Te la leggo fedele — fonte {src}{when}: {content} — "
+                 f"Se c'è da correggere o aggiungere qualcosa, dimmelo adesso.")
+        self._pending_readback = _PendingState({"id": mem.get("id"), "content": content}, timeout=180)
+        self.memory.log_conversation("Euri", reply)
+        self._speak(reply)
+
+    def _handle_pending_readback(self, text: str):
+        """La risposta dopo la rilettura: ok/niente → chiudi; 'aggiungi…' → merge
+        costruttivo; correzione → riscrittura fedele. In entrambi i casi di modifica:
+        nuovo nodo source=user (fonte massima) + supersede del vecchio — il canale di
+        CURA della memoria guidato da Stefano, mai edit silenziosi."""
+        pending = self._pending_readback
+        self._pending_readback = None
+        low = text.lower().strip()
+        if re.search(r"^(ok|va bene|giusto|perfetto|niente|nulla|no|corretta|esatto|lascia|annulla|basta)\b", low) \
+                or len(low) < 12:
+            self._speak("Ok, la lascio com'è.")
+            return
+        old_id, old_content = pending.data["id"], pending.data["content"]
+        is_addition = bool(re.search(r"\b(aggiungi|aggiungici|integra|completa con)\b", low))
+        if is_addition:
+            merged = self.brain.merge_memories(old_content, text)
+            new_content = merged if merged not in ("DIVERSO", "NESSUNA AGGIUNTA") else None
+            verb = "arricchita"
+        else:
+            new_content = self.brain.apply_correction_to_memory(old_content, text)
+            verb = "corretta"
+        if not new_content:
+            # mai perdere la parola di Stefano: la sua frase diventa il nodo nuovo
+            new_content = text
+            verb = "sostituita con le tue parole"
+        new_id = self.memory.save_memory(new_content, source="user")
+        if new_id and old_id:
+            self.memory.supersede_memory(old_id, new_id)
+        reply = (f"Fatto, memoria {verb}. Ora dice: {new_content[:220]}"
+                 if new_id else "Non sono riuscita a salvare la modifica.")
         self.memory.log_conversation("Euri", reply)
         self._speak(reply)
 
@@ -1548,6 +1643,15 @@ class VoiceDaemon:
                 self._handle_pending_todo(text)
                 return
 
+        # Rilettura pending: memoria appena riletta, attesa correzione/aggiunta (180s)
+        if self._pending_readback:
+            if self._pending_readback.expired():
+                self._pending_readback = None
+                logger.debug("Readback pending scaduto (timeout 180s)")
+            else:
+                self._handle_pending_readback(text)
+                return
+
         # Riprogrammazione pending: Euri ha chiesto "a quando lo sposto?" (timeout 120s)
         if self._pending_reschedule:
             if self._pending_reschedule.expired():
@@ -1681,6 +1785,7 @@ class VoiceDaemon:
             Intent.LIST_TODAY: self._handle_list_today,
             Intent.COMPLETE: self._handle_complete,
             Intent.RESCHEDULE: self._handle_reschedule,
+            Intent.READ_BACK: self._handle_read_back,
             Intent.SILENCE_MODE: self._handle_silence_mode,
             Intent.RESTORE_ALERTS: self._handle_restore_alerts,
             Intent.STATUS: self._handle_status,
@@ -1982,6 +2087,7 @@ class VoiceDaemon:
         if any([
             self._pending_todo,
             self._pending_reschedule,
+            self._pending_readback,
             self._pending_write,
             self._teach_recovery_mode,
             self._teach_mode,

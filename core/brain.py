@@ -527,6 +527,35 @@ class Brain:
             logger.error(f"Errore merge_memories: {e}")
             return "DIVERSO"
 
+    def apply_correction_to_memory(self, existing: str, correction: str) -> str | None:
+        """Gemello di merge_memories per la CORREZIONE (canale rilettura→cura, 14/07):
+        riscrive la memoria applicando la correzione di Stefano — user > tutto nella
+        gerarchia di fiducia. Fedele: cambia SOLO ciò che la correzione tocca, tiene
+        il resto, non inventa. Ritorna il testo corretto o None su errore (il chiamante
+        allora salva la correzione grezza e supseda la vecchia: mai perdere la parola
+        di Stefano)."""
+        existing = self._strip_memory_header(existing)
+        prompt = (
+            f"Memoria salvata B:\n{existing}\n\n"
+            f"Correzione di Stefano C:\n{correction}\n\n"
+            f"Riscrivi B applicando C: correggi SOLO ciò che C contraddice o precisa, "
+            f"mantieni intatto tutto il resto di B, non aggiungere nulla che non sia "
+            f"in B o in C. La parola di Stefano vince sempre su B. "
+            f"Rispondi SOLO col testo riscritto, niente premesse né commenti."
+        )
+        try:
+            response = chat_client.chat(
+                model=config.OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.2, "num_predict": 2000},
+                think=False,
+            )
+            out = self._strip_memory_header(self._clean(response.message.content or ""))
+            return out if len(out) >= 20 else None
+        except Exception as e:
+            logger.error(f"Errore apply_correction_to_memory: {e}")
+            return None
+
     @staticmethod
     def _format_history_for_save(recent_history: list[dict], max_msgs: int = 16) -> str:
         """Formatta gli ultimi scambi (ruolo→nome) per il risolutore SAVE. Vuoto se assente."""
