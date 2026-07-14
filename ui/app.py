@@ -1,8 +1,10 @@
 import sys
 import os
+import inspect
 import queue as _queue
 from pathlib import Path
 import json
+import time
 
 # Aggiunge la root directory di Euri al sys.path per permettere gli import
 sys.path.append(str(Path(__file__).parent.parent))
@@ -476,19 +478,208 @@ with main_col:
         st.title("💬 Silent Chat")
         st.markdown("Chatta con Euri usando la tastiera. Nessun Voice Daemon, no TTS. La sessione LLM è condivisa.")
 
+        _CHAT_UPLOAD_TYPES = [
+            "pdf", "docx", "pptx", "txt", "md", "csv", "tsv", "json",
+            "xlsx", "xls", "ods", "png", "jpg", "jpeg", "webp", "bmp",
+            "gif", "tiff",
+        ]
+        _SPREADSHEET_EXTS = {".xlsx", ".xls", ".ods"}
+
+        def _chat_upload_dir() -> Path:
+            data_dir = Path(config.CODE_RUNNER_INPUT_DIR).expanduser()
+            data_dir.mkdir(parents=True, exist_ok=True)
+            return data_dir
+
+        def _chat_upload_registry_path() -> Path:
+            return _chat_upload_dir() / ".silent_chat_uploads.json"
+
+        def _is_inside_dir(path: Path, parent: Path) -> bool:
+            try:
+                path.resolve().relative_to(parent.resolve())
+                return True
+            except Exception:
+                return False
+
+        def _safe_upload_name(raw_name: str) -> str:
+            name = Path(raw_name or "upload").name
+            original = Path(name)
+            stem = "".join(
+                ch if ch.isalnum() or ch in (" ", ".", "_", "-") else "_"
+                for ch in original.stem
+            ).strip(" ._")
+            suffix = "".join(
+                ch for ch in original.suffix.lower()
+                if ch.isalnum() or ch == "."
+            )[:16]
+            return f"{(stem or 'upload')[:80]}{suffix}"
+
+        def _unique_upload_path(data_dir: Path, filename: str) -> Path:
+            target = data_dir / filename
+            if not target.exists():
+                return target
+            original = Path(filename)
+            stamp = time.strftime("%Y%m%d_%H%M%S")
+            for i in range(1, 100):
+                suffix = f"_{stamp}" if i == 1 else f"_{stamp}_{i}"
+                candidate = data_dir / f"{original.stem}{suffix}{original.suffix}"
+                if not candidate.exists():
+                    return candidate
+            return data_dir / f"{original.stem}_{stamp}_{int(time.time())}{original.suffix}"
+
+        def _load_chat_upload_registry() -> list[dict]:
+            registry = _chat_upload_registry_path()
+            if not registry.exists():
+                return []
+            try:
+                data = json.loads(registry.read_text(encoding="utf-8"))
+                return data if isinstance(data, list) else []
+            except Exception:
+                return []
+
+        def _write_chat_upload_registry(entries: list[dict]) -> None:
+            registry = _chat_upload_registry_path()
+            if not entries:
+                registry.unlink(missing_ok=True)
+                return
+            registry.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        def _cleanup_chat_uploads(*, delete_all: bool = False) -> int:
+            data_dir = _chat_upload_dir()
+            now = time.time()
+            ttl = getattr(config, "SILENT_CHAT_UPLOAD_TTL_SECONDS", 24 * 3600)
+            kept = []
+            removed = 0
+            for entry in _load_chat_upload_registry():
+                raw_path = entry.get("path") or ""
+                path = Path(raw_path).expanduser()
+                uploaded_at = float(entry.get("uploaded_at") or 0)
+                expired = ttl > 0 and uploaded_at and now - uploaded_at > ttl
+                if not raw_path or not _is_inside_dir(path, data_dir):
+                    continue
+                if delete_all or expired:
+                    try:
+                        path.unlink(missing_ok=True)
+                        removed += 1
+                    except Exception:
+                        kept.append(entry)
+                elif path.exists():
+                    kept.append(entry)
+            _write_chat_upload_registry(kept)
+            return removed
+
+        def _save_chat_uploads(uploaded_files) -> tuple[list[dict], list[str]]:
+            if not uploaded_files:
+                return [], []
+            data_dir = _chat_upload_dir()
+            _cleanup_chat_uploads(delete_all=True)
+            saved, errors = [], []
+            for upload in uploaded_files:
+                original_name = Path(getattr(upload, "name", "upload")).name
+                safe_name = _safe_upload_name(original_name)
+                target = _unique_upload_path(data_dir, safe_name)
+                try:
+                    target.write_bytes(upload.getvalue())
+                except Exception as e:
+                    errors.append(f"{original_name}: {e}")
+                    continue
+                saved.append({
+                    "name": target.name,
+                    "original_name": original_name,
+                    "path": str(target),
+                    "uploaded_at": time.time(),
+                    "size": target.stat().st_size,
+                })
+            if saved:
+                _write_chat_upload_registry(saved)
+            return saved, errors
+
+        def _split_chat_value(value) -> tuple[str, list]:
+            if value is None:
+                return "", []
+            if isinstance(value, str):
+                return value, []
+            if isinstance(value, dict):
+                text = value.get("text") or value.get("message") or ""
+                files = value.get("files") or []
+                return str(text), list(files)
+            text = getattr(value, "text", None)
+            if text is None:
+                text = getattr(value, "message", "")
+            files = getattr(value, "files", None) or []
+            return str(text or ""), list(files)
+
+        def _compose_upload_prompt(user_text: str, uploads: list[dict]) -> str:
+            names = ", ".join(u["name"] for u in uploads)
+            has_spreadsheet = any(Path(u["name"]).suffix.lower() in _SPREADSHEET_EXTS for u in uploads)
+            action = "Elabora" if has_spreadsheet else "Leggi e analizza"
+            upload_request = f"{action} i file appena caricati: {names}."
+            user_text = (user_text or "").strip()
+            if user_text:
+                return f"{user_text}\n\n{upload_request}"
+            return upload_request
+
         # Inizializza cronologia messaggi
         if "messages" not in st.session_state:
             st.session_state.messages = []
         if "chat_log_offset" not in st.session_state:
             st.session_state.chat_log_offset = len(memory_manager.get_today_conversation())
+        if "sc_upload_key" not in st.session_state:
+            st.session_state.sc_upload_key = 0
+
+        _cleanup_chat_uploads()
 
         # Mostra messaggi precedenti
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
 
+        current_uploads = _load_chat_upload_registry()
+        if current_uploads:
+            names = ", ".join(entry.get("name", "?") for entry in current_uploads)
+            c_upload_info, c_upload_del = st.columns([4, 1])
+            with c_upload_info:
+                st.caption(f"File chat temporanei: {names}")
+            with c_upload_del:
+                if st.button("Elimina", key="sc_delete_uploads", use_container_width=True):
+                    removed = _cleanup_chat_uploads(delete_all=True)
+                    st.success(f"File rimossi: {removed}")
+                    st.rerun()
+
+        _chat_input_supports_files = "accept_file" in inspect.signature(st.chat_input).parameters
+        if _chat_input_supports_files:
+            chat_value = st.chat_input(
+                "Scrivi a Euri o trascina file qui...",
+                accept_file="multiple",
+                file_type=_CHAT_UPLOAD_TYPES,
+                max_upload_size=getattr(config, "SILENT_CHAT_UPLOAD_MAX_MB", 200),
+            )
+            prompt, incoming_uploads = _split_chat_value(chat_value)
+        else:
+            incoming_uploads = st.file_uploader(
+                "Trascina qui file da analizzare",
+                type=_CHAT_UPLOAD_TYPES,
+                accept_multiple_files=True,
+                key=f"sc_upload_{st.session_state.sc_upload_key}",
+            )
+            prompt = st.session_state.pop("sc_pending_upload_prompt", "")
+            if not prompt:
+                prompt = st.chat_input("Scrivi a Euri...")
+
+        if incoming_uploads:
+            saved_uploads, upload_errors = _save_chat_uploads(incoming_uploads)
+            for err in upload_errors:
+                st.error(f"Upload non riuscito: {err}")
+            if saved_uploads:
+                prompt = _compose_upload_prompt(prompt, saved_uploads)
+                if not _chat_input_supports_files:
+                    st.session_state.sc_pending_upload_prompt = prompt
+                    st.session_state.sc_upload_key += 1
+                    st.rerun()
+            elif not prompt:
+                st.stop()
+
         # Input utente
-        if prompt := st.chat_input("Scrivi a Euri..."):
+        if prompt:
             # ── Curiosity loop (Euri Pulse, ramo efferente) — versione scritta ───
             # Stessa orchestrazione della voce (core.reaction, una sola verità), ma
             # via tastiera: Stefano non deve parlare ad alta voce (zero costo sociale,

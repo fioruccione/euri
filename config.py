@@ -349,6 +349,8 @@ CODE_RUNNER_OUTPUT_DIR = str(Path.home() / "Scrivania" / "scambio_dati")
 CODE_RUNNER_SANDBOX_DIR = str(Path(__file__).parent / "sandbox")
 CODE_RUNNER_TIMEOUT = 30           # secondi max per esecuzione script
 CODE_RUNNER_MAX_OUTPUT_BYTES = 10240  # max stdout catturato
+SILENT_CHAT_UPLOAD_TTL_SECONDS = 24 * 3600  # upload chat effimeri: cleanup dopo 24h
+SILENT_CHAT_UPLOAD_MAX_MB = 200
 # Timeout dell'intero handler run_code = pre-extract Vision + code-gen + esecuzione.
 # Settato V2.18.2 dopo osservazione 28/05 ore 16:29: pre-extract di 5 file
 # (con 3 chiamate Vision Gemma 4) + code-gen Gemma + execution = ~57s.
