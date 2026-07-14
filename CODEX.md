@@ -1,3 +1,92 @@
+# Handoff Euri — 2026-07-14
+
+## Stato repo al close
+
+- Branch corrente: `feat/thought-map-initiative`.
+- Branch allineato a `origin/feat/thought-map-initiative`.
+- Nessuna modifica tracked pendente al momento del controllo.
+- File untracked presente e lasciato intatto: `ui/.~lock.app.py#`.
+
+## Commit recenti importanti
+
+- `5528104` — CodeRunner: confinamento OS via bubblewrap.
+- `50a513e` — Passive learner: parlato ambient senza wake degradato a DEBOLE.
+- `fc98660` — Wake-word guard: finestra misurata dal turno precedente.
+- `0f748c7` — Requirements allineati agli import runtime.
+- `130f5cf` — Routing lettura spreadsheet verso CodeRunner.
+- `cae3d52` — Silent Chat: gestione path locali incollati.
+- `37ec570` — Silent Chat: upload file drag/drop.
+
+## Lavoro fatto da Codex in questa fase
+
+- Implementati e pushati i punti 6 e 7 dell'hardening:
+  - spreadsheet (`excel`, `xlsx`, `xls`, `ods`, foglio di calcolo) instradati a
+    `run_code`, non piu' a `read_document`;
+  - `requirements.txt` allineato a dipendenze runtime, UI, CodeRunner, documenti,
+    visione e diagnostica.
+- Test/controlli passati:
+  - `./venv/bin/python test_executor_routing.py`;
+  - `./venv/bin/python -m pip check`;
+  - risolvibilita' import dei pacchetti aggiunti;
+  - `git diff --check`.
+
+## Review Codex sui fix Claude 1, 2, 3
+
+Richiesta: review logica/architetturale, non implementare.
+
+Findings da riprendere:
+
+1. `voice_daemon.py:1881` — Provenienza / qualita' epistemica.
+   Il fix 3 degrada a DEBOLE solo se tutto `new_history` non contiene nessun
+   `trusted`. Se il passive learner processa insieme uno scambio con wake word e
+   uno ambient dentro-finestra, `segment_addressed=True` e anche fatti estratti
+   dalla parte ambient possono restare FORTE. Serve test segmento misto.
+
+2. `agent/code_runner.py:522` — Sicurezza.
+   Il subprocess eredita quasi tutto `os.environ`; vengono rimossi solo pochi
+   token noti. Poiche' `os` e' consentito, codice generato puo' leggere variabili
+   ambiente. Anche con bwrap, senza `--clearenv`, l'ambiente passa dentro.
+
+3. `agent/code_runner.py:484` — Riproducibilita' / disponibilita'.
+   Il fallback copre "bwrap non installato", non "bwrap installato ma non
+   utilizzabile". Nel container Codex `bwrap` esiste ma fallisce con
+   `Operation not permitted`; ogni script fallisce prima di partire.
+
+4. `voice_daemon.py:2440` — Consenso conversazionale.
+   Confermato caso fuori scope: `_last_activity_ts` e `_last_auth_voice_ts`
+   vengono aggiornati prima di `not text`, garbage-STT e wake guard. Rumore
+   autenticato/garbage puo' tenere viva la finestra e far passare un utterance
+   successivo senza wake word. Trattarlo come punto separato.
+
+5. `test_wake_guard.py:42` — Testabilita'.
+   I test del punto 3 sono irraggiungibili: `sys.exit(...)` e' prima di
+   `_test_passive_weak()`.
+
+6. `agent/code_runner.py:558` — Disponibilita' / cleanup processi.
+   Timeout e interrupt sotto bwrap restano non verificati. Il codice manda
+   `SIGTERM` al process group e fa `wait(timeout=3)`, ma non ha fallback
+   `SIGKILL` se il gruppo non muore.
+
+Note:
+
+- Il fix 1 come idea e' corretto: misurare da `_prev_activity_ts` chiude il bug
+  principale del wake-word guard.
+- Il fix 2 va nella direzione giusta: bwrap e' la difesa corretta rispetto allo
+  scanner AST. Va stretto su env/preflight/kill.
+- Fontconfig per `matplotlib` e' rimandabile: non e' blocco sicurezza.
+- Mobile resta conservativo: senza `trusted` esplicito finisce debole. Se il
+  mobile e' considerato autenticato, va deciso a parte.
+
+## Regole operative da mantenere
+
+- Non intervenire sul punto 5 / Dream promozione: e' dentro esperimento
+  `dream_trace` pre-registrato gestito da Claude.
+- Punto 4 single-exchange loss sospeso: decisione filosofica di Stefano, non
+  toccare senza richiesta.
+- Se si modificano file, commit atomico e push.
+
+---
+
 # Handoff Euri — 2026-06-27
 
 ## Stato repo al close
