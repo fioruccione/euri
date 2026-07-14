@@ -15,6 +15,7 @@ import ast
 import os
 import sys
 import signal
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -469,6 +470,42 @@ class CodeRunner:
             budget -= len(txt)
         return "\n\n".join(blocks)
 
+    def _wrap_cmd(self, script_path: Path) -> list[str]:
+        """Confinamento OS del subprocess via bubblewrap (punto 2 hardening): difesa
+        RUNTIME, non solo scansione AST. Il processo gira in un namespace mount dove
+        il filesystem è read-only tranne sandbox+output, /tmp è isolato, e $HOME/etc
+        NON esistono — quindi `open('/etc/shadow')`, os.open, ctypes, path da variabile
+        sono tutti tagliati dal kernel, non dal testo del codice. Lo SecurityScanner AST
+        resta come prima barriera (errori chiari). Fallback: se bwrap manca (altra
+        macchina) si degrada al lancio diretto + scanner, con warning una-tantum."""
+        direct = [sys.executable, "-u", str(script_path)]
+        if not getattr(config, "CODE_RUNNER_BWRAP_ENABLED", True):
+            return direct
+        bwrap = shutil.which("bwrap")
+        if not bwrap:
+            if not getattr(self, "_bwrap_warned", False):
+                logger.warning("CodeRunner: bwrap non disponibile — sandbox OS degradata "
+                               "a solo-scanner. Installa 'bubblewrap' per il confinamento runtime.")
+                self._bwrap_warned = True
+            return direct
+        venv = str(Path(sys.executable).parent.parent)  # .../venv
+        return [
+            bwrap,
+            "--ro-bind", "/usr", "/usr",
+            "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64",
+            "--symlink", "usr/bin", "/bin", "--symlink", "usr/sbin", "/sbin",
+            "--ro-bind-try", "/etc/ld.so.cache", "/etc/ld.so.cache",
+            "--ro-bind", venv, venv,
+            "--bind", str(self._sandbox_dir), str(self._sandbox_dir),
+            "--ro-bind-try", str(self._input_dir), str(self._input_dir),   # dati: read-only
+            "--bind-try", str(self._output_dir), str(self._output_dir),    # artefatti: read-write
+            "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+            "--setenv", "HOME", "/tmp", "--setenv", "MPLCONFIGDIR", "/tmp",
+            "--unshare-all", "--die-with-parent", "--new-session",
+            "--chdir", str(self._sandbox_dir),
+            sys.executable, "-u", str(script_path),
+        ]
+
     def _execute_code(self, code: str, stop_event: threading.Event,
                       timeout: int) -> CodeResult:
         """Esegue il codice in subprocess isolato."""
@@ -502,9 +539,9 @@ class CodeRunner:
                         except OSError:
                             pass
 
-            # Lancia il subprocess
+            # Lancia il subprocess (confinato in bwrap se disponibile — vedi _wrap_cmd)
             process = subprocess.Popen(
-                [sys.executable, "-u", str(script_path)],
+                self._wrap_cmd(script_path),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=str(self._sandbox_dir),

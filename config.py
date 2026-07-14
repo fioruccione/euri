@@ -348,6 +348,10 @@ CODE_RUNNER_INPUT_DIR = str(Path.home() / "Scrivania" / "dati_per_Euri")
 CODE_RUNNER_OUTPUT_DIR = str(Path.home() / "Scrivania" / "scambio_dati")
 CODE_RUNNER_SANDBOX_DIR = str(Path(__file__).parent / "sandbox")
 CODE_RUNNER_TIMEOUT = 30           # secondi max per esecuzione script
+# Confinamento OS del subprocess via bubblewrap (difesa runtime oltre lo scanner AST):
+# namespace mount read-only tranne sandbox+output, /tmp isolato, $HOME/etc assenti.
+# Kill-switch: a False si degrada al lancio diretto + scanner (comportamento storico).
+CODE_RUNNER_BWRAP_ENABLED = True
 CODE_RUNNER_MAX_OUTPUT_BYTES = 10240  # max stdout catturato
 SILENT_CHAT_UPLOAD_TTL_SECONDS = 24 * 3600  # upload chat effimeri: cleanup dopo 24h
 SILENT_CHAT_UPLOAD_MAX_MB = 200
