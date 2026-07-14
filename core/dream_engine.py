@@ -698,7 +698,11 @@ REGOLE:
             if residue:
                 self._r.setex("euri:dream_trace:latest",
                               getattr(config, "DREAM_TRACE_TTL_S", 48 * 3600), residue)
-                logger.info(f"Dream trace aggiornata ({len(lines)} righe)")
+                # contenuto nel log: la chiave si sovrascrive a ogni ciclo, il log è
+                # l'unica storia dei residui — serve al check pre-registrato "leggi
+                # ~10 residui" (ESPERIMENTO_DREAM_TRACE.md, criterio 4)
+                logger.info(f"Dream trace aggiornata ({len(lines)} righe): "
+                            f"{residue[:500].replace(chr(10), ' | ')}")
         except Exception as e:
             logger.debug(f"dream_trace non aggiornata (non-critico): {e}")
 
