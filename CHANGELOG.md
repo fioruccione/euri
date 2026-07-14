@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-14 - Cognitive Present preparatorio (runtime invariato)
+
+- Aggiunto il contratto puro e thread-safe `core/cognitive_present.py`: snapshot
+  versionati, provenienza esplicita, TTL sensoriali, lease dalla fine del parlato e
+  token per rivalidare decisioni asincrone. Il daemon non lo importa ancora.
+- Aggiunto un audit read-only dei log vocali per follow-up persi, collisioni con
+  Initiative e confusione fra capability configurata e disponibilita' corrente.
+- Rafforzato il replay Active Focus: usa `reaction_raw`, mai la lezione sintetizzata,
+  e una reaction non puo' creare un focus. Il nuovo replay e' NO-GO per copertura:
+  la rimozione delle sintesi interne espone la mancanza di eventi utente diretti recenti.
+
 Storico completo delle versioni di Euri. Il README riporta solo la versione corrente; qui la cronologia integrale.
 
 ## Unreleased (13–14/07/2026) — Impegni nel modello memoria + il sogno che si misura

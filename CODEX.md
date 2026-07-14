@@ -1,5 +1,21 @@
 # Handoff Euri — 2026-07-14
 
+## Cognitive Present preparatorio — 2026-07-14
+
+- Aggiunti `core/cognitive_present.py` e `SPEC_COGNITIVE_PRESENT.md`, senza import
+  dal daemon, Redis o prompt: il runtime e l'esperimento `dream_trace` restano invariati.
+- Il contratto separa stato epistemico, disponibilita' sensoriale, fase/canale,
+  domanda pendente e lease conversazionale; la lease parte dalla fine del TTS.
+- `scripts/experiments/audit_cognitive_present.py` ha analizzato 71.980 righe del
+  log corrente: 12 turni fuori finestra, uno solo follow-up certo entro 45s dalla
+  fine TTS (14/07 16:55), seguito 21,4s dopo da Initiative; tre auto-descrizioni
+  assolute della webcam confliggono con la capability configurata.
+- Replay Active Focus raffinato: `reaction_raw` puo' solo rinforzare, la sintesi
+  `reaction` non entra. Esito: NO-GO per copertura (5 giorni campionabili, nessun
+  focus vivo al 14/07). Non riaprire alle sintesi interne; manca una sorgente diretta
+  e replayabile dei turni utente accettati.
+- Nessuna attivazione runtime prima della chiusura e dell'audit cieco Dream Trace.
+
 ## Correzioni strutturali critiche — 2026-07-14
 
 Chiuse tre falle emerse dall'audit architetturale successivo all'hardening:

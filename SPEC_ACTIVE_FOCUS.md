@@ -60,9 +60,11 @@ sulla memoria-impegno (stessa id in source_refs), mai un duplicato.
   cooling. Il cap è il punto: un focus che non compete non è un focus.
 - **Dedup:** prima di creare, cercare focus attivo con stesso dominio + overlap di
   identificatori → rinforza quello. Mai due focus per la stessa cosa.
-- **Nascita:** SOLO da eventi nominabili (memoria salvata da voce/teach, impegno creato,
-  esperimento avviato, correzione ricca). MAI da passive-ambient da solo (spugna,
-  registro incerto — lezione Simone-scherzo) e MAI da insight non validati.
+- **Nascita:** SOLO da eventi esterni nominabili (`user`/`teach`, impegno creato,
+  esperimento avviato). MAI da passive-ambient da solo (spugna, registro incerto —
+  lezione Simone-scherzo), da insight non validati o da una lezione `reaction`
+  sintetizzata da Euri. Il campo `reaction_raw` puo' rinforzare un focus esistente,
+  ma una risposta a un insight non diventa automaticamente lavoro in corso.
 
 ## Riuso e sovrapposizioni (richieste esplicitamente)
 
@@ -128,3 +130,18 @@ riconosce il proprio lavoro reale.
 Costruire PRIMA il replay harness (offline, zero rischio, validabile da Stefano in
 mezz'ora di audit) — solo dopo il GO si tocca il runtime, e comunque non prima della
 fine della raccolta dream_trace.
+
+## Replay epistemico 14/07/2026
+
+Il replay e' stato ripetuto sostituendo ogni lezione `source=reaction` col solo
+`reaction_raw` e vietando alle reaction di creare un focus. Risultato: 72 focus nati,
+5 giorni recenti campionabili e nessun focus vivo a fine replay. Le sintesi generate
+da Euri sono correttamente sparite dai top, ma e' emersa una lacuna di copertura:
+dopo il 26/06 il dataset di memorie non contiene abbastanza eventi diretti
+`user`/`teach` per rappresentare il lavoro recente.
+
+Questo risultato annulla il vecchio GO come autorizzazione al runtime: quell'audit
+aveva validato che i testi provenissero dalle conversazioni, non che il ranking
+ricostruisse davvero la salienza quotidiana. Stato attuale: **NO-GO per copertura**.
+Non si corregge allargando di nuovo alle sintesi interne; serve una sorgente diretta
+dei turni accettati o un evento Pulse groundato, da progettare dopo `dream_trace`.

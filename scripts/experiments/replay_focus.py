@@ -7,7 +7,7 @@ motore focus a regole e genera:
      giorno: Stefano segna se riconosce il proprio lavoro reale (GO: ≥80% dei giorni).
 
 Read-only su Redis, nessun daemon, nessuna scrittura. Regole (dalla spec):
-  - NASCITA solo da eventi nominabili (source user/teach/reaction), mai da passive solo;
+  - NASCITA solo da eventi nominabili (source user/teach), mai da passive o sintesi reaction;
   - RINFORZO: stesso dominio + overlap di identificatori o ≥2 keyword (identifier-first,
     MAI cosine-only: anisotropia);
   - DECADIMENTO esponenziale per regola (τ 3 giorni), stati active/cooling/archiviato;
@@ -33,8 +33,8 @@ TAU_S = 3 * 86400.0          # decadimento tema_lavoro
 A_ON, A_OFF = 0.35, 0.10     # soglie active / archivio
 A_BIRTH = 0.45               # attivazione alla nascita
 CAP_ACTIVE = 7
-BIRTH_SOURCES = {"user", "teach", "reaction"}
-REINFORCE_W = {"user": 0.40, "teach": 0.40, "reaction": 0.35, "conversation": 0.20,
+BIRTH_SOURCES = {"user", "teach"}
+REINFORCE_W = {"user": 0.40, "teach": 0.40, "reaction_raw": 0.35, "conversation": 0.20,
                "episode": 0.20, "passive": 0.15, "obsidian_vault": 0.25}
 W_DEFAULT = 0.10             # reflection/loop2e/web/…: interni, rinforzo debole
 AUDIT_DAYS = 8
@@ -50,6 +50,20 @@ def sig_of(content: str) -> tuple[set, set]:
            if any(c.isdigit() for c in m)}
     kws = set(_kw(content or "")[:10])
     return ids, kws
+
+
+def normalize_focus_event(doc: dict) -> tuple[str, str]:
+    """Use external feedback, never Euri's synthesized reaction lesson.
+
+    `source=reaction` stores an LLM lesson plus `reaction_raw`. The former may
+    elaborate beyond Stefano's words and therefore cannot seed or reinforce the
+    work plan. The raw feedback can reinforce an existing focus but cannot birth
+    one, because feedback to an insight is not automatically ongoing work.
+    """
+    source = str(doc.get("source") or "?")
+    if source == "reaction":
+        return (str(doc.get("reaction_raw") or "").strip(), "reaction_raw")
+    return (str(doc.get("content") or "").strip(), source)
 
 
 @dataclass
@@ -138,7 +152,7 @@ def main():
         if not d:
             continue
         d = d[0]
-        content = (d.get("content") or "").strip()
+        content, source = normalize_focus_event(d)
         if not content or not d.get("created_at") or not d.get("domain"):
             continue
         key_ = content.lower()
@@ -146,7 +160,7 @@ def main():
             continue
         seen.add(key_)
         events.append((float(d["created_at"]), d["domain"], content,
-                       d.get("source", "?"), d.get("id", "")[:8]))
+                       source, d.get("id", "")[:8]))
     events.sort(key=lambda e: e[0])
     print(f"eventi: {len(events)} ({datetime.fromtimestamp(events[0][0]):%d/%m/%y} → "
           f"{datetime.fromtimestamp(events[-1][0]):%d/%m/%y})")
@@ -194,7 +208,7 @@ def main():
         for d in sampled:
             fh.write(f"---\n\n## {d:%A %d/%m}   [ ]S  [ ]~  [ ]N\n\n")
             for a, label, dom, reinf, cause in day_snapshots[d]:
-                fh.write(f"- **{a:.2f}** [{dom}] {label}  \n"
+                fh.write(f"- **{a:.2f}** [{dom}] {label}\n"
                          f"  _(nato da {cause}, rinforzato {reinf}×)_\n")
             fh.write("\n")
     print(f"\naudit scritto: {out} ({len(sampled)} giorni campionati)")
