@@ -2,6 +2,8 @@ import sys
 import os
 import inspect
 import queue as _queue
+import re
+import shutil
 from pathlib import Path
 import json
 import time
@@ -483,7 +485,12 @@ with main_col:
             "xlsx", "xls", "ods", "png", "jpg", "jpeg", "webp", "bmp",
             "gif", "tiff",
         ]
+        _SUPPORTED_UPLOAD_EXTS = {f".{ext}" for ext in _CHAT_UPLOAD_TYPES}
         _SPREADSHEET_EXTS = {".xlsx", ".xls", ".ods"}
+        _LOCAL_FILE_PATH_RE = re.compile(
+            rf"(?P<path>(?:~|/)[^\n\r]*?\.({'|'.join(_CHAT_UPLOAD_TYPES)}))",
+            re.IGNORECASE,
+        )
 
         def _chat_upload_dir() -> Path:
             data_dir = Path(config.CODE_RUNNER_INPUT_DIR).expanduser()
@@ -543,10 +550,13 @@ with main_col:
                 return
             registry.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        def _cleanup_chat_uploads(*, delete_all: bool = False) -> int:
+        def _cleanup_chat_uploads(
+            *, delete_all: bool = False, keep_paths: set[Path] | None = None
+        ) -> int:
             data_dir = _chat_upload_dir()
             now = time.time()
             ttl = getattr(config, "SILENT_CHAT_UPLOAD_TTL_SECONDS", 24 * 3600)
+            keep_resolved = {p.resolve() for p in (keep_paths or set()) if p.exists()}
             kept = []
             removed = 0
             for entry in _load_chat_upload_registry():
@@ -555,6 +565,9 @@ with main_col:
                 uploaded_at = float(entry.get("uploaded_at") or 0)
                 expired = ttl > 0 and uploaded_at and now - uploaded_at > ttl
                 if not raw_path or not _is_inside_dir(path, data_dir):
+                    continue
+                if path.exists() and path.resolve() in keep_resolved:
+                    kept.append(entry)
                     continue
                 if delete_all or expired:
                     try:
@@ -589,6 +602,107 @@ with main_col:
                     "uploaded_at": time.time(),
                     "size": target.stat().st_size,
                 })
+            if saved:
+                _write_chat_upload_registry(saved)
+            return saved, errors
+
+        def _allowed_pasted_path_roots() -> list[Path]:
+            roots = [
+                Path.home() / "Scrivania",
+                _chat_upload_dir(),
+            ]
+            unique = []
+            for root in roots:
+                root = root.expanduser()
+                if root not in unique:
+                    unique.append(root)
+            return unique
+
+        def _clean_local_path_candidate(raw_path: str) -> Path:
+            text = raw_path.strip().strip("\"'`").rstrip(".,;:!?)]}")
+            if text.startswith("file://"):
+                text = text[7:]
+            return Path(text).expanduser()
+
+        def _extract_local_path_candidates(text: str) -> list[Path]:
+            candidates = []
+            raw_candidates = []
+            stripped = text.strip()
+            if stripped.startswith(("/", "~", "file://")):
+                raw_candidates.append(stripped)
+            raw_candidates.extend(m.group(1) for m in re.finditer(r"['\"]([^'\"]+)['\"]", text))
+            raw_candidates.extend(m.group("path") for m in _LOCAL_FILE_PATH_RE.finditer(text))
+
+            seen = set()
+            for raw in raw_candidates:
+                path = _clean_local_path_candidate(raw)
+                key = str(path)
+                if key in seen or path.suffix.lower() not in _SUPPORTED_UPLOAD_EXTS:
+                    continue
+                seen.add(key)
+                candidates.append(path)
+            return candidates
+
+        def _is_path_only_prompt(text: str, paths: list[Path]) -> bool:
+            if len(paths) != 1:
+                return False
+            try:
+                return _clean_local_path_candidate(text).resolve(strict=False) == paths[0].resolve(strict=False)
+            except Exception:
+                return False
+
+        def _stage_existing_chat_paths(paths: list[Path]) -> tuple[list[dict], list[str]]:
+            if not paths:
+                return [], []
+
+            data_dir = _chat_upload_dir()
+            allowed_roots = _allowed_pasted_path_roots()
+            sources, errors = [], []
+
+            for path in paths:
+                try:
+                    source = path.resolve(strict=True)
+                except Exception:
+                    errors.append(f"{path}: file non trovato")
+                    continue
+                if not source.is_file():
+                    errors.append(f"{source}: non e' un file")
+                    continue
+                if source.suffix.lower() not in _SUPPORTED_UPLOAD_EXTS:
+                    errors.append(f"{source.name}: formato non supportato")
+                    continue
+                if not any(_is_inside_dir(source, root) for root in allowed_roots):
+                    roots = ", ".join(str(r) for r in allowed_roots)
+                    errors.append(f"{source}: percorso non ammesso (root consentite: {roots})")
+                    continue
+                sources.append(source)
+
+            if not sources:
+                return [], errors
+
+            keep_paths = {p for p in sources if _is_inside_dir(p, data_dir)}
+            _cleanup_chat_uploads(delete_all=True, keep_paths=keep_paths)
+
+            saved = []
+            for source in sources:
+                try:
+                    if _is_inside_dir(source, data_dir):
+                        target = source
+                    else:
+                        target = _unique_upload_path(data_dir, _safe_upload_name(source.name))
+                        shutil.copy2(source, target)
+                except Exception as e:
+                    errors.append(f"{source.name}: copia non riuscita ({e})")
+                    continue
+
+                saved.append({
+                    "name": target.name,
+                    "original_name": source.name,
+                    "path": str(target),
+                    "uploaded_at": time.time(),
+                    "size": target.stat().st_size,
+                })
+
             if saved:
                 _write_chat_upload_registry(saved)
             return saved, errors
@@ -677,6 +791,16 @@ with main_col:
                     st.rerun()
             elif not prompt:
                 st.stop()
+
+        if prompt and not incoming_uploads:
+            pasted_paths = _extract_local_path_candidates(prompt)
+            if pasted_paths:
+                staged_paths, path_errors = _stage_existing_chat_paths(pasted_paths)
+                for err in path_errors:
+                    st.error(f"Path locale non acquisito: {err}")
+                if staged_paths:
+                    user_text = "" if _is_path_only_prompt(prompt, pasted_paths) else prompt
+                    prompt = _compose_upload_prompt(user_text, staged_paths)
 
         # Input utente
         if prompt:
