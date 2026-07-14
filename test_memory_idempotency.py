@@ -13,10 +13,13 @@ class FakeRedis:
         self.docs = {}
         self.fail_commit = False
         self.expirations = {}
+        self.hashes = {}
+        self.zsets = {}
 
     def eval(self, _script, numkeys, *args):
-        assert numkeys == 2
-        idem_key, memory_key, memory_id, raw_doc, prefix = args
+        assert numkeys == 4
+        idem_key, memory_key, outbox_key, pending_key = args[:4]
+        memory_id, raw_doc, prefix, enqueued_at = args[4:]
         existing = self.strings.get(idem_key)
         if existing and prefix + existing in self.docs:
             return [existing, "0"]
@@ -24,6 +27,13 @@ class FakeRedis:
             raise RuntimeError("simulated JSON.SET failure")
         self.docs[memory_key] = json.loads(raw_doc)
         self.strings[idem_key] = memory_id
+        self.hashes[outbox_key] = {
+            "memory_key": memory_key,
+            "memory_id": memory_id,
+            "enqueued_at": enqueued_at,
+            "attempts": "0",
+        }
+        self.zsets.setdefault(pending_key, {})[outbox_key] = float(enqueued_at)
         return [memory_id, "1"]
 
     def zrem(self, *_args):
@@ -41,8 +51,7 @@ def _manager(redis):
 def _save(manager, content="Stefano usa un journal sequenziale per la history."):
     with (
         patch("core.memory_manager.assign_domain", return_value="test"),
-        patch("core.memory_manager.write_memory"),
-        patch("core.memory_manager.pulse_emit"),
+        patch("core.memory_manager.process_memory_outbox_event", return_value=True),
     ):
         return manager.save_memory(content, source="user", idempotent=True)
 
@@ -61,11 +70,13 @@ def test_failed_commit_leaves_no_phantom_winner():
         assert "JSON.SET" in str(exc)
     assert idem_key not in redis.strings
     assert redis.docs == {}
+    assert redis.hashes == {}
 
     redis.fail_commit = False
     winner = _save(manager)
     assert redis.strings[idem_key] == winner
     assert f"euri:memory:{winner}" in redis.docs
+    assert f"euri:outbox:memory:{winner}" in redis.hashes
 
 
 def test_document_build_failure_never_reserves_winner():
@@ -73,8 +84,7 @@ def test_document_build_failure_never_reserves_winner():
     manager = _manager(redis)
     with (
         patch("core.memory_manager.assign_domain", side_effect=RuntimeError("domain failure")),
-        patch("core.memory_manager.write_memory"),
-        patch("core.memory_manager.pulse_emit"),
+        patch("core.memory_manager.process_memory_outbox_event", return_value=True),
     ):
         try:
             manager.save_memory("Stefano verifica il commit prima del mapping.", source="user", idempotent=True)
@@ -83,6 +93,7 @@ def test_document_build_failure_never_reserves_winner():
             assert "domain failure" in str(exc)
     assert redis.strings == {}
     assert redis.docs == {}
+    assert redis.hashes == {}
 
 
 def test_duplicate_returns_only_existing_document():

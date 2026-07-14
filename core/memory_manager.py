@@ -19,14 +19,15 @@ from core.domain_gater import assign_domain, domain_aware_search, neighbor_domai
 from core.memory_attention import remove_loop2e_candidate, update_loop2e_candidate_index
 from core.memory_axes import analyze_memory_axes
 from core.memory_risk import rank_memories_epistemically
-from utils.obsidian_sync import write_memory
+from core.memory_outbox import (
+    MEMORY_OUTBOX_PENDING,
+    memory_outbox_key,
+    process_memory_outbox_event,
+)
 from core.pulse import pulse_emit
 
 # Sorgenti di memoria che nascono da un'INTERAZIONE col mondo (→ polo extero del Pulse);
 # le altre (passive/loop2e/reflection/reaction…) sono elaborazione interna di Euri (→ intero).
-_EXTERO_MEMORY_SOURCES = {"user", "teach", "conversation", "episode", "mobile_in"}
-
-
 _TTL_BY_SOURCE: dict[str, int] = {
     "passive":      90,
     "reflection":   90,
@@ -53,7 +54,24 @@ if existing then
 end
 redis.call('JSON.SET', KEYS[2], '$', ARGV[2])
 redis.call('SET', KEYS[1], ARGV[1], 'EX', 120)
+redis.call(
+    'HSET', KEYS[3],
+    'memory_key', KEYS[2], 'memory_id', ARGV[1],
+    'enqueued_at', ARGV[4], 'attempts', '0'
+)
+redis.call('ZADD', KEYS[4], ARGV[4], KEYS[3])
 return {ARGV[1], '1'}
+"""
+
+_MEMORY_COMMIT_LUA = """
+redis.call('JSON.SET', KEYS[1], '$', ARGV[2])
+redis.call(
+    'HSET', KEYS[2],
+    'memory_key', KEYS[1], 'memory_id', ARGV[1],
+    'enqueued_at', ARGV[3], 'attempts', '0'
+)
+redis.call('ZADD', KEYS[3], ARGV[3], KEYS[2])
+return ARGV[1]
 """
 
 
@@ -87,12 +105,15 @@ class MemoryManager:
         """Commit atomico RedisJSON + mapping; ritorna (winner_id, created)."""
         result = self.r.eval(
             _IDEMPOTENT_MEMORY_COMMIT_LUA,
-            2,
+            4,
             idem_key,
             memory_key,
+            memory_outbox_key(memory_id),
+            MEMORY_OUTBOX_PENDING,
             memory_id,
             json.dumps(doc, ensure_ascii=False, separators=(",", ":")),
             "euri:memory:",
+            f"{time.time():.6f}",
         )
         winner, created = result
         if isinstance(winner, bytes):
@@ -100,6 +121,19 @@ class MemoryManager:
         if isinstance(created, bytes):
             created = created.decode("utf-8", errors="replace")
         return str(winner), str(created) == "1"
+
+    def _commit_memory(self, memory_key: str, memory_id: str, doc: dict) -> None:
+        """Crea memoria canonica e record outbox nella stessa operazione Redis."""
+        self.r.eval(
+            _MEMORY_COMMIT_LUA,
+            3,
+            memory_key,
+            memory_outbox_key(memory_id),
+            MEMORY_OUTBOX_PENDING,
+            memory_id,
+            json.dumps(doc, ensure_ascii=False, separators=(",", ":")),
+            f"{time.time():.6f}",
+        )
 
     def save_memory(self, content: str, category: str = "personale", tags: list[str] = None, source: str = "user", expires_at: datetime | None = None, idempotent: bool = False, due_at: datetime | None = None, status: str | None = None) -> str | None:
         # Memory Guard: scansione anti-poisoning sull'ingest. Da fonte non fidata
@@ -213,45 +247,15 @@ class MemoryManager:
                 logger.debug(
                     f"save_memory: idempotency skip — documento già committato (winner={winner_id})"
                 )
+                process_memory_outbox_event(self.r, memory_outbox_key(winner_id))
                 return winner_id
         else:
-            self.r.json().set(key, "$", doc)
-        update_loop2e_candidate_index(self.r, doc)
-        if expires_at:
-            # expireat è separato dal JSON.SET (Codex #1): se fallisce, la memoria resterebbe
-            # SENZA TTL (vive per sempre) mentre expires_at dice il contrario. Tracciato, non
-            # ingoiato; e NON facciamo crashare il save (meglio una memoria senza TTL che persa).
-            try:
-                self.r.expireat(key, expires_at)
-            except Exception as e:
-                self._record_integrity_failure("expireat-save", key, e)
+            self._commit_memory(key, mid, doc)
         logger.info(f"Memory salvata: {mid}")
 
-        # Pulse afferente (Fase 1): una memoria salvata è un evento percepibile. Polo dalla
-        # source (interazione→extero, processo interno→intero). I flag di rischio nel payload
-        # così lo scorer di tensione li legge senza dover ri-aprire il nodo. Fail-open.
-        pulse_emit(
-            self.r, "memory",
-            "extero" if source in _EXTERO_MEMORY_SOURCES else "intero", "saved",
-            payload={
-                "id": mid, "mem_source": source, "domain": domain_label,
-                "requires_verification": requires_verification,
-                "memory_axes": {
-                    "subject_status": memory_axes.get("subject_status"),
-                    "audit_reasons": memory_axes.get("audit_reasons", []),
-                    "fact_types": memory_axes.get("fact_types", []),
-                    "temporal_markers": memory_axes.get("temporal_markers", []),
-                },
-                "safety_flag": doc["safety_flag"],
-            },
-            salience=0.55 if (doc["safety_flag"] or requires_verification) else 0.35,
-        )
-
-        # Sincronizza verso Obsidian Vault (se abilitato)
-        try:
-            write_memory(doc)
-        except Exception as e:
-            logger.debug(f"Obsidian sync memory error: {e}")
+        # Fast path: conserva la latenza attuale. Se un effetto fallisce, il record
+        # resta nell'outbox e verra' ripreso dal worker invece di essere perso.
+        process_memory_outbox_event(self.r, memory_outbox_key(mid))
 
         return mid
 

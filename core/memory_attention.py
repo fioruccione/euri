@@ -86,8 +86,8 @@ def loop2e_attention_score(doc: dict[str, Any]) -> float:
     return rc * 10_000_000_000.0 + lr + tie
 
 
-def update_loop2e_candidate_index(r, doc: dict[str, Any]) -> None:
-    """Aggiorna lo ZSET per una singola memoria. Fail-open: non solleva."""
+def update_loop2e_candidate_index(r, doc: dict[str, Any], *, strict: bool = False) -> None:
+    """Aggiorna lo ZSET; fail-open per default, solleva se il caller deve ritentare."""
     if r is None or not doc:
         return
     mid = bare_memory_id(doc.get("id", ""))
@@ -99,6 +99,8 @@ def update_loop2e_candidate_index(r, doc: dict[str, Any]) -> None:
         else:
             r.zrem(LOOP2E_ZSET, mid)
     except Exception as e:
+        if strict:
+            raise
         logger.debug(f"Loop2e attention index update fallito per {mid[:8]}: {e}")
 
 

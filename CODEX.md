@@ -29,8 +29,18 @@ Chiusa anche la fase ranking epistemico:
   percorsi laterali;
 - regressioni in `test_epistemic_ranking.py`.
 
-Restano come fasi separate: outbox durevole, supervisione dei loop e
-separazione CI unit/integration/live.
+Chiusa anche la fase outbox durevole:
+
+- save normale e idempotente committano RedisJSON + record outbox nello stesso Lua;
+- TTL, indice Loop 2e, Pulse e Obsidian vengono applicati da un consumer replayabile;
+- Pulse usa dedup atomico per event ID; un fallimento successivo non lo duplica;
+- il daemon drena in background gli eventi rimasti e il fast path mantiene il
+  comportamento immediato quando tutti i servizi sono disponibili;
+- regressioni in `test_memory_outbox.py`; script verificati su Redis reale e
+  chiavi di test eliminate.
+
+Restano come fasi separate: supervisione dei loop e separazione CI
+unit/integration/live.
 
 ## Stato repo al close
 

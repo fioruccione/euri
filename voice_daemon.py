@@ -2282,6 +2282,14 @@ class VoiceDaemon:
                 logger.error(f"Initiative controller: errore loop: {e}")
                 time.sleep(5)
 
+    def _memory_outbox_loop(self):
+        """Recupera gli effetti derivati rimasti pendenti dopo save o crash."""
+        from core.memory_outbox import drain_memory_outbox
+
+        while self._running:
+            _ok, failed = drain_memory_outbox(self.r, limit=20)
+            time.sleep(5 if failed else 1)
+
     def run(self):
         self._running = True
 
@@ -2324,6 +2332,10 @@ class VoiceDaemon:
         # Thread initiative controller — Pulse → tension → domanda prompt-based.
         t_initiative = threading.Thread(target=self._initiative_worker, daemon=True)
         t_initiative.start()
+
+        # Outbox memoria — TTL, indice attenzione, Pulse e Obsidian replayabili.
+        t_outbox = threading.Thread(target=self._memory_outbox_loop, daemon=True)
+        t_outbox.start()
 
         # Avvia Dream Engine (Loop 2b/2c)
         if hasattr(self, 'dream_engine'):

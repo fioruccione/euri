@@ -35,7 +35,7 @@ def _mark_ignored(filepath: str):
 def write_memory(doc: dict):
     """Scrive una memory su Obsidian."""
     if not config.OBSIDIAN_SYNC_ENABLED:
-        return
+        return True
         
     vault_path = Path(config.OBSIDIAN_VAULT_PATH)
     domain = doc.get("domain", "generale")
@@ -47,7 +47,7 @@ def write_memory(doc: dict):
         dir_path.mkdir(parents=True, exist_ok=True)
     except Exception as e:
         logger.error(f"Obsidian Sync: impossibile creare cartella {dir_path}: {e}")
-        return
+        return False
         
     # Format the date for the filename and content
     dt = from_timestamp(doc["created_at"])
@@ -77,8 +77,10 @@ def write_memory(doc: dict):
         _mark_ignored(str(filepath.absolute()))
         filepath.write_text(content, encoding="utf-8")
         logger.debug(f"Obsidian Sync: Scritta memoria {filepath.name}")
+        return True
     except Exception as e:
         logger.error(f"Obsidian Sync: errore scrittura {filepath}: {e}")
+        return False
 
 
 def write_insight(doc: dict):
