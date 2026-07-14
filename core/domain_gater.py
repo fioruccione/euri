@@ -9,6 +9,8 @@ In fase di recupero, la ricerca avviene in due step:
 import ollama
 from core.ollama_client import chat_client
 from loguru import logger
+
+from core.memory_risk import rank_memories_epistemically
 from redis.commands.search.query import Query
 
 import config
@@ -188,7 +190,7 @@ def domain_aware_search(query: str, embedder, r, limit: int = 5) -> list[dict]:
         items.append(item)
 
     items.sort(key=lambda x: x["_adj"])
-    results = items[:limit]
+    results = rank_memories_epistemically(items, limit=limit)
     n_dom = sum(1 for it in results if it["domain"] == query_domain)
     for it in results:
         it.pop("_adj", None)

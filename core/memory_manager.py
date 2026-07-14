@@ -18,6 +18,7 @@ from utils.date_utils import now, to_timestamp, from_timestamp, format_datetime
 from core.domain_gater import assign_domain, domain_aware_search, neighbor_domains
 from core.memory_attention import remove_loop2e_candidate, update_loop2e_candidate_index
 from core.memory_axes import analyze_memory_axes
+from core.memory_risk import rank_memories_epistemically
 from utils.obsidian_sync import write_memory
 from core.pulse import pulse_emit
 
@@ -314,7 +315,15 @@ class MemoryManager:
             if identifiers:
                 id_cap = max(1, limit // 3)
                 id_query = " | ".join(identifiers)
-                id_results = self._search_keyword(id_query, id_cap, source_filter=source_filter, touch=False)
+                id_results = self._rank_epistemically(
+                    self._search_keyword(
+                        id_query,
+                        max(id_cap * 4, 8),
+                        source_filter=source_filter,
+                        touch=False,
+                    ),
+                    limit=id_cap,
+                )
                 for r in id_results[:id_cap]:
                     uid = r.get("id", "")
                     if uid not in seen_uuids:
@@ -346,19 +355,30 @@ class MemoryManager:
                 f"(id:{len(identifiers)} token, semantic:{len(semantic)}, fill)"
             )
 
-            # Invariante A — down-rank di provenienza (centralizzato in _demote_provenance_stale).
-            merged = self._demote_provenance_stale(merged)
-
-            results = merged[:limit]
+            # Ranking prudente centralizzato: pertinenza, affidabilita' della fonte
+            # e flag epistemici concorrono prima del taglio finale.
+            results = self._rank_epistemically(merged, limit=limit)
             if touch:
                 self._touch_memories(results)
             return results
 
         if query == "*":
-            return self._search_keyword(query, limit, source_filter=source_filter, touch=touch)
+            candidates = self._search_keyword(
+                query, max(limit * 4, limit), source_filter=source_filter, touch=False
+            )
+            results = self._rank_epistemically(candidates, limit=limit)
+            if touch:
+                self._touch_memories(results)
+            return results
         kw_list = self._safe_keywords(query)
         kw_query = " | ".join(kw_list[:6]) if kw_list else query
-        return self._search_keyword(kw_query, limit, source_filter=source_filter, touch=touch)
+        candidates = self._search_keyword(
+            kw_query, max(limit * 4, limit), source_filter=source_filter, touch=False
+        )
+        results = self._rank_epistemically(candidates, limit=limit)
+        if touch:
+            self._touch_memories(results)
+        return results
 
     @staticmethod
     def _sanitize_query(text: str) -> str:
@@ -454,7 +474,7 @@ class MemoryManager:
                     item["_created_at"] = from_timestamp(item.get("created_at"))
                     item["_vec_score"] = score
                     docs.append(item)
-            return docs[:limit]
+            return self._rank_epistemically(docs, limit=limit)
         except Exception as e:
             logger.error(f"Errore ricerca semantica: {e}")
             return []
@@ -501,7 +521,7 @@ class MemoryManager:
                 merged.append(d)
                 seen.add(d["id"])
 
-        results = merged[:limit]
+        results = self._rank_epistemically(merged, limit=limit)
         if touch:
             self._touch_memories(results)
         return results
@@ -521,29 +541,18 @@ class MemoryManager:
             self._touch_memories(docs)
         return docs
 
+    @staticmethod
+    def _rank_epistemically(results: list[dict], limit: int | None = None) -> list[dict]:
+        """
+        Applica lo stesso ordinamento prudente a semantica, keyword e recency.
+        Il pool deve essere gia' ordinato per pertinenza: il reranker lo corregge,
+        non sostituisce il segnale prodotto dal motore di ricerca.
+        """
+        return rank_memories_epistemically(results, limit=limit)
+
     def _demote_provenance_stale(self, results: list[dict]) -> list[dict]:
-        """
-        Invariante A — down-rank di provenienza, CENTRALIZZATO. Sposta in fondo i nodi
-        la cui fondamenta è caduta (`provenance_stale`, propagato dal Dream Engine) —
-        demozione, non esclusione (fail-safe). Applicato a TUTTI i path che iniettano
-        contesto (semantico, recency, temporale), non solo alla ricerca semantica: senza,
-        un nodo marcio poteva ancora affiorare per pura recenza prima delle ancore pulite
-        (gap trovato in review). Legge il flag solo per i candidati finali; sort stabile.
-        """
-        if not results:
-            return results
-        def _stale(rec):
-            if "provenance_stale" in rec:
-                return bool(rec.get("provenance_stale"))
-            mid = rec.get("id", "")
-            k = mid if str(mid).startswith("euri:memory:") else f"euri:memory:{mid}"
-            try:
-                v = self.r.json().get(k, "$.provenance_stale")
-                return bool(v and v[0])
-            except Exception:
-                return False
-        results.sort(key=lambda rec: 1 if _stale(rec) else 0)
-        return results
+        """Compatibilita' interna: il vecchio helper ora usa il ranking completo."""
+        return self._rank_epistemically(results)
 
     def _touch_memories(self, memories: list[dict]):
         """Rinforza memorie realmente usate in retrieval cognitivo."""
@@ -598,12 +607,13 @@ class MemoryManager:
         source_filter: list[str] | None = None,
         touch: bool = True,
     ) -> list[dict]:
-        # Down-rank di provenienza anche sulla recency (gap di review F3): la base
-        # iniettata da _build_context per pura recenza non deve far affiorare un nodo
-        # marcio prima delle ancore pulite.
-        return self._demote_provenance_stale(
-            self._search_keyword("*", limit=limit, source_filter=source_filter, touch=touch)
+        candidates = self._search_keyword(
+            "*", limit=max(limit * 4, limit), source_filter=source_filter, touch=False
         )
+        results = self._rank_epistemically(candidates, limit=limit)
+        if touch:
+            self._touch_memories(results)
+        return results
 
     def search_memories_by_timerange(
         self,
@@ -616,16 +626,27 @@ class MemoryManager:
         try:
             q = (Query(f"@created_at:[{ts_start} {ts_end}]")
                  .sort_by("created_at", asc=False)
-                 .paging(0, limit))
+                 .paging(0, max(limit * 4, limit)))
             results = self.r.ft("idx:memories").search(q)
-            return self._demote_provenance_stale(self._hydrate(results.docs, touch=touch))
+            memories = self._rank_epistemically(
+                self._hydrate(results.docs, touch=False), limit=limit
+            )
+            if touch:
+                self._touch_memories(memories)
+            return memories
         except Exception as e:
             logger.error(f"Errore ricerca temporale: {e}")
             return []
 
     def get_recent_reflections(self, limit: int = 2, touch: bool = True) -> list[dict]:
         """Restituisce le reflection più recenti generate da Loop 2a."""
-        return self._search_keyword("*", limit=limit, source_filter=["reflection"], touch=touch)
+        candidates = self._search_keyword(
+            "*", limit=max(limit * 4, limit), source_filter=["reflection"], touch=False
+        )
+        results = self._rank_epistemically(candidates, limit=limit)
+        if touch:
+            self._touch_memories(results)
+        return results
 
     # ──────────────────────────────────────────
     # IMPEGNI (todo assorbiti nel modello memoria: memorie con due_at + status)

@@ -12,7 +12,7 @@ memorie); dichiarato nel context come CAMPIONE rappresentativo, non scansione co
 """
 import re
 
-from core.memory_risk import memory_risk_rank, memory_verification_suffix
+from core.memory_risk import memory_epistemic_rank, memory_verification_suffix
 
 # Domande panoramiche/autobiografiche (generiche, non lessico di settore).
 _WIDE_RE = re.compile(
@@ -81,11 +81,11 @@ def build_wide_recall_map(
         if not d:
             continue
         doc = d[0]
-        if doc.get("superseded_by") or doc.get("source") == "web":
+        if doc.get("superseded_by") or doc.get("correction_pending") or doc.get("source") == "web":
             continue
         dom = doc.get("domain") or "generale"
         score = (
-            memory_risk_rank(doc),
+            memory_epistemic_rank(doc),
             -_SRC_PRIORITY.get(doc.get("source") or "", 0),
             -int(doc.get("recalled_count") or 0),
             -float(doc.get("created_at") or 0),

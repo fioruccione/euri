@@ -16,8 +16,21 @@ Chiuse tre falle emerse dall'audit architetturale successivo all'hardening:
 
 Test aggiunti: `test_history_provenance.py`, `test_memory_idempotency.py`.
 Verificato anche il Lua contro Redis Stack reale con chiavi temporanee poi
-eliminate. Restano come fasi separate: ranking epistemico, outbox durevole,
-supervisione dei loop e separazione CI unit/integration/live.
+eliminate.
+
+Chiusa anche la fase ranking epistemico:
+
+- `core/memory_risk.py` espone un reranker unico che conserva l'ordine di
+  pertinenza e applica una penalita' limitata per fonte e flag di rischio;
+- semantic, keyword, recency e timerange recuperano un pool piu' ampio prima
+  del taglio; solo i risultati finali ricevono il touch;
+- wide recall, subject/entity recall e temporal recall usano lo stesso criterio;
+- `correction_pending` e `superseded_by` non entrano piu' nel contesto RAG da
+  percorsi laterali;
+- regressioni in `test_epistemic_ranking.py`.
+
+Restano come fasi separate: outbox durevole, supervisione dei loop e
+separazione CI unit/integration/live.
 
 ## Stato repo al close
 
