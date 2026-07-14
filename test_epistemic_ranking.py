@@ -73,3 +73,10 @@ def test_temporal_recall_cannot_reintroduce_quarantined_memory():
     ]
 
     assert [item["id"] for item in prioritize_window(window)] == ["derived"]
+
+
+if __name__ == "__main__":
+    tests = [globals()[name] for name in sorted(globals()) if name.startswith("test_")]
+    for test in tests:
+        test()
+    print(f"test_epistemic_ranking: OK ({len(tests)} casi)")

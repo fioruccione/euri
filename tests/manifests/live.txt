@@ -1,0 +1,6 @@
+# Stato reale, hardware o cicli cognitivi: esecuzione solo manuale e consapevole.
+test_consolidation.py
+test_linux.py
+test_memory.py
+test_plane_guard.py
+test_retrieval_strategy.py

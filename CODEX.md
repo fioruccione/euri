@@ -49,7 +49,16 @@ Chiusa anche la fase supervisione:
   con deadline;
 - regressioni in `test_worker_supervisor.py` e `test_dream_schedule.py`.
 
-Resta come fase separata la classificazione CI unit/integration/live.
+Chiusa anche la fase test/CI:
+
+- manifest completi in `tests/manifests/{unit,integration,live}.txt`;
+- `scripts/check_test_manifests.py` impedisce test non classificati o duplicati;
+- `scripts/run_test_manifest.py` isola ogni script in un processo con timeout;
+- `.github/workflows/unit.yml` esegue solo il tier non distruttivo;
+- baseline locale: 32 test classificati, tier unit 23/23 in 16.1s.
+
+Le quattro fasi strutturali dell'audit sono quindi chiuse in commit separati:
+ranking epistemico, outbox durevole, supervisione e CI non distruttiva.
 
 ## Stato repo al close
 
