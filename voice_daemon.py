@@ -2423,6 +2423,13 @@ class VoiceDaemon:
                 self.visual_gate.notify_activity()
                 if hasattr(self, 'dream_engine'):
                     self.dream_engine.notify_activity()
+                # Il wake-word guard misura la finestra di conversazione dal turno
+                # PRECEDENTE: catturiamo il valore prima di sovrascriverlo, altrimenti
+                # `since_last ≈ 0` sempre → `in_conversation` sempre True → il guard
+                # non scatta mai e qualsiasi voce autenticata è processata senza "Euri"
+                # (bug consenso conversazionale: interviene non chiamata). I consumer
+                # idle/passive/presence continuano a leggere il timestamp aggiornato.
+                _prev_activity_ts = self._last_activity_ts
                 self._last_activity_ts = time.time()
                 if not self._translate_bidir:
                     # La voce ha passato SpeakerAuth: prova d'identità per l'efferente.
@@ -2458,12 +2465,10 @@ class VoiceDaemon:
                 # - è dentro una conversazione attiva (< CONVERSATION_WINDOW_SEC dall'ultima risposta)
                 # Eccezione: modalità traduzione/interprete (parla anche l'interlocutore)
                 has_wake_word = bool(_WAKE_WORD_RE.search(text))
-                if not (self._translate_bidir or self._dictation_mode):
-                    since_last = time.time() - self._last_activity_ts
-                    in_conversation = since_last < _CONVERSATION_WINDOW_SEC
-                    if not has_wake_word and not in_conversation:
-                        logger.debug(f"Wake word assente e fuori finestra ({since_last:.0f}s) — ignorato: '{text[:40]}'")
-                        continue
+                since_last = time.time() - _prev_activity_ts
+                if not self._utterance_is_addressed(has_wake_word, since_last):
+                    logger.debug(f"Wake word assente e fuori finestra ({since_last:.0f}s) — ignorato: '{text[:40]}'")
+                    continue
 
                 # Trusted = wake word esplicito. Scambi ambient (solo finestra) non analizzati dal passive learner.
                 self.brain._next_trusted = has_wake_word
@@ -2472,6 +2477,16 @@ class VoiceDaemon:
                 self._dispatch(text, detected_lang=detected_lang)
 
         logger.info("Euri spento.")
+
+    def _utterance_is_addressed(self, has_wake_word: bool, since_last: float) -> bool:
+        """True se l'utterance va processata (guard di consenso conversazionale).
+        In traduzione/dettato parla anche l'interlocutore → sempre processata.
+        Altrimenti: wake word esplicita OPPURE dentro la finestra di conversazione
+        attiva. `since_last` DEVE misurare dal turno PRECEDENTE, non dall'utterance
+        corrente (che azzererebbe la finestra e renderebbe il guard un no-op)."""
+        if self._translate_bidir or self._dictation_mode:
+            return True
+        return has_wake_word or since_last < _CONVERSATION_WINDOW_SEC
 
     def _mobile_worker(self):
         """
