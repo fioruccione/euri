@@ -741,6 +741,88 @@ Rispondi SOLO con SÌ o NO."""
             logger.debug(f"Errore LLM judge insight: {e}")
             return False
 
+    def _ensure_premise_fidelity(self, insight_key: str) -> bool:
+        """Risveglio lucido — FASE MISURA (additiva: NON decide nulla): quanto le due
+        premesse del sogno sono FEDELI alle memorie sorgente da cui è nato — l'atto-parola
+        applicato ai sogni: il sogno ha detto la verità sulle proprie fonti?
+
+        Misurato UNA volta per candidate e cacheato sul doc: `premise_fidelity` 0..1
+        (min dei due lati: la connessione poggia su ENTRAMBE le premesse) + nota +
+        dettaglio A/B. Candidate senza provenienza (pre-23/06) o con sorgenti scadute →
+        None = NON-VERIFICABILE (≠ infedele). Il valore viaggia nella convergence trace
+        per la correlazione offline coi verdetti external_reaction. Ritorna True solo se
+        ha speso una chiamata LLM ora (per il budget per-ciclo). Fail-open."""
+        if not getattr(config, "PREMISE_FIDELITY_ENABLED", True):
+            return False
+        try:
+            g = lambda p, d=None: (self._r.json().get(insight_key, p) or [d])[0]
+            if g("$.premise_fidelity", "assente") != "assente":
+                return False  # già valutata (anche None = non-verificabile marcato)
+
+            def _mark_unverifiable(reason: str):
+                self._r.json().set(insight_key, "$.premise_fidelity", None)
+                self._r.json().set(insight_key, "$.premise_fidelity_note", reason)
+
+            srcs = g("$.source_memory_ids") or []
+            content = (g("$.content") or "").strip()
+            if len(srcs) < 2 or not content:
+                _mark_unverifiable("non verificabile: provenienza assente (candidate pre-23/06)")
+                return False
+            src_texts = []
+            for sid in srcs[:2]:
+                data = self._r.json().get(sid, "$.content")
+                src_texts.append(((data or [None])[0] or "").strip())
+            if not all(src_texts):
+                _mark_unverifiable("non verificabile: memorie sorgente scadute/mancanti")
+                return False
+
+            prompt = (
+                "Un sogno ha generato questa connessione tra due domini:\n\n"
+                f"{content[:1200]}\n\n"
+                "Le due memorie REALI da cui è nato dicono:\n"
+                f"MEMORIA A: \"{src_texts[0][:700]}\"\n"
+                f"MEMORIA B: \"{src_texts[1][:700]}\"\n\n"
+                "Valuta la FEDELTÀ: le righe \"Nel dominio [...] succede:\" descrivono ciò "
+                "che le memorie dicono DAVVERO, o aggiungono/distorcono fatti (numeri "
+                "cambiati, capacità inventate, attribuzioni sbagliate)? Non giudicare la "
+                "qualità della connessione, solo la fedeltà delle premesse alle fonti.\n"
+                "Rispondi ESATTAMENTE in questo formato (tre righe, niente altro):\n"
+                "FEDELTA_A: SI oppure PARZIALE oppure NO\n"
+                "FEDELTA_B: SI oppure PARZIALE oppure NO\n"
+                "NOTA: <max una riga: cosa è ricamato/distorto, oppure 'premesse fedeli'>"
+            )
+            resp = self._ollama_chat(
+                model=config.DREAM_OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0, "num_predict": 300},
+                think=False,
+            )
+            text = resp.message.content or ""
+            if "<channel|>" in text:
+                text = text.split("<channel|>", 1)[-1]
+            import re as _re
+            text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL).strip()
+            scores = {"SI": 1.0, "SÌ": 1.0, "PARZIALE": 0.5, "NO": 0.0}
+            m_a = _re.search(r"FEDELTA_A:\s*(SI|SÌ|PARZIALE|NO)", text, _re.IGNORECASE)
+            m_b = _re.search(r"FEDELTA_B:\s*(SI|SÌ|PARZIALE|NO)", text, _re.IGNORECASE)
+            m_n = _re.search(r"NOTA:\s*(.+)", text)
+            if not (m_a and m_b):
+                _mark_unverifiable("valutazione non parsabile")
+                return True  # la chiamata LLM è stata spesa comunque
+            fa = scores[m_a.group(1).upper()]
+            fb = scores[m_b.group(1).upper()]
+            self._r.json().set(insight_key, "$.premise_fidelity", min(fa, fb))
+            self._r.json().set(insight_key, "$.premise_fidelity_ab",
+                               f"{m_a.group(1).upper()}/{m_b.group(1).upper()}")
+            self._r.json().set(insight_key, "$.premise_fidelity_note",
+                               (m_n.group(1).strip()[:300] if m_n else ""))
+            logger.info(f"Fedeltà premesse {insight_key.split(':')[-1][:8]}: "
+                        f"{min(fa, fb)} ({m_a.group(1)}/{m_b.group(1)})")
+            return True
+        except Exception as e:
+            logger.debug(f"premise_fidelity fallita (non-critica): {e}")
+            return False
+
     def _trace_convergence(self, doc, convergences, n_certain, neighbor_trace, outcome):
         """Instrumentazione ADDITIVA (read-only sulla decisione): registra la convergenza
         AL MOMENTO DELLA DECISIONE su euri:convergence:trace, per correlarla OFFLINE col
@@ -780,6 +862,10 @@ Rispondi SOLO con SÌ o NO."""
                 # È il join che permette l'audit baseline/trattamento SULLA trace,
                 # senza log paralleli.
                 "trace_injected": {True: "1", False: "0"}.get(g("$.trace_injected"), ""),
+                # Risveglio lucido (fase misura): fedeltà premesse↔sorgenti al momento
+                # della decisione; "" = non ancora valutata o non-verificabile.
+                "premise_fidelity": ("" if g("$.premise_fidelity") is None
+                                     else str(g("$.premise_fidelity"))),
             }, maxlen=50000, approximate=True)
         except Exception as e:
             logger.debug(f"trace convergence fallito (non-critico): {e}")
@@ -797,11 +883,17 @@ Rispondi SOLO con SÌ o NO."""
             # Per ogni candidato, controlla se ci sono altri candidati molto simili
             # (Convergenza = la stessa intuizione è emersa da sogni indipendenti)
             promoted_count = 0
-            
+            # Risveglio lucido (fase misura): budget di valutazioni-fedeltà per ciclo,
+            # così il backfill dei candidate esistenti si ammortizza su più cicli leggeri
+            fidelity_budget = getattr(config, "PREMISE_FIDELITY_BUDGET", 5)
+
             for doc in res.docs:
                 # Potrebbe essere già stato eliminato come duplicato in un'iterazione precedente
                 if not self._r.exists(doc.id):
                     continue
+
+                if fidelity_budget > 0 and self._ensure_premise_fidelity(doc.id):
+                    fidelity_budget -= 1
 
                 vec_str = getattr(doc, "embedding", None)
                 if not vec_str:

@@ -233,6 +233,14 @@ CONVERGENCE_TRACE_ENABLED = True
 # Pre-registrazione e criteri: ESPERIMENTO_DREAM_TRACE.md. A flag spento: zero differenze.
 DREAM_TRACE_ENABLED = True  # ON dal 13/07 (ok Stefano) — raccolta braccio trattamento
 DREAM_TRACE_TTL_S = 48 * 3600  # residuo stantio dopo 2 giorni di fermo → scade, non contamina
+# Risveglio lucido — FASE MISURA (14/07): fedeltà-di-premessa dei candidate rispetto alle
+# memorie sorgente (source_memory_ids): il sogno ha detto la verità sulle proprie fonti?
+# ADDITIVA: nessuna decisione di promozione cambiata; punteggio calcolato UNA volta per
+# candidate (cacheato sul doc) e loggato nella convergence trace, da correlare OFFLINE
+# coi verdetti external_reaction di Stefano. Diventa gate SOLO se separa i suoi SÌ dai
+# NO — e comunque dopo la fine dell'esperimento dream_trace.
+PREMISE_FIDELITY_ENABLED = True
+PREMISE_FIDELITY_BUDGET = 5  # max valutazioni LLM per ciclo leggero (ammortizza il backfill)
 INSIGHT_TTL_DAYS = 30
 INSIGHT_DEMOTE_DAYS = 14  # PROMOTED non richiamato entro X giorni → torna CANDIDATE
 
