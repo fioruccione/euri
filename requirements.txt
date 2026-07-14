@@ -1,17 +1,21 @@
 # Core
 redis[hiredis]>=5.0
+numpy>=1.26
 faster-whisper>=1.0
 sherpa-onnx>=1.9
 streamlit>=1.35
+streamlit-webrtc>=0.47
 ollama>=0.2
 dateparser>=1.2
 sentence-transformers>=2.0
 resemblyzer>=0.1.4
+requests>=2.31
 
 # Audio
 pyaudio>=0.2.14
 sounddevice>=0.4.6
 soundfile>=0.12
+av>=11.0
 
 # VAD (silero usa torch)
 torch>=2.0
@@ -23,13 +27,34 @@ psutil>=5.9
 loguru>=0.7
 ddgs>=0.1
 beautifulsoup4>=4.12
+lxml>=4.9
 pytz>=2024.1
 uuid7>=0.1
+PyYAML>=6.0
+watchdog>=4.0
+scipy>=1.11
 
 # Document extraction (V2.18.2 — analisi PDF/DOCX/PPTX/immagini via CodeRunner)
 # Cascata testo-nativo → Vision LLM Gemma 4 per file scansionati.
 # Richiede anche: apt install poppler-utils (per pdf2image)
 pypdf>=4.0
+PyPDF2>=3.0
 pdf2image>=1.17
 python-docx>=1.0
 python-pptx>=1.0
+
+# CodeRunner data/office stack
+pandas>=2.0
+openpyxl>=3.1
+xlsxwriter>=3.1
+odfpy>=1.4
+Pillow>=10.0
+matplotlib>=3.8
+reportlab>=4.0
+tabulate>=0.9
+
+# Vision / face gate (YuNet + SFace richiedono opencv-contrib)
+opencv-contrib-python-headless>=4.8
+
+# Diagnostics / experiments
+scikit-learn>=1.4
