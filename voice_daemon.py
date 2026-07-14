@@ -840,16 +840,22 @@ class VoiceDaemon:
         recent = self.memory.get_recent_memories(limit=10, source_filter=source_filter, touch=False)
         if not recent:
             return None
+        # Il rumore include interrogative e deittici temporali ("COSA hai salvato POCO
+        # fa?"): sopravvissuti al filtro diventano keyword di contenuto e scavalcano la
+        # più recente (caso live 14/07: "cosa" matchava una reflection al posto della
+        # lezione in cima). E il match è per PAROLA INTERA, non per sottostringa.
         kw = [w for w in self.memory._safe_keywords(text)
               if w not in {"memoria", "memorie", "lezione", "lezioni", "riflessione",
-                           "ultima", "ultime", "appena", "salvato", "salvata",
-                           "memorizzato", "scritto", "creato", "creata", "leggi",
-                           "leggimi", "rileggi", "rileggimi", "grado", "proposito",
-                           "risposta", "questa", "sentire"}]
+                           "ultima", "ultime", "ultimo", "ultimi", "appena", "salvato",
+                           "salvata", "memorizzato", "scritto", "creato", "creata",
+                           "leggi", "leggimi", "rileggi", "rileggimi", "grado",
+                           "proposito", "risposta", "questa", "sentire", "cosa",
+                           "come", "quando", "quale", "poco", "prima", "adesso",
+                           "oggi", "ieri", "fammi", "dimmi", "voce"}]
         if kw:
+            pat = re.compile(r"\b(" + "|".join(map(re.escape, kw)) + r")\b", re.IGNORECASE)
             for m in recent:
-                low = (m.get("content") or "").lower()
-                if any(w in low for w in kw):
+                if pat.search(m.get("content") or ""):
                     return m
         return recent[0]
 
@@ -883,10 +889,19 @@ class VoiceDaemon:
         pending = self._pending_readback
         self._pending_readback = None
         low = text.lower().strip()
-        if re.search(r"^(ok|va bene|giusto|perfetto|niente|nulla|no|corretta|esatto|lascia|annulla|basta)\b", low) \
-                or len(low) < 12:
+        # "No" iniziale è ambiguo: "No, va bene così" = ack; "No, è sbagliata: X" =
+        # correzione. È ack solo se corto o seguito da parole positive; altrimenti
+        # si toglie il "no," di testa e il resto va al ramo correzione.
+        starts_no = bool(re.match(r"^no\b", low))
+        is_ack = (re.search(r"^(ok|va bene|giusto|perfetto|niente|nulla|corretta|esatto|lascia|annulla|basta)\b", low)
+                  or len(low) < 12
+                  or (starts_no and (len(low) < 25 or re.search(
+                      r"\b(va bene|così|giusto|perfetto|lascia|niente da|nulla da|bella|buona)\b", low))))
+        if is_ack:
             self._speak("Ok, la lascio com'è.")
             return
+        if starts_no:
+            text = re.sub(r"^no[,\s]+", "", text, flags=re.IGNORECASE)
         old_id, old_content = pending.data["id"], pending.data["content"]
         is_addition = bool(re.search(r"\b(aggiungi|aggiungici|integra|completa con)\b", low))
         if is_addition:
