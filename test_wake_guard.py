@@ -40,3 +40,16 @@ assert f(make(), False, fixed_since_last) is False, "col fix la voce non chiamat
 print("OK  regressione: il guard ora DISCRIMINA (0s→processa, fuori finestra→ignora)")
 print("PASS" if ok else "FALLITO")
 sys.exit(0 if ok else 1)
+
+
+# ── Punto 3: degrado a DEBOLE del parlato ambient (no wake nel segmento) ──────
+def _test_passive_weak():
+    g = vd.VoiceDaemon._passive_weak_support
+    assert g("strong", True)  is False   # rivolto a Euri → fatto pieno
+    assert g("strong", False) is True    # ambient → degradato anche se FORTE
+    assert g("weak",   True)  is True     # weak resta weak
+    assert g(None,     False) is True     # default + ambient → degradato
+    assert g(None,     True)  is False    # default + rivolto → pieno
+    print("OK  punto 3: degrado ambient→DEBOLE 5/5")
+
+_test_passive_weak()

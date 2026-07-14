@@ -1874,9 +1874,16 @@ class VoiceDaemon:
                 if not facts:
                     continue
 
+                # Punto 3 hardening: la wake word è un segnale di affidabilità. Se il
+                # segmento non contiene NESSUNA interazione rivolta esplicitamente a Euri
+                # (parlato ambient dentro-finestra), i fatti si degradano a DEBOLE anche
+                # se l'LLM li giudica FORTE — non si scarta, si marca l'incerto.
+                segment_addressed = any(m.get("trusted") for m in new_history)
+
                 saved = 0
                 for fact_item in facts:
-                    weak_support = isinstance(fact_item, dict) and fact_item.get("support") == "weak"
+                    support = fact_item.get("support") if isinstance(fact_item, dict) else None
+                    weak_support = self._passive_weak_support(support, segment_addressed)
                     fact = fact_item.get("content", "") if isinstance(fact_item, dict) else str(fact_item)
                     clean = validate_payload(fact, "memory")
                     if not clean:
@@ -2477,6 +2484,13 @@ class VoiceDaemon:
                 self._dispatch(text, detected_lang=detected_lang)
 
         logger.info("Euri spento.")
+
+    @staticmethod
+    def _passive_weak_support(support: str | None, segment_addressed: bool) -> bool:
+        """DEBOLE (→ requires_verification, fuori da Loop 2e) se il giudizio LLM è
+        'weak' OPPURE se il segmento non era rivolto a Euri (nessuna wake word). Non
+        scarta nulla: degrada l'incerto. Protegge provenienza/qualità epistemica."""
+        return support == "weak" or not segment_addressed
 
     def _utterance_is_addressed(self, has_wake_word: bool, since_last: float) -> bool:
         """True se l'utterance va processata (guard di consenso conversazionale).
