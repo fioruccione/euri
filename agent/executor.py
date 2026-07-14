@@ -776,21 +776,28 @@ class Executor:
             r"[^.\n]{0,30}?(\bquest[oae]\b|\bquanto\s+segue\b|\bil\s+seguente\b|\bi\s+seguenti\b|\bla\s+lista\b|\bl['’]elenco\b|:)",
             re.IGNORECASE,
         ), "teach_text", {"text": "__USER_TEXT__"}),
+        # Spreadsheet: anche quando l'utente dice "leggi", il formato non è testo
+        # lineare. Passa dal CodeRunner/pandas invece del lettore documentale.
+        (re.compile(
+            r'\b(leggi|apri|analizza|esamina|controlla|riassumi|sintetizza|estrai|consulta|guarda|verifica)\s+.*\b(excel|xlsx|xls|ods|fogli[oa](\s+di\s+calcolo)?|spreadsheet)\b'
+            r'|\b(cosa\s+(dice|riporta|c[\'\`è]\s+scritto)|che\s+(dati|valori)\s+ci\s+sono)\b.*\b(excel|xlsx|xls|ods|fogli[oa](\s+di\s+calcolo)?|spreadsheet)\b',
+            re.IGNORECASE,
+        ), "run_code", {"task": "__USER_TEXT__"}),
         # IN MEZZO: LETTURA/comprensione di un documento (read_document, no code-gen).
         # Verbi di lettura + sostantivo-documento → Gemma LEGGE ed estrae i valori,
         # non scrive un parser. Deve precedere run_code (che ora prende solo i verbi
         # di elaborazione/calcolo). Vedi caso 03PPR100: il code-gen sbagliava colonna.
         (re.compile(
-            r'\b(leggi|apri|analizza|esamina|controlla|riassumi|sintetizza|estrai|consulta|guarda|verifica)\s+.*\b(documento|document[io]|pdf|sched[ae]|certificat[oi]|file|foglio|testo|presentazion[ei]|docx|pptx|csv|excel|xlsx|ods|json|relazione|rapporto|report)\b'
-            r'|\b(cosa\s+(dice|riporta|c[\'\`è]\s+scritto)|che\s+(dati|valori)\s+ci\s+sono)\b.*\b(documento|pdf|sched[ae]|file|certificat[oi]|csv|excel)\b',
+            r'\b(leggi|apri|analizza|esamina|controlla|riassumi|sintetizza|estrai|consulta|guarda|verifica)\s+.*\b(documento|document[io]|pdf|sched[ae]|certificat[oi]|file|testo|presentazion[ei]|docx|pptx|csv|json|relazione|rapporto|report)\b'
+            r'|\b(cosa\s+(dice|riporta|c[\'\`è]\s+scritto)|che\s+(dati|valori)\s+ci\s+sono)\b.*\b(documento|pdf|sched[ae]|file|certificat[oi]|csv)\b',
             re.IGNORECASE,
         ), "read_document", {"question": "__USER_TEXT__"}),
         # DOPO: Elaborazione/calcolo/creazione su file (run_code). Solo verbi che
         # TRASFORMANO o PRODUCONO dati — la pura lettura è gestita sopra.
         (re.compile(
-            r'\b(unisci|fondi|combina|merge|raggruppa)\s+.*(csv|file|pdf|excel|dati|document[io]|ods|odt|txt|json)\b'
-            r'|\b(elabora|processa|converti|trasforma|calcola|filtra|ordina|conta|somma)\s+.*(csv|pdf|excel|dati|document[io]|ods|odt|txt|json|file)\b'
-            r'|\b(crea|genera|esporta|salva)\s+.*(csv|file|pdf|excel|grafico|report|tabella|document[io])\b'
+            r'\b(unisci|fondi|combina|merge|raggruppa)\s+.*(csv|file|pdf|excel|xlsx|xls|dati|document[io]|ods|odt|txt|json)\b'
+            r'|\b(elabora|processa|converti|trasforma|calcola|filtra|ordina|conta|somma)\s+.*(csv|pdf|excel|xlsx|xls|dati|document[io]|ods|odt|txt|json|file)\b'
+            r'|\b(crea|genera|esporta|salva)\s+.*(csv|file|pdf|excel|xlsx|xls|grafico|report|tabella|document[io])\b'
             r'|\b(ridimensiona|comprimi|ruota|taglia|converti)\s+.*(foto|immagin[ei])\b',
             re.IGNORECASE,
         ), "run_code", {"task": "__USER_TEXT__"}),   # __USER_TEXT__ sarà sostituito dal voice_daemon
