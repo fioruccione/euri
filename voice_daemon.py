@@ -888,33 +888,48 @@ class VoiceDaemon:
         CURA della memoria guidato da Stefano, mai edit silenziosi."""
         pending = self._pending_readback
         self._pending_readback = None
-        low = text.lower().strip()
-        # "No" iniziale è ambiguo: "No, va bene così" = ack; "No, è sbagliata: X" =
-        # correzione. È ack solo se corto o seguito da parole positive; altrimenti
-        # si toglie il "no," di testa e il resto va al ramo correzione.
-        starts_no = bool(re.match(r"^no\b", low))
-        is_ack = (re.search(r"^(ok|va bene|giusto|perfetto|niente|nulla|corretta|esatto|lascia|annulla|basta)\b", low)
-                  or len(low) < 12
-                  or (starts_no and (len(low) < 25 or re.search(
-                      r"\b(va bene|così|giusto|perfetto|lascia|niente da|nulla da|bella|buona)\b", low))))
-        if is_ack:
+        # Il triage lo fa il classificatore pragmatico (regex solo sui casi ovvi,
+        # Gemma per la varietà del parlato, fallback conservativo=OK): "Tutto
+        # perfetto, hai capito benissimo" è un OK anche senza parole-chiave —
+        # il prefisso-regex qui creava un nodo spurio (caso live 14/07 08:47).
+        from core.utterance_pragmatics import classify_readback_reply
+        kind = classify_readback_reply(text)
+        if kind == "OK":
             self._speak("Ok, la lascio com'è.")
             return
-        if starts_no:
-            text = re.sub(r"^no[,\s]+", "", text, flags=re.IGNORECASE)
+        body = re.sub(r"^no[,\s]+", "", text, flags=re.IGNORECASE)
         old_id, old_content = pending.data["id"], pending.data["content"]
-        is_addition = bool(re.search(r"\b(aggiungi|aggiungici|integra|completa con)\b", low))
-        if is_addition:
-            merged = self.brain.merge_memories(old_content, text)
+        if kind == "AGGIUNTA":
+            merged = self.brain.merge_memories(old_content, body)
             new_content = merged if merged not in ("DIVERSO", "NESSUNA AGGIUNTA") else None
             verb = "arricchita"
         else:
-            new_content = self.brain.apply_correction_to_memory(old_content, text)
+            new_content = self.brain.apply_correction_to_memory(old_content, body)
             verb = "corretta"
         if not new_content:
             # mai perdere la parola di Stefano: la sua frase diventa il nodo nuovo
-            new_content = text
+            new_content = body
             verb = "sostituita con le tue parole"
+        # Guardia P-GT sul canale di cura (una soglia di similarità NON distingue
+        # "riscritto identico" da "corretto un numero" sui testi lunghi):
+        #  1. testo invariato → nessun nodo;
+        #  2. i token NUOVI salienti devono avere radice nelle parole dell'utente —
+        #     se la riscrittura introduce parole mai dette, si rifiuta onestamente
+        #     invece di salvare invenzioni (falso-positivo ack o LLM che ricama).
+        _norm = lambda s: re.sub(r"\s+", " ", (s or "").strip().lower())
+        _toks = lambda s: set(re.findall(r"\w+", _norm(s)))
+        if _norm(new_content) == _norm(old_content):
+            self._speak("Ho riguardato la memoria ma non c'era nulla da cambiare — la lascio com'è.")
+            return
+        added = {t for t in _toks(new_content) - _toks(old_content) if len(t) >= 3 or t.isdigit()}
+        removed = {t for t in _toks(old_content) - _toks(new_content) if len(t) >= 3}
+        if not added and not removed:
+            self._speak("Ho riguardato la memoria ma non c'era nulla da cambiare — la lascio com'è.")
+            return
+        if added and not (added & _toks(body)):
+            self._speak("Non ho capito bene cosa dovrei cambiare — ripetimi la correzione "
+                        "con le parole esatte e la applico.")
+            return
         new_id = self.memory.save_memory(new_content, source="user")
         if new_id and old_id:
             self.memory.supersede_memory(old_id, new_id)

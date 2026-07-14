@@ -125,3 +125,56 @@ def classify_reply_type(question: str, reply: str, *, chat=None, model: str = No
     except Exception as e:
         logger.warning(f"classify_reply_type: Gemma fallito ({e}) → fallback regex")
     return "ANSWER"
+
+
+# ── Rilettura → cura (READ_BACK pending) ──────────────────────────────────────
+# Cosa vuole l'utente dopo che Euri gli ha riletto una memoria? I prefissi-ack a
+# regex non reggono la varietà del parlato (caso live 14/07: "Tutto perfetto, hai
+# capito benissimo" finiva nel ramo correzione e creava un nodo spurio). Regex solo
+# sui casi ovvi; Gemma per il resto; fallback CONSERVATIVO = OK: nel dubbio la
+# memoria NON si tocca (l'utente può ridirlo esplicito), mai il contrario.
+_READBACK_ACK_RE = re.compile(
+    r"^(ok|va bene|giusto|perfetto|esatto|niente|nulla|corretta|lascia|annulla|basta"
+    r"|tutto\s+(bene|ok|perfetto|giusto|corretto)|bravo|brava|ottimo|benissimo)\b",
+    re.IGNORECASE,
+)
+_READBACK_ADD_RE = re.compile(r"\b(aggiungi|aggiungici|integra|completa\s+con)\b", re.IGNORECASE)
+
+
+def classify_readback_reply(reply: str, *, chat=None, model: str = None) -> str:
+    """Ritorna 'OK', 'CORREZIONE' o 'AGGIUNTA'. Capisce, non matcha parole."""
+    low = (reply or "").strip().lower()
+    if not low or len(low) < 12 or _READBACK_ACK_RE.match(low):
+        return "OK"
+    if _READBACK_ADD_RE.search(low):
+        return "AGGIUNTA"
+    try:
+        if chat is None:
+            from core.ollama_client import chat_client
+            chat = chat_client
+        import config
+        prompt = (
+            "Euri (un'assistente) ha appena riletto all'utente una memoria che aveva "
+            "salvato, chiedendo se c'è da correggere o aggiungere qualcosa.\n"
+            f'REPLICA DELL\'UTENTE: "{reply}"\n\n'
+            "Classifica la replica:\n"
+            "- OK: approva, va bene così, complimenti, nessuna modifica richiesta\n"
+            "- CORREZIONE: dice che qualcosa nella memoria è sbagliato/impreciso e indica come dev'essere\n"
+            "- AGGIUNTA: vuole integrare informazioni nuove nella memoria\n"
+            "Rispondi con UNA sola parola: OK oppure CORREZIONE oppure AGGIUNTA."
+        )
+        r = chat.chat(
+            model=model or config.OLLAMA_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0.0, "num_predict": 8},
+            think=False,
+        )
+        out = (r.message.content or "").strip().upper()
+        if "CORREZ" in out:
+            return "CORREZIONE"
+        if "AGGIUNT" in out:
+            return "AGGIUNTA"
+        return "OK"
+    except Exception as e:
+        logger.warning(f"classify_readback_reply: Gemma fallito ({e}) → OK conservativo")
+        return "OK"
