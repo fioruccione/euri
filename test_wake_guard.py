@@ -99,3 +99,28 @@ if __name__ == "__main__":
     test_passive_weak_and_mixed_segment()
     test_activity_only_after_acceptance()
     print("PASS")
+
+
+def _test_readback_chronological():
+    """READ_BACK legge l'ULTIMA cronologica anche se il ranking epistemico (f19ce39)
+    ha spinto giù la memoria fresca-ma-rischiosa: l'audit è sulla cronologia."""
+    import time as _t
+    class FakeMem:
+        def get_recent_memories(self, limit, source_filter, touch):
+            return [
+                {"id": "old", "content": "Nota vecchia e pulita.", "source": "reflection",
+                 "created_at": _t.time() - 3600},
+                {"id": "new", "content": "Lezione PVC: ridurre di 25 gradi non basta.",
+                 "source": "reaction", "created_at": _t.time() - 60,
+                 "requires_verification": True},
+            ]
+        _safe_keywords = staticmethod(lambda t: [])
+    d = vd.VoiceDaemon.__new__(vd.VoiceDaemon)
+    d.memory = FakeMem()
+    d._READBACK_SRC_HINTS = vd.VoiceDaemon._READBACK_SRC_HINTS
+    target = vd.VoiceDaemon._find_readback_target(d, "cosa hai salvato poco fa?")
+    assert target["id"] == "new", f"letta la sbagliata: {target['id']}"
+    print("OK  readback: ultima CRONOLOGICA nonostante il ranking epistemico")
+
+
+_test_readback_chronological()

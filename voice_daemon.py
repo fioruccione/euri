@@ -884,6 +884,12 @@ class VoiceDaemon:
                 source_filter = filt
                 break
         recent = self.memory.get_recent_memories(limit=10, source_filter=source_filter, touch=False)
+        # La rilettura è un gesto di AUDIT sulla CRONOLOGIA: si ri-ordina per created_at
+        # perché get_recent_memories ora riordina per rischio epistemico (f19ce39) e una
+        # lezione fresca con numeri (requires_verification) scivolerebbe sotto una memoria
+        # vecchia ma pulita — e "cosa hai salvato poco fa?" leggerebbe la cosa sbagliata.
+        # Per l'audit vale l'opposto: le memorie rischiose sono quelle da riascoltare.
+        recent.sort(key=lambda m: float(m.get("created_at") or 0), reverse=True)
         if not recent:
             return None
         # Il rumore include interrogative e deittici temporali ("COSA hai salvato POCO
