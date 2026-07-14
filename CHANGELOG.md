@@ -10,6 +10,13 @@
 - Rafforzato il replay Active Focus: usa `reaction_raw`, mai la lezione sintetizzata,
   e una reaction non puo' creare un focus. Il nuovo replay e' NO-GO per copertura:
   la rimozione delle sintesi interne espone la mancanza di eventi utente diretti recenti.
+- Review incrociata: osservazioni Cognitive Present rese immutabili e monotone anche
+  con eventi fuori ordine; aggiunta la chiusura di turni senza TTS. Riclassificato
+  `test_insight_repromotion.py` da integration a live: il valutatore scansiona e puo'
+  modificare tutti i candidate reali, quindi non e' sicuro durante `dream_trace`.
+- Allineato `test_tool_vectorset.py` al contratto gia' documentato del fast path:
+  i tre casi con gap top-1/top-2 sotto 0.005 attendono fallback LLM, non un forcing
+  vettoriale. La baseline storica 13/16 diventa cosi' 16/16 decisioni corrette.
 
 Storico completo delle versioni di Euri. Il README riporta solo la versione corrente; qui la cronologia integrale.
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test isolato e deterministico per il gate di ri-promozione (V2.19, opzione b).
+Test live e deterministico per il gate di ri-promozione (V2.19, opzione b).
 
 Verifica la regola: la PRIMA promozione di un insight è libera (per sola
 convergenza), ma un insight già demoto da Gate 1 (`demoted_once=True`) e mai
@@ -8,7 +8,7 @@ validato dall'uso (`recalled_count=0`) NON deve risorgere per ri-convergenza —
 resta candidate e si spegne al giorno 30. Se invece è stato richiamato
 (`recalled_count>0`), la ri-promozione è concessa.
 
-Strategia (no LLM, no idle, no mutazione dei dati reali):
+Strategia (no LLM, no idle):
   - Crea 3 cluster sintetici di insight `euri:insight:__test_repromo_*`.
   - Ogni cluster: 1 SUBJECT (content ben formato) + 3 FILLER (content malformato
     ma embedding IDENTICO al subject → distanza coseno 0 → 3 convergenze).
@@ -23,7 +23,11 @@ Casi:
   B) demoted_once=True,  recalled_count=2  → atteso: 'promoted' (validato dall'uso)
   C) (nessun flag, fresco)                 → atteso: 'promoted' (sogno libero)
 
-Teardown garantito via try/finally: tocca SOLO le chiavi __test_repromo_*.
+ATTENZIONE: `_evaluate_insights()` scansiona tutti i candidate dell'indice reale.
+Oltre alle chiavi sintetiche puo' aggiornare fedelta', trace, stato e duplicati di
+candidate di produzione. Per questo il test appartiene al tier LIVE e non va eseguito
+durante una raccolta sperimentale. Il teardown garantisce soltanto la rimozione delle
+chiavi sintetiche `__test_repromo_*`.
 
 Uso: venv/bin/python test_insight_repromotion.py
 """

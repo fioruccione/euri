@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable
@@ -40,6 +41,20 @@ _GROUNDED_STATUSES = frozenset({
     EpistemicStatus.USER_ASSERTED,
     EpistemicStatus.SYSTEM_FACT,
 })
+
+
+def _freeze_value(value: Any) -> Any:
+    """Copy structured observations into recursively immutable values."""
+    if value is None or isinstance(value, (bool, int, float, str, bytes)):
+        return value
+    if isinstance(value, Mapping):
+        frozen = [(_freeze_value(key), _freeze_value(item)) for key, item in value.items()]
+        return tuple(sorted(frozen, key=lambda pair: repr(pair[0])))
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_value(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return tuple(sorted((_freeze_value(item) for item in value), key=repr))
+    raise TypeError(f"unsupported mutable observation value: {type(value).__name__}")
 
 
 @dataclass(frozen=True)
@@ -162,7 +177,7 @@ class CognitivePresent:
         at = self._clock() if observed_at is None else observed_at
         item = Observation(
             key=key.strip(),
-            value=value,
+            value=_freeze_value(value),
             status=EpistemicStatus(status),
             source=source.strip(),
             observed_at=at,
@@ -172,6 +187,8 @@ class CognitivePresent:
         )
         with self._lock:
             previous = self._observations.get(item.key)
+            if previous is not None and item.observed_at < previous.observed_at:
+                return previous
             self._observations[item.key] = item
             # Sensor refreshes at 2 fps must not invalidate a decision when their
             # meaning is unchanged. Expiry is still checked during revalidation.
@@ -200,6 +217,25 @@ class CognitivePresent:
             )
             self._bump()
             return self._last_user_turn_id
+
+    def finish_processing(
+        self,
+        *,
+        opens_conversation: bool = False,
+        at: float | None = None,
+    ) -> None:
+        """Return to listening when a turn completes without voice playback."""
+        when = self._clock() if at is None else at
+        with self._lock:
+            if self._phase is not InteractionPhase.PROCESSING:
+                raise RuntimeError("finish_processing called outside processing")
+            if opens_conversation:
+                self._conversation_lease_until = max(
+                    self._conversation_lease_until,
+                    when + self._conversation_window_s,
+                )
+            self._phase = InteractionPhase.LISTENING
+            self._bump()
 
     def begin_speech(
         self,

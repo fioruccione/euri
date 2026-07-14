@@ -15,6 +15,21 @@
   focus vivo al 14/07). Non riaprire alle sintesi interne; manca una sorgente diretta
   e replayabile dei turni utente accettati.
 - Nessuna attivazione runtime prima della chiusura e dell'audit cieco Dream Trace.
+- Review successiva: valori osservati congelati ricorsivamente, update sensoriali
+  fuori ordine ignorati e transizione `finish_processing` aggiunta per canali senza
+  TTS. `test_insight_repromotion.py` spostato nel tier live: la sua chiamata a
+  `_evaluate_insights()` non e' isolata al prefisso test e puo' mutare candidate reali.
+- Integration: plausibility e SAVE resolver verdi. Tool VectorSet esponeva la baseline
+  13/16 gia' documentata come failure; i tre casi ambigui ora attendono correttamente
+  `None` (fallback LLM) invece di pretendere che il fast path forzi un intent.
+- Review `068e706`: fix READ_BACK corretto; la cronologia viene ristabilita solo nel
+  gesto di audit, senza indebolire il ranking RAG. Review `worker_supervisor`: nessun
+  finding bloccante su restart/shutdown; limite dichiarato da conservare, e' un
+  supervisore di exit/error e health, non un watchdog per thread vivi ma bloccati.
+- Verifiche post-review: unit 26/26, integration 3/3, spot-check live read-only
+  `plane_guard` 4/4 e retrieval strategy 5/5. Tier live completo NON eseguito:
+  consolidation e insight repromotion mutano lo stato cognitivo, memory pipeline
+  produce side effect reali, linux usa hardware audio/STT. Rimandare oltre dream_trace.
 
 ## Correzioni strutturali critiche — 2026-07-14
 
