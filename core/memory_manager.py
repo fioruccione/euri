@@ -6,6 +6,7 @@ import re
 import json
 import time
 import uuid
+import hashlib
 from datetime import datetime
 from loguru import logger
 
@@ -38,6 +39,23 @@ _TTL_BY_SOURCE: dict[str, int] = {
 REFLECTION_DEDUP_MAX_DIST = 0.10
 
 
+# Mapping idempotente e documento diventano visibili nella stessa operazione.
+# JSON.SET precede SET: se la scrittura canonica fallisce, non resta un winner
+# fantasma. Gli effetti derivati (TTL, ZSET, Pulse, Obsidian) restano replayabili.
+_IDEMPOTENT_MEMORY_COMMIT_LUA = """
+local existing = redis.call('GET', KEYS[1])
+if existing then
+    local existing_key = ARGV[3] .. existing
+    if redis.call('EXISTS', existing_key) == 1 then
+        return {existing, '0'}
+    end
+end
+redis.call('JSON.SET', KEYS[2], '$', ARGV[2])
+redis.call('SET', KEYS[1], ARGV[1], 'EX', 120)
+return {ARGV[1], '1'}
+"""
+
+
 class MemoryManager:
     def __init__(self, r: redis_lib.Redis, embedder=None):
         self.r = r
@@ -49,6 +67,38 @@ class MemoryManager:
     # ──────────────────────────────────────────
     # MEMORIES (ricordi a lungo termine)
     # ──────────────────────────────────────────
+
+    @staticmethod
+    def _idempotency_key(content: str, source: str) -> str | None:
+        normalized = " ".join((content or "").lower().split())
+        if not normalized:
+            return None
+        digest = hashlib.sha1(normalized.encode()).hexdigest()
+        return f"euri:idem:save:{source}:{digest}"
+
+    def _commit_idempotent_memory(
+        self,
+        idem_key: str,
+        memory_key: str,
+        memory_id: str,
+        doc: dict,
+    ) -> tuple[str, bool]:
+        """Commit atomico RedisJSON + mapping; ritorna (winner_id, created)."""
+        result = self.r.eval(
+            _IDEMPOTENT_MEMORY_COMMIT_LUA,
+            2,
+            idem_key,
+            memory_key,
+            memory_id,
+            json.dumps(doc, ensure_ascii=False, separators=(",", ":")),
+            "euri:memory:",
+        )
+        winner, created = result
+        if isinstance(winner, bytes):
+            winner = winner.decode("utf-8", errors="replace")
+        if isinstance(created, bytes):
+            created = created.decode("utf-8", errors="replace")
+        return str(winner), str(created) == "1"
 
     def save_memory(self, content: str, category: str = "personale", tags: list[str] = None, source: str = "user", expires_at: datetime | None = None, idempotent: bool = False, due_at: datetime | None = None, status: str | None = None) -> str | None:
         # Memory Guard: scansione anti-poisoning sull'ingest. Da fonte non fidata
@@ -62,25 +112,18 @@ class MemoryManager:
         mid = str(uuid.uuid4())
         key = f"euri:memory:{mid}"
 
-        # Idempotency cross-processo (Codex round 3 #1/#2) — OPT-IN (idempotent=True).
+        # Idempotency cross-processo — OPT-IN (idempotent=True).
         # Daemon vocale, UI e passive-inline possono salvare lo STESSO contenuto concorrentemente
-        # (check-then-save TOCTOU; passive ~487 nodi). Una chiave SET NX EX su (source, contenuto
-        # normalizzato) serializza in Redis: il 2° writer trova la chiave e RITORNA L'ID DEL
-        # VINCITORE invece di creare un doppione. Finestra breve = copre la race, non la storia.
+        # (check-then-save TOCTOU). Il mapping su (source, contenuto normalizzato) viene
+        # committato atomicamente col RedisJSON solo DOPO aver costruito il documento.
+        # Finestra breve = copre la race, non la storia.
         # ⚠️ OPT-IN di proposito (Codex round 3 bis): ritornare un id ESISTENTE rompe i chiamanti
         # che post-mutano il nuovo id (reaction scrive reacted_to/tags, loop2e consolidated_*,
         # obsidian forza il domain) → gli scriverebbero metadati di una memoria nuova sul nodo del
-        # vincitore. Abilitato SOLO dove la race è reale E il chiamante non post-muta: passive
-        # learner e save esplicito (user). Fail-mode sicuro: spento = resta il dedup best-effort.
-        if idempotent:
-            import hashlib
-            _norm = " ".join((content or "").lower().split())
-            if _norm:
-                _idem = f"euri:idem:save:{source}:{hashlib.sha1(_norm.encode()).hexdigest()}"
-                if not self.r.set(_idem, mid, nx=True, ex=120):
-                    _winner = self.r.get(_idem)
-                    logger.debug(f"save_memory: idempotency skip — contenuto già in salvataggio (winner={_winner})")
-                    return _winner or None
+        # vincitore. Abilitato SOLO dove la race è reale e le eventuali post-mutazioni sono
+        # conservative anche su un nodo identico esistente: passive learner e save esplicito.
+        # Fail-mode sicuro: spento = resta il dedup best-effort.
+        idem_key = self._idempotency_key(content, source) if idempotent else None
 
         ts = now()
 
@@ -163,7 +206,15 @@ class MemoryManager:
             doc["reminded_count"] = 0
             doc["last_reminded_at"] = None
             doc["completed_at"] = None
-        self.r.json().set(key, "$", doc)
+        if idem_key:
+            winner_id, created = self._commit_idempotent_memory(idem_key, key, mid, doc)
+            if not created:
+                logger.debug(
+                    f"save_memory: idempotency skip — documento già committato (winner={winner_id})"
+                )
+                return winner_id
+        else:
+            self.r.json().set(key, "$", doc)
         update_loop2e_candidate_index(self.r, doc)
         if expires_at:
             # expireat è separato dal JSON.SET (Codex #1): se fallisce, la memoria resterebbe

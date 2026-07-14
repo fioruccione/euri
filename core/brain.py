@@ -6,6 +6,7 @@ import re
 import json
 import time
 import threading
+from collections import deque
 from loguru import logger
 import ollama
 from core.ollama_client import chat_client
@@ -18,7 +19,10 @@ class Brain:
     def __init__(self):
         self._conversation_history: list[dict] = []
         self._max_history = 10  # ultimi 10 scambi in contesto
-        self._next_trusted = False  # impostato da voice_daemon prima di respond()
+        self._history_seq = 0
+        # Coda indipendente dalla history comprimibile: il passive learner usa
+        # sequence ID stabili e fa ack dopo l'estrazione.
+        self._passive_journal: deque[dict] = deque(maxlen=2048)
         self._episodes: list[str] = []       # episodi compressi della sessione corrente
         self._compress_lock = threading.Lock()
         self.history_lock = threading.Lock()  # protegge _conversation_history da accessi concorrenti
@@ -36,7 +40,36 @@ class Brain:
         text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
         return text.strip()
 
-    def respond(self, user_text: str, context: str = "") -> str:
+    def _append_history_locked(self, role: str, content: str, trusted: bool) -> None:
+        """Aggiunge un messaggio alla history LLM e al journal passivo."""
+        self._history_seq += 1
+        message = {
+            "seq": self._history_seq,
+            "role": role,
+            "content": content,
+            "trusted": bool(trusted),
+        }
+        self._conversation_history.append(message)
+        self._passive_journal.append(dict(message))
+
+    def passive_messages_after(self, last_seq: int) -> list[dict]:
+        """Snapshot dei messaggi non ancora processati, immune alla compressione."""
+        with self.history_lock:
+            if self._passive_journal and last_seq < self._passive_journal[0]["seq"] - 1:
+                logger.warning(
+                    "Passive journal: gap rilevato dopo seq {} (primo disponibile {})",
+                    last_seq,
+                    self._passive_journal[0]["seq"],
+                )
+            return [dict(m) for m in self._passive_journal if m["seq"] > last_seq]
+
+    def ack_passive_messages(self, through_seq: int) -> None:
+        """Rimuove dal journal solo messaggi già analizzati dal passive learner."""
+        with self.history_lock:
+            while self._passive_journal and self._passive_journal[0]["seq"] <= through_seq:
+                self._passive_journal.popleft()
+
+    def respond(self, user_text: str, context: str = "", *, trusted: bool = False) -> str:
         """
         Genera una risposta per voce: breve, diretta, italiana.
         context: informazioni aggiuntive da iniettare (es. risultati ricerca Redis).
@@ -87,12 +120,12 @@ class Brain:
             logger.info(f"[TIMING] brain.respond() Ollama: {(time.perf_counter()-_t)*1000:.0f}ms")
             reply = self._clean(response.message.content or "")
 
-            # Aggiorna storico (trusted=True → analizzabile dal passive learner)
+            # La provenienza appartiene a QUESTO turno: parametro locale, non
+            # side-channel globale condiviso tra voce e mobile.
             with self.history_lock:
-                self._conversation_history.append({"role": "user", "content": user_text, "trusted": self._next_trusted})
-                self._conversation_history.append({"role": "assistant", "content": reply, "trusted": self._next_trusted})
+                self._append_history_locked("user", user_text, trusted)
+                self._append_history_locked("assistant", reply, trusted)
                 trigger_compress = len(self._conversation_history) >= config.EPISODE_COMPRESSION_THRESHOLD
-            self._next_trusted = False  # reset — il prossimo scambio è non-trusted di default
 
             # Compressione episodica in background se la history è abbastanza lunga
             if trigger_compress:
@@ -107,8 +140,8 @@ class Brain:
     def inject_tool_result(self, user_text: str, result_text: str):
         """Inietta uno scambio tool nella history LLM — visibile ai turn CHAT successivi."""
         with self.history_lock:
-            self._conversation_history.append({"role": "user", "content": user_text, "trusted": False})
-            self._conversation_history.append({"role": "assistant", "content": result_text, "trusted": False})
+            self._append_history_locked("user", user_text, False)
+            self._append_history_locked("assistant", result_text, False)
 
     def _compress_episode(self):
         """Comprime i messaggi più vecchi in un episodio — gira in background."""

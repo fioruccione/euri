@@ -104,8 +104,6 @@ CASES = [
 
 def main():
     brain = Brain()
-    if not hasattr(brain, "_next_trusted"):
-        brain._next_trusted = True
 
     passed = 0
     by_cat: dict[str, list[int]] = {}

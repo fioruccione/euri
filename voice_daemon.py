@@ -176,7 +176,7 @@ class VoiceDaemon:
         self._last_auth_voice_ts: float = 0.0  # ultima voce AUTENTICATA e accettata dal guard — prova
                                                # d'identità per l'efferente quando la faccia non basta.
                                                # NON aggiornato dal TTS di Euri (niente auto-rinfresco).
-        self._passive_history_len: int = 0     # lunghezza history già analizzata
+        self._passive_last_seq: int = 0        # sequence ID journal già analizzato
         self._consolidation_last_run: float = 0.0  # timestamp ultimo Loop 2a
         self._brain_lock = threading.Lock()  # protegge brain tra main loop e mobile worker
         self._first_visual_activation = True  # True finché il VisualGate non vede l'utente per la prima volta
@@ -653,7 +653,7 @@ class VoiceDaemon:
         self.memory.log_conversation("Euri", reply)
         self._speak(reply)
 
-    def _handle_search(self, text: str):
+    def _handle_search(self, text: str, *, trusted: bool = False):
         """SEARCH path allineato a CHAT: usa _build_context per evitare
         l'allucinazione di assenza ('non ce l'ho' su memorie che invece esistono).
         Prima della V2.16 questo handler usava solo search_memories+search_notes
@@ -690,7 +690,7 @@ class VoiceDaemon:
         )
         context = (context + "\n\n" if context else "") + search_hint
         with self._brain_lock:
-            reply = self.brain.respond(text, context=context)
+            reply = self.brain.respond(text, context=context, trusted=trusted)
         reply = scrub_unbacked_save_claim(reply)  # pavimento di onestà: SEARCH non salva
         emit_unbacked_action_commitment(self.r, reply, set(), channel="voice_search")
         reply = scrub_unbacked_action_claim(reply, set())  # SEARCH non agisce: niente claim d'azione
@@ -1464,7 +1464,7 @@ class VoiceDaemon:
 
 
 
-    def _handle_chat(self, text: str):
+    def _handle_chat(self, text: str, *, trusted: bool = False):
         # Audit di Coerenza: capture correction signal PRIMA di loggare/rispondere,
         # così last_rag_ctx contiene ancora il ctx del turno precedente (corretto).
         if self.memory.detect_correction(text):
@@ -1493,7 +1493,7 @@ class VoiceDaemon:
         context = self._augment_context_by_strategy(text, context)
         context = (context + "\n\n" if context else "") + "[Modalità conversazione: sii presente e naturale, non rigido.]"
         with self._brain_lock:
-            reply = self.brain.respond(text, context=context)
+            reply = self.brain.respond(text, context=context, trusted=trusted)
         reply = scrub_unbacked_save_claim(reply)  # pavimento di onestà: CHAT non salva
         emit_unbacked_action_commitment(self.r, reply, set(), channel="voice_chat")
         reply = scrub_unbacked_action_claim(reply, set())  # CHAT non agisce: niente claim d'azione
@@ -1649,7 +1649,7 @@ class VoiceDaemon:
             self._teach_snapshot_content = ""
             self._speak("Ok, ho cancellato la sessione precedente.")
 
-    def _dispatch(self, text: str, detected_lang: str = "it"):
+    def _dispatch(self, text: str, detected_lang: str = "it", *, trusted: bool = False):
         """Smista il testo trascritto all'handler corretto."""
         if self.memory.is_silent_mode():
             # Anche in silenzio: ripristino e shutdown passano sempre
@@ -1830,7 +1830,10 @@ class VoiceDaemon:
 
         handler = handlers.get(intent, self._handle_chat)
         _t_handler = time.perf_counter()
-        handler(text)
+        if intent in {Intent.CHAT, Intent.SEARCH}:
+            handler(text, trusted=trusted)
+        else:
+            handler(text)
         logger.info(f"[TIMING] Handler {intent.value}: {(time.perf_counter()-_t_handler)*1000:.0f}ms")
 
     def _passive_learner_loop(self):
@@ -1856,19 +1859,16 @@ class VoiceDaemon:
                 if idle < IDLE_TRIGGER:
                     continue
 
-                # Abbastanza nuovi scambi da analizzare? — snapshot atomico sotto history_lock
-                with self.brain.history_lock:
-                    history = list(self.brain._conversation_history)
-                new_exchanges = len(history) - self._passive_history_len
+                # Journal append-only fino all'ack: la compressione della history
+                # conversazionale non può più invalidare il cursore del learner.
+                new_history = self.brain.passive_messages_after(self._passive_last_seq)
+                new_exchanges = len(new_history)
                 if new_exchanges < MIN_NEW_EXCHANGES:
                     continue
 
-                # Analizza tutto il segmento nuovo (rimosso filtro trusted)
-                new_history = history[self._passive_history_len:]
-                self._passive_history_len = len(history)
-
                 if not new_history:
                     continue
+                through_seq = new_history[-1]["seq"]
 
                 saved = 0
                 # Non mischiare nel medesimo prompt scambi rivolti esplicitamente a
@@ -1896,6 +1896,8 @@ class VoiceDaemon:
 
                 if saved:
                     logger.info(f"Passive learner: {saved} fatto/i salvato/i silenziosamente")
+                self._passive_last_seq = through_seq
+                self.brain.ack_passive_messages(through_seq)
 
             except Exception as e:
                 logger.error(f"Errore passive learner: {e}")
@@ -2433,11 +2435,8 @@ class VoiceDaemon:
                 if hasattr(self, 'dream_engine'):
                     self.dream_engine.notify_activity()
 
-                # Trusted = wake word esplicito. Scambi ambient (solo finestra) non analizzati dal passive learner.
-                self.brain._next_trusted = has_wake_word
-
                 # Dispatch
-                self._dispatch(text, detected_lang=detected_lang)
+                self._dispatch(text, detected_lang=detected_lang, trusted=has_wake_word)
 
         logger.info("Euri spento.")
 

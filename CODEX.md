@@ -1,5 +1,24 @@
 # Handoff Euri — 2026-07-14
 
+## Correzioni strutturali critiche — 2026-07-14
+
+Chiuse tre falle emerse dall'audit architetturale successivo all'hardening:
+
+- `Brain.respond` riceve `trusted` come parametro per-turno; rimosso il
+  side-channel globale `_next_trusted`, che poteva essere consumato dal mobile
+  o restare stale dopo handler senza risposta LLM;
+- la history usa sequence ID monotoni e alimenta un passive journal separato;
+  la compressione episodica puo' accorciare `_conversation_history` senza
+  invalidare il cursore del learner;
+- il save idempotente costruisce prima il documento e committa RedisJSON +
+  mapping in un unico script Lua. Un mapping viene riusato solo se il documento
+  vincitore esiste; mapping stale e fallimenti non producono save fantasma.
+
+Test aggiunti: `test_history_provenance.py`, `test_memory_idempotency.py`.
+Verificato anche il Lua contro Redis Stack reale con chiavi temporanee poi
+eliminate. Restano come fasi separate: ranking epistemico, outbox durevole,
+supervisione dei loop e separazione CI unit/integration/live.
+
 ## Stato repo al close
 
 - Branch corrente: `feat/thought-map-initiative`.
