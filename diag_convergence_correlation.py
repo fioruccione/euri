@@ -85,6 +85,8 @@ def main():
         outcome = fdict.get("outcome", "?")
         conv = int(fdict.get("convergences") or 0)
         ncert = int(fdict.get("n_certain") or 0)
+        policy = fdict.get("promotion_policy") or "vector_auto_v1"
+        njudge = int(fdict.get("n_judge_confirmed") or 0)
         neighbors = []
         try:
             neighbors = json.loads(fdict.get("neighbors") or "[]")
@@ -105,6 +107,7 @@ def main():
         if outcome == "promoted":
             cur_rc = _f(r.execute_command("JSON.GET", seed, "$.recalled_count"))
         rows.append(dict(seed=seed, ts=ts, outcome=outcome, conv=conv, ncert=ncert,
+                         policy=policy, njudge=njudge,
                          claim_conv=claim_conv, cur_rc=cur_rc,
                          age_days=(now - ts) / 86400 if ts else None))
 
@@ -127,6 +130,9 @@ def main():
     print("=== distribuzione esiti ===")
     for oc, n in Counter(r["outcome"] for r in rows).most_common():
         print(f"  {oc:22s} {n}")
+    print("\n=== versioni policy ===")
+    for policy, n in Counter(r["policy"] for r in rows).most_common():
+        print(f"  {policy:22s} {n}")
 
     promoted = [r for r in rows if r["outcome"] == "promoted" and r["cur_rc"] is not None]
     mature = [r for r in promoted if (r["age_days"] or 0) >= MIN_MATURITY_DAYS]
@@ -149,6 +155,14 @@ def main():
     would_claim = sum(1 for r in rows if r["claim_conv"] >= config.DREAM_INSIGHT_MIN_CONVERGENCES - 1)
     print(f"  raggiungerebbero soglia con FULL-TEXT (n_certain): {would_full}/{len(rows)}")
     print(f"  raggiungerebbero soglia con CLAIM (relativo):      {would_claim}/{len(rows)}")
+    judged = [r for r in rows if r["policy"] == "claim_judge_v2"]
+    if judged:
+        would_judge = sum(
+            1 for r in judged
+            if r["njudge"] >= config.DREAM_INSIGHT_MIN_CONVERGENCES - 1
+        )
+        print(f"  confermati dal JUDGE v2:                           "
+              f"{would_judge}/{len(judged)}")
 
 
 if __name__ == "__main__":

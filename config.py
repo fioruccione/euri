@@ -226,6 +226,14 @@ DREAM_INSIGHT_MIN_CONVERGENCES = 3   # era 2 — soglia alzata per ridurre promo
 # per correlarla OFFLINE col recall futuro — misura convergenza↔uso su dati NON selezionati.
 # Non altera nessuna promozione. Read-only sulla decisione. Vedi analisi diag_convergence_*.
 CONVERGENCE_TRACE_ENABLED = True
+# Policy v2 (15/07/2026): la distanza vettoriale seleziona soltanto le coppie da
+# confrontare. Nessun vicino, neppure a distanza zero, conta come convergenza senza
+# conferma semantica dello stesso meccanismo operativo. Il cambio chiude il falso
+# positivo da template osservato nei primi 16 candidate del braccio dream_trace.
+CONVERGENCE_POLICY_VERSION = "claim_judge_v2"
+CONVERGENCE_VECTOR_SHORTLIST_MAX_DISTANCE = 0.40
+CONVERGENCE_JUDGE_BUDGET = 6          # nuove coppie LLM per ciclo; cache hit escluse
+CONVERGENCE_JUDGE_CACHE_TTL_S = 30 * 86400
 # Esperimento continuità 2b (dream_trace): tra un ciclo creativo e il successivo persiste
 # un residuo di ESPLORAZIONE a livello di STRATEGIA (tipi di ponte tentati e trovati deboli,
 # max 5 righe, mai contenuti né conclusioni). Con ~145 domini e pairing random la coppia non

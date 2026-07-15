@@ -1,5 +1,24 @@
 # Handoff Euri — 2026-07-14
 
+## Correzione convergenza insight — 2026-07-15
+
+- Stefano ha autorizzato esplicitamente la correzione durante `dream_trace`: tre
+  promozioni live avevano `n_certain=2`, ma i vicini a distanza 0.12–0.14 erano claim
+  scollegati. Il full-text/template non può più decidere una convergenza.
+- Policy `claim_judge_v2`: il vettore fa solo shortlist (<0.40); ogni coppia richiede
+  giudizio conservativo SAME/RELATED/DIFFERENT. Solo SAME conta ed è assorbito.
+- Cache simmetrica content-addressed, budget 6 nuove coppie/ciclo e fail-closed su
+  budget, errore o output non parsabile. Trace estesa con policy e metriche del judge.
+- Benchmark Ollama locale su 6 coppie etichettate: thinking 6/6 corrette e parsabili
+  (116s), no-thinking 5/6 (7,5s), con un falso SAME su AST-vs-controllo qualità.
+  Conservato `think=True`, `num_predict=5000`: il tetto evita finali troncati; il budget
+  per ciclo limita il costo e la cache evita di ripeterlo sulla stessa coppia.
+- Checkpoint esperimento documentato in `ESPERIMENTO_DREAM_TRACE.md`: baseline 149,
+  trattamento 16, ambiguo 2. L'audit primario resta per-candidate ma va stratificato
+  pre/post policy per i possibili effetti indiretti sul retrieval.
+- Aggiunto `test_convergence_policy.py`; il live `test_insight_repromotion.py` simula
+  ora il contratto semantico invece di affidarsi alla distanza zero.
+
 ## Cognitive Present preparatorio — 2026-07-14
 
 - Aggiunti `core/cognitive_present.py` e `SPEC_COGNITIVE_PRESENT.md`, senza import
@@ -187,8 +206,9 @@ Note:
 
 ## Regole operative da mantenere
 
-- Non intervenire sul punto 5 / Dream promozione: e' dentro esperimento
-  `dream_trace` pre-registrato gestito da Claude.
+- Dream promozione modificata il 15/07 su autorizzazione esplicita di Stefano per
+  chiudere il bug concettuale full-text→convergenza; non aggiungere altri interventi
+  durante `dream_trace` senza una nuova decisione esplicita.
 - Punto 4 single-exchange loss sospeso: decisione filosofica di Stefano, non
   toccare senza richiesta.
 - Se si modificano file, commit atomico e push.

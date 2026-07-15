@@ -714,38 +714,95 @@ REGOLE:
 
     # ── Loop 2c: Insight e Promozione ──────────────────────────────────────
 
-    def _llm_judge_same_insight(self, content_a: str, content_b: str) -> bool:
+    def _llm_judge_same_insight(self, content_a: str, content_b: str):
         """
-        Zona grigia: chiede a Gemma (con thinking) se due insight esprimono
-        lo stesso principio strutturale, anche se formulati diversamente.
-        Il vettore MiniLM è superficiale; il judge ragiona sul significato profondo.
+        Decide in modo conservativo se due candidate esprimono lo stesso claim.
+
+        Il vettore serve soltanto per la shortlist: anche una distanza zero passa da
+        qui. True = SAME; False = RELATED/DIFFERENT; None = risposta non valida o
+        errore. Il chiamante tratta None fail-closed e non conta la convergenza.
         """
         prompt = f"""\
-Analizza questi due insight generati da processi di ragionamento indipendenti.
+Sei un giudice conservativo di equivalenza semantica. Analizza due insight generati
+da processi di ragionamento indipendenti.
 
 Insight A: "{content_a}"
 Insight B: "{content_b}"
 
-Esprimono lo stesso principio strutturale o la stessa analogia profonda,
-anche se formulati con parole diverse?
+Classificali così:
+- SAME: stesso meccanismo operativo o causale e stesso tipo di conseguenza concreta,
+  anche se applicati a domini diversi o formulati con parole diverse.
+- RELATED: condividono tema, obiettivo, lessico, forma o un'analogia generica, ma il
+  meccanismo operativo differisce oppure non è abbastanza specificato.
+- DIFFERENT: claim e meccanismi differenti.
 
-Rispondi SOLO con SÌ o NO."""
+Il template ripetuto "Nel dominio... / La connessione operativa..." e la semplice
+presenza di controllo, ottimizzazione, dati o prevenzione NON sono prove di SAME.
+Non giudicare qui la verità delle premesse: valuta soltanto l'equivalenza del claim.
+
+Rispondi SOLO con SAME, RELATED oppure DIFFERENT."""
         try:
             response = self._ollama_chat(
                 model=config.DREAM_OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                options={"temperature": 0, "num_predict": 1500},
+                options={"temperature": 0, "num_predict": 5000},
                 think=True,
             )
             text = response.message.content or ""
             if "<channel|>" in text:
                 text = text.split("<channel|>", 1)[-1]
-            import re
             text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-            return text.strip().upper().startswith(("SÌ", "SI", "YES"))
+            match = re.fullmatch(r"(SAME|RELATED|DIFFERENT)\.?", text.upper())
+            if not match:
+                logger.debug(f"Dream Engine: judge convergenza non parsabile: {text[:80]!r}")
+                return None
+            return match.group(1) == "SAME"
         except Exception as e:
             logger.debug(f"Errore LLM judge insight: {e}")
-            return False
+            return None
+
+    def _convergence_judge_cache_key(self, id_a: str, content_a: str,
+                                     id_b: str, content_b: str) -> str:
+        """Chiave simmetrica e content-addressed: un edit invalida il verdetto."""
+        pair = sorted((
+            (str(id_a), hashlib.sha256((content_a or "").encode("utf-8")).hexdigest()),
+            (str(id_b), hashlib.sha256((content_b or "").encode("utf-8")).hexdigest()),
+        ))
+        raw = json.dumps(pair, ensure_ascii=True, separators=(",", ":"))
+        digest = hashlib.sha256(raw.encode("ascii")).hexdigest()
+        version = getattr(config, "CONVERGENCE_POLICY_VERSION", "claim_judge_v2")
+        return f"euri:convergence:judge:{version}:{digest}"
+
+    def _cached_same_insight_judgement(self, id_a: str, content_a: str,
+                                       id_b: str, content_b: str,
+                                       *, allow_model_call: bool):
+        """Ritorna (verdetto, model_called, cache_hit).
+
+        `verdetto` è True/False se disponibile, None se il budget è esaurito o il
+        modello fallisce. Gli errori non vengono cacheati, così un ciclo futuro può
+        riprovare; SAME e NOT_SAME sono deterministici per la policy versionata.
+        """
+        key = self._convergence_judge_cache_key(id_a, content_a, id_b, content_b)
+        try:
+            cached = self._r.get(key)
+            if isinstance(cached, (bytes, bytearray)):
+                cached = cached.decode()
+            if cached in {"SAME", "NOT_SAME"}:
+                return cached == "SAME", False, True
+        except Exception as e:
+            logger.debug(f"Dream Engine: cache judge non letta: {e}")
+
+        if not allow_model_call:
+            return None, False, False
+
+        verdict = self._llm_judge_same_insight(content_a, content_b)
+        if verdict is not None:
+            try:
+                ttl = getattr(config, "CONVERGENCE_JUDGE_CACHE_TTL_S", 30 * 86400)
+                self._r.setex(key, ttl, "SAME" if verdict else "NOT_SAME")
+            except Exception as e:
+                logger.debug(f"Dream Engine: cache judge non scritta: {e}")
+        return verdict, True, False
 
     def _ensure_premise_fidelity(self, insight_key: str) -> bool:
         """Risveglio lucido — FASE MISURA (additiva: NON decide nulla): quanto le due
@@ -829,7 +886,9 @@ Rispondi SOLO con SÌ o NO."""
             logger.debug(f"premise_fidelity fallita (non-critica): {e}")
             return False
 
-    def _trace_convergence(self, doc, convergences, n_certain, neighbor_trace, outcome):
+    def _trace_convergence(self, doc, convergences, n_certain, neighbor_trace, outcome,
+                           *, n_vector_shortlisted=0, n_judge_confirmed=0,
+                           n_judge_deferred=0, judge_trace=None):
         """Instrumentazione ADDITIVA (read-only sulla decisione): registra la convergenza
         AL MOMENTO DELLA DECISIONE su euri:convergence:trace, per correlarla OFFLINE col
         recall futuro — test convergenza↔uso su dati NON selezionati (promossi E scartati),
@@ -859,10 +918,19 @@ Rispondi SOLO con SÌ o NO."""
                 "demoted_once": "1" if g("$.demoted_once", False) else "0",
                 "recalled_count_at_decision": str(g("$.recalled_count", 0) or 0),
                 "convergences": str(convergences),
+                # `n_certain` resta per confrontare la vecchia policy: conta quanti
+                # vicini sarebbero passati automaticamente con score<0.15, ma dalla v2
+                # non modifica più `convergences`.
                 "n_certain": str(n_certain),
+                "promotion_policy": getattr(config, "CONVERGENCE_POLICY_VERSION",
+                                             "vector_auto_v1"),
+                "n_vector_shortlisted": str(n_vector_shortlisted),
+                "n_judge_confirmed": str(n_judge_confirmed),
+                "n_judge_deferred": str(n_judge_deferred),
                 "outcome": outcome,
                 "seed_content": (getattr(doc, "content", "") or "")[:600],
                 "neighbors": _json.dumps(neighbor_trace, ensure_ascii=False)[:4000],
+                "judge_trace": _json.dumps(judge_trace or [], ensure_ascii=False)[:4000],
                 # Braccio esperimento dream_trace: "1"/"0" se il candidate è nato
                 # con/senza residuo iniettato; "" per i candidate pre-esperimento.
                 # È il join che permette l'audit baseline/trattamento SULLA trace,
@@ -892,6 +960,7 @@ Rispondi SOLO con SÌ o NO."""
             # Risveglio lucido (fase misura): budget di valutazioni-fedeltà per ciclo,
             # così il backfill dei candidate esistenti si ammortizza su più cicli leggeri
             fidelity_budget = getattr(config, "PREMISE_FIDELITY_BUDGET", 5)
+            judge_budget = getattr(config, "CONVERGENCE_JUDGE_BUDGET", 6)
 
             for doc in res.docs:
                 # Potrebbe essere già stato eliminato come duplicato in un'iterazione precedente
@@ -923,15 +992,21 @@ Rispondi SOLO con SÌ o NO."""
                 )
                 res_sim = self._r.ft("idx:insights").search(q_sim, query_params={"vec": vec_bytes})
 
-                # Conta quanti hanno score molto alto (distanza cosine bassa)
-                # < 0.15 → convergenza certa (vettori quasi identici)
-                # 0.15–0.40 → zona grigia: il vettore MiniLM è superficiale,
-                #              chiediamo al LLM se il principio profondo è lo stesso
+                # Il vettore MiniLM propone soltanto una shortlist. La vecchia policy
+                # auto-contava score<0.15, ma il template comune produce distanze
+                # 0.12–0.14 anche tra claim scollegati: ogni coppia passa ora dal judge.
                 stored_cc = self._r.json().get(doc.id, "$.convergence_count")
                 convergences = int(stored_cc[0]) if stored_cc else 1
                 similar_ids = []
                 neighbor_trace = []   # (id, score, content[:400]) — instrumentazione offline
-                n_certain = 0         # vicini auto-contati (score<0.15), la parte anisotropia-sensibile
+                judge_trace = []      # (id, score, esito, cache_hit)
+                n_certain = 0         # metrica legacy: sarebbero passati nella policy v1
+                n_vector_shortlisted = 0
+                n_judge_confirmed = 0
+                n_judge_deferred = 0
+                max_distance = getattr(
+                    config, "CONVERGENCE_VECTOR_SHORTLIST_MAX_DISTANCE", 0.40
+                )
 
                 for sim in res_sim.docs:
                     if sim.id == doc.id:
@@ -940,14 +1015,45 @@ Rispondi SOLO con SÌ o NO."""
                     sim_content = getattr(sim, "content", None)
                     neighbor_trace.append((str(sim.id), round(score, 4), (sim_content or "")[:400]))
                     if score < 0.15:
-                        convergences += 1
                         n_certain += 1
+                    if score >= max_distance:
+                        judge_trace.append((str(sim.id), round(score, 4),
+                                            "OUTSIDE_SHORTLIST", False))
+                        continue
+                    n_vector_shortlisted += 1
+                    if not sim_content:
+                        judge_trace.append((str(sim.id), round(score, 4),
+                                            "MISSING_CONTENT", False))
+                        continue
+
+                    verdict, model_called, cache_hit = self._cached_same_insight_judgement(
+                        str(doc.id), doc.content, str(sim.id), sim_content,
+                        allow_model_call=judge_budget > 0,
+                    )
+                    if model_called:
+                        judge_budget -= 1
+                    if verdict is True:
+                        logger.debug(
+                            f"Dream Engine: judge LLM ha confermato convergenza "
+                            f"(score={score:.2f}, cache={cache_hit})"
+                        )
+                        convergences += 1
+                        n_judge_confirmed += 1
                         similar_ids.append(sim.id)
-                    elif score < 0.40:
-                        if sim_content and self._llm_judge_same_insight(doc.content, sim_content):
-                            logger.debug(f"Dream Engine: judge LLM ha confermato convergenza (score={score:.2f})")
-                            convergences += 1
-                            similar_ids.append(sim.id)
+                        label = "SAME"
+                    elif verdict is False:
+                        label = "NOT_SAME"
+                    else:
+                        n_judge_deferred += 1
+                        label = "ERROR" if model_called else "DEFERRED_BUDGET"
+                    judge_trace.append((str(sim.id), round(score, 4), label, cache_hit))
+
+                trace_meta = {
+                    "n_vector_shortlisted": n_vector_shortlisted,
+                    "n_judge_confirmed": n_judge_confirmed,
+                    "n_judge_deferred": n_judge_deferred,
+                    "judge_trace": judge_trace,
+                }
                         
                 # Se abbiamo abbastanza convergenze, promuoviamo!
                 if convergences >= config.DREAM_INSIGHT_MIN_CONVERGENCES:
@@ -963,7 +1069,8 @@ Rispondi SOLO con SÌ o NO."""
                             f"Dream Engine: promozione bloccata (formato non operativo) — "
                             f"{doc.id[-8:]} con {convergences} convergenze"
                         )
-                        self._trace_convergence(doc, convergences, n_certain, neighbor_trace, "denied_format")
+                        self._trace_convergence(doc, convergences, n_certain, neighbor_trace,
+                                                "denied_format", **trace_meta)
                         continue
 
                     # Gate di ri-promozione (V2.19, opzione b): la PRIMA promozione è
@@ -989,7 +1096,8 @@ Rispondi SOLO con SÌ o NO."""
                         pulse_emit(self._r, "insight", "intero", "repromotion_denied",
                                    payload={"id": str(doc.id)[-12:], "convergences": convergences},
                                    salience=0.45)
-                        self._trace_convergence(doc, convergences, n_certain, neighbor_trace, "denied_repromotion")
+                        self._trace_convergence(doc, convergences, n_certain, neighbor_trace,
+                                                "denied_repromotion", **trace_meta)
                         continue
 
                     # Provenienza cumulativa: prima di cancellare i candidate assorbiti,
@@ -1025,7 +1133,8 @@ Rispondi SOLO con SÌ o NO."""
                                    "convergences": convergences,
                                },
                                salience=0.65)
-                    self._trace_convergence(doc, convergences, n_certain, neighbor_trace, "promoted")
+                    self._trace_convergence(doc, convergences, n_certain, neighbor_trace,
+                                            "promoted", **trace_meta)
                     promoted_count += 1
                     
                     # Scrivi nel vault di Obsidian
@@ -1038,7 +1147,8 @@ Rispondi SOLO con SÌ o NO."""
 
                 else:
                     # Convergenza sotto soglia: nessuna promozione (il ramo più comune).
-                    self._trace_convergence(doc, convergences, n_certain, neighbor_trace, "below_threshold")
+                    self._trace_convergence(doc, convergences, n_certain, neighbor_trace,
+                                            "below_threshold", **trace_meta)
 
         except Exception as e:
             logger.error(f"Errore valutazione insights: {e}")

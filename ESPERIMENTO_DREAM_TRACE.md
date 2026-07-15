@@ -105,6 +105,37 @@ bozza web era sotto il rumore: 0.6 σ):
 
 *(da compilare a raccolta finita — includere il negativo)*
 
+## DEVIAZIONE DOCUMENTATA (15/07/2026) — gate di promozione corretto
+
+Checkpoint prima dell'intervento: **baseline 149 / trattamento 16 / ambiguo 2**.
+Tre promozioni notturne hanno fornito una riproduzione live del bug già indicato nella
+pre-registrazione: per ciascuna, due vicini full-text con distanza 0.12–0.14 sono stati
+auto-contati come convergenze certe pur esprimendo claim operativi manifestamente diversi.
+Il template a tre righe dominava quindi la distanza e trasformava una shortlist lessicale
+in una decisione epistemica; i vicini falsi venivano inoltre assorbiti, cancellati e la loro
+provenienza unita al promosso.
+
+Per decisione esplicita di Stefano il bug concettuale è stato corretto durante la raccolta:
+
+- policy `vector_auto_v1` fino al candidate trattamento 16;
+- policy `claim_judge_v2` dal candidate trattamento 17;
+- il vettore seleziona soltanto coppie con distanza <0.40;
+- ogni coppia, anche a distanza zero, richiede un verdetto semantico `SAME`;
+- `RELATED`, `DIFFERENT`, errore, risposta non parsabile o budget esaurito sono fail-closed;
+- cache simmetrica content-addressed e budget per ciclo limitano il costo;
+- la convergence trace registra versione policy, shortlist, conferme e rinvii.
+
+Il giudice è rimasto in modalità thinking dopo confronto locale sullo stesso corpus di sei
+coppie: thinking 6/6 corrette e parsabili, no-thinking 5/6 con un falso `SAME` proprio su
+due meccanismi solo genericamente analoghi (validazione AST vs controllo qualità compound).
+`num_predict=5000` lascia margine al ragionamento; cache e budget 6/ciclo confinano il costo.
+
+Questa deviazione NON cambia direttamente l'unità primaria dell'esperimento: l'audit cieco
+misura il contenuto di tutti i candidate, non promozione o convergenza. Può però produrre
+effetti indiretti sul contesto futuro, perché cambia quali insight entrano nel retrieval.
+L'analisi finale deve quindi riportare anche il risultato stratificato trattamento 1–16 vs
+17–60 e non presentare la raccolta come runtime perfettamente invariato.
+
 ## Annotazioni per esperimenti futuri (NON in questo)
 
 - Pairing: sostituire `random.choice` con ricerca del dominio semanticamente DISTANTE
@@ -112,7 +143,7 @@ bozza web era sotto il rumore: 0.6 σ):
 - Template tre-righe: misurato che domina lo spazio embedding (μ coppie ~0.82) →
   candidato a de-boilerplate, ma è il fix V2.6, va trattato con rispetto.
 - Gate di promozione: la convergenza-per-ripetizione non misura contenuto (analisi
-  04–13/07) — ripensarlo è il lavoro grosso a parte, legato a uso/external_reaction.
+  04–13/07). Corretto il 15/07 dopo riproduzione live; vedere deviazione documentata.
 
 ## NOTA DI RACCOLTA (13/07 sera) — eco a punto fisso, distillazione rifinita
 
