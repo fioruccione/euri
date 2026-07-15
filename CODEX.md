@@ -1,5 +1,28 @@
 # Handoff Euri — 2026-07-14
 
+## Cognitive Present runtime v1 — 2026-07-15
+
+- Attivato per decisione esplicita di Stefano dopo il caso live IZOD: Initiative
+  aveva interrotto il discorso con un insight protocollo/progetto e aveva poi
+  catturato la continuazione sull'IZOD come reazione al sogno.
+- Il presente mantiene una lease vocale dalla fine effettiva del TTS e un focus
+  breve di 5 minuti costruito solo dagli ultimi turni utente accettati. La lease
+  autorizza il follow-up senza wake word; il focus non autorizza parlato ambient.
+- Durante un focus, il gate LLM conservativo distingue `EXTENDS`, `RELATED` e
+  `UNRELATED`: solo `EXTENDS` puo' intervenire, dopo 8 secondi e con cooldown
+  contestuale. La proposta riceve un token e viene rivalidata prima del TTS.
+- Dal primo trigger VAD fino alla fine di autenticazione, STT e dispatch, un turno
+  vocale in volo blocca Initiative anche se il testo non e' ancora disponibile.
+- Le repliche a una domanda Initiative sono ora `ANSWER`, `CLARIFICATION` oppure
+  `OFF_TOPIC`: quest'ultimo chiude la cattura reaction e restituisce il turno al
+  dispatch normale. Pending reaction ridotto da 30 a 5 minuti.
+- Il verdetto reaction precede la sintesi; una lesson `DA_VALUTARE`/`PARZIALE`
+  eredita `requires_verification` e non puo' narrarsi come conferma.
+- Sonda Ollama sul caso reale: insight protocollo/progetto=`RELATED`, candidato
+  condizionamento/posizionamento IZOD=`EXTENDS`, replica frigorifero=`OFF_TOPIC`.
+- Test: unit 27/27, integration 3/3. Nessuna modifica al Dream Engine o a
+  `dream_trace`.
+
 ## Correzione convergenza insight — 2026-07-15
 
 - Stefano ha autorizzato esplicitamente la correzione durante `dream_trace`: tre

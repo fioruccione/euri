@@ -45,6 +45,11 @@ from core.embedder import Embedder
 from core.honesty import scrub_unbacked_save_claim
 from core.act_word_check import emit_unbacked_action_commitment, scrub_unbacked_action_claim
 from core.ollama_client import chat_client
+from core.cognitive_present import (
+    CognitivePresent,
+    InteractionChannel,
+    InteractionPhase,
+)
 from core.worker_supervisor import WorkerSupervisor
 from agent.executor import Executor, build_injected_context
 
@@ -186,6 +191,15 @@ class VoiceDaemon:
         self._brain_lock = threading.Lock()  # protegge brain tra main loop e mobile worker
         self._first_visual_activation = True  # True finché il VisualGate non vede l'utente per la prima volta
         self._tts_lock   = threading.Lock()  # protegge il modello TTS da accessi concorrenti
+        # Dal primo frame VAD fino alla fine di STT/dispatch. Initiative non deve
+        # confondere "testo non ancora disponibile" con un confine di turno libero.
+        self._voice_input_inflight = threading.Event()
+        self.present = CognitivePresent(
+            conversation_window_s=getattr(config, "CONVERSATION_LEASE_SECONDS", 45),
+            focus_window_s=getattr(config, "CONVERSATION_FOCUS_SECONDS", 5 * 60),
+            max_focus_turns=getattr(config, "CONVERSATION_FOCUS_MAX_TURNS", 4),
+        )
+        self._initiative_focus_cache: dict[tuple[str, int], str] = {}
 
         # Impegni verbali → azioni reali: (pattern sulla risposta di Euri, callable(text, reply))
         self._IMPLICIT_ACTIONS = [
@@ -278,6 +292,15 @@ class VoiceDaemon:
         if not text:
             return
         self._last_activity_ts = time.time()
+        present_started = False
+        try:
+            self.present.begin_speech(
+                channel=InteractionChannel.VOICE,
+                opens_conversation=True,
+            )
+            present_started = True
+        except Exception as e:
+            logger.debug(f"Cognitive Present: begin_speech ignorato: {e}")
         logger.info(f"Euri: {text}")
         self.visual_gate.notify_activity()
         self.r.set("euri:audio:lock", "1", ex=300)
@@ -307,6 +330,14 @@ class VoiceDaemon:
                 logger.critical(f"Fallback TTS fallito: {tts_err} — Euri muto")
         finally:
             self.r.delete("euri:audio:lock")
+            ended_at = time.time()
+            # La durata del playback non consuma la lease e non anticipa Initiative.
+            self._last_activity_ts = ended_at
+            if present_started:
+                try:
+                    self.present.finish_speech(at=ended_at)
+                except Exception as e:
+                    logger.debug(f"Cognitive Present: finish_speech ignorato: {e}")
         if interrupted:
             self._speak_simple("Ok.")
 
@@ -316,6 +347,15 @@ class VoiceDaemon:
         if not text:
             return
         logger.info(f"Euri: {text}")
+        present_started = False
+        try:
+            self.present.begin_speech(
+                channel=InteractionChannel.VOICE,
+                opens_conversation=True,
+            )
+            present_started = True
+        except Exception as e:
+            logger.debug(f"Cognitive Present: begin_speech simple ignorato: {e}")
         self.r.set("euri:audio:lock", "1", ex=10)
         try:
             samples, sr = self.tts.synthesize(text, lang=lang)
@@ -329,6 +369,13 @@ class VoiceDaemon:
                 pass
         finally:
             self.r.delete("euri:audio:lock")
+            ended_at = time.time()
+            self._last_activity_ts = ended_at
+            if present_started:
+                try:
+                    self.present.finish_speech(at=ended_at)
+                except Exception as e:
+                    logger.debug(f"Cognitive Present: finish_speech simple ignorato: {e}")
 
     def _interrupt_listener(self, stop_event: threading.Event) -> None:
         """
@@ -633,15 +680,20 @@ class VoiceDaemon:
         self.memory.log_conversation("Euri", text)
         self._speak(text)
         if insight is not None:
-            self._awaiting_reaction = _PendingState({"insight": insight, "question": text}, timeout=1800)
+            question_id = f"briefing:{insight.get('id') or time.time()}"
+            self._awaiting_reaction = _PendingState(
+                {"insight": insight, "question": text, "question_id": question_id},
+                timeout=300,
+            )
+            self.present.set_pending_question(question_id, text)
 
-    def _handle_reaction(self, text: str):
+    def _handle_reaction(self, text: str) -> bool:
         """Stefano ha risposto alla domanda di curiosità. La risposta è la verità ESTERNA
         che fonda o smentisce l'insight: la cattura (sintesi della lezione su Qwen, lenta)
         gira in BACKGROUND per non bloccare la voce. Euri dà solo un cenno naturale."""
         pending = self._awaiting_reaction
         if not pending:
-            return
+            return False
 
         # Guardia chiarimento: se Stefano CHIEDE invece di rispondere ("di quale
         # insight parli?", "non capisco cosa intendi"), NON consumare il turno come
@@ -649,11 +701,17 @@ class VoiceDaemon:
         # → requires_verification, finding 26/06). Classificatore pragmatico via Gemma
         # (non regex: capisce il fraseggio nuovo). Euri ri-nomina l'insight e RI-ARMA.
         from core.utterance_pragmatics import classify_reply_type
-        if classify_reply_type(pending.data.get("question", ""), text) == "CLARIFICATION":
+        reply_type = classify_reply_type(pending.data.get("question", ""), text)
+        if reply_type == "CLARIFICATION":
             self.memory.log_conversation("Stefano", text)
             ins = pending.data.get("insight", {})
             question = pending.data.get("question", "")
-            self._awaiting_reaction = _PendingState({"insight": ins, "question": question}, timeout=1800)
+            question_id = pending.data.get("question_id") or f"reaction:{ins.get('id') or time.time()}"
+            self._awaiting_reaction = _PendingState(
+                {"insight": ins, "question": question, "question_id": question_id},
+                timeout=300,
+            )
+            self.present.set_pending_question(question_id, question)
             content = (ins.get("content") or "").strip()
             if content:
                 # L'insight ha struttura fissa a 3 righe e la TESI è la terza: il vecchio
@@ -667,9 +725,17 @@ class VoiceDaemon:
             reply = f"Mi riferivo a questo: {snippet}. Secondo te regge, o è una forzatura?"
             self.memory.log_conversation("Euri", reply)
             self._speak(reply)
-            return
+            return True
+
+        if reply_type == "OFF_TOPIC":
+            question_id = pending.data.get("question_id")
+            self._awaiting_reaction = None
+            self.present.clear_pending_question(question_id)
+            logger.info("Reaction pending chiusa: replica OFF_TOPIC, turno restituito al dispatch")
+            return False
 
         self._awaiting_reaction = None
+        self.present.clear_pending_question(pending.data.get("question_id"))
         insight = pending.data["insight"]
         self.memory.log_conversation("Stefano", text)
 
@@ -682,6 +748,7 @@ class VoiceDaemon:
 
         threading.Thread(target=_bg, daemon=True).start()
         self._speak("Ah, buono a sapersi. Ci rifletto su.")
+        return True
 
     def _handle_save_note(self, text: str):
         from core.validator import validate_payload
@@ -930,6 +997,7 @@ class VoiceDaemon:
         reply = (f"Te la leggo fedele — fonte {src}{when}: {content} — "
                  f"Se c'è da correggere o aggiungere qualcosa, dimmelo adesso.")
         self._pending_readback = _PendingState({"id": mem.get("id"), "content": content}, timeout=180)
+        self.present.set_pending_question(f"readback:{mem.get('id')}", reply)
         self.memory.log_conversation("Euri", reply)
         self._speak(reply)
 
@@ -940,6 +1008,7 @@ class VoiceDaemon:
         CURA della memoria guidato da Stefano, mai edit silenziosi."""
         pending = self._pending_readback
         self._pending_readback = None
+        self.present.clear_pending_question(f"readback:{pending.data.get('id')}")
         # Il triage lo fa il classificatore pragmatico (regex solo sui casi ovvi,
         # Gemma per la varietà del parlato, fallback conservativo=OK): "Tutto
         # perfetto, hai capito benissimo" è un OK anche senza parole-chiave —
@@ -1728,6 +1797,9 @@ class VoiceDaemon:
         # Rilettura pending: memoria appena riletta, attesa correzione/aggiunta (180s)
         if self._pending_readback:
             if self._pending_readback.expired():
+                self.present.clear_pending_question(
+                    f"readback:{self._pending_readback.data.get('id')}"
+                )
                 self._pending_readback = None
                 logger.debug("Readback pending scaduto (timeout 180s)")
             else:
@@ -1756,11 +1828,14 @@ class VoiceDaemon:
         # la risposta di Stefano per trasformarla in lezione ri-sognabile (timeout 300s).
         if self._awaiting_reaction:
             if self._awaiting_reaction.expired():
+                self.present.clear_pending_question(
+                    self._awaiting_reaction.data.get("question_id")
+                )
                 self._awaiting_reaction = None
-                logger.debug("Reaction pending scaduta (timeout 300s)")
+                logger.debug("Reaction pending scaduta")
             else:
-                self._handle_reaction(text)
-                return
+                if self._handle_reaction(text):
+                    return
 
         # Audit memory: attende sì/no per cancellare le memorie rumore
         if self._audit_confirm_mode:
@@ -2174,8 +2249,17 @@ class VoiceDaemon:
             if self._wait_or_stop(30):
                 break
 
-    def _initiative_block_reason(self) -> str:
+    def _initiative_block_reason(self, *, idle_seconds: float | None = None,
+                                 cooldown_s: float | None = None) -> str:
         """Ritorna "" se Euri può iniziare una domanda proattiva adesso."""
+        if self._voice_input_inflight.is_set():
+            return "voice_input_inflight"
+        try:
+            phase = self.present.snapshot().phase
+            if phase is not InteractionPhase.LISTENING:
+                return f"present_phase:{phase.value}"
+        except Exception:
+            pass
         if self._awaiting_reaction:
             return "awaiting_reaction"
         if any([
@@ -2200,7 +2284,11 @@ class VoiceDaemon:
 
         now_ts = time.time()
         idle = (now_ts - self._last_activity_ts) if self._last_activity_ts else 999999
-        if idle < getattr(config, "INITIATIVE_IDLE_SECONDS", 90):
+        idle_threshold = (
+            getattr(config, "INITIATIVE_IDLE_SECONDS", 90)
+            if idle_seconds is None else float(idle_seconds)
+        )
+        if idle < idle_threshold:
             return f"recent_activity:{idle:.0f}s"
 
         try:
@@ -2208,7 +2296,10 @@ class VoiceDaemon:
             last_ask = float(last_raw or 0)
         except Exception:
             last_ask = 0.0
-        cooldown = getattr(config, "INITIATIVE_COOLDOWN_S", 3 * 3600)
+        cooldown = (
+            getattr(config, "INITIATIVE_COOLDOWN_S", 3 * 3600)
+            if cooldown_s is None else float(cooldown_s)
+        )
         if last_ask and now_ts - last_ask < cooldown:
             return f"cooldown:{int(cooldown - (now_ts - last_ask))}s"
 
@@ -2226,6 +2317,18 @@ class VoiceDaemon:
 
         return ""
 
+    def _revalidate_initiative_output(self, decision_token) -> tuple[bool, str]:
+        """Ultimo guard prima dell'efferenza: stato semantico e voce in volo."""
+        current, reason = self.present.revalidate(
+            decision_token,
+            require_phase=InteractionPhase.LISTENING,
+        )
+        if not current:
+            return False, reason
+        if self._voice_input_inflight.is_set():
+            return False, "voice_input_inflight"
+        return True, "current"
+
     def _handle_initiative_candidate(self, event_id: str, event: dict, *, from_pending: bool = False) -> bool:
         """Valuta un evento Pulse e, se maturo, fa parlare Euri.
 
@@ -2234,6 +2337,7 @@ class VoiceDaemon:
         """
         from core.initiative import (
             build_candidate,
+            classify_focus_relevance,
             clear_pending,
             generate_question,
             mark_seen,
@@ -2262,7 +2366,47 @@ class VoiceDaemon:
             mark_seen(self.r, event_id)
             return True
 
-        block_reason = self._initiative_block_reason()
+        try:
+            present_snapshot = self.present.snapshot()
+            focus_active = present_snapshot.focus_open()
+            focus_text = present_snapshot.focus_text() if focus_active else ""
+        except Exception:
+            present_snapshot = None
+            focus_active = False
+            focus_text = ""
+
+        contextual = False
+        if focus_active:
+            # Prima escludi stati/modalità che vietano sempre l'efferenza; nessuna
+            # chiamata LLM mentre Euri parla, processa o aspetta già una risposta.
+            block_reason = self._initiative_block_reason(idle_seconds=0, cooldown_s=0)
+            if block_reason:
+                if not from_pending:
+                    store_pending(self.r, candidate)
+                    record_candidate(self.r, candidate, decision="defer", reason=block_reason)
+                return False
+
+            cache_key = (event_id, present_snapshot.last_user_turn_id)
+            relevance = self._initiative_focus_cache.get(cache_key)
+            if relevance is None:
+                with self._brain_lock:
+                    relevance = classify_focus_relevance(focus_text, candidate)
+                self._initiative_focus_cache[cache_key] = relevance
+                if len(self._initiative_focus_cache) > 256:
+                    self._initiative_focus_cache.pop(next(iter(self._initiative_focus_cache)))
+            if relevance != "EXTENDS":
+                reason = f"focus_{relevance.lower()}"
+                if not from_pending:
+                    store_pending(self.r, candidate)
+                    record_candidate(self.r, candidate, decision="defer", reason=reason)
+                return False
+            contextual = True
+            block_reason = self._initiative_block_reason(
+                idle_seconds=getattr(config, "INITIATIVE_CONTEXTUAL_MIN_IDLE_S", 8),
+                cooldown_s=getattr(config, "INITIATIVE_CONTEXTUAL_COOLDOWN_S", 3 * 60),
+            )
+        else:
+            block_reason = self._initiative_block_reason()
         if block_reason:
             if not from_pending:
                 store_pending(self.r, candidate)
@@ -2275,8 +2419,13 @@ class VoiceDaemon:
             mark_seen(self.r, event_id)
             return True
 
+        decision_token = self.present.issue_decision_token()
         with self._brain_lock:
-            proposal = generate_question(candidate)
+            proposal = generate_question(candidate, focus_text=focus_text if contextual else "")
+        if contextual:
+            proposal = dict(proposal)
+            proposal["focus_relevance"] = "EXTENDS"
+            proposal["focus_turn_id"] = present_snapshot.last_user_turn_id
 
         if not proposal.get("should_ask"):
             record_candidate(self.r, candidate, decision="skip", reason="llm_declined", proposal=proposal)
@@ -2291,6 +2440,19 @@ class VoiceDaemon:
             mark_seen(self.r, event_id)
             return True
 
+        current, stale_reason = self._revalidate_initiative_output(decision_token)
+        if not current:
+            if not from_pending:
+                store_pending(self.r, candidate)
+                record_candidate(
+                    self.r,
+                    candidate,
+                    decision="defer",
+                    reason=f"stale_decision:{stale_reason}",
+                    proposal=proposal,
+                )
+            return False
+
         try:
             self.r.set("euri:initiative:last_ask_ts", str(time.time()), ex=7 * 24 * 3600)
         except Exception:
@@ -2299,7 +2461,15 @@ class VoiceDaemon:
         # La risposta dell'utente rientra nello stesso circuito già usato dal briefing
         # manuale: capture_reaction salva la lezione e aggiorna l'insight.
         if str(candidate.event.get("sense") or "") == "insight":
-            self._awaiting_reaction = _PendingState({"insight": candidate.related}, timeout=1800)
+            self._awaiting_reaction = _PendingState(
+                {
+                    "insight": candidate.related,
+                    "question": question,
+                    "question_id": event_id,
+                },
+                timeout=300,
+            )
+            self.present.set_pending_question(event_id, question)
 
         record_candidate(self.r, candidate, decision="spoken", proposal=proposal)
         clear_pending(self.r, event_id)
@@ -2444,19 +2614,28 @@ class VoiceDaemon:
                 chunk = mic.read_chunk()
                 speech_ended, segment = self.vad.process_chunk(chunk)
 
+                if self.vad.is_speaking:
+                    self._voice_input_inflight.set()
+
                 if not speech_ended:
                     continue
+
+                # Tiene chiuso il confine anche dopo il VAD, mentre identità, STT e
+                # dispatch stanno ancora attribuendo significato al turno.
+                self._voice_input_inflight.set()
 
                 # Gate mobile: silenzio se la pagina Voce Mobile sta processando
                 if self.r.exists("euri:mobile:active"):
                     logger.debug("Mobile gate: voce ignorata — sessione mobile attiva")
                     self.vad.reset()
+                    self._voice_input_inflight.clear()
                     continue
 
                 # Gate visivo: ignora voce se nessuno è presente
                 if not self.visual_gate.is_user_present():
                     logger.debug("VisualGate: voce rilevata ma gate INACTIVE — ignorata")
                     self.vad.reset()
+                    self._voice_input_inflight.clear()
                     continue
 
                 # Enrollment mode: raccoglie utterance per il voiceprint
@@ -2474,6 +2653,7 @@ class VoiceDaemon:
                         else:
                             self._speak("Registrazione fallita. Riprova.")
                     self.vad.reset()
+                    self._voice_input_inflight.clear()
                     continue
 
                 # Verifica identità vocale (prima di STT per risparmiare CPU)
@@ -2481,6 +2661,7 @@ class VoiceDaemon:
                 if not self._translate_bidir and not self.speaker_auth.verify(segment):
                     logger.info("SpeakerAuth: voce non riconosciuta — comando ignorato")
                     self.vad.reset()
+                    self._voice_input_inflight.clear()
                     continue
 
                 # Trascrizione
@@ -2492,6 +2673,7 @@ class VoiceDaemon:
 
                 accepted = self._accept_voice_transcript(text)
                 if accepted is None:
+                    self._voice_input_inflight.clear()
                     continue
                 text, has_wake_word = accepted
 
@@ -2499,8 +2681,17 @@ class VoiceDaemon:
                 if hasattr(self, 'dream_engine'):
                     self.dream_engine.notify_activity()
 
-                # Dispatch
-                self._dispatch(text, detected_lang=detected_lang, trusted=has_wake_word)
+                # Dispatch. Se un handler termina senza TTS, chiude comunque la fase
+                # PROCESSING; gli handler che parlano la chiudono via finish_speech.
+                try:
+                    self._dispatch(text, detected_lang=detected_lang, trusted=has_wake_word)
+                finally:
+                    try:
+                        if self.present.snapshot().phase is InteractionPhase.PROCESSING:
+                            self.present.finish_processing(opens_conversation=False)
+                    except Exception as e:
+                        logger.debug(f"Cognitive Present: finish_processing ignorato: {e}")
+                    self._voice_input_inflight.clear()
 
         self._shutdown_components()
         logger.info("Euri spento.")
@@ -2538,7 +2729,8 @@ class VoiceDaemon:
         scarta nulla: degrada l'incerto. Protegge provenienza/qualità epistemica."""
         return support == "weak" or not segment_addressed
 
-    def _utterance_is_addressed(self, has_wake_word: bool, since_last: float) -> bool:
+    def _utterance_is_addressed(self, has_wake_word: bool, since_last: float,
+                                conversation_open: bool = False) -> bool:
         """True se l'utterance va processata (guard di consenso conversazionale).
         In traduzione/dettato parla anche l'interlocutore → sempre processata.
         Altrimenti: wake word esplicita OPPURE dentro la finestra di conversazione
@@ -2546,7 +2738,7 @@ class VoiceDaemon:
         corrente (che azzererebbe la finestra e renderebbe il guard un no-op)."""
         if self._translate_bidir or self._dictation_mode:
             return True
-        return has_wake_word or since_last < _CONVERSATION_WINDOW_SEC
+        return has_wake_word or conversation_open or since_last < _CONVERSATION_WINDOW_SEC
 
     @staticmethod
     def _is_garbage_transcript(text: str) -> tuple[bool, float]:
@@ -2577,7 +2769,11 @@ class VoiceDaemon:
         now_ts = time.time() if now_ts is None else now_ts
         has_wake_word = bool(_WAKE_WORD_RE.search(text))
         since_last = now_ts - self._last_activity_ts
-        if not self._utterance_is_addressed(has_wake_word, since_last):
+        try:
+            conversation_open = self.present.snapshot(now=now_ts).conversation_open(now_ts)
+        except Exception:
+            conversation_open = False
+        if not self._utterance_is_addressed(has_wake_word, since_last, conversation_open):
             logger.debug(
                 f"Wake word assente e fuori finestra ({since_last:.0f}s) — ignorato: '{text[:40]}'"
             )
@@ -2586,6 +2782,14 @@ class VoiceDaemon:
         self._last_activity_ts = now_ts
         if not self._translate_bidir:
             self._last_auth_voice_ts = now_ts
+        try:
+            self.present.accept_user_turn(
+                text,
+                channel=InteractionChannel.VOICE,
+                at=now_ts,
+            )
+        except Exception as e:
+            logger.debug(f"Cognitive Present: accept_user_turn ignorato: {e}")
         return text, has_wake_word
 
     def _mobile_worker(self):

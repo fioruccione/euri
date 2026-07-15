@@ -1,5 +1,6 @@
 """Regressioni wake guard, activity timing e provenienza passive learner."""
 import sys
+import threading
 import types
 
 sys.path.insert(0, '/home/fio/Euri')
@@ -27,6 +28,7 @@ _stub_module("voice.face_auth", FaceAuth=_HardwareStub)
 _stub_module("voice.speaker_auth", SpeakerAuth=_HardwareStub, ENROLL_UTTERANCES=3)
 
 import voice_daemon as vd
+from core.cognitive_present import CognitivePresent
 
 WIN = vd._CONVERSATION_WINDOW_SEC
 
@@ -36,6 +38,8 @@ def make(translate=False, dictation=False, last_activity=100.0):
     d._dictation_mode = dictation
     d._last_activity_ts = last_activity
     d._last_auth_voice_ts = 50.0
+    d._voice_input_inflight = threading.Event()
+    d.present = CognitivePresent(conversation_window_s=45, focus_window_s=300)
     return d
 
 def test_addressed_guard():
@@ -94,10 +98,63 @@ def test_activity_only_after_acceptance():
     print("OK  vuoto, garbage e fuori-finestra non rinnovano activity")
 
 
+def test_long_tts_lease_accepts_followup_without_wake_word():
+    d = make(last_activity=110.0)
+    d.present.accept_user_turn("Euri, rileggi la memoria", at=100.0)
+    d.present.begin_speech(at=110.0)
+    d.present.finish_speech(at=170.0)
+
+    accepted = d._accept_voice_transcript(
+        "Questa memoria è contorta e non è legata a quel singolo evento.",
+        now_ts=205.0,
+    )
+    assert accepted is not None and accepted[1] is False
+    print("OK  lease dalla fine TTS: follow-up accettato dopo risposta lunga")
+
+
+def test_offtopic_reaction_returns_turn_to_dispatch():
+    import core.utterance_pragmatics as pragmatics
+
+    d = make()
+    d.memory = type("Mem", (), {"log_conversation": lambda *_a, **_k: None})()
+    question_id = "initiative:izod"
+    d._awaiting_reaction = vd._PendingState({
+        "insight": {"id": "abc", "content": "protocollo e progetto"},
+        "question": "Il collegamento tra protocollo e progetto regge?",
+        "question_id": question_id,
+    }, timeout=300)
+    d.present.set_pending_question(question_id, "Il collegamento regge?")
+    old = pragmatics.classify_reply_type
+    pragmatics.classify_reply_type = lambda *_a, **_k: "OFF_TOPIC"
+    try:
+        handled = d._handle_reaction(
+            "Abbiamo un frigorifero per l'IZOD, forse i provini erano messi male."
+        )
+    finally:
+        pragmatics.classify_reply_type = old
+
+    assert handled is False
+    assert d._awaiting_reaction is None
+    assert d.present.snapshot().pending_question_id == ""
+    print("OK  reaction OFF_TOPIC: nessuna cattura, turno restituito al dispatch")
+
+
+def test_initiative_token_is_cancelled_by_voice_inflight():
+    d = make()
+    token = d.present.issue_decision_token()
+    d._voice_input_inflight.set()
+
+    assert d._revalidate_initiative_output(token) == (False, "voice_input_inflight")
+    print("OK  voce VAD in volo invalida l'efferenza Initiative")
+
+
 if __name__ == "__main__":
     test_addressed_guard()
     test_passive_weak_and_mixed_segment()
     test_activity_only_after_acceptance()
+    test_long_tts_lease_accepts_followup_without_wake_word()
+    test_offtopic_reaction_returns_turn_to_dispatch()
+    test_initiative_token_is_cancelled_by_voice_inflight()
     print("PASS")
 
 

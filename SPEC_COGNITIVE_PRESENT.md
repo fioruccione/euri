@@ -1,8 +1,9 @@
-# Cognitive Present: contratto preparatorio
+# Cognitive Present: contratto runtime
 
-**Stato: implementazione isolata, nessuna integrazione runtime durante la raccolta
-`dream_trace`.** Il modulo `core/cognitive_present.py` non e' importato dal daemon,
-non scrive in Redis e non entra nei prompt.
+**Stato: runtime v1 attivato il 15/07/2026 per decisione esplicita di Stefano.**
+Il componente resta transitorio e locale al processo: non scrive in Redis e non
+viene consolidato automaticamente in memoria. L'integrazione corrente copre fase,
+lease vocale, focus breve, domande pendenti e rivalidazione di Initiative.
 
 ## Scopo
 
@@ -17,6 +18,7 @@ Contiene:
 - canale corrente: voce, mobile, testo o sistema;
 - lease conversazionale, rinnovata al termine del parlato che apre una risposta;
 - ultimo turno utente accettato e domanda pendente;
+- focus conversazionale breve: ultimi turni utente accettati, senza sintesi interna;
 - osservazioni sensoriali o operative con fonte, stato epistemico e scadenza;
 - versione monotona dello stato semantico.
 
@@ -48,18 +50,20 @@ alcun accesso alla webcam.
    deve rivalidare versione, fase e osservazioni da cui dipende.
 5. Il presente non viene consolidato automaticamente in memoria. Gli eventi che
    meritano memoria continuano a passare dai normali gate epistemici.
+6. La lease di risposta e il focus non coincidono: la prima dura secondi e autorizza
+   un follow-up senza wake word; il secondo dura minuti e impedisce a Initiative di
+   cambiare argomento. Un focus non rende automaticamente indirizzato il parlato.
 
-## Sequenza d'integrazione dopo Dream Trace
+## Integrazione runtime v1
 
-1. Shadow mode: alimentare il componente da VisualGate, voce, TTS e modalita', ma
-   usare lo stato solo per audit.
-2. Rivalidazione Initiative: scartare o ricalcolare una proposta se il token e'
-   diventato stale prima del TTS.
-3. Lease conversazionale: usare `finish_speech` come origine della finestra di
-   follow-up, con regressione sulla risposta lunga osservata il 14/07.
-4. Contesto LLM: iniettare solo uno snapshot compatto e groundato delle capability
-   e percezioni correnti. Questa fase richiede un audit separato.
+1. Voce e TTS alimentano fase, lease e ultimi turni utente accettati.
+2. Initiative classifica un candidato rispetto al focus come `EXTENDS`, `RELATED`
+   o `UNRELATED`; solo `EXTENDS` puo' entrare prima della scadenza del focus.
+3. Initiative rivalida un `DecisionToken` immediatamente prima del TTS: un nuovo
+   turno, una domanda pendente o un cambio fase rendono stale la proposta.
+4. Il contenuto completo dello snapshot non entra nel prompt generale del Brain.
+   Capability e percezioni correnti richiedono ancora un audit separato.
 
 Active Focus resta un piano distinto, su scala di giorni. I due componenti non
-devono essere attivati insieme: altrimenti non sarebbe possibile attribuire gli
-effetti osservati al presente transitorio o alla continuita' di lavoro.
+vanno fusi: condividono provenienza e interfacce, ma hanno tempi e responsabilita'
+diversi. L'eventuale attivazione di Active Focus resta una decisione separata.

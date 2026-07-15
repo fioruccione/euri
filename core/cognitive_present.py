@@ -1,8 +1,8 @@
 """Transient, versioned working state for Euri's immediate present.
 
-This module is deliberately independent from Redis, prompts and the voice daemon.
-It defines the state contract that can be exercised offline while dream_trace is
-collecting. Runtime integration must be a separate, explicitly enabled change.
+The state remains independent from Redis and long-term memory. The voice daemon
+feeds it accepted turns, playback boundaries and pending questions; consumers use
+versioned snapshots and decision tokens instead of treating stale state as current.
 """
 from __future__ import annotations
 
@@ -91,6 +91,8 @@ class CognitiveSnapshot:
     last_user_text: str
     pending_question_id: str
     pending_question_text: str
+    focus_until: float
+    recent_user_turns: tuple[tuple[int, str, float], ...]
     observations: tuple[Observation, ...]
 
     def observation(self, key: str) -> Observation | None:
@@ -99,6 +101,15 @@ class CognitiveSnapshot:
     def conversation_open(self, now: float | None = None) -> bool:
         at = self.captured_at if now is None else now
         return self.conversation_lease_until > 0 and at <= self.conversation_lease_until
+
+    def focus_open(self, now: float | None = None) -> bool:
+        at = self.captured_at if now is None else now
+        return self.focus_until > 0 and at <= self.focus_until and bool(self.recent_user_turns)
+
+    def focus_text(self, *, max_chars: int = 1800) -> str:
+        """Contesto dei turni utente recenti, senza sintesi o inferenze interne."""
+        text = "\n".join(turn[1] for turn in self.recent_user_turns if turn[1]).strip()
+        return text[-max_chars:]
 
 
 @dataclass(frozen=True)
@@ -116,12 +127,20 @@ class CognitivePresent:
         self,
         *,
         conversation_window_s: float = 45.0,
+        focus_window_s: float = 300.0,
+        max_focus_turns: int = 4,
         clock: Callable[[], float] = time.time,
     ) -> None:
         if conversation_window_s <= 0:
             raise ValueError("conversation_window_s must be positive")
+        if focus_window_s <= 0:
+            raise ValueError("focus_window_s must be positive")
+        if max_focus_turns <= 0:
+            raise ValueError("max_focus_turns must be positive")
         self._clock = clock
         self._conversation_window_s = float(conversation_window_s)
+        self._focus_window_s = float(focus_window_s)
+        self._max_focus_turns = int(max_focus_turns)
         self._lock = threading.RLock()
         self._version = 0
         self._phase = InteractionPhase.LISTENING
@@ -131,6 +150,8 @@ class CognitivePresent:
         self._last_user_text = ""
         self._pending_question_id = ""
         self._pending_question_text = ""
+        self._focus_until = 0.0
+        self._recent_user_turns: list[tuple[int, str, float]] = []
         self._observations: dict[str, Observation] = {}
         self._speech_started_at: float | None = None
         self._speech_opens_conversation = False
@@ -156,6 +177,8 @@ class CognitivePresent:
                 last_user_text=self._last_user_text,
                 pending_question_id=self._pending_question_id,
                 pending_question_text=self._pending_question_text,
+                focus_until=self._focus_until,
+                recent_user_turns=tuple(self._recent_user_turns),
                 observations=tuple(sorted(self._observations.values(), key=lambda item: item.key)),
             )
 
@@ -215,6 +238,11 @@ class CognitivePresent:
                 self._conversation_lease_until,
                 when + self._conversation_window_s,
             )
+            self._focus_until = when + self._focus_window_s
+            self._recent_user_turns.append(
+                (self._last_user_turn_id, self._last_user_text, when)
+            )
+            self._recent_user_turns = self._recent_user_turns[-self._max_focus_turns:]
             self._bump()
             return self._last_user_turn_id
 

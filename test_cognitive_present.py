@@ -138,6 +138,28 @@ def test_processing_can_finish_without_tts():
     assert snap.conversation_open()
 
 
+def test_focus_outlives_turn_lease_and_uses_only_accepted_user_turns():
+    present = CognitivePresent(
+        conversation_window_s=45,
+        focus_window_s=300,
+        max_focus_turns=2,
+        clock=lambda: 0.0,
+    )
+    present.accept_user_turn("Stiamo controllando i provini IZOD", at=100.0)
+    present.finish_processing(at=101.0)
+    present.accept_user_turn("Forse i pezzi erano messi male", at=130.0)
+    present.finish_processing(at=131.0)
+    present.accept_user_turn("Il frigorifero controlla la temperatura", at=160.0)
+
+    snap = present.snapshot(now=250.0)
+    assert not snap.conversation_open(250.0)
+    assert snap.focus_open(250.0)
+    assert "provini IZOD" not in snap.focus_text()  # cap a due turni, nessuna sintesi
+    assert "pezzi erano messi male" in snap.focus_text()
+    assert "frigorifero" in snap.focus_text()
+    assert not snap.focus_open(460.1)
+
+
 if __name__ == "__main__":
     test_provenance_and_expiry()
     test_semantic_version_and_revalidation()
@@ -145,4 +167,5 @@ if __name__ == "__main__":
     test_conversation_lease_starts_after_long_speech()
     test_pending_question_is_versioned()
     test_processing_can_finish_without_tts()
+    test_focus_outlives_turn_lease_and_uses_only_accepted_user_turns()
     print("PASS")

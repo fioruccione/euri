@@ -55,6 +55,11 @@ class _FakeMemory:
         self.failures.append(args)
 
 
+class _CaptureMemory(_FakeMemory):
+    def save_memory(self, *_args, **_kwargs):
+        return "lesson-1"
+
+
 def _classify_with(output=None, fail=False):
     old = reaction.chat_client
     reaction.chat_client = _FakeClient(output, fail=fail)
@@ -99,10 +104,41 @@ def test_smentita_sets_demoted_once():
                for k, p, _v in memory.r.j.sets)
 
 
+def test_capture_propagates_uncertainty_to_reaction_memory():
+    memory = _CaptureMemory()
+    old_classify = reaction.classify_reaction_verdict
+    old_synthesize = reaction.synthesize_lesson
+    old_pulse = reaction.pulse_emit
+    seen = {}
+    reaction.classify_reaction_verdict = lambda *_a, **_k: "DA_VALUTARE"
+    def _synthesize(_insight, _reply, verdict):
+        seen["verdict"] = verdict
+        return "lezione"
+    reaction.synthesize_lesson = _synthesize
+    reaction.pulse_emit = lambda *_a, **_k: None
+    try:
+        out = reaction.capture_reaction(
+            memory,
+            {"id": "abc", "domain_a": "a", "domain_b": "b", "content": "insight"},
+            "Potrebbe essere, ma non è legato a questo evento.",
+        )
+    finally:
+        reaction.classify_reaction_verdict = old_classify
+        reaction.synthesize_lesson = old_synthesize
+        reaction.pulse_emit = old_pulse
+
+    assert seen["verdict"] == "DA_VALUTARE"
+    assert out["verdict"] == "DA_VALUTARE"
+    sets = memory.r.j.sets
+    assert ("euri:memory:lesson-1", "$.reaction_verdict", "DA_VALUTARE") in sets
+    assert ("euri:memory:lesson-1", "$.requires_verification", True) in sets
+
+
 if __name__ == "__main__":
     test_da_valutare_is_parsed()
     test_classifier_fail_open_is_hypothesis_not_confirmation()
     test_da_valutare_marks_insight_requires_verification()
     test_smentita_still_demotes()
     test_smentita_sets_demoted_once()
+    test_capture_propagates_uncertainty_to_reaction_memory()
     print("test_reaction_verdict: OK")

@@ -81,10 +81,16 @@ def test_classify_reply_type():
                chat=FakeChat("CHIARIMENTO")) == "CLARIFICATION"
     # Gemma riconosce una risposta vera
     assert crt("regge?", "sì secondo me regge", chat=FakeChat("RISPOSTA")) == "ANSWER"
+    # Caso live 15/07: la replica riprende IZOD, non la domanda protocollo/progetto
+    assert crt(
+        "Questo collegamento tra protocollo e progetto è utile o forzato?",
+        "Abbiamo un frigorifero per controllare la temperatura, forse i provini erano messi male.",
+        chat=FakeChat("FUORI_TEMA"),
+    ) == "OFF_TOPIC"
     # fast-path regex: chiarimento ovvio → Gemma NON viene nemmeno chiamato
     assert crt("regge?", "non capisco cosa intendi", chat=RaisingChat()) == "CLARIFICATION"
-    # fallback: replica non-ovvia + Gemma giù → ANSWER (conservativo: cattura)
-    assert crt("regge?", "mah, vedremo", chat=RaisingChat()) == "ANSWER"
+    # fallback fail-closed: non cattura una replica non compresa come verità esterna
+    assert crt("regge?", "mah, vedremo", chat=RaisingChat()) == "OFF_TOPIC"
     print("ok classify_reply_type")
 
 

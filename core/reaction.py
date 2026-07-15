@@ -308,7 +308,8 @@ def formulate_curiosity_question(insight: dict, topic: str | None = None,
         return None
 
 
-def synthesize_lesson(insight: dict, reaction_text: str) -> str | None:
+def synthesize_lesson(insight: dict, reaction_text: str,
+                      verdict: str = "DA_VALUTARE") -> str | None:
     """
     Euri sintetizza la LEZIONE da (sua connessione + reazione di Stefano).
     È QUI che si vede se il loop è meccanico o naturale: deve tenere il filo
@@ -325,6 +326,9 @@ def synthesize_lesson(insight: dict, reaction_text: str) -> str | None:
         f"Avevi portato a Stefano questa tua connessione — un insight che hai sognato:\n"
         f"\"{_insight_brief(insight)}\"\n\n"
         f"Stefano ti ha risposto:\n\"{reaction_text.strip()}\"\n\n"
+        f"VERDETTO EPISTEMICO GIÀ CLASSIFICATO: {verdict}. È un vincolo: la lezione "
+        f"non può trasformare DA_VALUTARE in conferma, PARZIALE in conferma piena, né "
+        f"addolcire una SMENTITA.\n\n"
         f"PRIMA capisci cosa ha toccato la sua risposta, alla base della connessione:\n"
         f"– ha confermato che poggia su qualcosa di VERO? allora riconoscilo prima di andare "
         f"oltre — il sogno aveva un'ancora reale — e poi di' cosa resta comunque aperto.\n"
@@ -438,13 +442,21 @@ def capture_reaction(memory, insight: dict, reaction_text: str, *, emit: bool = 
     insight_id = insight.get("id", "")
     domain = insight.get("domain_a") or insight.get("domain") or "generale"
 
-    # 1) Euri sintetizza la lezione (fail-open → reazione grezza se l'LLM tace)
-    lesson = synthesize_lesson(insight, reaction_text)
+    # 1) Il verdetto viene PRIMA della sintesi: la prosa derivata non può risultare
+    # epistemicamente più forte della reazione che la fonda.
+    verdict = classify_reaction_verdict(insight, reaction_text)
+    lesson = synthesize_lesson(insight, reaction_text, verdict=verdict)
     fallback = lesson is None
     if fallback:
         lesson = f"Su «{_insight_brief(insight)}» Stefano ha reagito: «{reaction_text.strip()}»."
 
-    out = {"insight_id": insight_id, "lesson": lesson, "persisted": False, "lesson_id": None}
+    out = {
+        "insight_id": insight_id,
+        "lesson": lesson,
+        "persisted": False,
+        "lesson_id": None,
+        "verdict": verdict,
+    }
 
     # 2) salva la lezione come nodo NORMALE (riusa save_memory: embedding, indice, TTL, dominio auto)
     try:
@@ -466,16 +478,18 @@ def capture_reaction(memory, insight: dict, reaction_text: str, *, emit: bool = 
         db = insight.get("domain_b")
         if db:
             r.json().set(key, "$.tags", [db])  # pescabile anche dall'altro polo
+        r.json().set(key, "$.reaction_verdict", verdict)
+        if verdict in {"DA_VALUTARE", "PARZIALE"}:
+            r.json().set(key, "$.requires_verification", True)
+            r.json().set(key, "$.verification_status", "reaction_not_fully_grounded")
         # 4) evidence-update sull'insight: la prima verità ESTERNA allo strato insight, col VERDETTO
         if insight_id:
-            verdict = classify_reaction_verdict(insight, reaction_text)
             r.json().set(f"euri:insight:{insight_id}", "$.external_reaction", {
                 "reaction": reaction_text.strip(),
                 "lesson_id": lesson_id,
                 "verdict": verdict,
                 "ts": time.time(),
             })
-            out["verdict"] = verdict
             _apply_reaction_verdict(memory, insight_id, verdict)
         out["persisted"] = True
     except Exception as e:

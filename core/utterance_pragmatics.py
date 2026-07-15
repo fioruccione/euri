@@ -89,8 +89,8 @@ def is_clarification_request(text: str) -> bool:
 # (chiarimento ovvio → niente latenza) e come fallback se Gemma non risponde.
 def classify_reply_type(question: str, reply: str, *, chat=None, model: str = None) -> str:
     """
-    Ritorna 'ANSWER' o 'CLARIFICATION': la replica dell'utente è una risposta alla
-    domanda di Euri o una richiesta di chiarimento? Capisce, non matcha parole.
+    Ritorna ANSWER, CLARIFICATION o OFF_TOPIC: la replica dell'utente è una risposta
+    alla domanda, una richiesta di chiarimento o la continuazione di un altro filo?
     Fast-path: chiarimento ovvio via regex (zero latenza). Poi Gemma. Fallback su
     regex se Gemma è giù.
     """
@@ -105,10 +105,12 @@ def classify_reply_type(question: str, reply: str, *, chat=None, model: str = No
             "Euri (un assistente) ha fatto una domanda all'utente per validare una sua idea.\n"
             f'DOMANDA DI EURI: "{question or "(una domanda su una sua intuizione)"}"\n'
             f'REPLICA DELL\'UTENTE: "{reply}"\n\n'
-            "La replica è una RISPOSTA alla domanda (conferma, smentita, valutazione, "
-            "opinione, anche parziale) oppure una RICHIESTA DI CHIARIMENTO (l'utente non "
-            "ha capito, chiede di cosa si parla, chiede di rispiegare)?\n"
-            "Rispondi con UNA sola parola: RISPOSTA oppure CHIARIMENTO."
+            "Classifica la replica:\n"
+            "- RISPOSTA: affronta davvero la domanda, anche con conferma, smentita o dubbio.\n"
+            "- CHIARIMENTO: l'utente non ha capito e chiede di rispiegare.\n"
+            "- FUORI_TEMA: continua un altro discorso o non fornisce evidenza sulla domanda.\n"
+            "Una frase non diventa RISPOSTA solo perché contiene parole vagamente analoghe.\n"
+            "Rispondi con UNA sola parola: RISPOSTA, CHIARIMENTO oppure FUORI_TEMA."
         )
         r = chat.chat(
             model=model or config.OLLAMA_MODEL,
@@ -119,12 +121,14 @@ def classify_reply_type(question: str, reply: str, *, chat=None, model: str = No
         out = (r.message.content or "").strip().upper()
         if "CHIARIMENT" in out:
             return "CLARIFICATION"
+        if "FUORI" in out or "OFF_TOPIC" in out:
+            return "OFF_TOPIC"
         if "RISPOST" in out:
             return "ANSWER"
-        logger.debug(f"classify_reply_type: output Gemma ambiguo '{out}' → ANSWER")
+        logger.debug(f"classify_reply_type: output Gemma ambiguo '{out}' → OFF_TOPIC")
     except Exception as e:
-        logger.warning(f"classify_reply_type: Gemma fallito ({e}) → fallback regex")
-    return "ANSWER"
+        logger.warning(f"classify_reply_type: Gemma fallito ({e}) → OFF_TOPIC")
+    return "OFF_TOPIC"
 
 
 # ── Rilettura → cura (READ_BACK pending) ──────────────────────────────────────

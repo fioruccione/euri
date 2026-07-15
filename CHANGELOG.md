@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-07-15 - Cognitive Present runtime e Initiative contestuale
+
+- La finestra di follow-up vocale parte ora dalla fine reale del playback, quindi
+  una risposta TTS lunga non consuma il tempo concesso all'utente.
+- Aggiunto un focus conversazionale breve, composto solo da turni utente accettati:
+  durante il focus Initiative puo' entrare soltanto con un candidato classificato
+  `EXTENDS`; affinità generiche (`RELATED`) e temi estranei restano pendenti.
+- Un token versionato e il segnale VAD/STT in volo rivalidano la proposta subito
+  prima del TTS, evitando di parlare sopra un turno appena iniziato.
+- Il circuito reaction distingue risposte, chiarimenti e continuazioni fuori tema.
+  Le ultime non vengono piu' trasformate in lezioni del sogno; il verdetto
+  epistemico viene inoltre propagato alla memoria reaction prima della sintesi.
+- Riproduzione locale del caso IZOD, tier unit 27/27 e integration 3/3 verdi.
+  Dream Engine invariato.
+
 ## 2026-07-14 - Cognitive Present preparatorio (runtime invariato)
 
 - Aggiunto il contratto puro e thread-safe `core/cognitive_present.py`: snapshot
