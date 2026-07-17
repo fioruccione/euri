@@ -128,6 +128,51 @@ def run():
     gate_blind._blind = True
     ok.append(check("cieco/fail-open: owner mai presente", not gate_blind.is_owner_present()))
 
+    # Gli indici V4L2 cambiano dopo riconnessioni USB: video0 può mancare mentre
+    # la stessa webcam è disponibile su video1. La discovery accetta solo un nodo
+    # che restituisce davvero un frame, non basta che il device si apra.
+    class FakeCapture:
+        def __init__(self, opened, frames):
+            self.opened = opened
+            self.frames = list(frames)
+            self.released = False
+
+        def isOpened(self):
+            return self.opened
+
+        def set(self, *_args):
+            return True
+
+        def read(self):
+            return self.frames.pop(0) if self.frames else (False, None)
+
+        def release(self):
+            self.released = True
+
+    first = FakeCapture(False, [])
+    second = FakeCapture(True, [(True, object())])
+
+    class FakeCV2:
+        CAP_V4L2 = 200
+        CAP_PROP_FRAME_WIDTH = 3
+        CAP_PROP_FRAME_HEIGHT = 4
+        CAP_PROP_FPS = 5
+
+        def VideoCapture(self, source, _backend):
+            return first if source == "/dev/video0" else second
+
+    gate_camera = VisualGate(camera_index=None)
+    gate_camera._cv2 = FakeCV2()
+    gate_camera._camera_candidates = lambda: [
+        ("/dev/video0", "/dev/video0"),
+        ("/dev/video1", "/dev/video1"),
+    ]
+    cap, frame, label = gate_camera._open_camera()
+    ok.append(check("camera discovery salta video0 assente",
+                    cap is second and first.released))
+    ok.append(check("camera discovery valida un frame reale",
+                    frame is not None and label == "/dev/video1"))
+
     print()
     passed = sum(ok)
     print(f"{passed}/{len(ok)} test passati")

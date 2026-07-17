@@ -374,6 +374,9 @@ INITIATIVE_PENDING_MIN_AGE_S = 5  # stabilizza memory/saved prima di idratare (p
 FACE_AUTH_ENABLED = True
 FACE_AUTH_OWNER = "stefano"           # identità che abilita l'efferente
 FACE_AUTH_THRESHOLD = 0.363           # cosine SFace (soglia canonica OpenCV)
+# None = scoperta automatica dei nodi /dev/video*. Impostare un indice (es. 1) o
+# un path (es. "/dev/video1") solo per forzare una camera specifica.
+VISUAL_GATE_CAMERA_DEVICE = None
 FACE_DETECT_MODEL = str(Path.home() / "euri" / "models" / "face_detection_yunet_2023mar.onnx")
 FACE_RECOG_MODEL = str(Path.home() / "euri" / "models" / "face_recognition_sface_2021dec.onnx")
 FACEPRINT_DIR = str(Path.home() / "euri" / "models" / "faceprints")

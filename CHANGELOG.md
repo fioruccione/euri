@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-17 - VisualGate non dipende piu' da `/dev/video0`
+
+- Corretto il mancato avvio della webcam dopo il cambio di enumerazione USB:
+  Linux esponeva `GENERAL WEBCAM` su `/dev/video1` e `/dev/video2`, mentre il gate
+  apriva rigidamente l'indice 0.
+- Il VisualGate scopre ora i nodi V4L2 disponibili in ordine, li prova con il backend
+  esplicito e accetta il primo che restituisce davvero un frame. Una webcam che espone
+  anche un nodo metadata non viene quindi scelta sul solo `isOpened()`.
+- `VISUAL_GATE_CAMERA_DEVICE` permette ancora di forzare indice o path; `None` usa la
+  discovery. Verifica host: `/dev/video1`, frame 640x480 acquisito correttamente.
+
 ## 2026-07-17 - Tempi interni del Dream osservabili
 
 - Aggiunta instrumentazione read-only per durata totale del ciclo idle e delle fasi

@@ -38,6 +38,7 @@ Dipendenze: opencv-contrib-python
 """
 import threading
 import time
+from pathlib import Path
 
 from loguru import logger
 import config
@@ -52,9 +53,13 @@ IDENTITY_TIMEOUT_S = 120.0  # secondi senza facce prima di scordare chi era
 
 class VisualGate:
 
-    def __init__(self, camera_index: int = 0, fps: float = 2.0, resolution: tuple = (640, 480),
+    def __init__(self, camera_index: int | str | None = None, fps: float = 2.0,
+                 resolution: tuple = (640, 480),
                  face_auth=None):
-        self._camera_index = camera_index
+        self._camera_index = (
+            camera_index if camera_index is not None
+            else getattr(config, "VISUAL_GATE_CAMERA_DEVICE", None)
+        )
         self._interval = 1.0 / fps
         self._resolution = resolution
         self._face_auth = face_auth
@@ -175,6 +180,54 @@ class VisualGate:
     # Loop interno
     # ──────────────────────────────────────────
 
+    def _camera_candidates(self) -> list[tuple[int | str, str]]:
+        """Restituisce sorgenti V4L2 in ordine stabile, oppure l'override esplicito.
+
+        Gli indici `/dev/videoN` non sono persistenti tra riconnessioni USB. Inoltre
+        una singola webcam può esporre più nodi (video e metadata): `_open_camera`
+        prova quindi un frame reale, non si limita a `isOpened()`.
+        """
+        if self._camera_index is not None:
+            return [(self._camera_index, str(self._camera_index))]
+
+        def device_number(path: Path) -> int:
+            suffix = path.name.removeprefix("video")
+            return int(suffix) if suffix.isdigit() else 10**9
+
+        devices = sorted(Path("/dev").glob("video[0-9]*"), key=device_number)
+        if devices:
+            return [(str(path), str(path)) for path in devices]
+        # Portabilità/fail-open: su piattaforme senza V4L2 OpenCV può comunque
+        # risolvere la camera predefinita tramite il proprio backend.
+        return [(0, "indice 0")]
+
+    def _open_camera(self):
+        """Apre il primo candidato che produce davvero un frame valido."""
+        cv2 = self._cv2
+        backend = getattr(cv2, "CAP_V4L2", None)
+        for source, label in self._camera_candidates():
+            try:
+                cap = (cv2.VideoCapture(source, backend)
+                       if backend is not None else cv2.VideoCapture(source))
+            except Exception as e:
+                logger.debug(f"VisualGate: apertura {label} fallita ({e})")
+                continue
+            if not cap.isOpened():
+                cap.release()
+                continue
+
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._resolution[0])
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._resolution[1])
+            cap.set(cv2.CAP_PROP_FPS, 2)
+            for _ in range(3):
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    self._camera_index = source
+                    return cap, frame, label
+                time.sleep(0.05)
+            cap.release()
+        return None, None, None
+
     def _detect(self, frame):
         """Ritorna (face_detected: bool, best_row) dove best_row è la riga YuNet
         (box+landmark) della faccia più grande, o None (Haar non dà landmark)."""
@@ -222,8 +275,8 @@ class VisualGate:
 
     def _loop(self):
         cv2 = self._cv2
-        cap = cv2.VideoCapture(self._camera_index)
-        if not cap.isOpened():
+        cap, first_frame, camera_label = self._open_camera()
+        if cap is None:
             logger.warning("VisualGate: webcam non accessibile — gate disabilitato (fail-open)")
             with self._lock:
                 self._gate_active = True
@@ -231,16 +284,17 @@ class VisualGate:
             self._running = False
             return
 
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._resolution[0])
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._resolution[1])
-        cap.set(cv2.CAP_PROP_FPS, 2)
-        logger.debug("VisualGate: webcam aperta")
+        logger.info(f"VisualGate: webcam aperta ({camera_label})")
 
         consecutive_no_face = 0
 
         while self._running:
             t_start = time.monotonic()
-            ret, frame = cap.read()
+            if first_frame is not None:
+                ret, frame = True, first_frame
+                first_frame = None
+            else:
+                ret, frame = cap.read()
 
             if not ret:
                 time.sleep(self._interval)
