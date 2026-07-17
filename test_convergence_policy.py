@@ -226,10 +226,50 @@ def test_budget_exhaustion_is_fail_closed():
     assert traces[-1][1]["n_judge_deferred"] == 1
 
 
+def test_bridge_validity_is_observational_and_preserves_hypotheses():
+    insight_key = "euri:insight:new"
+    redis = FakeRedis(docs={
+        insight_key: {
+            "id": "new",
+            "content": "Nel dominio [a] succede: A. Nel dominio [b] succede: B. "
+                       "La connessione operativa non ovvia è: C.",
+            "status": "candidate",
+            "bridge_measurement_eligible": True,
+            "source_memory_ids": ["euri:memory:a", "euri:memory:b"],
+        },
+        "euri:memory:a": {"content": "La memoria A descrive un parametro."},
+        "euri:memory:b": {"content": "La memoria B descrive un risultato."},
+    })
+    engine = DreamEngine(redis, embedder=None)
+    requests = []
+    engine._ollama_chat = lambda **kwargs: requests.append(kwargs) or SimpleNamespace(
+        message=SimpleNamespace(
+            content="BRIDGE: HYPOTHESIS\nNOTE: manca una misura causale diretta"
+        )
+    )
+
+    assert engine._ensure_bridge_validity(insight_key) is True
+    assert redis.docs[insight_key]["bridge_validity"] == "hypothesis"
+    assert redis.docs[insight_key]["bridge_validity_score"] == 0.5
+    assert redis.docs[insight_key]["status"] == "candidate"
+    assert requests[-1]["think"] is True
+    assert requests[-1]["options"]["num_predict"] == 5000
+
+
+def test_bridge_parser_rejects_explanatory_free_text():
+    parse = DreamEngine._parse_bridge_validity_response
+    assert parse("BRIDGE: SUPPORTED\nNOTE: segue dalle fonti") == (
+        "supported", 1.0, "segue dalle fonti"
+    )
+    assert parse("Secondo me è una buona ipotesi") is None
+
+
 if __name__ == "__main__":
     test_zero_distance_requires_semantic_confirmation()
     test_only_judge_confirmed_neighbors_are_absorbed()
     test_pair_cache_is_symmetric_and_avoids_second_model_call()
     test_judge_accepts_only_exact_same_label()
     test_budget_exhaustion_is_fail_closed()
+    test_bridge_validity_is_observational_and_preserves_hypotheses()
+    test_bridge_parser_rejects_explanatory_free_text()
     print("test_convergence_policy: OK")

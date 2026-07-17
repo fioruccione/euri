@@ -438,7 +438,11 @@ class DreamEngine:
             safe_domain = domain.replace(" ", "\\ ")
             # Prende un campione casuale (Redis stack non ha RANDOM natively in FT.SEARCH, 
             # ma possiamo prendere le prime con sort_by null e limit 10 e poi scegliere)
-            q = Query(f"@domain:{{{safe_domain}}}").paging(0, 10).return_fields("id", "content", "embedding", "created_at")
+            q = (
+                Query(f"@domain:{{{safe_domain}}} -@memory_kind:{{conversation_anchor}}")
+                .paging(0, 10)
+                .return_fields("id", "content", "embedding", "created_at")
+            )
             res = self._r.ft("idx:memories").search(q)
             if not res.docs:
                 return None
@@ -631,6 +635,13 @@ REGOLE:
                     # convergenza (union dei fratelli assorbiti — vedi promozione).
                     "source_memory_ids": [mem_a["id"], mem_b["id"]],
                 }
+                if getattr(config, "BRIDGE_VALIDITY_ENABLED", False):
+                    # Solo i candidate nuovi entrano nella misura: evita un backfill LLM
+                    # dell'intero archivio e mantiene leggibile il confine sperimentale.
+                    insight_doc["bridge_measurement_eligible"] = True
+                    insight_doc["bridge_policy_version"] = getattr(
+                        config, "BRIDGE_VALIDITY_POLICY_VERSION", "bridge_observer_v1"
+                    )
                 if getattr(config, "DREAM_TRACE_ENABLED", False):
                     # Braccio sperimentale: candidate nato CON residuo iniettato (True)
                     # o senza (False: primo ciclo, o residuo scaduto). A flag spento il
@@ -886,6 +897,111 @@ Rispondi SOLO con SAME, RELATED oppure DIFFERENT."""
             logger.debug(f"premise_fidelity fallita (non-critica): {e}")
             return False
 
+    @staticmethod
+    def _parse_bridge_validity_response(raw: str) -> tuple[str, float, str] | None:
+        """Parsa il verdetto osservativo sul ponte, senza prendere decisioni."""
+        if not raw:
+            return None
+        text = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        match = re.search(
+            r"BRIDGE:\s*(SUPPORTED|HYPOTHESIS|FORCED)\b", text, re.IGNORECASE
+        )
+        if not match:
+            return None
+        verdict = match.group(1).lower()
+        score = {"supported": 1.0, "hypothesis": 0.5, "forced": 0.0}[verdict]
+        note_match = re.search(r"NOTE:\s*(.+)", text, re.IGNORECASE)
+        note = note_match.group(1).strip()[:400] if note_match else ""
+        return verdict, score, note
+
+    def _ensure_bridge_validity(self, insight_key: str) -> bool:
+        """Misura read-only della qualita' epistemica della connessione.
+
+        `premise_fidelity` controlla se le prime due righe rispettano le fonti; questa
+        misura guarda invece la terza riga. Un'interpretazione nuova non e' un errore:
+        viene distinta tra deduzione sostenuta, ipotesi verificabile e ponte forzato.
+        Il risultato viene salvato e tracciato, ma NON influenza la promozione.
+        """
+        if not getattr(config, "BRIDGE_VALIDITY_ENABLED", False):
+            return False
+        try:
+            g = lambda p, d=None: (self._r.json().get(insight_key, p) or [d])[0]
+            if not g("$.bridge_measurement_eligible", False):
+                return False
+            if g("$.bridge_validity", "assente") != "assente":
+                return False
+
+            srcs = g("$.source_memory_ids") or []
+            content = (g("$.content") or "").strip()
+            if len(srcs) < 2 or not content:
+                self._r.json().set(insight_key, "$.bridge_validity", "unknown")
+                self._r.json().set(insight_key, "$.bridge_validity_score", None)
+                self._r.json().set(
+                    insight_key, "$.bridge_validity_note", "fonti o contenuto mancanti"
+                )
+                return False
+
+            source_texts = []
+            for sid in srcs[:2]:
+                data = self._r.json().get(sid, "$.content")
+                source_texts.append(((data or [None])[0] or "").strip())
+            if not all(source_texts):
+                self._r.json().set(insight_key, "$.bridge_validity", "unknown")
+                self._r.json().set(insight_key, "$.bridge_validity_score", None)
+                self._r.json().set(
+                    insight_key, "$.bridge_validity_note", "memorie sorgente mancanti"
+                )
+                return False
+
+            prompt = f"""\
+Valuta la TERZA RIGA di un insight rispetto alle due memorie reali da cui nasce.
+Non devi eliminare la creativita': una lettura personale o nuova e' ammessa, ma va
+distinta da un fatto gia' sostenuto dalle fonti.
+
+MEMORIA A: "{source_texts[0][:900]}"
+MEMORIA B: "{source_texts[1][:900]}"
+
+INSIGHT: "{content[:1800]}"
+
+Classifica il ponte cosi':
+- SUPPORTED: l'effetto pratico segue dalle due fonti senza introdurre meccanismi,
+  eventi, strumenti o causalita' mancanti.
+- HYPOTHESIS: collegamento coerente e verificabile, ma richiede almeno una premessa
+  non ancora presente nelle fonti. E' un'interpretazione utile, non un fatto.
+- FORCED: collegamento arbitrario, generico, sproporzionato oppure fondato su dettagli
+  o causalita' inventati.
+
+Rispondi ESATTAMENTE con due righe:
+BRIDGE: SUPPORTED oppure HYPOTHESIS oppure FORCED
+NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
+            response = self._ollama_chat(
+                model=config.DREAM_OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0, "num_predict": 5000},
+                think=True,
+            )
+            parsed = self._parse_bridge_validity_response(response.message.content or "")
+            if not parsed:
+                self._r.json().set(insight_key, "$.bridge_validity", "unknown")
+                self._r.json().set(insight_key, "$.bridge_validity_score", None)
+                self._r.json().set(
+                    insight_key, "$.bridge_validity_note", "valutazione non parsabile"
+                )
+                return True
+
+            verdict, score, note = parsed
+            self._r.json().set(insight_key, "$.bridge_validity", verdict)
+            self._r.json().set(insight_key, "$.bridge_validity_score", score)
+            self._r.json().set(insight_key, "$.bridge_validity_note", note)
+            logger.info(
+                f"Qualita ponte {insight_key.split(':')[-1][:8]}: "
+                f"{verdict} ({score:.1f})"
+            )
+            return True
+        except Exception as e:
+            logger.debug(f"bridge_validity fallita (non-critica): {e}")
+            return False
+
     def _trace_convergence(self, doc, convergences, n_certain, neighbor_trace, outcome,
                            *, n_vector_shortlisted=0, n_judge_confirmed=0,
                            n_judge_deferred=0, judge_trace=None):
@@ -940,6 +1056,16 @@ Rispondi SOLO con SAME, RELATED oppure DIFFERENT."""
                 # della decisione; "" = non ancora valutata o non-verificabile.
                 "premise_fidelity": ("" if g("$.premise_fidelity") is None
                                      else str(g("$.premise_fidelity"))),
+                # Misura separata della terza riga: osservativa, mai usata qui
+                # per promuovere o bloccare il candidate.
+                "bridge_validity": str(g("$.bridge_validity", "") or ""),
+                "bridge_validity_score": (
+                    "" if g("$.bridge_validity_score") is None
+                    else str(g("$.bridge_validity_score"))
+                ),
+                "bridge_validity_note": str(
+                    g("$.bridge_validity_note", "") or ""
+                )[:400],
             }, maxlen=50000, approximate=True)
         except Exception as e:
             logger.debug(f"trace convergence fallito (non-critico): {e}")
@@ -960,6 +1086,7 @@ Rispondi SOLO con SAME, RELATED oppure DIFFERENT."""
             # Risveglio lucido (fase misura): budget di valutazioni-fedeltà per ciclo,
             # così il backfill dei candidate esistenti si ammortizza su più cicli leggeri
             fidelity_budget = getattr(config, "PREMISE_FIDELITY_BUDGET", 5)
+            bridge_budget = getattr(config, "BRIDGE_VALIDITY_BUDGET", 3)
             judge_budget = getattr(config, "CONVERGENCE_JUDGE_BUDGET", 6)
 
             for doc in res.docs:
@@ -969,6 +1096,8 @@ Rispondi SOLO con SAME, RELATED oppure DIFFERENT."""
 
                 if fidelity_budget > 0 and self._ensure_premise_fidelity(doc.id):
                     fidelity_budget -= 1
+                if bridge_budget > 0 and self._ensure_bridge_validity(doc.id):
+                    bridge_budget -= 1
 
                 vec_str = getattr(doc, "embedding", None)
                 if not vec_str:
@@ -1200,6 +1329,8 @@ Rispondi SOLO con SAME, RELATED oppure DIFFERENT."""
             if not content or not _case_has_causal_hint(content):
                 continue
             if doc.get("superseded_by") or doc.get("consolidated_into"):
+                continue
+            if doc.get("memory_kind") == "conversation_anchor":
                 continue
             if doc.get("provenance_stale") or int(doc.get("audit_flag") or 0) > 0:
                 continue
