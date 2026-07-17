@@ -49,7 +49,17 @@ _PENDING_RE = re.compile(
 )
 
 _HISTORICAL_RE = re.compile(r"\b(?:in\s+passato|prima|all['’]inizio|era|aveva|precedentemente)\b", re.IGNORECASE)
-_CURRENT_RE = re.compile(r"\b(?:ora|adesso|attualmente|oggi|sta|ancora|già)\b", re.IGNORECASE)
+_CURRENT_RE = re.compile(
+    r"\b(?:ora|adesso|attualmente|oggi|sta|ancora|già|questa\s+mattina|"
+    r"stamattina|stamani|stamane|questa\s+sera|stasera|stanotte)\b",
+    re.IGNORECASE,
+)
+_RELATIVE_TIME_RE = re.compile(
+    r"\b(?:oggi|ieri|domani|questa\s+mattina|stamattina|stamani|stamane|"
+    r"questa\s+sera|stasera|stanotte|poco\s+fa|\d+\s+(?:giorni|ore)\s+fa|"
+    r"settimana\s+scorsa)\b",
+    re.IGNORECASE,
+)
 
 _TECH_RE = re.compile(
     r"\b\d+[.,]?\d*\s*(?:%|g|kg|ml|l|mg|ppm|bar|°[Cc]|rpm|mm|cm|m\b|MPa|KJ/m)\b|"
@@ -107,6 +117,8 @@ def analyze_memory_axes(content: str, *, source: str | None = None, created_at: 
         temporal_markers.append("historical")
     if _CURRENT_RE.search(text):
         temporal_markers.append("current_marker")
+    if _RELATIVE_TIME_RE.search(text):
+        temporal_markers.append("relative_reference")
 
     fact_types: list[str] = []
     if _PERSON_ROLE_RE.search(text):

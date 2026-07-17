@@ -13,6 +13,8 @@ VISSUTE/fattuali in testa (boost), le reflection in coda e limitate. Nessun effe
 non c'è un riferimento temporale. Non cancella reflection, non tocca i loop.
 """
 
+from core.memory_risk import rank_memories_epistemically
+
 # Tre livelli, per "quando è davvero successo":
 # - CONVERSATIONAL: il diario PARLATO/insegnato — created_at ≈ momento in cui è stato detto.
 # - DERIVED: consolidazioni — created_at = momento del CONSOLIDAMENTO (può raccogliere
@@ -33,9 +35,10 @@ def prioritize_window(window_mems: list[dict], max_conv: int = 8,
     reflection/altro in coda e limitati. Preserva l'ordine d'ingresso entro i gruppi (la
     finestra arriva già ordinata per created_at desc).
     """
-    conv = [m for m in window_mems if m.get("source") in CONVERSATIONAL_SOURCES]
-    derived = [m for m in window_mems if m.get("source") in DERIVED_SOURCES]
-    other = [m for m in window_mems
+    usable = rank_memories_epistemically(window_mems)
+    conv = [m for m in usable if m.get("source") in CONVERSATIONAL_SOURCES]
+    derived = [m for m in usable if m.get("source") in DERIVED_SOURCES]
+    other = [m for m in usable
              if m.get("source") not in CONVERSATIONAL_SOURCES
              and m.get("source") not in DERIVED_SOURCES]
     return conv[:max_conv] + derived[:max_derived] + other[:max_other]

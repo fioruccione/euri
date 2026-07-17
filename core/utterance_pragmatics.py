@@ -89,8 +89,8 @@ def is_clarification_request(text: str) -> bool:
 # (chiarimento ovvio → niente latenza) e come fallback se Gemma non risponde.
 def classify_reply_type(question: str, reply: str, *, chat=None, model: str = None) -> str:
     """
-    Ritorna 'ANSWER' o 'CLARIFICATION': la replica dell'utente è una risposta alla
-    domanda di Euri o una richiesta di chiarimento? Capisce, non matcha parole.
+    Ritorna ANSWER, CLARIFICATION o OFF_TOPIC: la replica dell'utente è una risposta
+    alla domanda, una richiesta di chiarimento o la continuazione di un altro filo?
     Fast-path: chiarimento ovvio via regex (zero latenza). Poi Gemma. Fallback su
     regex se Gemma è giù.
     """
@@ -105,10 +105,12 @@ def classify_reply_type(question: str, reply: str, *, chat=None, model: str = No
             "Euri (un assistente) ha fatto una domanda all'utente per validare una sua idea.\n"
             f'DOMANDA DI EURI: "{question or "(una domanda su una sua intuizione)"}"\n'
             f'REPLICA DELL\'UTENTE: "{reply}"\n\n'
-            "La replica è una RISPOSTA alla domanda (conferma, smentita, valutazione, "
-            "opinione, anche parziale) oppure una RICHIESTA DI CHIARIMENTO (l'utente non "
-            "ha capito, chiede di cosa si parla, chiede di rispiegare)?\n"
-            "Rispondi con UNA sola parola: RISPOSTA oppure CHIARIMENTO."
+            "Classifica la replica:\n"
+            "- RISPOSTA: affronta davvero la domanda, anche con conferma, smentita o dubbio.\n"
+            "- CHIARIMENTO: l'utente non ha capito e chiede di rispiegare.\n"
+            "- FUORI_TEMA: continua un altro discorso o non fornisce evidenza sulla domanda.\n"
+            "Una frase non diventa RISPOSTA solo perché contiene parole vagamente analoghe.\n"
+            "Rispondi con UNA sola parola: RISPOSTA, CHIARIMENTO oppure FUORI_TEMA."
         )
         r = chat.chat(
             model=model or config.OLLAMA_MODEL,
@@ -119,9 +121,64 @@ def classify_reply_type(question: str, reply: str, *, chat=None, model: str = No
         out = (r.message.content or "").strip().upper()
         if "CHIARIMENT" in out:
             return "CLARIFICATION"
+        if "FUORI" in out or "OFF_TOPIC" in out:
+            return "OFF_TOPIC"
         if "RISPOST" in out:
             return "ANSWER"
-        logger.debug(f"classify_reply_type: output Gemma ambiguo '{out}' → ANSWER")
+        logger.debug(f"classify_reply_type: output Gemma ambiguo '{out}' → OFF_TOPIC")
     except Exception as e:
-        logger.warning(f"classify_reply_type: Gemma fallito ({e}) → fallback regex")
-    return "ANSWER"
+        logger.warning(f"classify_reply_type: Gemma fallito ({e}) → OFF_TOPIC")
+    return "OFF_TOPIC"
+
+
+# ── Rilettura → cura (READ_BACK pending) ──────────────────────────────────────
+# Cosa vuole l'utente dopo che Euri gli ha riletto una memoria? I prefissi-ack a
+# regex non reggono la varietà del parlato (caso live 14/07: "Tutto perfetto, hai
+# capito benissimo" finiva nel ramo correzione e creava un nodo spurio). Regex solo
+# sui casi ovvi; Gemma per il resto; fallback CONSERVATIVO = OK: nel dubbio la
+# memoria NON si tocca (l'utente può ridirlo esplicito), mai il contrario.
+_READBACK_ACK_RE = re.compile(
+    r"^(ok|va bene|giusto|perfetto|esatto|niente|nulla|corretta|lascia|annulla|basta"
+    r"|tutto\s+(bene|ok|perfetto|giusto|corretto)|bravo|brava|ottimo|benissimo)\b",
+    re.IGNORECASE,
+)
+_READBACK_ADD_RE = re.compile(r"\b(aggiungi|aggiungici|integra|completa\s+con)\b", re.IGNORECASE)
+
+
+def classify_readback_reply(reply: str, *, chat=None, model: str = None) -> str:
+    """Ritorna 'OK', 'CORREZIONE' o 'AGGIUNTA'. Capisce, non matcha parole."""
+    low = (reply or "").strip().lower()
+    if not low or len(low) < 12 or _READBACK_ACK_RE.match(low):
+        return "OK"
+    if _READBACK_ADD_RE.search(low):
+        return "AGGIUNTA"
+    try:
+        if chat is None:
+            from core.ollama_client import chat_client
+            chat = chat_client
+        import config
+        prompt = (
+            "Euri (un'assistente) ha appena riletto all'utente una memoria che aveva "
+            "salvato, chiedendo se c'è da correggere o aggiungere qualcosa.\n"
+            f'REPLICA DELL\'UTENTE: "{reply}"\n\n'
+            "Classifica la replica:\n"
+            "- OK: approva, va bene così, complimenti, nessuna modifica richiesta\n"
+            "- CORREZIONE: dice che qualcosa nella memoria è sbagliato/impreciso e indica come dev'essere\n"
+            "- AGGIUNTA: vuole integrare informazioni nuove nella memoria\n"
+            "Rispondi con UNA sola parola: OK oppure CORREZIONE oppure AGGIUNTA."
+        )
+        r = chat.chat(
+            model=model or config.OLLAMA_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0.0, "num_predict": 8},
+            think=False,
+        )
+        out = (r.message.content or "").strip().upper()
+        if "CORREZ" in out:
+            return "CORREZIONE"
+        if "AGGIUNT" in out:
+            return "AGGIUNTA"
+        return "OK"
+    except Exception as e:
+        logger.warning(f"classify_readback_reply: Gemma fallito ({e}) → OK conservativo")
+        return "OK"

@@ -62,8 +62,16 @@ class FakeBrain:
 def test_looks_like_workflow():
     assert wp.looks_like_workflow("leggi il documento e preparami una mail")
     assert wp.looks_like_workflow("analizza l'allegato e scrivi una risposta")
+    assert wp.looks_like_workflow("riassumi quello che ho detto e scrivimi una mail")
     assert not wp.looks_like_workflow("come stai oggi")
     assert not wp.looks_like_workflow("controlla la cpu")  # un solo verbo
+    assert not wp.looks_like_workflow("leggi e rileggi")  # stessa capability, nessun artefatto
+    # Regressione live 17/07: `legg\w*` scambiava "leggero" per "leggere" e,
+    # insieme a "controllato", faceva creare una bozza non richiesta.
+    assert not wp.looks_like_workflow(
+        "No, non l'ho controllato ma non dovrebbe cambiare nulla. "
+        "Se c'e' un leggero ritiro in piu' sul bancale non cambia l'utilizzo reale."
+    )
     print("ok looks_like_workflow")
 
 

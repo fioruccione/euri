@@ -18,7 +18,6 @@ def get_client() -> redis.Redis:
 def init_indexes(r: redis.Redis):
     """Crea/migra gli indici RediSearch se necessario."""
     _ensure_memory_index(r)
-    _create_todo_index(r)
     _create_note_index(r)
     _create_dream_index(r)
     _create_insight_index(r)
@@ -27,6 +26,7 @@ def init_indexes(r: redis.Redis):
 
 def flush_and_reinit(r: redis.Redis):
     """Cancella tutti i dati euri:* e ricrea gli indici da zero."""
+    # idx:todos resta nella lista di drop per pulire i DB pre-migrazione impegni.
     for idx in ("idx:memories", "idx:todos", "idx:notes", "idx:dreams", "idx:insights"):
         try:
             r.ft(idx).dropindex()
@@ -39,7 +39,6 @@ def flush_and_reinit(r: redis.Redis):
     logger.info(f"Cancellate {len(keys)} chiavi euri:*")
 
     _create_memory_index(r)
-    _create_todo_index(r)
     _create_note_index(r)
     _create_dream_index(r)
     _create_insight_index(r)
@@ -60,18 +59,20 @@ def _has_field(r: redis.Redis, index: str, field_name: str) -> bool:
 
 
 def _ensure_memory_index(r: redis.Redis):
-    """Crea o migra idx:memories per includere VECTOR e campo domain."""
+    """Crea o migra idx:memories includendo ricerca semantica, stato e cronologia."""
     try:
         r.ft("idx:memories").info()
-        # Controlla se ha già VECTOR e domain
-        has_vector = _has_field(r, "idx:memories", "embedding")
-        has_domain = _has_field(r, "idx:memories", "domain")
-        if not has_vector or not has_domain:
-            missing = []
-            if not has_vector:
-                missing.append("VECTOR")
-            if not has_domain:
-                missing.append("domain")
+        required = {
+            "embedding": "VECTOR",
+            "domain": "domain",
+            "status": "status",
+            "memory_kind": "memory_kind",
+            "asserted_at": "asserted_at",
+            "event_start": "event_start",
+            "event_end": "event_end",
+        }
+        missing = [label for field, label in required.items() if not _has_field(r, "idx:memories", field)]
+        if missing:
             logger.info(f"Migrazione idx:memories: aggiunta campi {missing}...")
             r.ft("idx:memories").dropindex()
             _create_memory_index(r)
@@ -87,8 +88,15 @@ def _create_memory_index(r: redis.Redis):
         TagField("$.category", as_name="category"),
         TagField("$.source", as_name="source"),
         TagField("$.domain", as_name="domain"),          # ← NUOVO: domain gating
+        TagField("$.memory_kind", as_name="memory_kind"),
         NumericField("$.created_at", as_name="created_at", sortable=True),
+        NumericField("$.asserted_at", as_name="asserted_at", sortable=True),
+        NumericField("$.event_start", as_name="event_start", sortable=True),
+        NumericField("$.event_end", as_name="event_end", sortable=True),
         NumericField("$.due_at", as_name="due_at", sortable=True),
+        # Impegni assorbiti nel modello memoria: pending/done vive solo sulle
+        # memorie-impegno (le altre hanno status null → fuori da @status:{...}).
+        TagField("$.status", as_name="status"),
         TagField("$.tags[*]", as_name="tags"),
         VectorField(
             "$.embedding",
@@ -103,25 +111,6 @@ def _create_memory_index(r: redis.Redis):
     )
     r.ft("idx:memories").create_index(schema, definition=definition)
     logger.info("Creato indice idx:memories (con VECTOR + domain)")
-
-
-def _create_todo_index(r: redis.Redis):
-    try:
-        r.ft("idx:todos").info()
-    except Exception:
-        definition = IndexDefinition(prefix=["euri:todo:"], index_type=IndexType.JSON)
-        schema = (
-            TextField("$.content", as_name="content"),
-            NumericField("$.due_at", as_name="due_at", sortable=True),
-            # created_at indicizzato: is_duplicate_todo filtra i todo creati OGGI via
-            # @created_at:[...]; senza questo campo la query falla (SEARCH_SYNTAX) e il
-            # dedup dei todo resta silenziosamente inattivo. Coerente con memories/notes.
-            NumericField("$.created_at", as_name="created_at", sortable=True),
-            TagField("$.status", as_name="status"),
-            TagField("$.priority", as_name="priority"),
-        )
-        r.ft("idx:todos").create_index(schema, definition=definition)
-        logger.info("Creato indice idx:todos")
 
 
 def _create_note_index(r: redis.Redis):

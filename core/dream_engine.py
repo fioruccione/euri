@@ -112,6 +112,7 @@ class DreamEngine:
         self._memory_manager = memory  # usato dal Bridge Synthesis
         self._running = False
         self._thread = None
+        self._stop_event = threading.Event()
         self._lock = threading.Lock()
         # Loop 2h — Self-Observation: istanziato solo se memory è disponibile
         # (in test isolati può essere None).
@@ -162,13 +163,20 @@ class DreamEngine:
             if self._running:
                 return
             self._running = True
+            self._stop_event.clear()
             self._thread = threading.Thread(target=self._loop, daemon=True, name="dream-engine")
             self._thread.start()
             logger.info("Dream Engine avviato (background)")
 
-    def stop(self):
+    def stop(self, timeout: float = 8.0):
         with self._lock:
             self._running = False
+            self._stop_event.set()
+            thread = self._thread
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout)
+            if thread.is_alive():
+                logger.warning("Dream Engine: thread non terminato entro la deadline")
             
     def notify_activity(self):
         """Chiamato da voice_daemon ad ogni STT/TTS per resettare l'idle timer."""
@@ -206,10 +214,8 @@ class DreamEngine:
         """Loop principale: controlla l'idle e lancia i sotto-cicli dovuti."""
         while self._running:
             poll = int(getattr(config, "DREAM_ENGINE_POLL_SECONDS", 300))
-            for _ in range(max(1, poll)):
-                if not self._running:
-                    return
-                time.sleep(1)
+            if self._stop_event.wait(max(1, poll)):
+                return
                 
             if self._is_idle():
                 self._run_due_idle_cycles()
@@ -432,7 +438,11 @@ class DreamEngine:
             safe_domain = domain.replace(" ", "\\ ")
             # Prende un campione casuale (Redis stack non ha RANDOM natively in FT.SEARCH, 
             # ma possiamo prendere le prime con sort_by null e limit 10 e poi scegliere)
-            q = Query(f"@domain:{{{safe_domain}}}").paging(0, 10).return_fields("id", "content", "embedding", "created_at")
+            q = (
+                Query(f"@domain:{{{safe_domain}}} -@memory_kind:{{conversation_anchor}}")
+                .paging(0, 10)
+                .return_fields("id", "content", "embedding", "created_at")
+            )
             res = self._r.ft("idx:memories").search(q)
             if not res.docs:
                 return None
@@ -517,6 +527,25 @@ class DreamEngine:
         label_a = f"dominio: {dom_a}" + (f", {age_a}" if age_a else "")
         label_b = f"dominio: {dom_b}" + (f", {age_b}" if age_b else "")
 
+        # Esperimento dream_trace (continuità 2b): residuo di STRATEGIA del ciclo
+        # precedente, iniettato come sezione marcata. Serve a non ripercorrere i TIPI
+        # di ponte già trovati deboli — mai a continuarli. A flag spento: sezione
+        # vuota, prompt bit-identico all'attuale.
+        trace_txt = None
+        if getattr(config, "DREAM_TRACE_ENABLED", False):
+            try:
+                trace_txt = self._r.get("euri:dream_trace:latest")
+            except Exception:
+                trace_txt = None
+        trace_section = ""
+        if trace_txt:
+            trace_section = (
+                "\n[TRACCIA DEL CICLO PRECEDENTE — strategie di connessione già tentate e trovate deboli:\n"
+                f"{trace_txt}\n"
+                "Serve solo a NON ripercorrere: se la connessione che stai per proporre ricade in una di "
+                "queste strategie deboli, cambia tipo di ponte o rispondi NESSUN INSIGHT.]\n"
+            )
+
         prompt = f"""\
 Hai due memorie da domini diversi. Il tuo compito è trovare una connessione operativa non ovvia — qualcosa che non emerge guardando un solo dominio.
 
@@ -525,7 +554,7 @@ Memoria A ({label_a}):
 
 Memoria B ({label_b}):
 "{mem_b['content']}"
-
+{trace_section}
 Se esiste una connessione genuina, rispondi ESATTAMENTE in questo formato (tre righe, niente altro):
 Nel dominio [{dom_a}] succede: [descrivi cosa succede concretamente, con i dettagli specifici della memoria A]
 Nel dominio [{dom_b}] succede: [descrivi cosa succede concretamente, con i dettagli specifici della memoria B]
@@ -545,11 +574,20 @@ REGOLE:
                 think=True,
             )
             text = response.message.content or ""
+            import re
+            # Il CoT va colto PRIMA dello strip: è la materia prima del residuo di
+            # esplorazione. A seconda della versione ollama vive in message.thinking
+            # oppure inline nel blocco <think> del content.
+            raw_cot = ""
+            if getattr(config, "DREAM_TRACE_ENABLED", False):
+                raw_cot = getattr(response.message, "thinking", "") or ""
+                if not raw_cot:
+                    m = re.search(r"<think>(.*?)</think>", text, flags=re.DOTALL)
+                    raw_cot = m.group(1) if m else ""
             if "<channel|>" in text:
                 text = text.split("<channel|>", 1)[-1]
-            import re
             text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-            
+
             status = "discarded"
             insight_content = ""
 
@@ -597,48 +635,440 @@ REGOLE:
                     # convergenza (union dei fratelli assorbiti — vedi promozione).
                     "source_memory_ids": [mem_a["id"], mem_b["id"]],
                 }
+                if getattr(config, "BRIDGE_VALIDITY_ENABLED", False):
+                    # Solo i candidate nuovi entrano nella misura: evita un backfill LLM
+                    # dell'intero archivio e mantiene leggibile il confine sperimentale.
+                    insight_doc["bridge_measurement_eligible"] = True
+                    insight_doc["bridge_policy_version"] = getattr(
+                        config, "BRIDGE_VALIDITY_POLICY_VERSION", "bridge_observer_v1"
+                    )
+                if getattr(config, "DREAM_TRACE_ENABLED", False):
+                    # Braccio sperimentale: candidate nato CON residuo iniettato (True)
+                    # o senza (False: primo ciclo, o residuo scaduto). A flag spento il
+                    # campo non esiste → nessuna differenza col comportamento attuale.
+                    insight_doc["trace_injected"] = bool(trace_txt)
                 self._r.json().set(f"euri:insight:{insight_id}", "$", insight_doc)
-                
+
+            # Il residuo si distilla ANCHE dai sogni scartati: "perché era debole" è
+            # proprio l'informazione che il ciclo dopo deve avere. Fail-open, dopo il
+            # salvataggio del sogno: un fallimento qui non tocca il ciclo.
+            if getattr(config, "DREAM_TRACE_ENABLED", False) and raw_cot:
+                self._update_dream_trace(raw_cot, dom_a, dom_b)
+
             return dream_doc
             
         except Exception as e:
             logger.error(f"Errore generazione sogno: {e}")
             return None
 
+    def _update_dream_trace(self, cot: str, dom_a: str, dom_b: str) -> None:
+        """Esperimento continuità 2b: distilla dal CoT appena scartato un residuo di
+        ESPLORAZIONE (max 5 righe) e lo persiste con TTL su euri:dream_trace:latest.
+
+        Il residuo vive al livello della STRATEGIA ("che tipo di ponte ho provato e
+        perché era debole"), non della coppia di domini: con ~145 domini e pairing
+        random la coppia non si ripete quasi mai, un residuo per-coppia sarebbe inerte.
+        Povero di proposito: troppo ricco → il ciclo dopo converge invece di esplorare
+        (ruminazione). think=False: il thinking consumerebbe num_predict e tornerebbe
+        vuoto (failure noto, caso synthesize_lesson). Il modello del sogno è già caldo
+        in VRAM → chiamata economica. NON è una memoria: niente embedding, niente
+        dominio, mai nel retrieval. Fail-open: non rompe mai il sogno."""
+        try:
+            if not cot or len(cot.strip()) < 80:
+                return
+            # NB 13/07 sera: la v1 di questo prompt aveva 3 etichette d'esempio → il
+            # modello le pappagallava a ogni ciclo, e la traccia iniettata nel sogno
+            # rientrava dal CoT nel residuo (eco a punto fisso, quasi-verbatim tra
+            # cicli su domini diversi). Ora: niente esempi, ignorare esplicitamente
+            # la traccia precedente, e "NIENTE DA SEGNALARE" se non c'è esplorazione
+            # vera (meglio nessun residuo di un residuo finto).
+            prompt = (
+                f"Hai appena cercato una connessione tra i domini '{dom_a}' e '{dom_b}'. "
+                "Questo è il tuo ragionamento grezzo:\n\n"
+                f"{cot[:6000]}\n\n"
+                "Riassumi in MASSIMO 5 righe i tentativi di collegamento che HAI FATTO in "
+                "QUESTO ragionamento e perché non reggevano. Regole:\n"
+                "- il TIPO di ponte descrivilo con parole tue, prese dal ragionamento vero — "
+                "niente etichette generiche di repertorio;\n"
+                "- se nel ragionamento compare una [TRACCIA DEL CICLO PRECEDENTE], IGNORALA: "
+                "non riassumerla, non riusarne etichette o frasi;\n"
+                "- niente contenuti specifici dei due domini, niente insight finale;\n"
+                "- una riga per tentativo: 'ho provato <tipo di ponte>: debole perché <ragione>'.\n"
+                "Se in questo ragionamento non hai esplorato strade alternative reali, "
+                "rispondi solo: NIENTE DA SEGNALARE."
+            )
+            resp = self._ollama_chat(
+                model=config.DREAM_OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.2, "num_predict": 400},
+                think=False,
+            )
+            text = resp.message.content or ""
+            if "<channel|>" in text:
+                text = text.split("<channel|>", 1)[-1]
+            import re as _re
+            text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL).strip()
+            if "NIENTE DA SEGNALARE" in text.upper():
+                return  # nessuna esplorazione vera → non sovrascrivere (il TTL smaltisce)
+            lines = [ln.strip() for ln in text.splitlines() if ln.strip()][:5]
+            residue = "\n".join(lines)
+            if residue:
+                self._r.setex("euri:dream_trace:latest",
+                              getattr(config, "DREAM_TRACE_TTL_S", 48 * 3600), residue)
+                # contenuto nel log: la chiave si sovrascrive a ogni ciclo, il log è
+                # l'unica storia dei residui — serve al check pre-registrato "leggi
+                # ~10 residui" (ESPERIMENTO_DREAM_TRACE.md, criterio 4)
+                logger.info(f"Dream trace aggiornata ({len(lines)} righe): "
+                            f"{residue[:500].replace(chr(10), ' | ')}")
+        except Exception as e:
+            logger.debug(f"dream_trace non aggiornata (non-critico): {e}")
+
     # ── Loop 2c: Insight e Promozione ──────────────────────────────────────
 
-    def _llm_judge_same_insight(self, content_a: str, content_b: str) -> bool:
+    def _llm_judge_same_insight(self, content_a: str, content_b: str):
         """
-        Zona grigia: chiede a Gemma (con thinking) se due insight esprimono
-        lo stesso principio strutturale, anche se formulati diversamente.
-        Il vettore MiniLM è superficiale; il judge ragiona sul significato profondo.
+        Decide in modo conservativo se due candidate esprimono lo stesso claim.
+
+        Il vettore serve soltanto per la shortlist: anche una distanza zero passa da
+        qui. True = SAME; False = RELATED/DIFFERENT; None = risposta non valida o
+        errore. Il chiamante tratta None fail-closed e non conta la convergenza.
         """
         prompt = f"""\
-Analizza questi due insight generati da processi di ragionamento indipendenti.
+Sei un giudice conservativo di equivalenza semantica. Analizza due insight generati
+da processi di ragionamento indipendenti.
 
 Insight A: "{content_a}"
 Insight B: "{content_b}"
 
-Esprimono lo stesso principio strutturale o la stessa analogia profonda,
-anche se formulati con parole diverse?
+Classificali così:
+- SAME: stesso meccanismo operativo o causale e stesso tipo di conseguenza concreta,
+  anche se applicati a domini diversi o formulati con parole diverse.
+- RELATED: condividono tema, obiettivo, lessico, forma o un'analogia generica, ma il
+  meccanismo operativo differisce oppure non è abbastanza specificato.
+- DIFFERENT: claim e meccanismi differenti.
 
-Rispondi SOLO con SÌ o NO."""
+Il template ripetuto "Nel dominio... / La connessione operativa..." e la semplice
+presenza di controllo, ottimizzazione, dati o prevenzione NON sono prove di SAME.
+Non giudicare qui la verità delle premesse: valuta soltanto l'equivalenza del claim.
+
+Rispondi SOLO con SAME, RELATED oppure DIFFERENT."""
         try:
             response = self._ollama_chat(
                 model=config.DREAM_OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                options={"temperature": 0, "num_predict": 1500},
+                options={"temperature": 0, "num_predict": 5000},
                 think=True,
             )
             text = response.message.content or ""
             if "<channel|>" in text:
                 text = text.split("<channel|>", 1)[-1]
-            import re
             text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-            return text.strip().upper().startswith(("SÌ", "SI", "YES"))
+            match = re.fullmatch(r"(SAME|RELATED|DIFFERENT)\.?", text.upper())
+            if not match:
+                logger.debug(f"Dream Engine: judge convergenza non parsabile: {text[:80]!r}")
+                return None
+            return match.group(1) == "SAME"
         except Exception as e:
             logger.debug(f"Errore LLM judge insight: {e}")
+            return None
+
+    def _convergence_judge_cache_key(self, id_a: str, content_a: str,
+                                     id_b: str, content_b: str) -> str:
+        """Chiave simmetrica e content-addressed: un edit invalida il verdetto."""
+        pair = sorted((
+            (str(id_a), hashlib.sha256((content_a or "").encode("utf-8")).hexdigest()),
+            (str(id_b), hashlib.sha256((content_b or "").encode("utf-8")).hexdigest()),
+        ))
+        raw = json.dumps(pair, ensure_ascii=True, separators=(",", ":"))
+        digest = hashlib.sha256(raw.encode("ascii")).hexdigest()
+        version = getattr(config, "CONVERGENCE_POLICY_VERSION", "claim_judge_v2")
+        return f"euri:convergence:judge:{version}:{digest}"
+
+    def _cached_same_insight_judgement(self, id_a: str, content_a: str,
+                                       id_b: str, content_b: str,
+                                       *, allow_model_call: bool):
+        """Ritorna (verdetto, model_called, cache_hit).
+
+        `verdetto` è True/False se disponibile, None se il budget è esaurito o il
+        modello fallisce. Gli errori non vengono cacheati, così un ciclo futuro può
+        riprovare; SAME e NOT_SAME sono deterministici per la policy versionata.
+        """
+        key = self._convergence_judge_cache_key(id_a, content_a, id_b, content_b)
+        try:
+            cached = self._r.get(key)
+            if isinstance(cached, (bytes, bytearray)):
+                cached = cached.decode()
+            if cached in {"SAME", "NOT_SAME"}:
+                return cached == "SAME", False, True
+        except Exception as e:
+            logger.debug(f"Dream Engine: cache judge non letta: {e}")
+
+        if not allow_model_call:
+            return None, False, False
+
+        verdict = self._llm_judge_same_insight(content_a, content_b)
+        if verdict is not None:
+            try:
+                ttl = getattr(config, "CONVERGENCE_JUDGE_CACHE_TTL_S", 30 * 86400)
+                self._r.setex(key, ttl, "SAME" if verdict else "NOT_SAME")
+            except Exception as e:
+                logger.debug(f"Dream Engine: cache judge non scritta: {e}")
+        return verdict, True, False
+
+    def _ensure_premise_fidelity(self, insight_key: str) -> bool:
+        """Risveglio lucido — FASE MISURA (additiva: NON decide nulla): quanto le due
+        premesse del sogno sono FEDELI alle memorie sorgente da cui è nato — l'atto-parola
+        applicato ai sogni: il sogno ha detto la verità sulle proprie fonti?
+
+        Misurato UNA volta per candidate e cacheato sul doc: `premise_fidelity` 0..1
+        (min dei due lati: la connessione poggia su ENTRAMBE le premesse) + nota +
+        dettaglio A/B. Candidate senza provenienza (pre-23/06) o con sorgenti scadute →
+        None = NON-VERIFICABILE (≠ infedele). Il valore viaggia nella convergence trace
+        per la correlazione offline coi verdetti external_reaction. Ritorna True solo se
+        ha speso una chiamata LLM ora (per il budget per-ciclo). Fail-open."""
+        if not getattr(config, "PREMISE_FIDELITY_ENABLED", True):
             return False
+        try:
+            g = lambda p, d=None: (self._r.json().get(insight_key, p) or [d])[0]
+            if g("$.premise_fidelity", "assente") != "assente":
+                return False  # già valutata (anche None = non-verificabile marcato)
+
+            def _mark_unverifiable(reason: str):
+                self._r.json().set(insight_key, "$.premise_fidelity", None)
+                self._r.json().set(insight_key, "$.premise_fidelity_note", reason)
+
+            srcs = g("$.source_memory_ids") or []
+            content = (g("$.content") or "").strip()
+            if len(srcs) < 2 or not content:
+                _mark_unverifiable("non verificabile: provenienza assente (candidate pre-23/06)")
+                return False
+            src_texts = []
+            for sid in srcs[:2]:
+                data = self._r.json().get(sid, "$.content")
+                src_texts.append(((data or [None])[0] or "").strip())
+            if not all(src_texts):
+                _mark_unverifiable("non verificabile: memorie sorgente scadute/mancanti")
+                return False
+
+            prompt = (
+                "Un sogno ha generato questa connessione tra due domini:\n\n"
+                f"{content[:1200]}\n\n"
+                "Le due memorie REALI da cui è nato dicono:\n"
+                f"MEMORIA A: \"{src_texts[0][:700]}\"\n"
+                f"MEMORIA B: \"{src_texts[1][:700]}\"\n\n"
+                "Valuta la FEDELTÀ: le righe \"Nel dominio [...] succede:\" descrivono ciò "
+                "che le memorie dicono DAVVERO, o aggiungono/distorcono fatti (numeri "
+                "cambiati, capacità inventate, attribuzioni sbagliate)? Non giudicare la "
+                "qualità della connessione, solo la fedeltà delle premesse alle fonti.\n"
+                "Rispondi ESATTAMENTE in questo formato (tre righe, niente altro):\n"
+                "FEDELTA_A: SI oppure PARZIALE oppure NO\n"
+                "FEDELTA_B: SI oppure PARZIALE oppure NO\n"
+                "NOTA: <max una riga: cosa è ricamato/distorto, oppure 'premesse fedeli'>"
+            )
+            resp = self._ollama_chat(
+                model=config.DREAM_OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0, "num_predict": 300},
+                think=False,
+            )
+            text = resp.message.content or ""
+            if "<channel|>" in text:
+                text = text.split("<channel|>", 1)[-1]
+            import re as _re
+            text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL).strip()
+            scores = {"SI": 1.0, "SÌ": 1.0, "PARZIALE": 0.5, "NO": 0.0}
+            m_a = _re.search(r"FEDELTA_A:\s*(SI|SÌ|PARZIALE|NO)", text, _re.IGNORECASE)
+            m_b = _re.search(r"FEDELTA_B:\s*(SI|SÌ|PARZIALE|NO)", text, _re.IGNORECASE)
+            m_n = _re.search(r"NOTA:\s*(.+)", text)
+            if not (m_a and m_b):
+                _mark_unverifiable("valutazione non parsabile")
+                return True  # la chiamata LLM è stata spesa comunque
+            fa = scores[m_a.group(1).upper()]
+            fb = scores[m_b.group(1).upper()]
+            self._r.json().set(insight_key, "$.premise_fidelity", min(fa, fb))
+            self._r.json().set(insight_key, "$.premise_fidelity_ab",
+                               f"{m_a.group(1).upper()}/{m_b.group(1).upper()}")
+            self._r.json().set(insight_key, "$.premise_fidelity_note",
+                               (m_n.group(1).strip()[:300] if m_n else ""))
+            logger.info(f"Fedeltà premesse {insight_key.split(':')[-1][:8]}: "
+                        f"{min(fa, fb)} ({m_a.group(1)}/{m_b.group(1)})")
+            return True
+        except Exception as e:
+            logger.debug(f"premise_fidelity fallita (non-critica): {e}")
+            return False
+
+    @staticmethod
+    def _parse_bridge_validity_response(raw: str) -> tuple[str, float, str] | None:
+        """Parsa il verdetto osservativo sul ponte, senza prendere decisioni."""
+        if not raw:
+            return None
+        text = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        match = re.search(
+            r"BRIDGE:\s*(SUPPORTED|HYPOTHESIS|FORCED)\b", text, re.IGNORECASE
+        )
+        if not match:
+            return None
+        verdict = match.group(1).lower()
+        score = {"supported": 1.0, "hypothesis": 0.5, "forced": 0.0}[verdict]
+        note_match = re.search(r"NOTE:\s*(.+)", text, re.IGNORECASE)
+        note = note_match.group(1).strip()[:400] if note_match else ""
+        return verdict, score, note
+
+    def _ensure_bridge_validity(self, insight_key: str) -> bool:
+        """Misura read-only della qualita' epistemica della connessione.
+
+        `premise_fidelity` controlla se le prime due righe rispettano le fonti; questa
+        misura guarda invece la terza riga. Un'interpretazione nuova non e' un errore:
+        viene distinta tra deduzione sostenuta, ipotesi verificabile e ponte forzato.
+        Il risultato viene salvato e tracciato, ma NON influenza la promozione.
+        """
+        if not getattr(config, "BRIDGE_VALIDITY_ENABLED", False):
+            return False
+        try:
+            g = lambda p, d=None: (self._r.json().get(insight_key, p) or [d])[0]
+            if not g("$.bridge_measurement_eligible", False):
+                return False
+            if g("$.bridge_validity", "assente") != "assente":
+                return False
+
+            srcs = g("$.source_memory_ids") or []
+            content = (g("$.content") or "").strip()
+            if len(srcs) < 2 or not content:
+                self._r.json().set(insight_key, "$.bridge_validity", "unknown")
+                self._r.json().set(insight_key, "$.bridge_validity_score", None)
+                self._r.json().set(
+                    insight_key, "$.bridge_validity_note", "fonti o contenuto mancanti"
+                )
+                return False
+
+            source_texts = []
+            for sid in srcs[:2]:
+                data = self._r.json().get(sid, "$.content")
+                source_texts.append(((data or [None])[0] or "").strip())
+            if not all(source_texts):
+                self._r.json().set(insight_key, "$.bridge_validity", "unknown")
+                self._r.json().set(insight_key, "$.bridge_validity_score", None)
+                self._r.json().set(
+                    insight_key, "$.bridge_validity_note", "memorie sorgente mancanti"
+                )
+                return False
+
+            prompt = f"""\
+Valuta la TERZA RIGA di un insight rispetto alle due memorie reali da cui nasce.
+Non devi eliminare la creativita': una lettura personale o nuova e' ammessa, ma va
+distinta da un fatto gia' sostenuto dalle fonti.
+
+MEMORIA A: "{source_texts[0][:900]}"
+MEMORIA B: "{source_texts[1][:900]}"
+
+INSIGHT: "{content[:1800]}"
+
+Classifica il ponte cosi':
+- SUPPORTED: l'effetto pratico segue dalle due fonti senza introdurre meccanismi,
+  eventi, strumenti o causalita' mancanti.
+- HYPOTHESIS: collegamento coerente e verificabile, ma richiede almeno una premessa
+  non ancora presente nelle fonti. E' un'interpretazione utile, non un fatto.
+- FORCED: collegamento arbitrario, generico, sproporzionato oppure fondato su dettagli
+  o causalita' inventati.
+
+Rispondi ESATTAMENTE con due righe:
+BRIDGE: SUPPORTED oppure HYPOTHESIS oppure FORCED
+NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
+            response = self._ollama_chat(
+                model=config.DREAM_OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0, "num_predict": 5000},
+                think=True,
+            )
+            parsed = self._parse_bridge_validity_response(response.message.content or "")
+            if not parsed:
+                self._r.json().set(insight_key, "$.bridge_validity", "unknown")
+                self._r.json().set(insight_key, "$.bridge_validity_score", None)
+                self._r.json().set(
+                    insight_key, "$.bridge_validity_note", "valutazione non parsabile"
+                )
+                return True
+
+            verdict, score, note = parsed
+            self._r.json().set(insight_key, "$.bridge_validity", verdict)
+            self._r.json().set(insight_key, "$.bridge_validity_score", score)
+            self._r.json().set(insight_key, "$.bridge_validity_note", note)
+            logger.info(
+                f"Qualita ponte {insight_key.split(':')[-1][:8]}: "
+                f"{verdict} ({score:.1f})"
+            )
+            return True
+        except Exception as e:
+            logger.debug(f"bridge_validity fallita (non-critica): {e}")
+            return False
+
+    def _trace_convergence(self, doc, convergences, n_certain, neighbor_trace, outcome,
+                           *, n_vector_shortlisted=0, n_judge_confirmed=0,
+                           n_judge_deferred=0, judge_trace=None):
+        """Instrumentazione ADDITIVA (read-only sulla decisione): registra la convergenza
+        AL MOMENTO DELLA DECISIONE su euri:convergence:trace, per correlarla OFFLINE col
+        recall futuro — test convergenza↔uso su dati NON selezionati (promossi E scartati),
+        che il pool dei soli promossi non permette (selection bias).
+        Non altera nessuna decisione. Fail-safe: non rompe mai il ciclo. Disattivabile via
+        config.CONVERGENCE_TRACE_ENABLED. neighbor_trace = [(id, score, content[:400])] per
+        ricalcolare offline qualsiasi metrica (es. claim-embedding + soglia relativa)."""
+        if not getattr(config, "CONVERGENCE_TRACE_ENABLED", True):
+            return
+        try:
+            # below_threshold è ri-valutato ogni ciclo per lo stesso candidate → dedup per
+            # (seed, convergences) con marcatore TTL: una entry per LIVELLO di convergenza
+            # raggiunto (traiettoria), non a ogni ciclo. Le decisioni TERMINALI
+            # (promoted/denied_*) si loggano SEMPRE — sono l'evento raro e prezioso per la
+            # correlazione convergenza↔uso, che il rumore below_threshold non deve sfrattare.
+            if outcome == "below_threshold":
+                seen_key = f"euri:convergence:seen:{doc.id}:{convergences}"
+                if not self._r.set(seen_key, "1", nx=True, ex=7 * 86400):
+                    return
+            import json as _json
+            g = lambda p, d=None: (self._r.json().get(doc.id, p) or [d])[0]
+            self._r.xadd("euri:convergence:trace", {
+                "ts": repr(time.time()),
+                "seed_id": str(doc.id),
+                "domain": f"{g('$.domain_a')}×{g('$.domain_b')}",
+                "created_at": repr(g("$.created_at")),
+                "demoted_once": "1" if g("$.demoted_once", False) else "0",
+                "recalled_count_at_decision": str(g("$.recalled_count", 0) or 0),
+                "convergences": str(convergences),
+                # `n_certain` resta per confrontare la vecchia policy: conta quanti
+                # vicini sarebbero passati automaticamente con score<0.15, ma dalla v2
+                # non modifica più `convergences`.
+                "n_certain": str(n_certain),
+                "promotion_policy": getattr(config, "CONVERGENCE_POLICY_VERSION",
+                                             "vector_auto_v1"),
+                "n_vector_shortlisted": str(n_vector_shortlisted),
+                "n_judge_confirmed": str(n_judge_confirmed),
+                "n_judge_deferred": str(n_judge_deferred),
+                "outcome": outcome,
+                "seed_content": (getattr(doc, "content", "") or "")[:600],
+                "neighbors": _json.dumps(neighbor_trace, ensure_ascii=False)[:4000],
+                "judge_trace": _json.dumps(judge_trace or [], ensure_ascii=False)[:4000],
+                # Braccio esperimento dream_trace: "1"/"0" se il candidate è nato
+                # con/senza residuo iniettato; "" per i candidate pre-esperimento.
+                # È il join che permette l'audit baseline/trattamento SULLA trace,
+                # senza log paralleli.
+                "trace_injected": {True: "1", False: "0"}.get(g("$.trace_injected"), ""),
+                # Risveglio lucido (fase misura): fedeltà premesse↔sorgenti al momento
+                # della decisione; "" = non ancora valutata o non-verificabile.
+                "premise_fidelity": ("" if g("$.premise_fidelity") is None
+                                     else str(g("$.premise_fidelity"))),
+                # Misura separata della terza riga: osservativa, mai usata qui
+                # per promuovere o bloccare il candidate.
+                "bridge_validity": str(g("$.bridge_validity", "") or ""),
+                "bridge_validity_score": (
+                    "" if g("$.bridge_validity_score") is None
+                    else str(g("$.bridge_validity_score"))
+                ),
+                "bridge_validity_note": str(
+                    g("$.bridge_validity_note", "") or ""
+                )[:400],
+            }, maxlen=50000, approximate=True)
+        except Exception as e:
+            logger.debug(f"trace convergence fallito (non-critico): {e}")
 
     def _evaluate_insights(self):
         """Valuta i candidate insights per la promozione (convergenza)."""
@@ -653,11 +1083,21 @@ Rispondi SOLO con SÌ o NO."""
             # Per ogni candidato, controlla se ci sono altri candidati molto simili
             # (Convergenza = la stessa intuizione è emersa da sogni indipendenti)
             promoted_count = 0
-            
+            # Risveglio lucido (fase misura): budget di valutazioni-fedeltà per ciclo,
+            # così il backfill dei candidate esistenti si ammortizza su più cicli leggeri
+            fidelity_budget = getattr(config, "PREMISE_FIDELITY_BUDGET", 5)
+            bridge_budget = getattr(config, "BRIDGE_VALIDITY_BUDGET", 3)
+            judge_budget = getattr(config, "CONVERGENCE_JUDGE_BUDGET", 6)
+
             for doc in res.docs:
                 # Potrebbe essere già stato eliminato come duplicato in un'iterazione precedente
                 if not self._r.exists(doc.id):
                     continue
+
+                if fidelity_budget > 0 and self._ensure_premise_fidelity(doc.id):
+                    fidelity_budget -= 1
+                if bridge_budget > 0 and self._ensure_bridge_validity(doc.id):
+                    bridge_budget -= 1
 
                 vec_str = getattr(doc, "embedding", None)
                 if not vec_str:
@@ -681,27 +1121,68 @@ Rispondi SOLO con SÌ o NO."""
                 )
                 res_sim = self._r.ft("idx:insights").search(q_sim, query_params={"vec": vec_bytes})
 
-                # Conta quanti hanno score molto alto (distanza cosine bassa)
-                # < 0.15 → convergenza certa (vettori quasi identici)
-                # 0.15–0.40 → zona grigia: il vettore MiniLM è superficiale,
-                #              chiediamo al LLM se il principio profondo è lo stesso
+                # Il vettore MiniLM propone soltanto una shortlist. La vecchia policy
+                # auto-contava score<0.15, ma il template comune produce distanze
+                # 0.12–0.14 anche tra claim scollegati: ogni coppia passa ora dal judge.
                 stored_cc = self._r.json().get(doc.id, "$.convergence_count")
                 convergences = int(stored_cc[0]) if stored_cc else 1
                 similar_ids = []
+                neighbor_trace = []   # (id, score, content[:400]) — instrumentazione offline
+                judge_trace = []      # (id, score, esito, cache_hit)
+                n_certain = 0         # metrica legacy: sarebbero passati nella policy v1
+                n_vector_shortlisted = 0
+                n_judge_confirmed = 0
+                n_judge_deferred = 0
+                max_distance = getattr(
+                    config, "CONVERGENCE_VECTOR_SHORTLIST_MAX_DISTANCE", 0.40
+                )
 
                 for sim in res_sim.docs:
                     if sim.id == doc.id:
                         continue  # Salta se stesso
                     score = float(sim.score)
+                    sim_content = getattr(sim, "content", None)
+                    neighbor_trace.append((str(sim.id), round(score, 4), (sim_content or "")[:400]))
                     if score < 0.15:
+                        n_certain += 1
+                    if score >= max_distance:
+                        judge_trace.append((str(sim.id), round(score, 4),
+                                            "OUTSIDE_SHORTLIST", False))
+                        continue
+                    n_vector_shortlisted += 1
+                    if not sim_content:
+                        judge_trace.append((str(sim.id), round(score, 4),
+                                            "MISSING_CONTENT", False))
+                        continue
+
+                    verdict, model_called, cache_hit = self._cached_same_insight_judgement(
+                        str(doc.id), doc.content, str(sim.id), sim_content,
+                        allow_model_call=judge_budget > 0,
+                    )
+                    if model_called:
+                        judge_budget -= 1
+                    if verdict is True:
+                        logger.debug(
+                            f"Dream Engine: judge LLM ha confermato convergenza "
+                            f"(score={score:.2f}, cache={cache_hit})"
+                        )
                         convergences += 1
+                        n_judge_confirmed += 1
                         similar_ids.append(sim.id)
-                    elif score < 0.40:
-                        sim_content = getattr(sim, "content", None)
-                        if sim_content and self._llm_judge_same_insight(doc.content, sim_content):
-                            logger.debug(f"Dream Engine: judge LLM ha confermato convergenza (score={score:.2f})")
-                            convergences += 1
-                            similar_ids.append(sim.id)
+                        label = "SAME"
+                    elif verdict is False:
+                        label = "NOT_SAME"
+                    else:
+                        n_judge_deferred += 1
+                        label = "ERROR" if model_called else "DEFERRED_BUDGET"
+                    judge_trace.append((str(sim.id), round(score, 4), label, cache_hit))
+
+                trace_meta = {
+                    "n_vector_shortlisted": n_vector_shortlisted,
+                    "n_judge_confirmed": n_judge_confirmed,
+                    "n_judge_deferred": n_judge_deferred,
+                    "judge_trace": judge_trace,
+                }
                         
                 # Se abbiamo abbastanza convergenze, promuoviamo!
                 if convergences >= config.DREAM_INSIGHT_MIN_CONVERGENCES:
@@ -717,6 +1198,8 @@ Rispondi SOLO con SÌ o NO."""
                             f"Dream Engine: promozione bloccata (formato non operativo) — "
                             f"{doc.id[-8:]} con {convergences} convergenze"
                         )
+                        self._trace_convergence(doc, convergences, n_certain, neighbor_trace,
+                                                "denied_format", **trace_meta)
                         continue
 
                     # Gate di ri-promozione (V2.19, opzione b): la PRIMA promozione è
@@ -742,6 +1225,8 @@ Rispondi SOLO con SÌ o NO."""
                         pulse_emit(self._r, "insight", "intero", "repromotion_denied",
                                    payload={"id": str(doc.id)[-12:], "convergences": convergences},
                                    salience=0.45)
+                        self._trace_convergence(doc, convergences, n_certain, neighbor_trace,
+                                                "denied_repromotion", **trace_meta)
                         continue
 
                     # Provenienza cumulativa: prima di cancellare i candidate assorbiti,
@@ -777,6 +1262,8 @@ Rispondi SOLO con SÌ o NO."""
                                    "convergences": convergences,
                                },
                                salience=0.65)
+                    self._trace_convergence(doc, convergences, n_certain, neighbor_trace,
+                                            "promoted", **trace_meta)
                     promoted_count += 1
                     
                     # Scrivi nel vault di Obsidian
@@ -786,7 +1273,12 @@ Rispondi SOLO con SÌ o NO."""
                             write_insight(doc_promoted[0])
                     except Exception as e:
                         logger.debug(f"Errore sync insight su Obsidian: {e}")
-                        
+
+                else:
+                    # Convergenza sotto soglia: nessuna promozione (il ramo più comune).
+                    self._trace_convergence(doc, convergences, n_certain, neighbor_trace,
+                                            "below_threshold", **trace_meta)
+
         except Exception as e:
             logger.error(f"Errore valutazione insights: {e}")
 
@@ -837,6 +1329,8 @@ Rispondi SOLO con SÌ o NO."""
             if not content or not _case_has_causal_hint(content):
                 continue
             if doc.get("superseded_by") or doc.get("consolidated_into"):
+                continue
+            if doc.get("memory_kind") == "conversation_anchor":
                 continue
             if doc.get("provenance_stale") or int(doc.get("audit_flag") or 0) > 0:
                 continue

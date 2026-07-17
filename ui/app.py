@@ -1,8 +1,12 @@
 import sys
 import os
+import inspect
 import queue as _queue
+import re
+import shutil
 from pathlib import Path
 import json
+import time
 
 # Aggiunge la root directory di Euri al sys.path per permettere gli import
 sys.path.append(str(Path(__file__).parent.parent))
@@ -179,9 +183,10 @@ executor = get_executor()
 executor.brain = brain
 executor.memory = memory_manager
 if brain._episode_callback is None:
-    brain._episode_callback = lambda summary: memory_manager.save_memory(
+    brain._episode_callback = lambda summary, temporal_context: memory_manager.save_memory(
         summary,
-        category="episodio", source="episode"
+        category="episodio", source="episode",
+        memory_kind="conversation_episode", temporal_context=temporal_context,
     )
 
 # Layout generale: 2 colonne (Main a sinistra, Terminale a destra)
@@ -190,7 +195,7 @@ main_col, term_col = st.columns([2.5, 1.5], gap="large")
 # Sidebar
 st.sidebar.title("Euri Control Room 🧠")
 st.sidebar.markdown("---")
-page = st.sidebar.radio("Navigazione", ["🎙️ Voce", "Telemetria & Welford", "Silent Chat", "RAG Explorer"])
+page = st.sidebar.radio("Navigazione", ["🎙️ Voce", "Telemetria & Welford", "Silent Chat", "RAG Explorer", "🪪 Volti & Accessi"])
 
 st.sidebar.markdown("---")
 st.sidebar.info(f"**Modello:** {config.OLLAMA_MODEL}\n\n**Vault:** {config.OBSIDIAN_VAULT_PATH}")
@@ -423,7 +428,7 @@ with main_col:
             ins_count = 0
             
         try:
-            todo_count = r.ft("idx:todos").info()["num_docs"]
+            todo_count = len(memory_manager.get_pending_todos())
         except Exception:
             todo_count = 0
             
@@ -476,19 +481,330 @@ with main_col:
         st.title("💬 Silent Chat")
         st.markdown("Chatta con Euri usando la tastiera. Nessun Voice Daemon, no TTS. La sessione LLM è condivisa.")
 
+        _CHAT_UPLOAD_TYPES = [
+            "pdf", "docx", "pptx", "txt", "md", "csv", "tsv", "json",
+            "xlsx", "xls", "ods", "png", "jpg", "jpeg", "webp", "bmp",
+            "gif", "tiff",
+        ]
+        _SUPPORTED_UPLOAD_EXTS = {f".{ext}" for ext in _CHAT_UPLOAD_TYPES}
+        _SPREADSHEET_EXTS = {".xlsx", ".xls", ".ods"}
+        _LOCAL_FILE_PATH_RE = re.compile(
+            rf"(?P<path>(?:~|/)[^\n\r]*?\.({'|'.join(_CHAT_UPLOAD_TYPES)}))",
+            re.IGNORECASE,
+        )
+
+        def _chat_upload_dir() -> Path:
+            data_dir = Path(config.CODE_RUNNER_INPUT_DIR).expanduser()
+            data_dir.mkdir(parents=True, exist_ok=True)
+            return data_dir
+
+        def _chat_upload_registry_path() -> Path:
+            return _chat_upload_dir() / ".silent_chat_uploads.json"
+
+        def _is_inside_dir(path: Path, parent: Path) -> bool:
+            try:
+                path.resolve().relative_to(parent.resolve())
+                return True
+            except Exception:
+                return False
+
+        def _safe_upload_name(raw_name: str) -> str:
+            name = Path(raw_name or "upload").name
+            original = Path(name)
+            stem = "".join(
+                ch if ch.isalnum() or ch in (" ", ".", "_", "-") else "_"
+                for ch in original.stem
+            ).strip(" ._")
+            suffix = "".join(
+                ch for ch in original.suffix.lower()
+                if ch.isalnum() or ch == "."
+            )[:16]
+            return f"{(stem or 'upload')[:80]}{suffix}"
+
+        def _unique_upload_path(data_dir: Path, filename: str) -> Path:
+            target = data_dir / filename
+            if not target.exists():
+                return target
+            original = Path(filename)
+            stamp = time.strftime("%Y%m%d_%H%M%S")
+            for i in range(1, 100):
+                suffix = f"_{stamp}" if i == 1 else f"_{stamp}_{i}"
+                candidate = data_dir / f"{original.stem}{suffix}{original.suffix}"
+                if not candidate.exists():
+                    return candidate
+            return data_dir / f"{original.stem}_{stamp}_{int(time.time())}{original.suffix}"
+
+        def _load_chat_upload_registry() -> list[dict]:
+            registry = _chat_upload_registry_path()
+            if not registry.exists():
+                return []
+            try:
+                data = json.loads(registry.read_text(encoding="utf-8"))
+                return data if isinstance(data, list) else []
+            except Exception:
+                return []
+
+        def _write_chat_upload_registry(entries: list[dict]) -> None:
+            registry = _chat_upload_registry_path()
+            if not entries:
+                registry.unlink(missing_ok=True)
+                return
+            registry.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        def _cleanup_chat_uploads(
+            *, delete_all: bool = False, keep_paths: set[Path] | None = None
+        ) -> int:
+            data_dir = _chat_upload_dir()
+            now = time.time()
+            ttl = getattr(config, "SILENT_CHAT_UPLOAD_TTL_SECONDS", 24 * 3600)
+            keep_resolved = {p.resolve() for p in (keep_paths or set()) if p.exists()}
+            kept = []
+            removed = 0
+            for entry in _load_chat_upload_registry():
+                raw_path = entry.get("path") or ""
+                path = Path(raw_path).expanduser()
+                uploaded_at = float(entry.get("uploaded_at") or 0)
+                expired = ttl > 0 and uploaded_at and now - uploaded_at > ttl
+                if not raw_path or not _is_inside_dir(path, data_dir):
+                    continue
+                if path.exists() and path.resolve() in keep_resolved:
+                    kept.append(entry)
+                    continue
+                if delete_all or expired:
+                    try:
+                        path.unlink(missing_ok=True)
+                        removed += 1
+                    except Exception:
+                        kept.append(entry)
+                elif path.exists():
+                    kept.append(entry)
+            _write_chat_upload_registry(kept)
+            return removed
+
+        def _save_chat_uploads(uploaded_files) -> tuple[list[dict], list[str]]:
+            if not uploaded_files:
+                return [], []
+            data_dir = _chat_upload_dir()
+            _cleanup_chat_uploads(delete_all=True)
+            saved, errors = [], []
+            for upload in uploaded_files:
+                original_name = Path(getattr(upload, "name", "upload")).name
+                safe_name = _safe_upload_name(original_name)
+                target = _unique_upload_path(data_dir, safe_name)
+                try:
+                    target.write_bytes(upload.getvalue())
+                except Exception as e:
+                    errors.append(f"{original_name}: {e}")
+                    continue
+                saved.append({
+                    "name": target.name,
+                    "original_name": original_name,
+                    "path": str(target),
+                    "uploaded_at": time.time(),
+                    "size": target.stat().st_size,
+                })
+            if saved:
+                _write_chat_upload_registry(saved)
+            return saved, errors
+
+        def _allowed_pasted_path_roots() -> list[Path]:
+            roots = [
+                Path.home() / "Scrivania",
+                _chat_upload_dir(),
+            ]
+            unique = []
+            for root in roots:
+                root = root.expanduser()
+                if root not in unique:
+                    unique.append(root)
+            return unique
+
+        def _clean_local_path_candidate(raw_path: str) -> Path:
+            text = raw_path.strip().strip("\"'`").rstrip(".,;:!?)]}")
+            if text.startswith("file://"):
+                text = text[7:]
+            return Path(text).expanduser()
+
+        def _extract_local_path_candidates(text: str) -> list[Path]:
+            candidates = []
+            raw_candidates = []
+            stripped = text.strip()
+            if stripped.startswith(("/", "~", "file://")):
+                raw_candidates.append(stripped)
+            raw_candidates.extend(m.group(1) for m in re.finditer(r"['\"]([^'\"]+)['\"]", text))
+            raw_candidates.extend(m.group("path") for m in _LOCAL_FILE_PATH_RE.finditer(text))
+
+            seen = set()
+            for raw in raw_candidates:
+                path = _clean_local_path_candidate(raw)
+                key = str(path)
+                if key in seen or path.suffix.lower() not in _SUPPORTED_UPLOAD_EXTS:
+                    continue
+                seen.add(key)
+                candidates.append(path)
+            return candidates
+
+        def _is_path_only_prompt(text: str, paths: list[Path]) -> bool:
+            if len(paths) != 1:
+                return False
+            try:
+                return _clean_local_path_candidate(text).resolve(strict=False) == paths[0].resolve(strict=False)
+            except Exception:
+                return False
+
+        def _stage_existing_chat_paths(paths: list[Path]) -> tuple[list[dict], list[str]]:
+            if not paths:
+                return [], []
+
+            data_dir = _chat_upload_dir()
+            allowed_roots = _allowed_pasted_path_roots()
+            sources, errors = [], []
+
+            for path in paths:
+                try:
+                    source = path.resolve(strict=True)
+                except Exception:
+                    errors.append(f"{path}: file non trovato")
+                    continue
+                if not source.is_file():
+                    errors.append(f"{source}: non e' un file")
+                    continue
+                if source.suffix.lower() not in _SUPPORTED_UPLOAD_EXTS:
+                    errors.append(f"{source.name}: formato non supportato")
+                    continue
+                if not any(_is_inside_dir(source, root) for root in allowed_roots):
+                    roots = ", ".join(str(r) for r in allowed_roots)
+                    errors.append(f"{source}: percorso non ammesso (root consentite: {roots})")
+                    continue
+                sources.append(source)
+
+            if not sources:
+                return [], errors
+
+            keep_paths = {p for p in sources if _is_inside_dir(p, data_dir)}
+            _cleanup_chat_uploads(delete_all=True, keep_paths=keep_paths)
+
+            saved = []
+            for source in sources:
+                try:
+                    if _is_inside_dir(source, data_dir):
+                        target = source
+                    else:
+                        target = _unique_upload_path(data_dir, _safe_upload_name(source.name))
+                        shutil.copy2(source, target)
+                except Exception as e:
+                    errors.append(f"{source.name}: copia non riuscita ({e})")
+                    continue
+
+                saved.append({
+                    "name": target.name,
+                    "original_name": source.name,
+                    "path": str(target),
+                    "uploaded_at": time.time(),
+                    "size": target.stat().st_size,
+                })
+
+            if saved:
+                _write_chat_upload_registry(saved)
+            return saved, errors
+
+        def _split_chat_value(value) -> tuple[str, list]:
+            if value is None:
+                return "", []
+            if isinstance(value, str):
+                return value, []
+            if isinstance(value, dict):
+                text = value.get("text") or value.get("message") or ""
+                files = value.get("files") or []
+                return str(text), list(files)
+            text = getattr(value, "text", None)
+            if text is None:
+                text = getattr(value, "message", "")
+            files = getattr(value, "files", None) or []
+            return str(text or ""), list(files)
+
+        def _compose_upload_prompt(user_text: str, uploads: list[dict]) -> str:
+            names = ", ".join(u["name"] for u in uploads)
+            has_spreadsheet = any(Path(u["name"]).suffix.lower() in _SPREADSHEET_EXTS for u in uploads)
+            action = "Elabora" if has_spreadsheet else "Leggi e analizza"
+            upload_request = f"{action} i file appena caricati: {names}."
+            user_text = (user_text or "").strip()
+            if user_text:
+                return f"{user_text}\n\n{upload_request}"
+            return upload_request
+
         # Inizializza cronologia messaggi
         if "messages" not in st.session_state:
             st.session_state.messages = []
         if "chat_log_offset" not in st.session_state:
             st.session_state.chat_log_offset = len(memory_manager.get_today_conversation())
+        if "sc_upload_key" not in st.session_state:
+            st.session_state.sc_upload_key = 0
+
+        _cleanup_chat_uploads()
 
         # Mostra messaggi precedenti
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
 
+        current_uploads = _load_chat_upload_registry()
+        if current_uploads:
+            names = ", ".join(entry.get("name", "?") for entry in current_uploads)
+            c_upload_info, c_upload_del = st.columns([4, 1])
+            with c_upload_info:
+                st.caption(f"File chat temporanei: {names}")
+            with c_upload_del:
+                if st.button("Elimina", key="sc_delete_uploads", use_container_width=True):
+                    removed = _cleanup_chat_uploads(delete_all=True)
+                    st.success(f"File rimossi: {removed}")
+                    st.rerun()
+
+        _chat_input_supports_files = "accept_file" in inspect.signature(st.chat_input).parameters
+        if _chat_input_supports_files:
+            chat_value = st.chat_input(
+                "Scrivi a Euri o trascina file qui...",
+                accept_file="multiple",
+                file_type=_CHAT_UPLOAD_TYPES,
+                max_upload_size=getattr(config, "SILENT_CHAT_UPLOAD_MAX_MB", 200),
+            )
+            prompt, incoming_uploads = _split_chat_value(chat_value)
+        else:
+            incoming_uploads = st.file_uploader(
+                "Trascina qui file da analizzare",
+                type=_CHAT_UPLOAD_TYPES,
+                accept_multiple_files=True,
+                key=f"sc_upload_{st.session_state.sc_upload_key}",
+            )
+            prompt = st.session_state.pop("sc_pending_upload_prompt", "")
+            if not prompt:
+                prompt = st.chat_input("Scrivi a Euri...")
+
+        if incoming_uploads:
+            saved_uploads, upload_errors = _save_chat_uploads(incoming_uploads)
+            for err in upload_errors:
+                st.error(f"Upload non riuscito: {err}")
+            if saved_uploads:
+                prompt = _compose_upload_prompt(prompt, saved_uploads)
+                if not _chat_input_supports_files:
+                    st.session_state.sc_pending_upload_prompt = prompt
+                    st.session_state.sc_upload_key += 1
+                    st.rerun()
+            elif not prompt:
+                st.stop()
+
+        if prompt and not incoming_uploads:
+            pasted_paths = _extract_local_path_candidates(prompt)
+            if pasted_paths:
+                staged_paths, path_errors = _stage_existing_chat_paths(pasted_paths)
+                for err in path_errors:
+                    st.error(f"Path locale non acquisito: {err}")
+                if staged_paths:
+                    user_text = "" if _is_path_only_prompt(prompt, pasted_paths) else prompt
+                    prompt = _compose_upload_prompt(user_text, staged_paths)
+
         # Input utente
-        if prompt := st.chat_input("Scrivi a Euri..."):
+        if prompt:
             # ── Curiosity loop (Euri Pulse, ramo efferente) — versione scritta ───
             # Stessa orchestrazione della voce (core.reaction, una sola verità), ma
             # via tastiera: Stefano non deve parlare ad alta voce (zero costo sociale,
@@ -502,7 +818,9 @@ with main_col:
 
             _pending = st.session_state.pop("sc_awaiting", None)
             if _pending is not None:
-                st.session_state.messages.append({"role": "user", "content": prompt})
+                st.session_state.messages.append({
+                    "role": "user", "content": prompt, "observed_at": time.time()
+                })
                 with st.chat_message("user"):
                     st.markdown(prompt)
                 with st.chat_message("assistant"):
@@ -513,7 +831,9 @@ with main_col:
                         except Exception as e:
                             ack = f"(Non sono riuscito a fissare la lezione: {e})"
                     st.markdown(ack)
-                st.session_state.messages.append({"role": "assistant", "content": ack})
+                st.session_state.messages.append({
+                    "role": "assistant", "content": ack, "observed_at": time.time()
+                })
                 memory_manager.log_conversation("Stefano", prompt)
                 memory_manager.log_conversation("Euri", ack)
                 st.stop()
@@ -521,14 +841,18 @@ with main_col:
             if _rx.BRIEFING_HINT_RE.search(prompt):
                 _is_brief, _topic = _rx.understand_briefing(prompt)
                 if _is_brief:
-                    st.session_state.messages.append({"role": "user", "content": prompt})
+                    st.session_state.messages.append({
+                        "role": "user", "content": prompt, "observed_at": time.time()
+                    })
                     with st.chat_message("user"):
                         st.markdown(prompt)
                     with st.chat_message("assistant"):
                         with st.spinner("Euri cerca un sogno da chiederti…"):
                             text, insight = _rx.run_briefing(memory_manager.r, embedder, _topic)
                         st.markdown(text)
-                    st.session_state.messages.append({"role": "assistant", "content": text})
+                    st.session_state.messages.append({
+                        "role": "assistant", "content": text, "observed_at": time.time()
+                    })
                     memory_manager.log_conversation("Stefano", prompt)
                     memory_manager.log_conversation("Euri", text)
                     if insight is not None:
@@ -553,7 +877,9 @@ with main_col:
                 )
 
             # Mostra utente
-            st.session_state.messages.append({"role": "user", "content": prompt})
+            st.session_state.messages.append({
+                "role": "user", "content": prompt, "observed_at": time.time()
+            })
             with st.chat_message("user"):
                 st.markdown(prompt)
 
@@ -562,7 +888,11 @@ with main_col:
                 from core.rag_context import build_rag_context, infer_context_mode
                 _context_mode = infer_context_mode(prompt, default="chat")
                 _recent_hist = [
-                    {"role": m["role"], "content": m["content"]}
+                    {
+                        "role": m["role"],
+                        "content": m["content"],
+                        "observed_at": m.get("observed_at"),
+                    }
                     for m in st.session_state.messages[:-1]
                 ]
                 _rag = build_rag_context(
@@ -613,7 +943,11 @@ with main_col:
                             # History recente per il risolutore SAVE semantico (Gradino 1):
                             # escludo il "memorizza…" corrente (messages[-1]).
                             recent_history = [
-                                {"role": _m["role"], "content": _m["content"]}
+                                {
+                                    "role": _m["role"],
+                                    "content": _m["content"],
+                                    "observed_at": _m.get("observed_at"),
+                                }
                                 for _m in st.session_state.messages[:-1]
                             ]
                             save_res = save_memory_command(
@@ -638,7 +972,11 @@ with main_col:
                         # solo quando la pre-gate cheap scatta; specific_search → invariato.
                         from core.retrieval_strategy import augment_context_with_ids
                         _recent_hist = [
-                            {"role": m["role"], "content": m["content"]}
+                            {
+                                "role": m["role"],
+                                "content": m["content"],
+                                "observed_at": m.get("observed_at"),
+                            }
                             for m in st.session_state.messages
                         ]
                         context_full, _, augment_ids = augment_context_with_ids(
@@ -660,7 +998,9 @@ with main_col:
                     st.markdown(response)
 
             # Salva risposta
-            st.session_state.messages.append({"role": "assistant", "content": response})
+            st.session_state.messages.append({
+                "role": "assistant", "content": response, "observed_at": time.time()
+            })
 
             # Log della conversazione — alimenta il passive learner
             memory_manager.log_conversation("Stefano", prompt)
@@ -678,19 +1018,32 @@ with main_col:
                         facts = brain.extract_passive_memories(recent_msgs)
                         saved = 0
                         for fact_item in facts:
+                            from core.temporal_context import derive_passive_memory_metadata
                             weak_support = isinstance(fact_item, dict) and fact_item.get("support") == "weak"
                             fact = fact_item.get("content", "") if isinstance(fact_item, dict) else str(fact_item)
+                            metadata = derive_passive_memory_metadata(
+                                fact_item if isinstance(fact_item, dict) else {"content": fact},
+                                recent_msgs,
+                            )
                             clean = validate_payload(fact, "memory")
                             if not clean:
                                 continue
                             if memory_manager.is_duplicate_memory(clean, llm_probe_fn=brain.probe_same_meaning):
                                 continue
-                            mid = memory_manager.save_memory(clean, category="passivo", source="passive", idempotent=True)
-                            if mid and weak_support:
+                            mid = memory_manager.save_memory(
+                                clean,
+                                category="passivo",
+                                source="passive",
+                                idempotent=True,
+                                memory_kind=metadata["memory_kind"],
+                                temporal_context=metadata["temporal_context"],
+                            )
+                            if mid and (weak_support or metadata["memory_kind"] == "conversation_anchor"):
                                 from core.memory_attention import remove_loop2e_candidate
                                 key = f"euri:memory:{mid}"
-                                memory_manager.r.json().set(key, "$.requires_verification", True)
-                                memory_manager.r.json().set(key, "$.passive_support", "tacit_acceptance")
+                                if weak_support:
+                                    memory_manager.r.json().set(key, "$.requires_verification", True)
+                                    memory_manager.r.json().set(key, "$.passive_support", "tacit_acceptance")
                                 remove_loop2e_candidate(memory_manager.r, mid)
                             saved += 1
                         if saved:
@@ -769,16 +1122,17 @@ with main_col:
                 tid = todo.get("id", "")
                 content = todo.get("content", "")
                 due = todo.get("_due_at")
-                priority = todo.get("priority", "media")
                 due_str = due.strftime("%d/%m %H:%M") if due else "nessuna scadenza"
-                badge = "🔴" if priority == "alta" else "🟡" if priority == "media" else "🟢"
 
-                with st.expander(f"{badge} {content[:60]} | {due_str}"):
+                with st.expander(f"⏰ {content[:60]} | {due_str}"):
                     new_content = st.text_input("Contenuto", value=content, key=f"edit_{tid}")
                     c1, c2, c3 = st.columns(3)
                     with c1:
                         if st.button("💾 Salva", key=f"save_{tid}"):
-                            r.json().set(f"euri:todo:{tid}", "$.content", new_content)
+                            # Nota: l'embedding resta quello del contenuto originale;
+                            # per ritocchi minori è accettabile, riscritture profonde
+                            # meglio farle a voce (nuovo impegno).
+                            r.json().set(f"euri:memory:{tid}", "$.content", new_content)
                             st.success("Aggiornato!")
                             st.rerun()
                     with c2:
@@ -788,6 +1142,119 @@ with main_col:
                             st.rerun()
                     with c3:
                         if st.button("🗑️ Elimina", key=f"del_{tid}"):
-                            r.delete(f"euri:todo:{tid}")
+                            r.delete(f"euri:memory:{tid}")
                             st.success("Eliminato!")
                             st.rerun()
+
+    # ── PAGE 4: VOLTI & ACCESSI ──────────────────────────────────────────────────
+    elif page == "🪪 Volti & Accessi":
+        import time as _time
+        import cv2 as _cv2
+        from datetime import datetime as _dt
+
+        st.title("🪪 Volti & Accessi")
+        st.markdown(
+            "Gestione delle persone che Euri **riconosce in faccia**. "
+            "Solo il proprietario abilita l'efferente (Euri che parla per prima); "
+            "gli altri abilitati attivano l'ascolto. Una faccia sconosciuta non fa parlare Euri."
+        )
+        st.warning(
+            "**Il faceprint è un dato biometrico.** Registra solo persone che sanno di essere "
+            "registrate e sono d'accordo — sul posto di lavoro non è un dettaglio (GDPR). "
+            "Resta tutto locale: si salva solo il vettore matematico del volto, mai le foto. "
+            "La rimozione qui sotto revoca ed elimina il dato."
+        )
+
+        @st.cache_resource
+        def get_face_auth():
+            from voice.face_auth import FaceAuth
+            fa = FaceAuth()
+            fa.load()
+            return fa
+
+        @st.cache_resource
+        def get_face_detector():
+            return _cv2.FaceDetectorYN_create(config.FACE_DETECT_MODEL, "", (640, 480), 0.8)
+
+        face_auth = get_face_auth()
+        face_auth.reload_faceprints()
+
+        if not face_auth._recognizer:
+            st.error("Modello SFace non disponibile — controlla FACE_RECOG_MODEL in config.py.")
+        else:
+            # ── Persone registrate ────────────────────────────────────────────
+            st.subheader("Persone registrate")
+            names = face_auth.enrolled_names()
+            if not names:
+                st.info("Nessun faceprint registrato. Il daemon riconosce solo dopo l'enrollment.")
+            for name in names:
+                fpath = Path(config.FACEPRINT_DIR) / f"{name}.npy"
+                created = _dt.fromtimestamp(fpath.stat().st_mtime).strftime("%d/%m/%Y %H:%M") if fpath.exists() else "?"
+                owner_badge = " 👑 proprietario" if name == config.FACE_AUTH_OWNER else ""
+                c1, c2 = st.columns([4, 1])
+                with c1:
+                    st.write(f"**{name}**{owner_badge} — registrato il {created}")
+                with c2:
+                    if st.button("🗑️ Revoca", key=f"face_del_{name}"):
+                        face_auth.remove(name)
+                        st.success(f"Faceprint '{name}' eliminato. Il daemon lo dimentica entro 30 secondi.")
+                        st.rerun()
+
+            # ── Nuovo enrollment ─────────────────────────────────────────────
+            st.markdown("---")
+            st.subheader("Registra una persona")
+            st.caption(
+                "Servono almeno 3 scatti con angolazioni leggermente diverse. "
+                "Un solo volto per scatto. Usa la fotocamera del dispositivo da cui apri "
+                "questa pagina (non entra in conflitto con la webcam del daemon)."
+            )
+
+            new_name = st.text_input("Nome (minuscolo, senza spazi)", key="face_enroll_name").strip().lower()
+            consent = st.checkbox("La persona è informata e d'accordo alla registrazione del suo faceprint.")
+
+            if "face_enroll_embs" not in st.session_state:
+                st.session_state.face_enroll_embs = []
+
+            if new_name and consent:
+                photo = st.camera_input(f"Scatto {len(st.session_state.face_enroll_embs) + 1}",
+                                        key=f"face_cam_{len(st.session_state.face_enroll_embs)}")
+                if photo is not None:
+                    img = _cv2.imdecode(np.frombuffer(photo.getvalue(), np.uint8), _cv2.IMREAD_COLOR)
+                    # Normalizza la dimensione: le foto da browser possono essere enormi
+                    if img.shape[1] > 960:
+                        scale = 960 / img.shape[1]
+                        img = _cv2.resize(img, None, fx=scale, fy=scale)
+                    det = get_face_detector()
+                    det.setInputSize((img.shape[1], img.shape[0]))
+                    _, faces = det.detect(img)
+                    if faces is None or len(faces) == 0:
+                        st.error("Nessun volto rilevato — riprova con più luce, viso frontale.")
+                    elif len(faces) > 1:
+                        st.error("Più volti nello scatto — dev'esserci solo la persona da registrare.")
+                    else:
+                        emb = face_auth.embed(img, faces[0])
+                        if emb is None:
+                            st.error("Volto rilevato ma embedding fallito — riprova.")
+                        else:
+                            st.session_state.face_enroll_embs.append(emb)
+                            st.rerun()
+
+                n = len(st.session_state.face_enroll_embs)
+                if n:
+                    st.progress(min(n / 3, 1.0), text=f"{n} scatti validi raccolti (minimo 3)")
+                c1, c2 = st.columns(2)
+                with c1:
+                    if n >= 3 and st.button(f"💾 Salva faceprint di '{new_name}'"):
+                        if face_auth.enroll_from_embeddings(new_name, st.session_state.face_enroll_embs):
+                            st.session_state.face_enroll_embs = []
+                            st.success(f"'{new_name}' registrato. Il daemon lo riconosce entro 30 secondi.")
+                            _time.sleep(1.5)
+                            st.rerun()
+                        else:
+                            st.error("Salvataggio fallito — riprova.")
+                with c2:
+                    if n and st.button("↩️ Ricomincia gli scatti"):
+                        st.session_state.face_enroll_embs = []
+                        st.rerun()
+            elif new_name and not consent:
+                st.info("Spunta la casella del consenso per procedere con gli scatti.")

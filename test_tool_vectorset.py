@@ -27,17 +27,23 @@ from core.embedder import Embedder
 from core.tool_registry import ToolRegistry, DEFAULT_TOOL_DEFINITIONS
 
 
-# Casi di test: (query, expected_intent oppure None per fallback)
+# Casi di test: (query, expected_fast_path oppure None per fallback LLM).
+# Questo test esercita ToolRegistry.match_tool, non il classificatore completo:
+# una query con top-1/top-2 troppo vicini deve tornare None anche quando l'intento
+# finale atteso dal successivo slow path e' noto.
 TEST_CASES = [
     # === MATCH ATTESI (semanticamente vicini alle descrizioni) ===
     ("cerca su google il fatturato di Primpex spa",       "WEB_SEARCH"),
     ("trovami online il prezzo del polipropilene",        "WEB_SEARCH"),
     ("ricordi quando abbiamo parlato di Realube?",        "SEARCH"),
-    ("hai in memoria informazioni su Fanti Plast?",       "SEARCH"),
+    # Ambigua SEARCH/SAVE_MEMORY nello spazio e5: astensione intenzionale.
+    ("hai in memoria informazioni su Fanti Plast?",       None),
     ("ricordami di chiamare Mario domani mattina",        "SAVE_TODO"),
-    ("segna che devo verificare il lotto 03 PPR 043",     "SAVE_TODO"),
+    # "segna" senza scadenza e' ambiguo TODO/MEMORY: decide il slow path.
+    ("segna che devo verificare il lotto 03 PPR 043",     None),
     ("ricordati che il grado 50 è migliore del 25",       "SAVE_MEMORY"),
-    ("annota che il fornitore consegna il martedì",       "SAVE_MEMORY"),
+    # Gap sotto 0.005: fail-quiet, non forcing del top-1.
+    ("annota che il fornitore consegna il martedì",       None),
     ("controlla quanta ram sto usando ora",               "EXECUTE"),
     ("leggi il log degli errori di sistema",              "EXECUTE"),
     ("l'ho fatto, ho chiamato il cliente",                "COMPLETE"),

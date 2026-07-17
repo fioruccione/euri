@@ -8,5 +8,8 @@ echo "=> Avvio di Euri con LD_LIBRARY_PATH configurato per CUDA 12"
 echo "=> Avvio Streamlit Control Room in background..."
 ./venv/bin/streamlit run ui/app.py --server.fileWatcherType=none > /dev/null 2>&1 &
 
+echo "=> Avvio Interocezione Hardware in background..."
+./venv/bin/python hardware_monitor.py &
+
 echo "=> Avvio Voice Daemon..."
 ./venv/bin/python voice_daemon.py

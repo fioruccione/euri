@@ -18,6 +18,7 @@ LOOP2E_ZSET = "euri:idx:loop2e:candidates"
 LOOP2E_MIN_RECALLED = 3
 LOOP2E_RECENCY_WINDOW_S = 30 * 86400
 LOOP2E_SKIP_SOURCES = {"loop2e", "campus", "web", "reflection"}
+NON_FACTUAL_MEMORY_KINDS = {"conversation_anchor"}
 
 
 def memory_key(memory_id: str) -> str:
@@ -34,6 +35,8 @@ def is_loop2e_candidate(doc: dict[str, Any], *, now_ts: float | None = None) -> 
     if not doc:
         return False
     if doc.get("source") in LOOP2E_SKIP_SOURCES:
+        return False
+    if doc.get("memory_kind") in NON_FACTUAL_MEMORY_KINDS:
         return False
     if doc.get("superseded_by") or doc.get("consolidated_into"):
         return False
@@ -86,8 +89,8 @@ def loop2e_attention_score(doc: dict[str, Any]) -> float:
     return rc * 10_000_000_000.0 + lr + tie
 
 
-def update_loop2e_candidate_index(r, doc: dict[str, Any]) -> None:
-    """Aggiorna lo ZSET per una singola memoria. Fail-open: non solleva."""
+def update_loop2e_candidate_index(r, doc: dict[str, Any], *, strict: bool = False) -> None:
+    """Aggiorna lo ZSET; fail-open per default, solleva se il caller deve ritentare."""
     if r is None or not doc:
         return
     mid = bare_memory_id(doc.get("id", ""))
@@ -99,6 +102,8 @@ def update_loop2e_candidate_index(r, doc: dict[str, Any]) -> None:
         else:
             r.zrem(LOOP2E_ZSET, mid)
     except Exception as e:
+        if strict:
+            raise
         logger.debug(f"Loop2e attention index update fallito per {mid[:8]}: {e}")
 
 

@@ -71,6 +71,11 @@ class VAD:
 
         return False, None
 
+    @property
+    def is_speaking(self) -> bool:
+        """True dal trigger di inizio voce fino alla chiusura del segmento."""
+        return self._is_speaking
+
     def reset(self):
         """Reset stato interno (usa dopo ogni segmento processato)."""
         if self._iterator:

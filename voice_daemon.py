@@ -23,6 +23,7 @@ from voice.vad import VAD
 from voice.stt import STT
 from voice.tts import TTS
 from voice.visual_gate import VisualGate
+from voice.face_auth import FaceAuth
 from voice.speaker_auth import SpeakerAuth, ENROLL_UTTERANCES
 
 from core.pulse import pulse_emit
@@ -44,6 +45,12 @@ from core.embedder import Embedder
 from core.honesty import scrub_unbacked_save_claim
 from core.act_word_check import emit_unbacked_action_commitment, scrub_unbacked_action_claim
 from core.ollama_client import chat_client
+from core.cognitive_present import (
+    CognitivePresent,
+    InteractionChannel,
+    InteractionPhase,
+)
+from core.worker_supervisor import WorkerSupervisor
 from agent.executor import Executor, build_injected_context
 
 
@@ -129,9 +136,10 @@ class VoiceDaemon:
         self.memory = MemoryManager(self.r, embedder=self.embedder)
         self.brain = Brain()
         Brain._shared_instance = self.brain  # Condivisa col CodeRunner
-        self.brain._episode_callback = lambda summary: self.memory.save_memory(
+        self.brain._episode_callback = lambda summary, temporal_context: self.memory.save_memory(
             summary,
-            category="episodio", source="episode"
+            category="episodio", source="episode",
+            memory_kind="conversation_episode", temporal_context=temporal_context,
         )
         self.executor = Executor()
         self.executor.brain  = self.brain
@@ -139,11 +147,16 @@ class VoiceDaemon:
         self.vad = VAD()
         self.stt = STT()
         self.tts = TTS()
-        self.visual_gate = VisualGate()
+        self.face_auth = FaceAuth()
+        self.visual_gate = VisualGate(face_auth=self.face_auth)
         self.speaker_auth = SpeakerAuth()
         self._enroll_mode = False
         self._enroll_segments: list = []
         self._running = False
+        self._workers = WorkerSupervisor()
+        self._stop_event = self._workers.stop_event
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_done = False
         self._missed_reminders: list[str] = []  # promemoria scattati mentre eri assente
         self._clock_emitted: set = set()         # fallback in-memory se Redis è giù; primario = set Redis (sopravvive ai restart)
         self._teach_recovery_mode = False        # in attesa di risposta su recovery TEACH
@@ -156,6 +169,8 @@ class VoiceDaemon:
         self._teach_pending_save = ""
         self._web_pending: dict = {}  # contesto ultima ricerca web (per "approfondisci" / "salva")
         self._pending_todo: _PendingState | None = None   # todo in attesa di conferma (timeout 60s)
+        self._pending_reschedule: _PendingState | None = None  # impegno da spostare, manca la data (timeout 120s)
+        self._pending_readback: _PendingState | None = None   # memoria riletta, attesa correzione/aggiunta (180s)
         self._pending_write: _PendingState | None = None  # richiesta scrittura file in attesa (timeout 120s)
         self._awaiting_reaction: _PendingState | None = None  # insight su cui Euri ha chiesto conferma, in attesa della reazione di Stefano (timeout 300s)
         self._last_created_file: str | None = None  # ultimo file creato da Euri (per "aprilo")
@@ -169,16 +184,35 @@ class VoiceDaemon:
         self._audit_confirm_mode = False       # Euri ha fatto l'audit, attende sì/no per cancellare
         self._audit_rumore: list[dict] = []    # memorie segnate come rumore dall'ultimo audit
         self._last_activity_ts: float = 0.0   # timestamp ultima attività vocale (per passive learner)
-        self._passive_history_len: int = 0     # lunghezza history già analizzata
+        self._last_auth_voice_ts: float = 0.0  # ultima voce AUTENTICATA e accettata dal guard — prova
+                                               # d'identità per l'efferente quando la faccia non basta.
+                                               # NON aggiornato dal TTS di Euri (niente auto-rinfresco).
+        self._passive_last_seq: int = 0        # sequence ID journal già analizzato
         self._consolidation_last_run: float = 0.0  # timestamp ultimo Loop 2a
         self._brain_lock = threading.Lock()  # protegge brain tra main loop e mobile worker
         self._first_visual_activation = True  # True finché il VisualGate non vede l'utente per la prima volta
         self._tts_lock   = threading.Lock()  # protegge il modello TTS da accessi concorrenti
+        # Dal primo frame VAD fino alla fine di STT/dispatch. Initiative non deve
+        # confondere "testo non ancora disponibile" con un confine di turno libero.
+        self._voice_input_inflight = threading.Event()
+        self.present = CognitivePresent(
+            conversation_window_s=getattr(config, "CONVERSATION_LEASE_SECONDS", 45),
+            focus_window_s=getattr(config, "CONVERSATION_FOCUS_SECONDS", 5 * 60),
+            max_focus_turns=getattr(config, "CONVERSATION_FOCUS_MAX_TURNS", 4),
+        )
+        self._initiative_focus_cache: dict[tuple[str, int], str] = {}
 
         # Impegni verbali → azioni reali: (pattern sulla risposta di Euri, callable(text, reply))
         self._IMPLICIT_ACTIONS = [
             (re.compile(r'\b(controllo|verifico|guardo)\b.{0,30}\b(todo|task|scadenz)', re.IGNORECASE),
              lambda t, r: self._handle_list_today("controlla i todo")),
+            # Claim di riprogrammazione non backed (caso Poseidon 13/07: "Impegno
+            # aggiornato" detto da CHAT senza tool) → esegue lo spostamento VERO,
+            # pescando la data dal testo utente o, in fallback, dal claim stesso.
+            (re.compile(r'\bimpegno\s+(aggiornato|spostato|riprogrammato)\b|'
+                        r'\bho\s+(spostato|riprogrammato|aggiornato)\b.{0,30}\b(impegno|promemoria|scadenza)',
+                        re.IGNORECASE),
+             lambda t, r: self._handle_reschedule(t, reply_hint=r)),
             (re.compile(r'\b(leggo|guardo|controllo)\b.{0,20}\blog\b', re.IGNORECASE),
              lambda t, r: self._handle_execute("leggi il log")),
             (re.compile(r'\b(controllo|verifico)\b.{0,20}\b(cpu|ram|disco|spazio)\b', re.IGNORECASE),
@@ -191,6 +225,7 @@ class VoiceDaemon:
         self.vad.load()
         self.stt.load()
         self.tts.load()
+        self.face_auth.load()
         self.visual_gate.start()
         self.speaker_auth.load()
         self.embedder.load()
@@ -258,6 +293,15 @@ class VoiceDaemon:
         if not text:
             return
         self._last_activity_ts = time.time()
+        present_started = False
+        try:
+            self.present.begin_speech(
+                channel=InteractionChannel.VOICE,
+                opens_conversation=True,
+            )
+            present_started = True
+        except Exception as e:
+            logger.debug(f"Cognitive Present: begin_speech ignorato: {e}")
         logger.info(f"Euri: {text}")
         self.visual_gate.notify_activity()
         self.r.set("euri:audio:lock", "1", ex=300)
@@ -287,6 +331,14 @@ class VoiceDaemon:
                 logger.critical(f"Fallback TTS fallito: {tts_err} — Euri muto")
         finally:
             self.r.delete("euri:audio:lock")
+            ended_at = time.time()
+            # La durata del playback non consuma la lease e non anticipa Initiative.
+            self._last_activity_ts = ended_at
+            if present_started:
+                try:
+                    self.present.finish_speech(at=ended_at)
+                except Exception as e:
+                    logger.debug(f"Cognitive Present: finish_speech ignorato: {e}")
         if interrupted:
             self._speak_simple("Ok.")
 
@@ -296,6 +348,15 @@ class VoiceDaemon:
         if not text:
             return
         logger.info(f"Euri: {text}")
+        present_started = False
+        try:
+            self.present.begin_speech(
+                channel=InteractionChannel.VOICE,
+                opens_conversation=True,
+            )
+            present_started = True
+        except Exception as e:
+            logger.debug(f"Cognitive Present: begin_speech simple ignorato: {e}")
         self.r.set("euri:audio:lock", "1", ex=10)
         try:
             samples, sr = self.tts.synthesize(text, lang=lang)
@@ -309,6 +370,13 @@ class VoiceDaemon:
                 pass
         finally:
             self.r.delete("euri:audio:lock")
+            ended_at = time.time()
+            self._last_activity_ts = ended_at
+            if present_started:
+                try:
+                    self.present.finish_speech(at=ended_at)
+                except Exception as e:
+                    logger.debug(f"Cognitive Present: finish_speech simple ignorato: {e}")
 
     def _interrupt_listener(self, stop_event: threading.Event) -> None:
         """
@@ -394,13 +462,54 @@ class VoiceDaemon:
     def _handle_shutdown(self, text: str = ""):
         logger.info("Shutdown vocale richiesto")
         self._speak_simple("Chiudo.")
+        self._request_shutdown()
+
+    def _wait_or_stop(self, seconds: float) -> bool:
+        """True se e' stato richiesto lo stop durante l'attesa."""
+        return self._stop_event.wait(seconds)
+
+    def background_health(self) -> dict[str, dict]:
+        """Snapshot diagnostico dei worker, incluso il Dream Engine."""
+        health = self._workers.health()
+        if hasattr(self, "dream_engine"):
+            thread = getattr(self.dream_engine, "_thread", None)
+            health["dream-engine"] = {
+                "state": "running" if getattr(self.dream_engine, "_running", False) else "stopped",
+                "alive": bool(thread and thread.is_alive()),
+            }
+        return health
+
+    def _request_shutdown(self) -> None:
         self._running = False
-        self.visual_gate.stop()
+        self._stop_event.set()
         try:
             import sounddevice as _sd
             _sd.stop()
         except Exception:
             pass
+
+    def _shutdown_components(self) -> None:
+        """Teardown idempotente con join dei loop prima dell'uscita del processo."""
+        with self._shutdown_lock:
+            if self._shutdown_done:
+                return
+            self._shutdown_done = True
+
+        self._request_shutdown()
+        components = []
+        if hasattr(self, "dream_engine"):
+            components.append(("dream-engine", self.dream_engine.stop))
+        if hasattr(self, "obsidian_sync"):
+            components.append(("obsidian", self.obsidian_sync.stop_watcher))
+        components.append(("visual-gate", self.visual_gate.stop))
+        for name, stop in components:
+            try:
+                stop()
+            except Exception as exc:
+                logger.warning(f"Shutdown {name} fallito: {exc}")
+        alive = self._workers.shutdown(timeout=8)
+        if alive:
+            logger.warning(f"Shutdown: worker non terminati entro deadline: {', '.join(alive)}")
 
     def _play_beep(self):
         """Segnale acustico breve — usato quando l'utente non è in frame ma c'è un reminder."""
@@ -572,15 +681,20 @@ class VoiceDaemon:
         self.memory.log_conversation("Euri", text)
         self._speak(text)
         if insight is not None:
-            self._awaiting_reaction = _PendingState({"insight": insight, "question": text}, timeout=1800)
+            question_id = f"briefing:{insight.get('id') or time.time()}"
+            self._awaiting_reaction = _PendingState(
+                {"insight": insight, "question": text, "question_id": question_id},
+                timeout=300,
+            )
+            self.present.set_pending_question(question_id, text)
 
-    def _handle_reaction(self, text: str):
+    def _handle_reaction(self, text: str) -> bool:
         """Stefano ha risposto alla domanda di curiosità. La risposta è la verità ESTERNA
         che fonda o smentisce l'insight: la cattura (sintesi della lezione su Qwen, lenta)
         gira in BACKGROUND per non bloccare la voce. Euri dà solo un cenno naturale."""
         pending = self._awaiting_reaction
         if not pending:
-            return
+            return False
 
         # Guardia chiarimento: se Stefano CHIEDE invece di rispondere ("di quale
         # insight parli?", "non capisco cosa intendi"), NON consumare il turno come
@@ -588,19 +702,41 @@ class VoiceDaemon:
         # → requires_verification, finding 26/06). Classificatore pragmatico via Gemma
         # (non regex: capisce il fraseggio nuovo). Euri ri-nomina l'insight e RI-ARMA.
         from core.utterance_pragmatics import classify_reply_type
-        if classify_reply_type(pending.data.get("question", ""), text) == "CLARIFICATION":
+        reply_type = classify_reply_type(pending.data.get("question", ""), text)
+        if reply_type == "CLARIFICATION":
             self.memory.log_conversation("Stefano", text)
             ins = pending.data.get("insight", {})
             question = pending.data.get("question", "")
-            self._awaiting_reaction = _PendingState({"insight": ins, "question": question}, timeout=1800)
+            question_id = pending.data.get("question_id") or f"reaction:{ins.get('id') or time.time()}"
+            self._awaiting_reaction = _PendingState(
+                {"insight": ins, "question": question, "question_id": question_id},
+                timeout=300,
+            )
+            self.present.set_pending_question(question_id, question)
             content = (ins.get("content") or "").strip()
-            snippet = content[:220] if content else "il pensiero che ti ho appena condiviso"
+            if content:
+                # L'insight ha struttura fissa a 3 righe e la TESI è la terza: il vecchio
+                # taglio cieco [:220] la mangiava (due volte dal vivo, 02-03/07) e Stefano
+                # finiva per "confermare" un claim mai pronunciato — che la cattura della
+                # reazione poi registrava come validato. Si legge TUTTO: la reazione può
+                # fondare solo ciò che è stato davvero detto.
+                snippet = " ".join(line.strip() for line in content.splitlines() if line.strip())
+            else:
+                snippet = "il pensiero che ti ho appena condiviso"
             reply = f"Mi riferivo a questo: {snippet}. Secondo te regge, o è una forzatura?"
             self.memory.log_conversation("Euri", reply)
             self._speak(reply)
-            return
+            return True
+
+        if reply_type == "OFF_TOPIC":
+            question_id = pending.data.get("question_id")
+            self._awaiting_reaction = None
+            self.present.clear_pending_question(question_id)
+            logger.info("Reaction pending chiusa: replica OFF_TOPIC, turno restituito al dispatch")
+            return False
 
         self._awaiting_reaction = None
+        self.present.clear_pending_question(pending.data.get("question_id"))
         insight = pending.data["insight"]
         self.memory.log_conversation("Stefano", text)
 
@@ -613,6 +749,7 @@ class VoiceDaemon:
 
         threading.Thread(target=_bg, daemon=True).start()
         self._speak("Ah, buono a sapersi. Ci rifletto su.")
+        return True
 
     def _handle_save_note(self, text: str):
         from core.validator import validate_payload
@@ -630,7 +767,9 @@ class VoiceDaemon:
         self.memory.log_conversation("Euri", reply)
         self._speak(reply)
 
-    def _handle_search(self, text: str):
+    def _handle_search(
+        self, text: str, *, trusted: bool = False, observed_at: float | None = None
+    ):
         """SEARCH path allineato a CHAT: usa _build_context per evitare
         l'allucinazione di assenza ('non ce l'ho' su memorie che invece esistono).
         Prima della V2.16 questo handler usava solo search_memories+search_notes
@@ -667,7 +806,9 @@ class VoiceDaemon:
         )
         context = (context + "\n\n" if context else "") + search_hint
         with self._brain_lock:
-            reply = self.brain.respond(text, context=context)
+            reply = self.brain.respond(
+                text, context=context, trusted=trusted, observed_at=observed_at
+            )
         reply = scrub_unbacked_save_claim(reply)  # pavimento di onestà: SEARCH non salva
         emit_unbacked_action_commitment(self.r, reply, set(), channel="voice_search")
         reply = scrub_unbacked_action_claim(reply, set())  # SEARCH non agisce: niente claim d'azione
@@ -697,6 +838,232 @@ class VoiceDaemon:
         self.memory.log_conversation("Euri", reply)
         self._speak(reply)
 
+    # Ore in lettere ("alle nove" → "alle 9:00") e rumore da togliere dalla query
+    # di targeting (verbi del gesto + riferimenti temporali: identificano l'AZIONE,
+    # non l'impegno). Forme strutturali dell'italiano, nessun idioma di settore.
+    _HOUR_WORDS = {"una": 1, "due": 2, "tre": 3, "quattro": 4, "cinque": 5, "sei": 6,
+                   "sette": 7, "otto": 8, "nove": 9, "dieci": 10, "undici": 11,
+                   "dodici": 12, "tredici": 13, "quattordici": 14, "quindici": 15,
+                   "sedici": 16, "diciassette": 17, "diciotto": 18, "diciannove": 19,
+                   "venti": 20, "ventuno": 21, "ventidue": 22, "ventitre": 23}
+    _RESCHED_NOISE = {"sposta", "spostalo", "spostala", "spostami", "rimanda", "rimandalo",
+                      "rimandala", "posticipa", "rinvia", "riprogramma", "impegno",
+                      "promemoria", "scadenza", "appuntamento", "aggiornato", "spostato",
+                      "riprogrammato", "spostata", "riprogrammata", "lunedì", "martedì",
+                      "mercoledì", "giovedì", "venerdì", "sabato", "domenica", "domani",
+                      "dopodomani", "oggi", "stasera", "stamattina", "settimana",
+                      "settimane", "giorno", "giorni", "mese", "mesi", "prossimo",
+                      "prossima", "mattina", "pomeriggio", "sera", "adesso", "subito"}
+
+    @classmethod
+    def _extract_reschedule_date(cls, text: str):
+        """extract_due_date + tre normalizzazioni per gli spostamenti:
+        'rimandalo DI una settimana' → 'tra una settimana'; 'alle nove' → 'alle 9:00'
+        (forme strutturali italiane, non idiomi di settore); giorno senza orario →
+        default 09:00 (una scadenza a mezzanotte non è mai l'intento di un impegno)."""
+        if not text:
+            return None
+        from core.time_parser import extract_due_date
+        t = re.sub(r"\b(?:di|per)\s+((?:un[oa]?|\d+)\s+(?:giorn[io]|settiman[ae]|or[ae]|mes[ei]))\b",
+                   r"tra \1", text, flags=re.IGNORECASE)
+        t = re.sub(r"\b(alle?)\s+(" + "|".join(cls._HOUR_WORDS) + r")\b",
+                   lambda m: f"alle {cls._HOUR_WORDS[m.group(2).lower()]}:00", t,
+                   flags=re.IGNORECASE)
+        due = extract_due_date(t)
+        if due is not None and due.hour == 0 and due.minute == 0:
+            due = due.replace(hour=9)
+        return due
+
+    def _find_reschedule_target(self, *texts):
+        """Individua l'impegno da spostare: keyword OR sui testi (utente prima, claim
+        di Euri come fallback), spogliati dei verbi del gesto e delle parole temporali.
+        La frase intera sanitizzata sarebbe un AND di tutti i token: non trova mai."""
+        for t in texts:
+            if not t:
+                continue
+            kw = [w for w in self.memory._safe_keywords(t) if w not in self._RESCHED_NOISE]
+            if not kw:
+                continue
+            candidates = self.memory.find_todo_by_content(" | ".join(kw[:5]))
+            if candidates:
+                return candidates[0]
+        return None
+
+    def _handle_reschedule(self, text: str, reply_hint: str = ""):
+        """Sposta la scadenza di un impegno — il gesto che backa i claim di
+        riprogrammazione (prima esisteva solo la parola, non l'azione)."""
+        self.memory.log_conversation("Stefano", text)
+        pending = self.memory.get_pending_todos()
+        if not pending:
+            self._speak("Non ho impegni in agenda da spostare.")
+            return
+        # Target: con un solo pending è lui; altrimenti keyword-match su utente+claim
+        target = pending[0] if len(pending) == 1 else self._find_reschedule_target(text, reply_hint)
+        if target is None:
+            self._speak("Quale impegno devo spostare? Dimmi qualche parola del contenuto.")
+            return
+        # Data: dal testo dell'utente; in fallback dal claim di Euri (implicit action)
+        new_due = self._extract_reschedule_date(text) or self._extract_reschedule_date(reply_hint)
+        if new_due is None:
+            self._pending_reschedule = _PendingState(
+                {"id": target["id"], "content": target.get("content", "")}, timeout=120)
+            self._speak(f"A quando sposto: {target.get('content', '')[:70]}?")
+            return
+        self._apply_reschedule(target, new_due)
+
+    def _handle_pending_reschedule(self, text: str):
+        """Risposta alla domanda 'a quando lo sposto?'."""
+        pending = self._pending_reschedule
+        self._pending_reschedule = None
+        if re.search(r"\b(annulla|lascia\s+stare|lascia\s+perdere|niente|no)\b", text.lower()):
+            self._speak("Ok, la scadenza resta com'è.")
+            return
+        new_due = self._extract_reschedule_date(text)
+        if new_due is None:
+            self._speak("Non ho capito la data — la scadenza resta com'era.")
+            return
+        self._apply_reschedule(pending.data, new_due)
+
+    def _apply_reschedule(self, todo: dict, new_due):
+        if self.memory.reschedule_todo(todo["id"], new_due):
+            reply = f"Fatto. Spostato a {format_datetime(new_due)}: {todo.get('content', '')[:80]}"
+        else:
+            reply = "Non riesco a spostarlo — quell'impegno non lo trovo più."
+        self.memory.log_conversation("Euri", reply)
+        self._speak(reply)
+
+    # ── Gesto di rilettura (audit a voce della memoria appena scritta) ─────────
+    # Nato dal caso 14/07 08:14: "leggimi l'ultima memoria su questa riflessione" →
+    # SEARCH semantico → deriva sul tema "memoria/AI" → risposta CONFABULATA (recitata
+    # l'intestazione del contesto come fosse il ricordo). La rilettura è
+    # un'INTERROGAZIONE (ultimo nodo per created_at), non una conversazione: qui
+    # l'LLM non tocca il contenuto — decide solo il routing (Layer 2) e la cura dopo.
+
+    _READBACK_SRC_HINTS = [
+        # (parole nella richiesta) → filtro source; l'ordine conta, il primo che matcha vince
+        (re.compile(r"\b(lezion|riflession|correzion|reazion)", re.IGNORECASE), ["reaction", "reflection"]),
+        (re.compile(r"\b(impegn|promemoria|scadenz)", re.IGNORECASE), None),  # gestito a parte via status
+        (re.compile(r"\b(insegnat|teach|studiat)", re.IGNORECASE), ["teach"]),
+    ]
+
+    def _find_readback_target(self, text: str) -> dict | None:
+        """L'ultima memoria per created_at, con filtro-fonte se la richiesta lo suggerisce
+        ("l'ultima lezione" → reaction/reflection) e restringimento per keyword se nomina
+        un soggetto. Deterministico: niente semantica, niente LLM."""
+        source_filter = None
+        for pat, filt in self._READBACK_SRC_HINTS:
+            if pat.search(text):
+                source_filter = filt
+                break
+        recent = self.memory.get_recent_memories(limit=10, source_filter=source_filter, touch=False)
+        # La rilettura è un gesto di AUDIT sulla CRONOLOGIA: si ri-ordina per created_at
+        # perché get_recent_memories ora riordina per rischio epistemico (f19ce39) e una
+        # lezione fresca con numeri (requires_verification) scivolerebbe sotto una memoria
+        # vecchia ma pulita — e "cosa hai salvato poco fa?" leggerebbe la cosa sbagliata.
+        # Per l'audit vale l'opposto: le memorie rischiose sono quelle da riascoltare.
+        recent.sort(key=lambda m: float(m.get("created_at") or 0), reverse=True)
+        if not recent:
+            return None
+        # Il rumore include interrogative e deittici temporali ("COSA hai salvato POCO
+        # fa?"): sopravvissuti al filtro diventano keyword di contenuto e scavalcano la
+        # più recente (caso live 14/07: "cosa" matchava una reflection al posto della
+        # lezione in cima). E il match è per PAROLA INTERA, non per sottostringa.
+        kw = [w for w in self.memory._safe_keywords(text)
+              if w not in {"memoria", "memorie", "lezione", "lezioni", "riflessione",
+                           "ultima", "ultime", "ultimo", "ultimi", "appena", "salvato",
+                           "salvata", "memorizzato", "scritto", "creato", "creata",
+                           "leggi", "leggimi", "rileggi", "rileggimi", "grado",
+                           "proposito", "risposta", "questa", "sentire", "cosa",
+                           "come", "quando", "quale", "poco", "prima", "adesso",
+                           "oggi", "ieri", "fammi", "dimmi", "voce"}]
+        if kw:
+            pat = re.compile(r"\b(" + "|".join(map(re.escape, kw)) + r")\b", re.IGNORECASE)
+            for m in recent:
+                if pat.search(m.get("content") or ""):
+                    return m
+        return recent[0]
+
+    def _handle_read_back(self, text: str):
+        self.memory.log_conversation("Stefano", text)
+        mem = self._find_readback_target(text)
+        if not mem:
+            self._speak("Non trovo memorie recenti da rileggerti.")
+            return
+        content = re.sub(r"^#\s*Memoria\s*\([^)]*\)\s*", "", (mem.get("content") or "")).strip()
+        when = ""
+        try:
+            from utils.date_utils import from_timestamp
+            dt = mem.get("_created_at") or from_timestamp(mem.get("created_at"))
+            if dt:
+                when = f", salvata alle {dt.strftime('%H:%M')} del {dt.strftime('%d/%m')}"
+        except Exception:
+            pass
+        src = mem.get("source", "?")
+        reply = (f"Te la leggo fedele — fonte {src}{when}: {content} — "
+                 f"Se c'è da correggere o aggiungere qualcosa, dimmelo adesso.")
+        self._pending_readback = _PendingState({"id": mem.get("id"), "content": content}, timeout=180)
+        self.present.set_pending_question(f"readback:{mem.get('id')}", reply)
+        self.memory.log_conversation("Euri", reply)
+        self._speak(reply)
+
+    def _handle_pending_readback(self, text: str):
+        """La risposta dopo la rilettura: ok/niente → chiudi; 'aggiungi…' → merge
+        costruttivo; correzione → riscrittura fedele. In entrambi i casi di modifica:
+        nuovo nodo source=user (fonte massima) + supersede del vecchio — il canale di
+        CURA della memoria guidato da Stefano, mai edit silenziosi."""
+        pending = self._pending_readback
+        self._pending_readback = None
+        self.present.clear_pending_question(f"readback:{pending.data.get('id')}")
+        # Il triage lo fa il classificatore pragmatico (regex solo sui casi ovvi,
+        # Gemma per la varietà del parlato, fallback conservativo=OK): "Tutto
+        # perfetto, hai capito benissimo" è un OK anche senza parole-chiave —
+        # il prefisso-regex qui creava un nodo spurio (caso live 14/07 08:47).
+        from core.utterance_pragmatics import classify_readback_reply
+        kind = classify_readback_reply(text)
+        if kind == "OK":
+            self._speak("Ok, la lascio com'è.")
+            return
+        body = re.sub(r"^no[,\s]+", "", text, flags=re.IGNORECASE)
+        old_id, old_content = pending.data["id"], pending.data["content"]
+        if kind == "AGGIUNTA":
+            merged = self.brain.merge_memories(old_content, body)
+            new_content = merged if merged not in ("DIVERSO", "NESSUNA AGGIUNTA") else None
+            verb = "arricchita"
+        else:
+            new_content = self.brain.apply_correction_to_memory(old_content, body)
+            verb = "corretta"
+        if not new_content:
+            # mai perdere la parola di Stefano: la sua frase diventa il nodo nuovo
+            new_content = body
+            verb = "sostituita con le tue parole"
+        # Guardia P-GT sul canale di cura (una soglia di similarità NON distingue
+        # "riscritto identico" da "corretto un numero" sui testi lunghi):
+        #  1. testo invariato → nessun nodo;
+        #  2. i token NUOVI salienti devono avere radice nelle parole dell'utente —
+        #     se la riscrittura introduce parole mai dette, si rifiuta onestamente
+        #     invece di salvare invenzioni (falso-positivo ack o LLM che ricama).
+        _norm = lambda s: re.sub(r"\s+", " ", (s or "").strip().lower())
+        _toks = lambda s: set(re.findall(r"\w+", _norm(s)))
+        if _norm(new_content) == _norm(old_content):
+            self._speak("Ho riguardato la memoria ma non c'era nulla da cambiare — la lascio com'è.")
+            return
+        added = {t for t in _toks(new_content) - _toks(old_content) if len(t) >= 3 or t.isdigit()}
+        removed = {t for t in _toks(old_content) - _toks(new_content) if len(t) >= 3}
+        if not added and not removed:
+            self._speak("Ho riguardato la memoria ma non c'era nulla da cambiare — la lascio com'è.")
+            return
+        if added and not (added & _toks(body)):
+            self._speak("Non ho capito bene cosa dovrei cambiare — ripetimi la correzione "
+                        "con le parole esatte e la applico.")
+            return
+        new_id = self.memory.save_memory(new_content, source="user")
+        if new_id and old_id:
+            self.memory.supersede_memory(old_id, new_id)
+        reply = (f"Fatto, memoria {verb}. Ora dice: {new_content[:220]}"
+                 if new_id else "Non sono riuscita a salvare la modifica.")
+        self.memory.log_conversation("Euri", reply)
+        self._speak(reply)
+
     def _handle_silence_mode(self, text: str):
         from utils.date_utils import parse_italian_date
         import re
@@ -721,6 +1088,26 @@ class VoiceDaemon:
         self._speak("Alert riattivati.")
 
     def _handle_status(self, text: str):
+        if re.search(r"\b(memori[ae]|ricord[oi])\b", text, re.IGNORECASE):
+            by_source: dict[str, int] = {}
+            total = 0
+            for key in self.memory.r.scan_iter("euri:memory:*"):
+                try:
+                    source = self.memory.r.json().get(key, "$.source")
+                    source = source[0] if source else "?"
+                except Exception:
+                    source = "?"
+                by_source[str(source)] = by_source.get(str(source), 0) + 1
+                total += 1
+            details = ", ".join(
+                f"{count} da {source}"
+                for source, count in sorted(by_source.items(), key=lambda item: -item[1])
+            )
+            reply = f"Ho {total} memorie in totale"
+            if details:
+                reply += f": {details}"
+            self._speak(reply + ".")
+            return
         todos = self.memory.get_pending_todos()
         overdue = self.memory.get_overdue_todos()
         memories = self.memory.get_recent_memories(limit=999, touch=False)
@@ -808,7 +1195,19 @@ class VoiceDaemon:
         proseguire il dispatch normale (piano vuoto o monostep → fail-open).
         """
         from core import workflow_planner
-        steps = workflow_planner.plan(text)
+        # Conversazione recente come FONTE del workflow (fix 01/07: la bozza ignorava
+        # il discorso — "scrivimi una mail su questo" perdeva il contesto appena detto).
+        try:
+            with self.brain.history_lock:
+                hist = list(self.brain._conversation_history)[-16:]
+            convo_text = "\n".join(
+                f"{'Stefano' if m.get('role') == 'user' else 'Euri'}: {m.get('content', '')}"
+                for m in hist if m.get("content")
+            )[-4000:]
+        except Exception as e:
+            logger.debug(f"workflow: brief history fallito: {e}")
+            convo_text = ""
+        steps = workflow_planner.plan(text, history_brief=convo_text)
         if len(steps) < 2:
             return False  # non è un vero workflow → dispatch normale
 
@@ -821,7 +1220,7 @@ class VoiceDaemon:
         except Exception as e:
             logger.debug(f"clear last_rag_ctx WORKFLOW fallito: {e}")
 
-        engine = workflow_planner.WorkflowEngine(self.executor, self.brain)
+        engine = workflow_planner.WorkflowEngine(self.executor, self.brain, conversation=convo_text)
         result = engine.run(steps)
 
         # Filo conduttore: il workflow deve restare nel thread, come _handle_execute.
@@ -873,7 +1272,7 @@ class VoiceDaemon:
         self._speak(reply)
 
     def _handle_audit_memory(self, text: str):
-        """Audit vocale delle memorie: analizza con LLM e propone cancellazione del rumore."""
+        """Audit vocale limitato: analizza candidati prioritari e propone il rumore."""
         import json as _json
         _ollama = chat_client  # instradato: chat_client.chat(...) == _ollama.chat(...)
 
@@ -905,7 +1304,7 @@ class VoiceDaemon:
 
         totale = len(all_docs)
         stats_str = ", ".join(f"{v} da {k}" for k, v in sorted(by_source.items(), key=lambda x: -x[1]))
-        self._speak(f"Ho {totale} memorie in totale: {stats_str}. Analizzo le passive.")
+        self._speak(f"Ho {totale} memorie in totale: {stats_str}.")
 
         # Audita solo le passive
         passive_docs = [d for d in all_docs if d.get("source") == "passive"]
@@ -913,40 +1312,90 @@ class VoiceDaemon:
             self._speak("Nessuna memoria passiva da analizzare. Tutto pulito.")
             return
 
+        audit_limit = max(1, int(getattr(config, "AUDIT_MEMORY_MAX_CANDIDATES", 40)))
+        batch_size = max(1, int(getattr(config, "AUDIT_MEMORY_BATCH_SIZE", 10)))
+        candidates = self._select_memory_audit_candidates(passive_docs, limit=audit_limit)
+        self._speak(
+            f"Faccio un controllo mirato su {len(candidates)} memorie passive prioritarie "
+            f"delle {len(passive_docs)} presenti."
+        )
+
         rumore = []
-        for doc in passive_docs:
-            content = doc.get("content", "")
+        for offset in range(0, len(candidates), batch_size):
+            if not getattr(self, "_running", True):
+                logger.info("Audit memoria interrotto dallo shutdown")
+                return
+            batch = candidates[offset:offset + batch_size]
+            rows = "\n".join(
+                f"{index}. {str(doc.get('content', ''))[:700]}"
+                for index, doc in enumerate(batch, start=1)
+            )
             prompt = (
-                f"Valuta se questo testo è un FATTO UTILE da ricordare su Stefano "
-                f"oppure è RUMORE (frase generica, conversazione ambient, dato non personale).\n"
-                f"Memoria: \"{content}\"\n"
-                f"Rispondi SOLO con UTILE o RUMORE."
+                "Valuta queste memorie passive. Una memoria e' RUMORE solo se e' una frase "
+                "generica, un artefatto di conversazione o un dato privo di un soggetto e di "
+                "riuso futuro. Non chiamare rumore un fatto concreto solo perche' richiede "
+                "verifica. Rispondi in JSON: {\"noise\": [numeri delle righe]} .\n\n"
+                + rows
             )
             try:
                 resp = _ollama.chat(
                     model=config.OLLAMA_MODEL,
                     messages=[{"role": "user", "content": prompt}],
-                    options={"temperature": 0, "num_predict": 300},
+                    options={"temperature": 0, "num_predict": 500},
+                    format="json",
                     think=False,
                 )
-                verdetto = (resp.message.content or "").strip().upper()
-                if "RUMORE" in verdetto:
-                    rumore.append(doc)
-            except Exception:
-                pass
+                parsed = _json.loads(resp.message.content or "{}")
+                noise_rows = parsed.get("noise", []) if isinstance(parsed, dict) else []
+                for row in noise_rows:
+                    try:
+                        index = int(row) - 1
+                    except (TypeError, ValueError):
+                        continue
+                    if 0 <= index < len(batch):
+                        rumore.append(batch[index])
+            except Exception as exc:
+                logger.warning(f"Audit memoria: batch {offset // batch_size + 1} non valutato: {exc}")
 
-        utili_count = len(passive_docs) - len(rumore)
+        checked_count = len(candidates)
+        utili_count = checked_count - len(rumore)
 
         if not rumore:
-            self._speak(f"Memoria pulita. Tutte e {len(passive_docs)} le memorie passive sono utili.")
+            self._speak(
+                f"Nel campione prioritario di {checked_count} memorie passive non ho trovato rumore."
+            )
             return
 
         self._audit_rumore = rumore
         self._audit_confirm_mode = True
         self._speak(
-            f"Su {len(passive_docs)} memorie passive: {utili_count} utili, {len(rumore)} rumore. "
+            f"Nel campione di {checked_count} memorie passive: {utili_count} utili, "
+            f"{len(rumore)} possibili rumori. "
             f"Le cancello?"
         )
+
+    @staticmethod
+    def _select_memory_audit_candidates(passive_docs: list[dict], limit: int) -> list[dict]:
+        """Prioritizza rischio epistemico e recenza, escludendo i fili episodici."""
+        eligible = [
+            doc for doc in passive_docs
+            if doc.get("memory_kind") != "conversation_anchor"
+            and not doc.get("superseded_by")
+            and not doc.get("correction_pending")
+        ]
+
+        def priority(doc: dict) -> tuple[int, float]:
+            risk = 0
+            risk += 100 if doc.get("audit_flag") else 0
+            risk += 40 if doc.get("requires_verification") else 0
+            risk += 25 if doc.get("passive_support") == "tacit_acceptance" else 0
+            try:
+                created_at = float(doc.get("created_at") or 0)
+            except (TypeError, ValueError):
+                created_at = 0.0
+            return risk, created_at
+
+        return sorted(eligible, key=priority, reverse=True)[:max(0, int(limit))]
 
     def _handle_audit_confirm(self, text: str):
         """Gestisce sì/no dopo l'audit vocale."""
@@ -1211,7 +1660,9 @@ class VoiceDaemon:
 
 
 
-    def _handle_chat(self, text: str):
+    def _handle_chat(
+        self, text: str, *, trusted: bool = False, observed_at: float | None = None
+    ):
         # Audit di Coerenza: capture correction signal PRIMA di loggare/rispondere,
         # così last_rag_ctx contiene ancora il ctx del turno precedente (corretto).
         if self.memory.detect_correction(text):
@@ -1240,7 +1691,9 @@ class VoiceDaemon:
         context = self._augment_context_by_strategy(text, context)
         context = (context + "\n\n" if context else "") + "[Modalità conversazione: sii presente e naturale, non rigido.]"
         with self._brain_lock:
-            reply = self.brain.respond(text, context=context)
+            reply = self.brain.respond(
+                text, context=context, trusted=trusted, observed_at=observed_at
+            )
         reply = scrub_unbacked_save_claim(reply)  # pavimento di onestà: CHAT non salva
         emit_unbacked_action_commitment(self.r, reply, set(), channel="voice_chat")
         reply = scrub_unbacked_action_claim(reply, set())  # CHAT non agisce: niente claim d'azione
@@ -1396,7 +1849,14 @@ class VoiceDaemon:
             self._teach_snapshot_content = ""
             self._speak("Ok, ho cancellato la sessione precedente.")
 
-    def _dispatch(self, text: str, detected_lang: str = "it"):
+    def _dispatch(
+        self,
+        text: str,
+        detected_lang: str = "it",
+        *,
+        trusted: bool = False,
+        observed_at: float | None = None,
+    ):
         """Smista il testo trascritto all'handler corretto."""
         if self.memory.is_silent_mode():
             # Anche in silenzio: ripristino e shutdown passano sempre
@@ -1420,6 +1880,27 @@ class VoiceDaemon:
                 self._handle_pending_todo(text)
                 return
 
+        # Rilettura pending: memoria appena riletta, attesa correzione/aggiunta (180s)
+        if self._pending_readback:
+            if self._pending_readback.expired():
+                self.present.clear_pending_question(
+                    f"readback:{self._pending_readback.data.get('id')}"
+                )
+                self._pending_readback = None
+                logger.debug("Readback pending scaduto (timeout 180s)")
+            else:
+                self._handle_pending_readback(text)
+                return
+
+        # Riprogrammazione pending: Euri ha chiesto "a quando lo sposto?" (timeout 120s)
+        if self._pending_reschedule:
+            if self._pending_reschedule.expired():
+                self._pending_reschedule = None
+                logger.debug("Reschedule pending scaduto (timeout 120s)")
+            else:
+                self._handle_pending_reschedule(text)
+                return
+
         # Write pending: attende conferma/dettagli/annullamento (timeout 120s)
         if self._pending_write:
             if self._pending_write.expired():
@@ -1433,11 +1914,14 @@ class VoiceDaemon:
         # la risposta di Stefano per trasformarla in lezione ri-sognabile (timeout 300s).
         if self._awaiting_reaction:
             if self._awaiting_reaction.expired():
+                self.present.clear_pending_question(
+                    self._awaiting_reaction.data.get("question_id")
+                )
                 self._awaiting_reaction = None
-                logger.debug("Reaction pending scaduta (timeout 300s)")
+                logger.debug("Reaction pending scaduta")
             else:
-                self._handle_reaction(text)
-                return
+                if self._handle_reaction(text):
+                    return
 
         # Audit memory: attende sì/no per cancellare le memorie rumore
         if self._audit_confirm_mode:
@@ -1543,6 +2027,8 @@ class VoiceDaemon:
             Intent.SEARCH: self._handle_search,
             Intent.LIST_TODAY: self._handle_list_today,
             Intent.COMPLETE: self._handle_complete,
+            Intent.RESCHEDULE: self._handle_reschedule,
+            Intent.READ_BACK: self._handle_read_back,
             Intent.SILENCE_MODE: self._handle_silence_mode,
             Intent.RESTORE_ALERTS: self._handle_restore_alerts,
             Intent.STATUS: self._handle_status,
@@ -1557,7 +2043,10 @@ class VoiceDaemon:
 
         handler = handlers.get(intent, self._handle_chat)
         _t_handler = time.perf_counter()
-        handler(text)
+        if intent in {Intent.CHAT, Intent.SEARCH}:
+            handler(text, trusted=trusted, observed_at=observed_at)
+        else:
+            handler(text)
         logger.info(f"[TIMING] Handler {intent.value}: {(time.perf_counter()-_t_handler)*1000:.0f}ms")
 
     def _passive_learner_loop(self):
@@ -1574,7 +2063,9 @@ class VoiceDaemon:
         MIN_NEW_EXCHANGES = 1   # scambi minimi dall'ultima analisi (era 2)
 
         while self._running:
-            time.sleep(20)
+            self._workers.heartbeat("passive-learner")
+            if self._wait_or_stop(20):
+                break
             try:
                 # Solo se c'è stata attività recente che ora è ferma
                 if self._last_activity_ts == 0:
@@ -1583,44 +2074,58 @@ class VoiceDaemon:
                 if idle < IDLE_TRIGGER:
                     continue
 
-                # Abbastanza nuovi scambi da analizzare? — snapshot atomico sotto history_lock
-                with self.brain.history_lock:
-                    history = list(self.brain._conversation_history)
-                new_exchanges = len(history) - self._passive_history_len
+                # Journal append-only fino all'ack: la compressione della history
+                # conversazionale non può più invalidare il cursore del learner.
+                new_history = self.brain.passive_messages_after(self._passive_last_seq)
+                new_exchanges = len(new_history)
                 if new_exchanges < MIN_NEW_EXCHANGES:
                     continue
 
-                # Analizza tutto il segmento nuovo (rimosso filtro trusted)
-                new_history = history[self._passive_history_len:]
-                self._passive_history_len = len(history)
-
                 if not new_history:
                     continue
-
-                facts = self.brain.extract_passive_memories(new_history)
-                if not facts:
-                    continue
+                through_seq = new_history[-1]["seq"]
 
                 saved = 0
-                for fact_item in facts:
-                    weak_support = isinstance(fact_item, dict) and fact_item.get("support") == "weak"
-                    fact = fact_item.get("content", "") if isinstance(fact_item, dict) else str(fact_item)
-                    clean = validate_payload(fact, "memory")
-                    if not clean:
-                        continue
-                    if self.memory.is_duplicate_memory(clean, llm_probe_fn=self.brain.probe_same_meaning):
-                        continue
-                    mid = self.memory.save_memory(clean, category="passivo", source="passive", idempotent=True)
-                    if mid and weak_support:
-                        from core.memory_attention import remove_loop2e_candidate
-                        key = f"euri:memory:{mid}"
-                        self.memory.r.json().set(key, "$.requires_verification", True)
-                        self.memory.r.json().set(key, "$.passive_support", "tacit_acceptance")
-                        remove_loop2e_candidate(self.memory.r, mid)
-                    saved += 1
+                # Non mischiare nel medesimo prompt scambi rivolti esplicitamente a
+                # Euri e parlato ambient: un solo messaggio trusted non deve rendere
+                # FORTE un fatto estratto dalla parte ambient del batch.
+                for segment_addressed, segment_history in self._passive_extraction_batches(new_history):
+                    facts = self.brain.extract_passive_memories(segment_history) or []
+                    for fact_item in facts:
+                        from core.temporal_context import derive_passive_memory_metadata
+                        support = fact_item.get("support") if isinstance(fact_item, dict) else None
+                        weak_support = self._passive_weak_support(support, segment_addressed)
+                        fact = fact_item.get("content", "") if isinstance(fact_item, dict) else str(fact_item)
+                        metadata = derive_passive_memory_metadata(
+                            fact_item if isinstance(fact_item, dict) else {"content": fact},
+                            segment_history,
+                        )
+                        clean = validate_payload(fact, "memory")
+                        if not clean:
+                            continue
+                        if self.memory.is_duplicate_memory(clean, llm_probe_fn=self.brain.probe_same_meaning):
+                            continue
+                        mid = self.memory.save_memory(
+                            clean,
+                            category="passivo",
+                            source="passive",
+                            idempotent=True,
+                            memory_kind=metadata["memory_kind"],
+                            temporal_context=metadata["temporal_context"],
+                        )
+                        if mid and (weak_support or metadata["memory_kind"] == "conversation_anchor"):
+                            from core.memory_attention import remove_loop2e_candidate
+                            key = f"euri:memory:{mid}"
+                            if weak_support:
+                                self.memory.r.json().set(key, "$.requires_verification", True)
+                                self.memory.r.json().set(key, "$.passive_support", "tacit_acceptance")
+                            remove_loop2e_candidate(self.memory.r, mid)
+                        saved += 1
 
                 if saved:
                     logger.info(f"Passive learner: {saved} fatto/i salvato/i silenziosamente")
+                self._passive_last_seq = through_seq
+                self.brain.ack_passive_messages(through_seq)
 
             except Exception as e:
                 logger.error(f"Errore passive learner: {e}")
@@ -1643,7 +2148,9 @@ class VoiceDaemon:
         EXCLUDE_SOURCES = {"campus", "web", "reflection"}
 
         while self._running:
-            time.sleep(CHECK_INTERVAL)
+            self._workers.heartbeat("consolidation")
+            if self._wait_or_stop(CHECK_INTERVAL):
+                break
             try:
                 if self._last_activity_ts == 0:
                     continue
@@ -1780,32 +2287,35 @@ class VoiceDaemon:
         Thread proattivo (ogni 30s). Due piani distinti:
           AFFERENTE (clock): quando una scadenza entra in finestra (<=60 min) emette UNA volta
             euri:pulse clock/threshold — il tempo del mondo, osservato sempre.
-          EFFERENTE (consegna): ricorda UNA sola volta e SOLO quando Stefano è PRESENTE.
-            Presenza = lo VEDE (gate, solo se la webcam funziona) OPPURE ha parlato di recente.
-            La webcam fa fail-open quando è cieca (is_user_present sempre True): se cieca NON ci
-            si fida del gate, vale solo l'interazione recente. Presenza IGNOTA (cieco + nessuna
-            interazione) ≠ presente → non si consegna nel vuoto: si attende e si consegna al primo
-            momento di presenza, anche dopo la scadenza. La frase è FORMULATA da Gemma (grounded
-            sul todo), non un template a livelli.
+          EFFERENTE (consegna): ricorda UNA sola volta e SOLO quando STEFANO è presente —
+            non "qualcuno": il laboratorio di notte è dei capoturno. Presenza di Stefano =
+            RICONOSCIUTO in faccia (is_owner_present, FaceAuth) OPPURE voce AUTENTICATA di
+            recente (SpeakerAuth). Il vecchio is_user_present (una faccia qualunque) non
+            basta più per parlare. Presenza IGNOTA ≠ presente → non si consegna nel vuoto:
+            si attende e si consegna al primo momento di presenza, anche dopo la scadenza.
+            La frase è FORMULATA da Gemma (grounded sul todo), non un template a livelli.
         """
         LEAD_MIN = 15              # consegna da 15 min prima della scadenza
         OVERDUE_CAP_MIN = 24 * 60  # ...fino a 24h dopo, in attesa di presenza
         PRESENT_WINDOW = 300       # "interazione recente" = ultimi 5 min
 
         while self._running:
+            self._workers.heartbeat("reminder")
             try:
                 t = now()
                 if t.hour >= 23 or t.hour < 7:         # quiet hours 23:00–07:00
-                    time.sleep(30)
+                    if self._wait_or_stop(30):
+                        break
                     continue
                 if self.r.exists("euri:audio:lock"):   # Euri sta parlando → aspetta
-                    time.sleep(5)
+                    if self._wait_or_stop(5):
+                        break
                     continue
 
-                # Presenza: lo VEDE (gate affidabile) OPPURE ha interagito di recente (primario).
-                seen = (not self.visual_gate.is_blind()) and self.visual_gate.is_user_present()
-                spoke = (self._last_activity_ts > 0 and
-                         (time.time() - self._last_activity_ts) <= PRESENT_WINDOW)
+                # Presenza di STEFANO: riconosciuto in faccia OPPURE voce autenticata recente.
+                seen = self.visual_gate.is_owner_present()
+                spoke = (self._last_auth_voice_ts > 0 and
+                         (time.time() - self._last_auth_voice_ts) <= PRESENT_WINDOW)
                 present = seen or spoke
 
                 for todo in self.memory.get_pending_todos():
@@ -1835,14 +2345,26 @@ class VoiceDaemon:
             except Exception as e:
                 logger.error(f"Errore reminder loop: {e}")
 
-            time.sleep(30)
+            if self._wait_or_stop(30):
+                break
 
-    def _initiative_block_reason(self) -> str:
+    def _initiative_block_reason(self, *, idle_seconds: float | None = None,
+                                 cooldown_s: float | None = None) -> str:
         """Ritorna "" se Euri può iniziare una domanda proattiva adesso."""
+        if self._voice_input_inflight.is_set():
+            return "voice_input_inflight"
+        try:
+            phase = self.present.snapshot().phase
+            if phase is not InteractionPhase.LISTENING:
+                return f"present_phase:{phase.value}"
+        except Exception:
+            pass
         if self._awaiting_reaction:
             return "awaiting_reaction"
         if any([
             self._pending_todo,
+            self._pending_reschedule,
+            self._pending_readback,
             self._pending_write,
             self._teach_recovery_mode,
             self._teach_mode,
@@ -1861,7 +2383,11 @@ class VoiceDaemon:
 
         now_ts = time.time()
         idle = (now_ts - self._last_activity_ts) if self._last_activity_ts else 999999
-        if idle < getattr(config, "INITIATIVE_IDLE_SECONDS", 90):
+        idle_threshold = (
+            getattr(config, "INITIATIVE_IDLE_SECONDS", 90)
+            if idle_seconds is None else float(idle_seconds)
+        )
+        if idle < idle_threshold:
             return f"recent_activity:{idle:.0f}s"
 
         try:
@@ -1869,20 +2395,38 @@ class VoiceDaemon:
             last_ask = float(last_raw or 0)
         except Exception:
             last_ask = 0.0
-        cooldown = getattr(config, "INITIATIVE_COOLDOWN_S", 3 * 3600)
+        cooldown = (
+            getattr(config, "INITIATIVE_COOLDOWN_S", 3 * 3600)
+            if cooldown_s is None else float(cooldown_s)
+        )
         if last_ask and now_ts - last_ask < cooldown:
             return f"cooldown:{int(cooldown - (now_ts - last_ask))}s"
 
-        # Presenza: come nei reminder, non basta il fail-open del gate cieco.
+        # Presenza di STEFANO, non di "qualcuno": la faccia del capoturno di notte
+        # attiva l'ascolto ma non deve far partire una domanda proattiva. Conta il
+        # riconoscimento facciale (owner) o la voce autenticata recente — non
+        # _last_activity_ts, che viene rinfrescato anche dal TTS di Euri stessa.
         try:
-            seen = (not self.visual_gate.is_blind()) and self.visual_gate.is_user_present()
+            seen = self.visual_gate.is_owner_present()
         except Exception:
             seen = False
-        spoke_recently = self._last_activity_ts > 0 and (now_ts - self._last_activity_ts) <= 300
+        spoke_recently = self._last_auth_voice_ts > 0 and (now_ts - self._last_auth_voice_ts) <= 300
         if not (seen or spoke_recently):
-            return "user_not_present"
+            return "owner_not_present"
 
         return ""
+
+    def _revalidate_initiative_output(self, decision_token) -> tuple[bool, str]:
+        """Ultimo guard prima dell'efferenza: stato semantico e voce in volo."""
+        current, reason = self.present.revalidate(
+            decision_token,
+            require_phase=InteractionPhase.LISTENING,
+        )
+        if not current:
+            return False, reason
+        if self._voice_input_inflight.is_set():
+            return False, "voice_input_inflight"
+        return True, "current"
 
     def _handle_initiative_candidate(self, event_id: str, event: dict, *, from_pending: bool = False) -> bool:
         """Valuta un evento Pulse e, se maturo, fa parlare Euri.
@@ -1892,6 +2436,7 @@ class VoiceDaemon:
         """
         from core.initiative import (
             build_candidate,
+            classify_focus_relevance,
             clear_pending,
             generate_question,
             mark_seen,
@@ -1920,7 +2465,47 @@ class VoiceDaemon:
             mark_seen(self.r, event_id)
             return True
 
-        block_reason = self._initiative_block_reason()
+        try:
+            present_snapshot = self.present.snapshot()
+            focus_active = present_snapshot.focus_open()
+            focus_text = present_snapshot.focus_text() if focus_active else ""
+        except Exception:
+            present_snapshot = None
+            focus_active = False
+            focus_text = ""
+
+        contextual = False
+        if focus_active:
+            # Prima escludi stati/modalità che vietano sempre l'efferenza; nessuna
+            # chiamata LLM mentre Euri parla, processa o aspetta già una risposta.
+            block_reason = self._initiative_block_reason(idle_seconds=0, cooldown_s=0)
+            if block_reason:
+                if not from_pending:
+                    store_pending(self.r, candidate)
+                    record_candidate(self.r, candidate, decision="defer", reason=block_reason)
+                return False
+
+            cache_key = (event_id, present_snapshot.last_user_turn_id)
+            relevance = self._initiative_focus_cache.get(cache_key)
+            if relevance is None:
+                with self._brain_lock:
+                    relevance = classify_focus_relevance(focus_text, candidate)
+                self._initiative_focus_cache[cache_key] = relevance
+                if len(self._initiative_focus_cache) > 256:
+                    self._initiative_focus_cache.pop(next(iter(self._initiative_focus_cache)))
+            if relevance != "EXTENDS":
+                reason = f"focus_{relevance.lower()}"
+                if not from_pending:
+                    store_pending(self.r, candidate)
+                    record_candidate(self.r, candidate, decision="defer", reason=reason)
+                return False
+            contextual = True
+            block_reason = self._initiative_block_reason(
+                idle_seconds=getattr(config, "INITIATIVE_CONTEXTUAL_MIN_IDLE_S", 8),
+                cooldown_s=getattr(config, "INITIATIVE_CONTEXTUAL_COOLDOWN_S", 3 * 60),
+            )
+        else:
+            block_reason = self._initiative_block_reason()
         if block_reason:
             if not from_pending:
                 store_pending(self.r, candidate)
@@ -1933,8 +2518,13 @@ class VoiceDaemon:
             mark_seen(self.r, event_id)
             return True
 
+        decision_token = self.present.issue_decision_token()
         with self._brain_lock:
-            proposal = generate_question(candidate)
+            proposal = generate_question(candidate, focus_text=focus_text if contextual else "")
+        if contextual:
+            proposal = dict(proposal)
+            proposal["focus_relevance"] = "EXTENDS"
+            proposal["focus_turn_id"] = present_snapshot.last_user_turn_id
 
         if not proposal.get("should_ask"):
             record_candidate(self.r, candidate, decision="skip", reason="llm_declined", proposal=proposal)
@@ -1949,6 +2539,19 @@ class VoiceDaemon:
             mark_seen(self.r, event_id)
             return True
 
+        current, stale_reason = self._revalidate_initiative_output(decision_token)
+        if not current:
+            if not from_pending:
+                store_pending(self.r, candidate)
+                record_candidate(
+                    self.r,
+                    candidate,
+                    decision="defer",
+                    reason=f"stale_decision:{stale_reason}",
+                    proposal=proposal,
+                )
+            return False
+
         try:
             self.r.set("euri:initiative:last_ask_ts", str(time.time()), ex=7 * 24 * 3600)
         except Exception:
@@ -1957,7 +2560,15 @@ class VoiceDaemon:
         # La risposta dell'utente rientra nello stesso circuito già usato dal briefing
         # manuale: capture_reaction salva la lezione e aggiorna l'insight.
         if str(candidate.event.get("sense") or "") == "insight":
-            self._awaiting_reaction = _PendingState({"insight": candidate.related}, timeout=1800)
+            self._awaiting_reaction = _PendingState(
+                {
+                    "insight": candidate.related,
+                    "question": question,
+                    "question_id": event_id,
+                },
+                timeout=300,
+            )
+            self.present.set_pending_question(event_id, question)
 
         record_candidate(self.r, candidate, decision="spoken", proposal=proposal)
         clear_pending(self.r, event_id)
@@ -1977,6 +2588,7 @@ class VoiceDaemon:
         last_id = "$"  # niente replay massivo al boot: solo eventi nuovi + pending espliciti
         logger.info("Initiative controller: in ascolto su euri:pulse")
         while self._running:
+            self._workers.heartbeat("initiative")
             try:
                 for event_id, event in iter_pending(
                     self.r,
@@ -1998,50 +2610,53 @@ class VoiceDaemon:
                         self._handle_initiative_candidate(event_id, fields)
             except Exception as e:
                 logger.error(f"Initiative controller: errore loop: {e}")
-                time.sleep(5)
+                if self._wait_or_stop(5):
+                    break
+
+    def _memory_outbox_loop(self):
+        """Recupera gli effetti derivati rimasti pendenti dopo save o crash."""
+        from core.memory_outbox import drain_memory_outbox
+
+        while self._running:
+            self._workers.heartbeat("memory-outbox")
+            _ok, failed = drain_memory_outbox(self.r, limit=20)
+            if self._wait_or_stop(5 if failed else 1):
+                break
 
     def run(self):
+        self._workers.prepare()
+        self._shutdown_done = False
         self._running = True
 
         # Intercetta Ctrl+C
         def _shutdown(sig, frame):
             logger.info("Shutdown segnalato...")
-            self._running = False
-            self.visual_gate.stop()
-            if hasattr(self, 'dream_engine'):
-                self.dream_engine.stop()
-            if hasattr(self, 'obsidian_sync'):
-                self.obsidian_sync.stop_watcher()
-            # Sblocca eventuale sd.wait() ancora appeso in background
-            # per evitare segfault durante il teardown di PortAudio
-            try:
-                import sounddevice as _sd
-                _sd.stop()
-            except Exception:
-                pass
+            self._request_shutdown()
 
         signal.signal(signal.SIGINT, _shutdown)
         signal.signal(signal.SIGTERM, _shutdown)
 
         # Thread proattivo reminder
-        t = threading.Thread(target=self._reminder_loop, daemon=True)
-        t.start()
+        self._workers.start("reminder", self._reminder_loop)
 
         # Thread passive learner — analizza conversazioni in idle silenziosamente
-        t2 = threading.Thread(target=self._passive_learner_loop, daemon=True)
-        t2.start()
+        self._workers.start("passive-learner", self._passive_learner_loop)
 
         # Thread Loop 2a — consolidamento silenzioso (reflection) in idle
-        t3 = threading.Thread(target=self._consolidation_loop, daemon=True)
-        t3.start()
+        self._workers.start("consolidation", self._consolidation_loop)
 
         # Thread mobile worker — gestisce richieste dalla pagina Streamlit via Redis Stream
-        t_mobile = threading.Thread(target=self._mobile_worker, daemon=True)
-        t_mobile.start()
+        self._workers.start("mobile", self._mobile_worker)
 
         # Thread initiative controller — Pulse → tension → domanda prompt-based.
-        t_initiative = threading.Thread(target=self._initiative_worker, daemon=True)
-        t_initiative.start()
+        self._workers.start(
+            "initiative",
+            self._initiative_worker,
+            enabled=getattr(config, "INITIATIVE_ENABLED", False),
+        )
+
+        # Outbox memoria — TTL, indice attenzione, Pulse e Obsidian replayabili.
+        self._workers.start("memory-outbox", self._memory_outbox_loop)
 
         # Avvia Dream Engine (Loop 2b/2c)
         if hasattr(self, 'dream_engine'):
@@ -2057,35 +2672,39 @@ class VoiceDaemon:
         with AudioCapture() as mic:
             logger.info("── Euri in ascolto ──")
             while self._running:
-                # Saluto al rientro: VisualGate ha appena rilevato presenza dopo assenza
+                # Qualcuno è arrivato nel campo visivo: SOLO afferente (pulse) — non
+                # sappiamo ancora CHI è (il riconoscimento arriva 1-2s dopo), e di
+                # notte può essere un capoturno: nessuna voce su questo segnale.
                 if self.visual_gate.consume_just_activated():
-                    # Senso "presenza": Stefano è rientrato nel campo visivo. source=extero.
                     pulse_emit(self.r, "presence", "extero", "arrival",
                                payload={"first": self._first_visual_activation}, salience=0.7)
                     if self._first_visual_activation:
                         # Prima rilevazione dall'avvio: silenzio, solo warm-up modello
                         self._first_visual_activation = False
                         threading.Thread(target=self._warmup_model, daemon=True).start()
-                    else:
-                        if self._missed_reminders:
-                            missed = self._missed_reminders.copy()
-                            self._missed_reminders.clear()
-                            if len(missed) == 1:
-                                self._speak(f"Bentornato Stefano. Hai perso un promemoria: {missed[0]}.")
-                            else:
-                                elenco = ", ".join(missed)
-                                self._speak(f"Bentornato Stefano. Hai perso {len(missed)} promemoria: {elenco}.")
-                        # Saluto a vuoto RIMOSSO (Stefano 23/06): la presenza-senza-contenuto
-                        # resta sul bus (pulse_emit sopra) ma NON diventa voce. Si parla solo con
-                        # un motivo grounded — reminder perso o TEACH da riprendere (Regola d'Oro).
-                        # Il "Bentornato Stefano." a vuoto era un arco riflesso (sente→parla) che
-                        # salutava la stanza vuota di notte; l'afferente presence resta prezioso.
-                        # Controlla se c'è una sessione TEACH interrotta
-                        snapshot = self.r.get("euri:teach:snapshot")
-                        if snapshot and not self._teach_mode:
-                            self._teach_snapshot_content = snapshot
-                            self._teach_recovery_mode = True
-                            self._speak("Ho trovato una sessione di insegnamento non completata. Vuoi riprendere da dove eravamo?")
+
+                # STEFANO è arrivato (riconosciuto in faccia): qui vive l'efferente di
+                # rientro — reminder persi e ripresa TEACH si dicono solo a lui.
+                # (Saluto a vuoto RIMOSSO, Stefano 23/06: si parla solo con un motivo
+                # grounded — la Regola d'Oro resta.)
+                if self.visual_gate.consume_owner_arrived():
+                    pulse_emit(self.r, "presence", "extero", "owner_arrival",
+                               payload={"identity": self.visual_gate.present_identity()},
+                               salience=0.75)
+                    if self._missed_reminders:
+                        missed = self._missed_reminders.copy()
+                        self._missed_reminders.clear()
+                        if len(missed) == 1:
+                            self._speak(f"Bentornato Stefano. Hai perso un promemoria: {missed[0]}.")
+                        else:
+                            elenco = ", ".join(missed)
+                            self._speak(f"Bentornato Stefano. Hai perso {len(missed)} promemoria: {elenco}.")
+                    # Controlla se c'è una sessione TEACH interrotta
+                    snapshot = self.r.get("euri:teach:snapshot")
+                    if snapshot and not self._teach_mode:
+                        self._teach_snapshot_content = snapshot
+                        self._teach_recovery_mode = True
+                        self._speak("Ho trovato una sessione di insegnamento non completata. Vuoi riprendere da dove eravamo?")
 
                 # Salta se proactive_agent sta parlando
                 if self.r.exists("euri:audio:lock"):
@@ -2094,19 +2713,28 @@ class VoiceDaemon:
                 chunk = mic.read_chunk()
                 speech_ended, segment = self.vad.process_chunk(chunk)
 
+                if self.vad.is_speaking:
+                    self._voice_input_inflight.set()
+
                 if not speech_ended:
                     continue
+
+                # Tiene chiuso il confine anche dopo il VAD, mentre identità, STT e
+                # dispatch stanno ancora attribuendo significato al turno.
+                self._voice_input_inflight.set()
 
                 # Gate mobile: silenzio se la pagina Voce Mobile sta processando
                 if self.r.exists("euri:mobile:active"):
                     logger.debug("Mobile gate: voce ignorata — sessione mobile attiva")
                     self.vad.reset()
+                    self._voice_input_inflight.clear()
                     continue
 
                 # Gate visivo: ignora voce se nessuno è presente
                 if not self.visual_gate.is_user_present():
                     logger.debug("VisualGate: voce rilevata ma gate INACTIVE — ignorata")
                     self.vad.reset()
+                    self._voice_input_inflight.clear()
                     continue
 
                 # Enrollment mode: raccoglie utterance per il voiceprint
@@ -2124,6 +2752,7 @@ class VoiceDaemon:
                         else:
                             self._speak("Registrazione fallita. Riprova.")
                     self.vad.reset()
+                    self._voice_input_inflight.clear()
                     continue
 
                 # Verifica identità vocale (prima di STT per risparmiare CPU)
@@ -2131,61 +2760,171 @@ class VoiceDaemon:
                 if not self._translate_bidir and not self.speaker_auth.verify(segment):
                     logger.info("SpeakerAuth: voce non riconosciuta — comando ignorato")
                     self.vad.reset()
+                    self._voice_input_inflight.clear()
                     continue
 
-                # Trascrizione
+                # Trascrizione. Il consenso conversazionale appartiene all'inizio
+                # fisico del turno, non alla fine di VAD+STT: un intervento lungo
+                # iniziato dentro la lease non deve scadere mentre viene acquisito.
+                segment_ended_at = time.time()
+                segment_duration_s = (
+                    len(segment) / config.VAD_SAMPLING_RATE if segment is not None else 0.0
+                )
+                utterance_started_at = max(0.0, segment_ended_at - segment_duration_s)
                 force_lang = None if self._translate_bidir else "it"
                 _t_stt = time.perf_counter()
                 text, detected_lang = self.stt.transcribe(segment, force_lang=force_lang)
                 logger.info(f"[TIMING] STT: {(time.perf_counter()-_t_stt)*1000:.0f}ms")
+                self.vad.reset()
+
+                accepted = self._accept_voice_transcript(
+                    text,
+                    addressed_at=utterance_started_at,
+                )
+                if accepted is None:
+                    self._voice_input_inflight.clear()
+                    continue
+                text, has_wake_word = accepted
+
                 self.visual_gate.notify_activity()
                 if hasattr(self, 'dream_engine'):
                     self.dream_engine.notify_activity()
-                self._last_activity_ts = time.time()
-                self.vad.reset()
 
-                if not text:
-                    continue
+                # Dispatch. Se un handler termina senza TTS, chiude comunque la fase
+                # PROCESSING; gli handler che parlano la chiudono via finish_speech.
+                try:
+                    self._dispatch(
+                        text,
+                        detected_lang=detected_lang,
+                        trusted=has_wake_word,
+                        observed_at=utterance_started_at,
+                    )
+                finally:
+                    try:
+                        if self.present.snapshot().phase is InteractionPhase.PROCESSING:
+                            self.present.finish_processing(opens_conversation=False)
+                    except Exception as e:
+                        logger.debug(f"Cognitive Present: finish_processing ignorato: {e}")
+                    self._voice_input_inflight.clear()
 
-                # Filtro garbage STT: Whisper a volte alucina caratteri ripetuti su rumore di fondo.
-                # Se >60% delle parole sono identiche (es. "č č č č...") scartiamo senza LLM.
-                _words = text.split()
-                if len(_words) >= 6:
-                    _most_common_word_ratio = max(
-                        _words.count(w) for w in set(_words)
-                    ) / len(_words)
-                    if _most_common_word_ratio > 0.60:
-                        logger.debug(f"Garbage STT scartato (ratio={_most_common_word_ratio:.2f}): '{text[:40]}'")
-                        continue
-
-                # Correzione misrecognition comuni Whisper (IT) — skip in modalità traduzione/interprete
-                if not self._translate_bidir:
-                    _text_lower = text.lower()
-                    for wrong, right in _STT_CORRECTIONS.items():
-                        if wrong in _text_lower:
-                            _text_lower = _text_lower.replace(wrong, right)
-                            text = _text_lower
-                            break
-
-                # Wake word guard: in ambienti rumorosi risponde solo se:
-                # - sente "Euri" nel testo, oppure
-                # - è dentro una conversazione attiva (< CONVERSATION_WINDOW_SEC dall'ultima risposta)
-                # Eccezione: modalità traduzione/interprete (parla anche l'interlocutore)
-                has_wake_word = bool(_WAKE_WORD_RE.search(text))
-                if not (self._translate_bidir or self._dictation_mode):
-                    since_last = time.time() - self._last_activity_ts
-                    in_conversation = since_last < _CONVERSATION_WINDOW_SEC
-                    if not has_wake_word and not in_conversation:
-                        logger.debug(f"Wake word assente e fuori finestra ({since_last:.0f}s) — ignorato: '{text[:40]}'")
-                        continue
-
-                # Trusted = wake word esplicito. Scambi ambient (solo finestra) non analizzati dal passive learner.
-                self.brain._next_trusted = has_wake_word
-
-                # Dispatch
-                self._dispatch(text, detected_lang=detected_lang)
-
+        self._shutdown_components()
         logger.info("Euri spento.")
+
+    @staticmethod
+    def _partition_passive_history(history: list[dict]) -> list[tuple[bool, list[dict]]]:
+        """Separa per provenienza mantenendo ordine e coppie user/assistant."""
+        buckets: dict[bool, list[dict]] = {}
+        order: list[bool] = []
+        for message in history:
+            addressed = bool(message.get("trusted"))
+            if addressed not in buckets:
+                buckets[addressed] = []
+                order.append(addressed)
+            buckets[addressed].append(message)
+        return [(addressed, buckets[addressed]) for addressed in order]
+
+    @classmethod
+    def _passive_extraction_batches(cls, history: list[dict]) -> list[tuple[bool, list[dict]]]:
+        """Evita contaminazione FORTE senza creare nuove perdite su batch piccoli.
+
+        L'estrattore richiede almeno quattro messaggi. Se una partizione mista
+        scende sotto la soglia, conserva il batch intero ma lo marca non rivolto:
+        tutti i fatti risultanti vengono quindi degradati a DEBOLE.
+        """
+        partitions = cls._partition_passive_history(history)
+        if len(partitions) > 1 and any(len(batch) < 4 for _, batch in partitions):
+            return [(False, history)]
+        return partitions
+
+    @staticmethod
+    def _passive_weak_support(support: str | None, segment_addressed: bool) -> bool:
+        """DEBOLE (→ requires_verification, fuori da Loop 2e) se il giudizio LLM è
+        'weak' OPPURE se il segmento non era rivolto a Euri (nessuna wake word). Non
+        scarta nulla: degrada l'incerto. Protegge provenienza/qualità epistemica."""
+        return support == "weak" or not segment_addressed
+
+    def _utterance_is_addressed(self, has_wake_word: bool, since_last: float,
+                                conversation_open: bool = False) -> bool:
+        """True se l'utterance va processata (guard di consenso conversazionale).
+        In traduzione/dettato parla anche l'interlocutore → sempre processata.
+        Altrimenti: wake word esplicita OPPURE dentro la finestra di conversazione
+        attiva. `since_last` DEVE misurare dal turno PRECEDENTE, non dall'utterance
+        corrente (che azzererebbe la finestra e renderebbe il guard un no-op)."""
+        if self._translate_bidir or self._dictation_mode:
+            return True
+        return has_wake_word or conversation_open or since_last < _CONVERSATION_WINDOW_SEC
+
+    @staticmethod
+    def _is_garbage_transcript(text: str) -> tuple[bool, float]:
+        """Rileva l'allucinazione Whisper composta quasi solo da parole ripetute."""
+        words = text.split()
+        if len(words) < 6:
+            return False, 0.0
+        ratio = max(words.count(word) for word in set(words)) / len(words)
+        return ratio > 0.60, ratio
+
+    def _accept_voice_transcript(
+        self,
+        text: str,
+        now_ts: float | None = None,
+        *,
+        addressed_at: float | None = None,
+    ) -> tuple[str, bool] | None:
+        """Valida consenso e STT; solo una voce accettata rinnova l'attività.
+
+        Il consenso si valuta quando l'utente ha iniziato a parlare. Un turno
+        lungo, iniziato dentro la lease, non deve scadere mentre VAD e STT lo
+        stanno ancora acquisendo.
+        """
+        if not text:
+            return None
+
+        garbage, ratio = self._is_garbage_transcript(text)
+        if garbage:
+            logger.debug(f"Garbage STT scartato (ratio={ratio:.2f}): '{text[:40]}'")
+            return None
+
+        if not self._translate_bidir:
+            text_lower = text.lower()
+            for wrong, right in _STT_CORRECTIONS.items():
+                if wrong in text_lower:
+                    text = text_lower.replace(wrong, right)
+                    break
+
+        now_ts = time.time() if now_ts is None else now_ts
+        guard_at = now_ts if addressed_at is None else min(float(addressed_at), now_ts)
+        has_wake_word = bool(_WAKE_WORD_RE.search(text))
+        # Prima interazione dopo l'avvio: non esiste un turno precedente. Manteniamo
+        # chiusa la lease senza stampare nel log l'intera epoch come durata trascorsa.
+        has_previous_activity = self._last_activity_ts > 0
+        since_last = (
+            guard_at - self._last_activity_ts
+            if has_previous_activity else float("inf")
+        )
+        try:
+            conversation_open = self.present.snapshot(now=guard_at).conversation_open(guard_at)
+        except Exception:
+            conversation_open = False
+        if not self._utterance_is_addressed(has_wake_word, since_last, conversation_open):
+            elapsed = f"{since_last:.0f}s" if has_previous_activity else "nessun turno precedente"
+            logger.debug(
+                "Wake word assente e inizio turno fuori finestra "
+                f"({elapsed}) — ignorato: '{text[:40]}'"
+            )
+            return None
+
+        self._last_activity_ts = now_ts
+        if not self._translate_bidir:
+            self._last_auth_voice_ts = now_ts
+        try:
+            self.present.accept_user_turn(
+                text,
+                channel=InteractionChannel.VOICE,
+                at=now_ts,
+            )
+        except Exception as e:
+            logger.debug(f"Cognitive Present: accept_user_turn ignorato: {e}")
+        return text, has_wake_word
 
     def _mobile_worker(self):
         """
@@ -2208,6 +2947,7 @@ class VoiceDaemon:
         logger.info("Mobile worker: in ascolto su euri:mobile:in")
 
         while self._running:
+            self._workers.heartbeat("mobile")
             try:
                 msgs = self.r.xread({STREAM_IN: last_id}, count=1, block=3000)
                 if not msgs:
@@ -2280,7 +3020,8 @@ class VoiceDaemon:
 
             except Exception as e:
                 logger.error(f"Mobile worker: {e}")
-                time.sleep(1)
+                if self._wait_or_stop(1):
+                    break
 
     def _morning_brief_if_needed(self):
         """Riepilogo mattutino alla prima interazione del giorno."""
@@ -2307,4 +3048,7 @@ if __name__ == "__main__":
 
     daemon = VoiceDaemon()
     daemon.setup()
-    daemon.run()
+    try:
+        daemon.run()
+    finally:
+        daemon._shutdown_components()

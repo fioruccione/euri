@@ -38,43 +38,94 @@ CAPABILITIES = {
 
 _VALID_CAPS = set(CAPABILITIES)
 
-# Verbi-azione GENERICI (non modi di dire di settore — vedi feedback no-overfit):
-# pre-gate economico per decidere se vale la pena chiamare il planner. Non è
-# classificazione, solo "sembra una richiesta operativa-composta?". Sostituibile
-# dal modello quando le regex toccano il soffitto (pipeline_model_routing).
-_ACTION_VERBS = re.compile(
-    r"\b(legg\w*|riassum\w*|sintetizz\w*|prepar\w*|scriv\w*|bozz\w*|mail|email|"
-    r"mand\w*|invi\w*|salv\w*|controll\w*|verific\w*|analizz\w*|estra\w*|"
-    r"revision\w*|rived\w*|rispond\w*|rispost\w*)\b",
+# Il gate deve riconoscere un ATTO OPERATIVO, non parole vagamente simili a verbi.
+# Il vecchio `legg\w*` contava "leggero" come "leggere" e una spiegazione tecnica
+# diventava un workflow. Le famiglie sotto usano forme lessicali finite e contano
+# CAPACITA' distinte, non due flessioni dello stesso verbo.
+_ACTION_FAMILIES = {
+    "READ": re.compile(r"\b(?:leggi(?:mi)?|leggere)\b", re.IGNORECASE),
+    "SUMMARIZE": re.compile(
+        r"\b(?:riassumi(?:mi)?|riassumere|sintetizza(?:mi)?|sintetizzare)\b",
+        re.IGNORECASE,
+    ),
+    "CHECK": re.compile(
+        r"\b(?:controlla(?:mi)?|controllare|verifica(?:mi)?|verificare|"
+        r"analizza(?:mi)?|analizzare|estrai|estrarre|rivedi|rivedere|"
+        r"revisiona(?:mi)?|revisionare)\b",
+        re.IGNORECASE,
+    ),
+    "DRAFT": re.compile(
+        r"\b(?:prepara(?:mi)?|preparare|scrivi(?:mi)?|scrivere|bozza|"
+        r"rispondi|rispondere)\b",
+        re.IGNORECASE,
+    ),
+    "SAVE_FOR_REVIEW": re.compile(
+        r"\b(?:salva(?:mi)?|salvare|manda(?:mi)?|mandare|invia(?:mi)?|inviare)\b",
+        re.IGNORECASE,
+    ),
+}
+
+_DIRECTIVE = re.compile(
+    r"\b(?:leggi(?:mi)?|riassumi(?:mi)?|sintetizza(?:mi)?|controlla(?:mi)?|"
+    r"verifica(?:mi)?|analizza(?:mi)?|estrai|rivedi|revisiona(?:mi)?|"
+    r"prepara(?:mi)?|scrivi(?:mi)?|rispondi|salva(?:mi)?|manda(?:mi)?|"
+    r"invia(?:mi)?|puoi|potresti|vorrei|voglio|fammi)\b",
+    re.IGNORECASE,
+)
+
+_TEXT_ARTIFACT = re.compile(
+    r"\b(?:document\w*|file|allegat\w*|testo|mail|email|bozza|risposta|"
+    r"relazione|report|contenuto|cartella|nota|appunti)\b|"
+    r"\b(?:quello|quanto)\s+che\s+(?:ho|abbiamo)\s+detto\b|"
+    r"\bquesto\s+discorso\b",
     re.IGNORECASE,
 )
 
 
 def looks_like_workflow(text: str) -> bool:
     """
-    Pre-gate economico: True se la frase contiene ≥2 verbi-azione DISTINTI
-    (= probabile richiesta multi-step). Heuristica fail-safe: se sbaglia, il
-    planner ritorna comunque [] o un piano da 1 step e si torna al dispatch.
+    True solo per una richiesta esplicita su testo/documenti con almeno due
+    capability distinte. E' intenzionalmente precision-first: una falsa azione
+    crea effetti reali, un falso negativo torna al normale dispatch conversazionale.
     """
-    hits = {m.group(0).lower() for m in _ACTION_VERBS.finditer(text or "")}
-    return len(hits) >= 2
+    utterance = text or ""
+    if not _DIRECTIVE.search(utterance) or not _TEXT_ARTIFACT.search(utterance):
+        return False
+    families = {name for name, pattern in _ACTION_FAMILIES.items() if pattern.search(utterance)}
+    return len(families) >= 2
 
 
 # ──────────────────────────────────────────
 # PLANNER (puro)
 # ──────────────────────────────────────────
 
-def _plan_prompt(utterance: str) -> str:
+def _plan_prompt(utterance: str, history_brief: str = "") -> str:
     cat = "\n".join(f"- {k}: {v}" for k, v in CAPABILITIES.items())
+    convo = ""
+    if history_brief.strip():
+        convo = (
+            "\nConversazione recente (la FONTE se la richiesta si riferisce a "
+            "'questo'/'quanto detto'):\n" + history_brief.strip() + "\n"
+        )
     return (
         "Sei il pianificatore operativo di Euri. Trasforma la richiesta dell'utente "
         "in una sequenza ORDINATA di passi, usando SOLO queste capability:\n"
-        f"{cat}\n\n"
+        f"{cat}\n"
+        f"{convo}\n"
         f'Richiesta: "{utterance}"\n\n'
         "Regole:\n"
+        "- Se il turno corrente e' una spiegazione, una constatazione, una domanda di "
+        "opinione o il racconto di cosa l'utente ha/non ha fatto, restituisci []. Non "
+        "inventare un'azione basandoti sulla conversazione precedente.\n"
+        "- Pianifica soltanto comandi operativi ESPLICITI presenti nel turno corrente.\n"
         "- Usa solo le capability elencate, in ordine logico.\n"
         '- Ogni passo prende in input l\'output del passo precedente con "$N" '
         "(N = numero del passo, 1-based), oppure null se non serve input.\n"
+        "- Se la richiesta si riferisce a quanto appena detto nella conversazione "
+        "(es. 'scrivimi una mail su questo', 'riassumi quello che ho detto'), la FONTE "
+        "è la CONVERSAZIONE: usa direttamente DRAFT/SUMMARIZE con input null (l'engine "
+        "inietta la conversazione), NON READ né CHECK (non c'è un documento da leggere).\n"
+        "- READ/CHECK servono solo quando c'è un DOCUMENTO/file da elaborare.\n"
         "- Se la richiesta è una sola azione semplice, restituisci un solo passo.\n"
         "- DRAFT non invia mai; se l'utente vuole una mail, è sempre una bozza.\n"
         "- Dopo una DRAFT aggiungi sempre SAVE_FOR_REVIEW come ultimo passo, "
@@ -119,10 +170,11 @@ def _validate(steps) -> list[dict]:
     return clean
 
 
-def plan(utterance: str, *, chat=None, model: str = None) -> list[dict]:
+def plan(utterance: str, *, history_brief: str = "", chat=None, model: str = None) -> list[dict]:
     """
     1 LLM-call → piano. PURO (nessun effetto). Fail-open: [] su errore/incertezza.
-    `chat`/`model` injectabili per test (default: chat_client + config.OLLAMA_MODEL).
+    `history_brief` = conversazione recente, così il planner sa che la FONTE può essere
+    il discorso (non un documento). `chat`/`model` injectabili per test.
     """
     if not utterance or not utterance.strip():
         return []
@@ -132,7 +184,7 @@ def plan(utterance: str, *, chat=None, model: str = None) -> list[dict]:
             chat = chat_client
         resp = chat.chat(
             model=model or config.OLLAMA_MODEL,
-            messages=[{"role": "user", "content": _plan_prompt(utterance)}],
+            messages=[{"role": "user", "content": _plan_prompt(utterance, history_brief)}],
             options={"temperature": 0.1, "num_predict": 400, "num_ctx": 4096},
             think=False,
         )
@@ -155,9 +207,10 @@ class WorkflowEngine:
     l'output dello step N.
     """
 
-    def __init__(self, executor, brain):
+    def __init__(self, executor, brain, conversation: str = ""):
         self._executor = executor
         self._brain = brain
+        self._conversation = conversation or ""   # fonte quando non c'è un documento
 
     def run(self, steps: list[dict]) -> dict:
         """
@@ -216,6 +269,10 @@ class WorkflowEngine:
 
     # ── dispatch capability → primitivo esistente ──
     def _run_cap(self, cap: str, args: dict, src: str) -> dict:
+        # Fonte-conversazione: se un passo generativo non ha input incatenato né documento,
+        # la fonte è il discorso appena avvenuto (fix 01/07: la bozza ignorava la conversazione).
+        if not src and self._conversation and cap in ("DRAFT", "SUMMARIZE", "CHECK"):
+            src = self._conversation
         if cap == "READ":
             return {"text": self._read(), "path": None}
         if cap == "SUMMARIZE":
@@ -226,10 +283,12 @@ class WorkflowEngine:
                 "senza riscrivere il contenuto:\n\n" + src), "path": None}
         if cap == "DRAFT":
             kind = (args or {}).get("kind", "testo")
+            # Budget largo: una bozza è il PENSIERO INTERO di Euri, non un riassunto —
+            # con 800 token la relazione del 03/07 si è troncata a metà frase.
             return {"text": self._llm(
                 f"Scrivi una bozza di {kind} in italiano basata su quanto segue. "
                 "Solo la bozza, pronta da revisionare, senza commenti né preamboli:\n\n"
-                + src), "path": None}
+                + src, num_predict=2500), "path": None}
         if cap == "SAVE_FOR_REVIEW":
             from agent.tools.draft_writer import save_review
             return {"text": src, "path": save_review(src)}
@@ -260,13 +319,31 @@ class WorkflowEngine:
 
     def _llm(self, prompt: str, *, num_predict: int = 800) -> str:
         from core.ollama_client import chat_client
-        r = chat_client.chat(
-            model=config.OLLAMA_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0.3, "num_predict": num_predict, "num_ctx": 16384},
-            think=False,
-        )
-        return self._brain._clean(r.message.content or "")
+        base = [{"role": "user", "content": prompt}]
+        parts: list[str] = []
+        # Il budget token è un tetto tecnico, non la fine del pensiero: se Ollama
+        # taglia (done_reason=length) si CONTINUA da dove si è fermato invece di
+        # consegnare un moncone (bozza troncata a metà frase, 03/07). Max 2 riprese:
+        # oltre, meglio un documento lungo interrotto con traccia nel log che un loop.
+        for _round in range(3):
+            msgs = base if not parts else base + [
+                {"role": "assistant", "content": "".join(parts)},
+                {"role": "user", "content": "Continua ESATTAMENTE da dove ti sei "
+                                            "interrotto, senza ripetere nulla e senza commenti."},
+            ]
+            r = chat_client.chat(
+                model=config.OLLAMA_MODEL,
+                messages=msgs,
+                options={"temperature": 0.3, "num_predict": num_predict, "num_ctx": 16384},
+                think=False,
+            )
+            parts.append(r.message.content or "")
+            if getattr(r, "done_reason", None) != "length":
+                break
+            logger.info(f"WorkflowEngine._llm: output al tetto di {num_predict} token → continuo la scrittura")
+        else:
+            logger.warning("WorkflowEngine._llm: ancora troncato dopo 2 riprese — consegno com'è")
+        return self._brain._clean("".join(parts))
 
     # ── voce finale ──
     @staticmethod

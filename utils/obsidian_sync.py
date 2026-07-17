@@ -35,7 +35,7 @@ def _mark_ignored(filepath: str):
 def write_memory(doc: dict):
     """Scrive una memory su Obsidian."""
     if not config.OBSIDIAN_SYNC_ENABLED:
-        return
+        return True
         
     vault_path = Path(config.OBSIDIAN_VAULT_PATH)
     domain = doc.get("domain", "generale")
@@ -47,7 +47,7 @@ def write_memory(doc: dict):
         dir_path.mkdir(parents=True, exist_ok=True)
     except Exception as e:
         logger.error(f"Obsidian Sync: impossibile creare cartella {dir_path}: {e}")
-        return
+        return False
         
     # Format the date for the filename and content
     dt = from_timestamp(doc["created_at"])
@@ -60,10 +60,20 @@ def write_memory(doc: dict):
     frontmatter = {
         "id": mem_id,
         "type": "memory",
+        "memory_kind": doc.get("memory_kind", "semantic_fact"),
         "domain": domain,
         "source": doc.get("source", "user"),
         "created_at": date_str
     }
+    asserted_dt = from_timestamp(doc.get("asserted_at"))
+    event_start_dt = from_timestamp(doc.get("event_start"))
+    event_end_dt = from_timestamp(doc.get("event_end"))
+    if asserted_dt:
+        frontmatter["asserted_at"] = asserted_dt.strftime("%Y-%m-%d %H:%M:%S")
+    if event_start_dt:
+        frontmatter["event_start"] = event_start_dt.strftime("%Y-%m-%d %H:%M:%S")
+    if event_end_dt:
+        frontmatter["event_end"] = event_end_dt.strftime("%Y-%m-%d %H:%M:%S")
     if doc.get("tags"):
         frontmatter["tags"] = doc["tags"]
         
@@ -77,8 +87,10 @@ def write_memory(doc: dict):
         _mark_ignored(str(filepath.absolute()))
         filepath.write_text(content, encoding="utf-8")
         logger.debug(f"Obsidian Sync: Scritta memoria {filepath.name}")
+        return True
     except Exception as e:
         logger.error(f"Obsidian Sync: errore scrittura {filepath}: {e}")
+        return False
 
 
 def write_insight(doc: dict):
@@ -176,7 +188,9 @@ class ObsidianSyncManager:
     def stop_watcher(self):
         if self.observer:
             self.observer.stop()
-            self.observer.join()
+            self.observer.join(timeout=5)
+            if self.observer.is_alive():
+                logger.warning("Obsidian Sync: watcher non terminato entro la deadline")
             
     def handle_file_event(self, filepath: str):
         """Elabora un file markdown appena salvato dall'utente."""

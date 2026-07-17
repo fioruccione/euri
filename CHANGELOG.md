@@ -1,6 +1,143 @@
 # Changelog
 
+## 2026-07-17 - Workflow solo su comando e modalita' epistemica preservata
+
+- Corretto il falso workflow live sul discorso Poseidon: il vecchio `legg\w*`
+  interpretava `leggero` come verbo leggere e, insieme a `controllato`, attivava il
+  planner, che ha creato una bozza non richiesta. Il gate ora richiede un comando
+  esplicito, un artefatto testuale e almeno due capability distinte; conta famiglie
+  lessicali finite, non frammenti o flessioni. Regressione sul turno reale inclusa.
+- Il planner riceve anche un divieto esplicito: spiegazioni, constatazioni, domande di
+  opinione e racconti di azioni passate devono produrre piano vuoto.
+- Chiarita la calibrazione del dialogo: il contesto certifica che Stefano ha detto una
+  frase, non che una sua stima sia gia' un risultato. Previsioni tecniche conservano
+  parole come `stimo`, `probabilmente`, `dovrebbe` e distinguono dati, meccanismo e
+  verifica mancante.
+
+## 2026-07-17 - Interocezione hardware osservativa
+
+- Aggiunto un recettore hardware indipendente e privo di LLM: CPU/RAM via `psutil`,
+  GPU via `pynvml` quando disponibile con fallback `nvidia-smi`. Letture corrotte o
+  sentinel di temperatura vengono escluse.
+- La macchina a stati distingue `NORMAL`, `WARNING` e `CRITICAL` con persistenza,
+  isteresi, escalation immediata, cooldown, recovery e guasto/ripristino del sensore.
+  La VRAM alta e' pressione, non emergenza: non puo' produrre `CRITICAL` da sola.
+- Redis conserva lo snapshot effimero `euri:hardware:latest`, lo stato corrente,
+  una baseline bounded al minuto per circa 14 giorni e lo stream delle transizioni.
+  Solo transizioni, reminder e fault entrano nel Pulse; Initiative le ignora.
+- `hardware_monitor.py` viene avviato in background da `start_euri.sh` e usa un lock
+  di processo per evitare duplicati. Questa e' Fase 0: nessun riflesso arresta Dream,
+  Ollama o altri processi. Roadmap e criteri per la Fase 1 sono nel modulo e nella spec.
+- Regressioni pure per persistenza, isteresi, cooldown, escalation, VRAM, parser GPU,
+  snapshot/eventi e recovery del provider. Suite unit completa: 29/29 verde.
+- Ownership del checkpoint resa esplicita: dopo 72 ore il report read-only
+  `scripts/audit_hardware_baseline.py` misura copertura, percentili, picchi, fault,
+  eventi e carico rappresentativo. Un promemoria persistente in Euri evita che la
+  review dipenda dalla memoria di Stefano.
+
+## 2026-07-17 - Interpretazioni con paternita' e qualita' del ponte osservabile
+
+- Le reflection restano libere di interpretare: nel RAG sono ora presentate come
+  `INTERPRETAZIONE DI EURI`, non come fatti attribuiti a Stefano. Il prompt del Loop 2a
+  separa il tema osservato dall'ultima frase `Ipotesi di Euri`, vietando di trasformare
+  possibilita' in piani o decisioni dell'utente.
+- Aggiunta una seconda misura Dream, distinta da `premise_fidelity`: per i soli candidate
+  nuovi il modello classifica la terza riga come `supported`, `hypothesis` o `forced` e
+  salva nota e punteggio nella convergence trace. La misura e' read-only: non promuove,
+  non blocca e non modifica l'esperimento `dream_trace`.
+- Il primo parlato senza wake word dopo un riavvio resta correttamente escluso, ma il log
+  mostra `nessun turno precedente` invece dei secondi trascorsi dall'epoch.
+- Test mirati aggiornati per paternita' delle reflection, parser/misura del ponte e primo
+  turno vocale fail-closed.
+
+## 2026-07-15 - Grounding temporale della memoria conversazionale
+
+- Ogni turno nella history porta ora `observed_at`, `conversation_id` e un segmento
+  incrementato dopo pause superiori a 30 minuti. Il prompt riceve distanze temporali
+  qualitative come metadati interni: sei ore prima non puo' piu' diventare "poco fa",
+  ma Euri non recita gli orari se non servono.
+- Le memorie distinguono `created_at` (scrittura), `asserted_at` (quando e' stato detto)
+  ed eventuale intervallo `event_start`/`event_end` (quando sarebbe avvenuto). Espressioni
+  relative e date numeriche vengono risolte rispetto all'affermazione, non al recall.
+- Il passive learner produce `semantic_fact` oppure `conversation_anchor`, conserva i
+  turni sorgente e registra esplicitamente i dettagli ancora mancanti. Gli anchor entrano
+  nel RAG come fili da riprendere, non come prove fattuali, e sono esclusi da Dream,
+  Loop 2e, ipotesi trasversali e grounding delle reaction.
+- Compressione episodica e Silent Chat propagano la stessa cronologia. Obsidian e Pulse
+  ricevono i nuovi metadati; `idx:memories` migra automaticamente i campi temporali.
+- Regressione sul caso IZOD: gap 10:56 -> 17:19, riferimento "questa mattina" e
+  completamento successivo del filo. Unit 28/28 e integration 3/3 verdi; la sonda Ollama
+  classifica il caso come `EPISODIO` senza inventare valori o risultati.
+- Test vocale live: il recall ha ripreso correttamente il tema IZOD senza attribuirgli
+  valori preesistenti. Le etichette temporali, imitate due volte dal modello, sono ora
+  separate dai contenuti dei turni e rimosse deterministicamente dall'output. Il contratto
+  collega i valori ellittici al tema immediatamente aperto ma vieta giudizi tecnici senza
+  unita', metodo o riferimento.
+- Corretto il drop di utterance lunghe: un turno Poseidon di 60 secondi, iniziato dentro
+  la lease, veniva valutato dal wake guard solo dopo VAD+STT e quindi scartato a 69 secondi.
+  Il consenso viene ora congelato all'inizio fisico del parlato, mentre activity e lease
+  si rinnovano soltanto dopo l'accettazione. Il contro-caso ambient fuori finestra resta chiuso.
+- Il routing memoria distingue ora il gesto, non il dominio: qualunque "cosa hai in
+  memoria?"/"cosa ricordi di X?" e' recall (`SEARCH`); conteggi e stato sono `STATUS`;
+  solo richieste esplicite di audit, rumore, duplicati o pulizia avviano manutenzione.
+  "Memoria RAM/libera/usata" resta hardware, mentre l'ambiguo "controlla la memoria"
+  non puo' avviare da solo una procedura distruttiva.
+- L'audit esplicito non esegue piu' una chiamata LLM sincrona per ciascuna memoria passiva:
+  seleziona al massimo 40 candidati risk-first, li valuta in quattro batch, dichiara che il
+  risultato riguarda un campione ed esce tra i batch quando riceve shutdown. Le ancore
+  conversazionali sono escluse dal gesto di pulizia.
+
+## 2026-07-15 - Cognitive Present runtime e Initiative contestuale
+
+- La finestra di follow-up vocale parte ora dalla fine reale del playback, quindi
+  una risposta TTS lunga non consuma il tempo concesso all'utente.
+- Aggiunto un focus conversazionale breve, composto solo da turni utente accettati:
+  durante il focus Initiative puo' entrare soltanto con un candidato classificato
+  `EXTENDS`; affinità generiche (`RELATED`) e temi estranei restano pendenti.
+- Un token versionato e il segnale VAD/STT in volo rivalidano la proposta subito
+  prima del TTS, evitando di parlare sopra un turno appena iniziato.
+- Il circuito reaction distingue risposte, chiarimenti e continuazioni fuori tema.
+  Le ultime non vengono piu' trasformate in lezioni del sogno; il verdetto
+  epistemico viene inoltre propagato alla memoria reaction prima della sintesi.
+- Riproduzione locale del caso IZOD, tier unit 27/27 e integration 3/3 verdi.
+  Dream Engine invariato.
+
+## 2026-07-14 - Cognitive Present preparatorio (runtime invariato)
+
+- Aggiunto il contratto puro e thread-safe `core/cognitive_present.py`: snapshot
+  versionati, provenienza esplicita, TTL sensoriali, lease dalla fine del parlato e
+  token per rivalidare decisioni asincrone. Il daemon non lo importa ancora.
+- Aggiunto un audit read-only dei log vocali per follow-up persi, collisioni con
+  Initiative e confusione fra capability configurata e disponibilita' corrente.
+- Rafforzato il replay Active Focus: usa `reaction_raw`, mai la lezione sintetizzata,
+  e una reaction non puo' creare un focus. Il nuovo replay e' NO-GO per copertura:
+  la rimozione delle sintesi interne espone la mancanza di eventi utente diretti recenti.
+- Review incrociata: osservazioni Cognitive Present rese immutabili e monotone anche
+  con eventi fuori ordine; aggiunta la chiusura di turni senza TTS. Riclassificato
+  `test_insight_repromotion.py` da integration a live: il valutatore scansiona e puo'
+  modificare tutti i candidate reali, quindi non e' sicuro durante `dream_trace`.
+- Allineato `test_tool_vectorset.py` al contratto gia' documentato del fast path:
+  i tre casi con gap top-1/top-2 sotto 0.005 attendono fallback LLM, non un forcing
+  vettoriale. La baseline storica 13/16 diventa cosi' 16/16 decisioni corrette.
+
 Storico completo delle versioni di Euri. Il README riporta solo la versione corrente; qui la cronologia integrale.
+
+## Unreleased (13–14/07/2026) — Impegni nel modello memoria + il sogno che si misura
+
+Giornata partita con un blackout (UPS ko, RDB integro) e chiusa con il sistema che misura sé stesso su tre assi: generazione dei sogni, risveglio, uso reale.
+
+- **Retrieval epistemico prima del taglio finale:** KNN domain-boosted, keyword, recency, finestre temporali, wide recall e subject/entity recall condividono ora il rischio di memoria e l'affidabilita' della fonte. I pool principali vengono ampliati e poi riordinati con una penalita' limitata, cosi' la pertinenza resta il segnale dominante ma `provenance_stale`, audit e consolidazioni fragili non monopolizzano i primi slot. `correction_pending` e `superseded_by` sono esclusi da ogni percorso che costruisce contesto; il touch avviene solo sui risultati finali. Regressioni pure in `test_epistemic_ranking.py`.
+- **Outbox durevole sul save memoria:** il RedisJSON canonico e un record outbox vengono creati nello stesso script Lua, sia sul path normale sia su quello idempotente. TTL, indice Loop 2e, Pulse e Obsidian sono consumer replayabili; Pulse usa un marker atomico per non duplicare l'evento dopo crash, Obsidian sovrascrive un path deterministico e l'indice espone una modalita' strict. Il save tenta subito il fast path, mentre un worker recupera gli eventi pendenti con backoff. Regressioni in `test_memory_outbox.py`; entrambi gli script di commit verificati su Redis Stack reale con chiavi temporanee eliminate.
+- **Supervisione e shutdown dei loop:** reminder, passive learner, consolidamento, mobile, Initiative e outbox passano da un `WorkerSupervisor` nominato, con stato/heartbeat, restart su uscita inattesa e backoff. Le attese usano uno stop event condiviso; shutdown vocale, SIGINT/SIGTERM ed eccezioni del main eseguono teardown idempotente e join con deadline. Anche Dream Engine usa un event interrompibile e `stop()` attende il thread; il watcher Obsidian ha un join limitato. Regressioni pure in `test_worker_supervisor.py` e stop del Dream coperto in `test_dream_schedule.py`.
+- **Test separati per rischio operativo + CI non distruttiva:** tutti i `test_*.py` sono classificati una sola volta nei manifest `unit`, `integration` e `live`; un checker fallisce su test mancanti, duplicati o inesistenti. Il runner esegue ogni script in un processo separato con timeout e riepilogo. GitHub Actions installa le dipendenze e lancia soltanto `unit`; Redis reale, Ollama, hardware e cicli cognitivi restano fuori dalla CI. Baseline locale: 23/23 unit passati in 16.1s.
+- **Tre invarianti strutturali ripristinati:** (1) la provenienza `trusted` appartiene ora al singolo `Brain.respond(..., trusted=...)`, non a un flag globale che mobile o handler intermedi potevano consumare; (2) il passive learner legge un journal con sequence ID e ack indipendente dalla history comprimibile, quindi il taglio episodico dei primi 20 messaggi non invalida più il cursore; (3) documento RedisJSON e mapping idempotente vengono committati insieme via Lua, con recupero dei mapping stale e nessun winner fantasma se costruzione o `JSON.SET` falliscono. Regressioni dedicate in `test_history_provenance.py` e `test_memory_idempotency.py`; script Lua verificato anche su Redis Stack reale.
+- **Chiusura hardening CodeRunner + consenso vocale:** il codice generato riceve ora un ambiente a allowlist, ripulito anche via `bwrap --clearenv`; un preflight cached distingue `bwrap` assente da installato-ma-inutilizzabile e degrada senza rendere indisponibili tutti i job. Timeout e interrupt terminano il process group con fallback `SIGKILL`. Il passive learner separa i batch trusted/ambient (fallback conservativo DEBOLE sui misti piccoli), mentre vuoto, garbage STT e voce fuori-finestra non rinnovano più activity/presenza autenticata. I test coprono env leak, preflight negativo, timeout/interrupt/kill, segmento misto e activity timing.
+- **Impegni assorbiti nel modello memoria (il silo todo non esiste più):** un impegno = memoria di prima classe con `due_at` + `status` pending/done, salvata dall'hardened path completo (guard, axes, embedding, pulse, vault). `idx:memories` guadagna il campo `status` (migrazione automatica); tutte le query impegni ripuntate; `euri:todo:*` + `idx:todos` smontati (migrazione una-tantum `scripts/migrate_todos_to_memory.py`). **Visibilità**: il riepilogo NOMINA gli scaduti (prima li contava: "1 cosa scaduta" irrispondibile per costruzione); `build_rag_context` inietta la sezione deterministica "Impegni aperti" con TUTTI i pending — il retrieval semantico perdeva il nodo-impegno nella competizione coi vicini e Euri negava scadenze esistenti. Validato a voce ("che impegni ho?" risponde col contenuto; Euri offre da sola lo spostamento quando la conversazione lo implica).
+- **Gesto sposta-impegno (Intent RESCHEDULE):** chiude il buco parola-senza-azione osservato dal vivo ("fallo adesso" → "Impegno aggiornato" con due_at immutato). Regex strutturali + targeting keyword-OR (spogliato di verbi del gesto e parole temporali), data dal testo utente con fallback dal claim, pending "a quando?" annullabile; lo spostamento riarma consegna e clock afferente. **Implicit action** sui claim "impegno aggiornato/spostato" della CHAT → l'azione avviene davvero. Validato a voce al primo colpo (regex 1ms, "lunedì mattina verso le 9" → data giusta, conferma col dato reale).
+- **Esperimento dream_trace (continuità 2b), pre-registrato e in raccolta:** residuo di ESPLORAZIONE tra cicli creativi — a livello di STRATEGIA ("che tipo di ponte ho provato e perché debole"), non di coppia (145 domini × pairing random: la coppia non si ripete). Dietro flag, bit-identico da spento. I primi 2 residui reali hanno mostrato l'eco a punto fisso (etichette d'esempio pappagallate, traccia che rientrava dal CoT) → distillazione rifatta senza esempi + IGNORA esplicita + "NIENTE DA SEGNALARE"; contenuto del residuo nel log (unica storia possibile). Misura sui CANDIDATE via `trace_injected` nella convergence trace (la promozione è quasi cieca al contenuto e interagirebbe con l'intervento); pre-registrazione onesta in `ESPERIMENTO_DREAM_TRACE.md` (n=60/braccio, ≥15pp, audit CIECO con `sample_dream_audit.py`); baseline = i 148 candidate già in trace.
+- **Sonda stato vettoriale: NO-GO misurato** (`SONDA_STATO_VETTORIALE.md` + `probe_vector_state.py`): dalla proposta "cognitive_state" (vettore persistente 512d), prima di costruire si è misurato su 1407 eventi reali — cos(S, centroide)=0.9885, il one-hot simbolico con la stessa dinamica eguaglia/supera ogni variante embedding, nessuna batte le baseline banali. Il vettore runtime non si costruisce. **La strada superstite è l'Active Focus** (`SPEC_ACTIVE_FOCUS.md`): working set simbolico ≤7 voci con provenienza nominabile e decadimento lazy; replay harness offline sulla storia reale (`replay_focus.py`) → audit umano GO 7/7 (con la firma del focus IMMUTABILE al seme: accrescerla creava l'acchiappa-tutto). Runtime da progettare post-raccolta.
+- **Risveglio lucido — fase misura (`premise_fidelity`):** per ogni candidate, il modello del sogno confronta le due premesse "Nel dominio X succede" con le memorie `source_memory_ids` vere: il sogno ha detto la verità sulle proprie fonti? SI/PARZIALE/NO per lato → min + nota, una volta per candidate (budget 5/ciclo leggero), None=non-verificabile per i pre-provenienza. ADDITIVA: nessuna promozione cambiata; il punteggio viaggia nella trace per la correlazione coi verdetti `external_reaction` di Stefano. Diventa gate SOLO se separa i suoi SÌ dai NO. Motivo misurato: il giudizio testo-alla-cieca non discrimina (il giudice zona-grigia sovra-accetta; al probe di giugno pure Gemma metteva la scoria fluente in cima) — l'asse che separa è il grounding, e da fine giugno la provenienza per verificarlo esiste.
+- **Analisi convergence trace (348 entry, 04–13/07):** distribuzione delle similarità claim PIATTA — max-per-candidato ≈ μ delle coppie casuali (0.8218 vs 0.8216), 1/146 sopra la soglia relativa, esiti del gate indistinguibili a livello claim → il timbro anisotropo confermato sui dati vivi; non è un problema di taratura, è il substrato. Promozioni ~6/giorno costanti in idle; `denied_repromotion` 140 grezzi su 37 seed.
 
 ## Unreleased — Loop 2e attention ZSET: salienza separata dal payload
 

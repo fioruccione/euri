@@ -86,8 +86,23 @@ def test_all_due_cycles_keep_order():
         _restore_config(old)
 
 
+def test_stop_interrupts_poll_and_joins_thread():
+    engine = FakeDreamEngine()
+    old = _patch_config(DREAM_ENGINE_ENABLED=True, DREAM_ENGINE_POLL_SECONDS=60)
+    try:
+        engine.start()
+        assert engine._thread.is_alive()
+        started = time.monotonic()
+        engine.stop(timeout=1)
+        assert not engine._thread.is_alive()
+        assert time.monotonic() - started < 0.5
+    finally:
+        _restore_config(old)
+
+
 if __name__ == "__main__":
     test_idle_threshold_uses_short_seconds_when_present()
     test_due_idle_cycles_are_split_by_interval()
     test_all_due_cycles_keep_order()
+    test_stop_interrupts_poll_and_joins_thread()
     print("test_dream_schedule: OK")

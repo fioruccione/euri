@@ -6,6 +6,7 @@ import re
 import json
 import time
 import uuid
+import hashlib
 from datetime import datetime
 from loguru import logger
 
@@ -17,14 +18,16 @@ from utils.date_utils import now, to_timestamp, from_timestamp, format_datetime
 from core.domain_gater import assign_domain, domain_aware_search, neighbor_domains
 from core.memory_attention import remove_loop2e_candidate, update_loop2e_candidate_index
 from core.memory_axes import analyze_memory_axes
-from utils.obsidian_sync import write_memory
+from core.memory_risk import rank_memories_epistemically
+from core.memory_outbox import (
+    MEMORY_OUTBOX_PENDING,
+    memory_outbox_key,
+    process_memory_outbox_event,
+)
 from core.pulse import pulse_emit
 
 # Sorgenti di memoria che nascono da un'INTERAZIONE col mondo (→ polo extero del Pulse);
 # le altre (passive/loop2e/reflection/reaction…) sono elaborazione interna di Euri (→ intero).
-_EXTERO_MEMORY_SOURCES = {"user", "teach", "conversation", "episode", "mobile_in"}
-
-
 _TTL_BY_SOURCE: dict[str, int] = {
     "passive":      90,
     "reflection":   90,
@@ -36,6 +39,40 @@ _TTL_BY_SOURCE: dict[str, int] = {
 
 # Reflection dedup latest-wins: distanza cosine <= 0.10 equivale a similarita' >= 0.90.
 REFLECTION_DEDUP_MAX_DIST = 0.10
+
+
+# Mapping idempotente e documento diventano visibili nella stessa operazione.
+# JSON.SET precede SET: se la scrittura canonica fallisce, non resta un winner
+# fantasma. Gli effetti derivati (TTL, ZSET, Pulse, Obsidian) restano replayabili.
+_IDEMPOTENT_MEMORY_COMMIT_LUA = """
+local existing = redis.call('GET', KEYS[1])
+if existing then
+    local existing_key = ARGV[3] .. existing
+    if redis.call('EXISTS', existing_key) == 1 then
+        return {existing, '0'}
+    end
+end
+redis.call('JSON.SET', KEYS[2], '$', ARGV[2])
+redis.call('SET', KEYS[1], ARGV[1], 'EX', 120)
+redis.call(
+    'HSET', KEYS[3],
+    'memory_key', KEYS[2], 'memory_id', ARGV[1],
+    'enqueued_at', ARGV[4], 'attempts', '0'
+)
+redis.call('ZADD', KEYS[4], ARGV[4], KEYS[3])
+return {ARGV[1], '1'}
+"""
+
+_MEMORY_COMMIT_LUA = """
+redis.call('JSON.SET', KEYS[1], '$', ARGV[2])
+redis.call(
+    'HSET', KEYS[2],
+    'memory_key', KEYS[1], 'memory_id', ARGV[1],
+    'enqueued_at', ARGV[3], 'attempts', '0'
+)
+redis.call('ZADD', KEYS[3], ARGV[3], KEYS[2])
+return ARGV[1]
+"""
 
 
 class MemoryManager:
@@ -50,7 +87,67 @@ class MemoryManager:
     # MEMORIES (ricordi a lungo termine)
     # ──────────────────────────────────────────
 
-    def save_memory(self, content: str, category: str = "personale", tags: list[str] = None, source: str = "user", expires_at: datetime | None = None, idempotent: bool = False) -> str | None:
+    @staticmethod
+    def _idempotency_key(content: str, source: str) -> str | None:
+        normalized = " ".join((content or "").lower().split())
+        if not normalized:
+            return None
+        digest = hashlib.sha1(normalized.encode()).hexdigest()
+        return f"euri:idem:save:{source}:{digest}"
+
+    def _commit_idempotent_memory(
+        self,
+        idem_key: str,
+        memory_key: str,
+        memory_id: str,
+        doc: dict,
+    ) -> tuple[str, bool]:
+        """Commit atomico RedisJSON + mapping; ritorna (winner_id, created)."""
+        result = self.r.eval(
+            _IDEMPOTENT_MEMORY_COMMIT_LUA,
+            4,
+            idem_key,
+            memory_key,
+            memory_outbox_key(memory_id),
+            MEMORY_OUTBOX_PENDING,
+            memory_id,
+            json.dumps(doc, ensure_ascii=False, separators=(",", ":")),
+            "euri:memory:",
+            f"{time.time():.6f}",
+        )
+        winner, created = result
+        if isinstance(winner, bytes):
+            winner = winner.decode("utf-8", errors="replace")
+        if isinstance(created, bytes):
+            created = created.decode("utf-8", errors="replace")
+        return str(winner), str(created) == "1"
+
+    def _commit_memory(self, memory_key: str, memory_id: str, doc: dict) -> None:
+        """Crea memoria canonica e record outbox nella stessa operazione Redis."""
+        self.r.eval(
+            _MEMORY_COMMIT_LUA,
+            3,
+            memory_key,
+            memory_outbox_key(memory_id),
+            MEMORY_OUTBOX_PENDING,
+            memory_id,
+            json.dumps(doc, ensure_ascii=False, separators=(",", ":")),
+            f"{time.time():.6f}",
+        )
+
+    def save_memory(
+        self,
+        content: str,
+        category: str = "personale",
+        tags: list[str] = None,
+        source: str = "user",
+        expires_at: datetime | None = None,
+        idempotent: bool = False,
+        due_at: datetime | None = None,
+        status: str | None = None,
+        memory_kind: str | None = None,
+        temporal_context: dict | None = None,
+    ) -> str | None:
         # Memory Guard: scansione anti-poisoning sull'ingest. Da fonte non fidata
         # (web/mobile_in) un contenuto con injection/esfiltrazione viene rifiutato
         # (ritorna None); da fonte fidata si salva ma marcato in safety_flag.
@@ -62,27 +159,49 @@ class MemoryManager:
         mid = str(uuid.uuid4())
         key = f"euri:memory:{mid}"
 
-        # Idempotency cross-processo (Codex round 3 #1/#2) — OPT-IN (idempotent=True).
+        # Idempotency cross-processo — OPT-IN (idempotent=True).
         # Daemon vocale, UI e passive-inline possono salvare lo STESSO contenuto concorrentemente
-        # (check-then-save TOCTOU; passive ~487 nodi). Una chiave SET NX EX su (source, contenuto
-        # normalizzato) serializza in Redis: il 2° writer trova la chiave e RITORNA L'ID DEL
-        # VINCITORE invece di creare un doppione. Finestra breve = copre la race, non la storia.
+        # (check-then-save TOCTOU). Il mapping su (source, contenuto normalizzato) viene
+        # committato atomicamente col RedisJSON solo DOPO aver costruito il documento.
+        # Finestra breve = copre la race, non la storia.
         # ⚠️ OPT-IN di proposito (Codex round 3 bis): ritornare un id ESISTENTE rompe i chiamanti
         # che post-mutano il nuovo id (reaction scrive reacted_to/tags, loop2e consolidated_*,
         # obsidian forza il domain) → gli scriverebbero metadati di una memoria nuova sul nodo del
-        # vincitore. Abilitato SOLO dove la race è reale E il chiamante non post-muta: passive
-        # learner e save esplicito (user). Fail-mode sicuro: spento = resta il dedup best-effort.
-        if idempotent:
-            import hashlib
-            _norm = " ".join((content or "").lower().split())
-            if _norm:
-                _idem = f"euri:idem:save:{source}:{hashlib.sha1(_norm.encode()).hexdigest()}"
-                if not self.r.set(_idem, mid, nx=True, ex=120):
-                    _winner = self.r.get(_idem)
-                    logger.debug(f"save_memory: idempotency skip — contenuto già in salvataggio (winner={_winner})")
-                    return _winner or None
+        # vincitore. Abilitato SOLO dove la race è reale e le eventuali post-mutazioni sono
+        # conservative anche su un nodo identico esistente: passive learner e save esplicito.
+        # Fail-mode sicuro: spento = resta il dedup best-effort.
+        idem_key = self._idempotency_key(content, source) if idempotent else None
 
         ts = now()
+        temporal_context = dict(temporal_context or {})
+
+        def _float_or_none(value):
+            try:
+                return float(value) if value is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        asserted_at = _float_or_none(temporal_context.get("asserted_at")) or to_timestamp(ts)
+        event_start = _float_or_none(temporal_context.get("event_start"))
+        event_end = _float_or_none(temporal_context.get("event_end"))
+        if event_start is None and event_end is None:
+            from core.temporal_context import resolve_text_event_time
+            inferred_time = resolve_text_event_time(content, asserted_at=asserted_at)
+            for field, value in inferred_time.items():
+                temporal_context.setdefault(field, value)
+            event_start = _float_or_none(temporal_context.get("event_start"))
+            event_end = _float_or_none(temporal_context.get("event_end"))
+        temporal_context["schema_version"] = int(temporal_context.get("schema_version") or 1)
+        temporal_context["asserted_at"] = asserted_at
+        temporal_context["event_start"] = event_start
+        temporal_context["event_end"] = event_end
+        kind_by_source = {
+            "episode": "conversation_episode",
+            "reflection": "reflection",
+            "loop2e": "derived_consolidation",
+            "reaction": "reaction_lesson",
+        }
+        memory_kind = memory_kind or kind_by_source.get(source, "semantic_fact")
 
         # Auto-assegna expires_at in base alla source (finestra scorrevole)
         if expires_at is None:
@@ -99,7 +218,8 @@ class MemoryManager:
                 embedding = vec.tolist()
 
         # Contesto temporale arricchito
-        hour = ts.hour
+        asserted_dt = from_timestamp(asserted_at) or ts
+        hour = asserted_dt.hour
         if hour < 12:
             time_of_day = "mattina"
         elif hour < 18:
@@ -108,7 +228,7 @@ class MemoryManager:
             time_of_day = "sera"
         _DAYS_IT = ["lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato", "domenica"]
         context_meta = {
-            "day_of_week": _DAYS_IT[ts.weekday()],
+            "day_of_week": _DAYS_IT[asserted_dt.weekday()],
             "time_of_day": time_of_day,
             "session_type": source,
         }
@@ -134,7 +254,7 @@ class MemoryManager:
             _re.IGNORECASE
         )
         requires_verification = bool(_NUM_PAT.search(content))
-        memory_axes = analyze_memory_axes(content, source=source, created_at=to_timestamp(ts))
+        memory_axes = analyze_memory_axes(content, source=source, created_at=asserted_at)
         if "acephalous_subject" in memory_axes.get("audit_reasons", []):
             requires_verification = True
 
@@ -143,56 +263,46 @@ class MemoryManager:
             "content": content,
             "category": category,
             "source": source,
+            "memory_kind": memory_kind,
             "domain": domain_label,
             "requires_verification": requires_verification,
             "created_at": to_timestamp(ts),
-            "due_at": None,
+            "asserted_at": asserted_at,
+            "event_start": event_start,
+            "event_end": event_end,
+            "due_at": to_timestamp(due_at),
             "expires_at": to_timestamp(expires_at) if expires_at else None,
             "recalled_count": 0,
             "last_recalled_at": None,
             "tags": tags or [],
             "embedding": embedding,
             "context_meta": context_meta,
+            "temporal_context": temporal_context,
             "memory_axes": memory_axes,
             "safety_flag": guard["safety_flag"],  # [] se pulito; categorie se contenuto sospetto da fonte fidata
         }
-        self.r.json().set(key, "$", doc)
-        update_loop2e_candidate_index(self.r, doc)
-        if expires_at:
-            # expireat è separato dal JSON.SET (Codex #1): se fallisce, la memoria resterebbe
-            # SENZA TTL (vive per sempre) mentre expires_at dice il contrario. Tracciato, non
-            # ingoiato; e NON facciamo crashare il save (meglio una memoria senza TTL che persa).
-            try:
-                self.r.expireat(key, expires_at)
-            except Exception as e:
-                self._record_integrity_failure("expireat-save", key, e)
+        # Impegno (todo assorbito): una memoria con scadenza e stato pending/done.
+        # Le memorie normali restano senza status → invisibili a @status:{pending}.
+        if status:
+            doc["status"] = status
+            doc["reminded_count"] = 0
+            doc["last_reminded_at"] = None
+            doc["completed_at"] = None
+        if idem_key:
+            winner_id, created = self._commit_idempotent_memory(idem_key, key, mid, doc)
+            if not created:
+                logger.debug(
+                    f"save_memory: idempotency skip — documento già committato (winner={winner_id})"
+                )
+                process_memory_outbox_event(self.r, memory_outbox_key(winner_id))
+                return winner_id
+        else:
+            self._commit_memory(key, mid, doc)
         logger.info(f"Memory salvata: {mid}")
 
-        # Pulse afferente (Fase 1): una memoria salvata è un evento percepibile. Polo dalla
-        # source (interazione→extero, processo interno→intero). I flag di rischio nel payload
-        # così lo scorer di tensione li legge senza dover ri-aprire il nodo. Fail-open.
-        pulse_emit(
-            self.r, "memory",
-            "extero" if source in _EXTERO_MEMORY_SOURCES else "intero", "saved",
-            payload={
-                "id": mid, "mem_source": source, "domain": domain_label,
-                "requires_verification": requires_verification,
-                "memory_axes": {
-                    "subject_status": memory_axes.get("subject_status"),
-                    "audit_reasons": memory_axes.get("audit_reasons", []),
-                    "fact_types": memory_axes.get("fact_types", []),
-                    "temporal_markers": memory_axes.get("temporal_markers", []),
-                },
-                "safety_flag": doc["safety_flag"],
-            },
-            salience=0.55 if (doc["safety_flag"] or requires_verification) else 0.35,
-        )
-
-        # Sincronizza verso Obsidian Vault (se abilitato)
-        try:
-            write_memory(doc)
-        except Exception as e:
-            logger.debug(f"Obsidian sync memory error: {e}")
+        # Fast path: conserva la latenza attuale. Se un effetto fallisce, il record
+        # resta nell'outbox e verra' ripreso dal worker invece di essere perso.
+        process_memory_outbox_event(self.r, memory_outbox_key(mid))
 
         return mid
 
@@ -256,7 +366,15 @@ class MemoryManager:
             if identifiers:
                 id_cap = max(1, limit // 3)
                 id_query = " | ".join(identifiers)
-                id_results = self._search_keyword(id_query, id_cap, source_filter=source_filter, touch=False)
+                id_results = self._rank_epistemically(
+                    self._search_keyword(
+                        id_query,
+                        max(id_cap * 4, 8),
+                        source_filter=source_filter,
+                        touch=False,
+                    ),
+                    limit=id_cap,
+                )
                 for r in id_results[:id_cap]:
                     uid = r.get("id", "")
                     if uid not in seen_uuids:
@@ -288,19 +406,30 @@ class MemoryManager:
                 f"(id:{len(identifiers)} token, semantic:{len(semantic)}, fill)"
             )
 
-            # Invariante A — down-rank di provenienza (centralizzato in _demote_provenance_stale).
-            merged = self._demote_provenance_stale(merged)
-
-            results = merged[:limit]
+            # Ranking prudente centralizzato: pertinenza, affidabilita' della fonte
+            # e flag epistemici concorrono prima del taglio finale.
+            results = self._rank_epistemically(merged, limit=limit)
             if touch:
                 self._touch_memories(results)
             return results
 
         if query == "*":
-            return self._search_keyword(query, limit, source_filter=source_filter, touch=touch)
+            candidates = self._search_keyword(
+                query, max(limit * 4, limit), source_filter=source_filter, touch=False
+            )
+            results = self._rank_epistemically(candidates, limit=limit)
+            if touch:
+                self._touch_memories(results)
+            return results
         kw_list = self._safe_keywords(query)
         kw_query = " | ".join(kw_list[:6]) if kw_list else query
-        return self._search_keyword(kw_query, limit, source_filter=source_filter, touch=touch)
+        candidates = self._search_keyword(
+            kw_query, max(limit * 4, limit), source_filter=source_filter, touch=False
+        )
+        results = self._rank_epistemically(candidates, limit=limit)
+        if touch:
+            self._touch_memories(results)
+        return results
 
     @staticmethod
     def _sanitize_query(text: str) -> str:
@@ -396,7 +525,7 @@ class MemoryManager:
                     item["_created_at"] = from_timestamp(item.get("created_at"))
                     item["_vec_score"] = score
                     docs.append(item)
-            return docs[:limit]
+            return self._rank_epistemically(docs, limit=limit)
         except Exception as e:
             logger.error(f"Errore ricerca semantica: {e}")
             return []
@@ -443,7 +572,7 @@ class MemoryManager:
                 merged.append(d)
                 seen.add(d["id"])
 
-        results = merged[:limit]
+        results = self._rank_epistemically(merged, limit=limit)
         if touch:
             self._touch_memories(results)
         return results
@@ -463,29 +592,18 @@ class MemoryManager:
             self._touch_memories(docs)
         return docs
 
+    @staticmethod
+    def _rank_epistemically(results: list[dict], limit: int | None = None) -> list[dict]:
+        """
+        Applica lo stesso ordinamento prudente a semantica, keyword e recency.
+        Il pool deve essere gia' ordinato per pertinenza: il reranker lo corregge,
+        non sostituisce il segnale prodotto dal motore di ricerca.
+        """
+        return rank_memories_epistemically(results, limit=limit)
+
     def _demote_provenance_stale(self, results: list[dict]) -> list[dict]:
-        """
-        Invariante A — down-rank di provenienza, CENTRALIZZATO. Sposta in fondo i nodi
-        la cui fondamenta è caduta (`provenance_stale`, propagato dal Dream Engine) —
-        demozione, non esclusione (fail-safe). Applicato a TUTTI i path che iniettano
-        contesto (semantico, recency, temporale), non solo alla ricerca semantica: senza,
-        un nodo marcio poteva ancora affiorare per pura recenza prima delle ancore pulite
-        (gap trovato in review). Legge il flag solo per i candidati finali; sort stabile.
-        """
-        if not results:
-            return results
-        def _stale(rec):
-            if "provenance_stale" in rec:
-                return bool(rec.get("provenance_stale"))
-            mid = rec.get("id", "")
-            k = mid if str(mid).startswith("euri:memory:") else f"euri:memory:{mid}"
-            try:
-                v = self.r.json().get(k, "$.provenance_stale")
-                return bool(v and v[0])
-            except Exception:
-                return False
-        results.sort(key=lambda rec: 1 if _stale(rec) else 0)
-        return results
+        """Compatibilita' interna: il vecchio helper ora usa il ranking completo."""
+        return self._rank_epistemically(results)
 
     def _touch_memories(self, memories: list[dict]):
         """Rinforza memorie realmente usate in retrieval cognitivo."""
@@ -540,12 +658,13 @@ class MemoryManager:
         source_filter: list[str] | None = None,
         touch: bool = True,
     ) -> list[dict]:
-        # Down-rank di provenienza anche sulla recency (gap di review F3): la base
-        # iniettata da _build_context per pura recenza non deve far affiorare un nodo
-        # marcio prima delle ancore pulite.
-        return self._demote_provenance_stale(
-            self._search_keyword("*", limit=limit, source_filter=source_filter, touch=touch)
+        candidates = self._search_keyword(
+            "*", limit=max(limit * 4, limit), source_filter=source_filter, touch=False
         )
+        results = self._rank_epistemically(candidates, limit=limit)
+        if touch:
+            self._touch_memories(results)
+        return results
 
     def search_memories_by_timerange(
         self,
@@ -554,44 +673,50 @@ class MemoryManager:
         limit: int = 5,
         touch: bool = True,
     ) -> list[dict]:
-        """Recupera memorie in un range temporale tramite filtro numerico su created_at."""
+        """Recupera memorie per tempo dell'evento, dell'affermazione o del salvataggio."""
         try:
-            q = (Query(f"@created_at:[{ts_start} {ts_end}]")
+            temporal_query = (
+                f"((@event_start:[-inf {ts_end}] @event_end:[{ts_start} +inf]) | "
+                f"@asserted_at:[{ts_start} {ts_end}] | "
+                f"@created_at:[{ts_start} {ts_end}])"
+            )
+            q = (Query(temporal_query)
                  .sort_by("created_at", asc=False)
-                 .paging(0, limit))
+                 .paging(0, max(limit * 4, limit)))
             results = self.r.ft("idx:memories").search(q)
-            return self._demote_provenance_stale(self._hydrate(results.docs, touch=touch))
+            memories = self._rank_epistemically(
+                self._hydrate(results.docs, touch=False), limit=limit
+            )
+            if touch:
+                self._touch_memories(memories)
+            return memories
         except Exception as e:
             logger.error(f"Errore ricerca temporale: {e}")
             return []
 
     def get_recent_reflections(self, limit: int = 2, touch: bool = True) -> list[dict]:
         """Restituisce le reflection più recenti generate da Loop 2a."""
-        return self._search_keyword("*", limit=limit, source_filter=["reflection"], touch=touch)
+        candidates = self._search_keyword(
+            "*", limit=max(limit * 4, limit), source_filter=["reflection"], touch=False
+        )
+        results = self._rank_epistemically(candidates, limit=limit)
+        if touch:
+            self._touch_memories(results)
+        return results
 
     # ──────────────────────────────────────────
-    # TODOS (promemoria con scadenza)
+    # IMPEGNI (todo assorbiti nel modello memoria: memorie con due_at + status)
     # ──────────────────────────────────────────
 
-    def save_todo(self, content: str, due_at: datetime = None, priority: str = "media", tags: list[str] = None) -> str:
-        tid = str(uuid.uuid4())
-        key = f"euri:todo:{tid}"
-        ts = now()
-        doc = {
-            "id": tid,
-            "content": content,
-            "created_at": to_timestamp(ts),
-            "due_at": to_timestamp(due_at),
-            "completed_at": None,
-            "priority": priority,
-            "status": "pending",
-            "reminded_count": 0,
-            "last_reminded_at": None,
-            "tags": tags or [],
-        }
-        self.r.json().set(key, "$", doc)
-        logger.info(f"Todo salvato: {tid} — scadenza: {format_datetime(due_at)}")
-        return tid
+    def save_todo(self, content: str, due_at: datetime = None, tags: list[str] = None) -> str | None:
+        """Un impegno è una memoria di prima classe con scadenza e stato pending/done:
+        passa dall'hardened path di save_memory (guard, axes, embedding, pulse, vault)
+        e il piano conversazionale la vede come qualsiasi altro ricordo."""
+        mid = self.save_memory(content, category="impegno", tags=tags, source="user",
+                               due_at=due_at, status="pending")
+        if mid:
+            logger.info(f"Impegno salvato: {mid} — scadenza: {format_datetime(due_at)}")
+        return mid
 
     def get_todos_today(self) -> list[dict]:
         t = now()
@@ -606,30 +731,41 @@ class MemoryManager:
     def get_pending_todos(self) -> list[dict]:
         return self._query_todos("@status:{pending}")
 
-    def get_due_todos_now(self, window_seconds: int = 60) -> list[dict]:
-        """Todo in scadenza entro i prossimi window_seconds (default: entro questo minuto)."""
-        ts_now = now().timestamp()
-        ts_end = ts_now + window_seconds
-        return self._query_todos(
-            f"@due_at:[{ts_now - window_seconds} {ts_end}] @status:{{pending}} @reminded_count:[0 0]"
-        )
-
     def mark_reminded(self, todo_id: str):
-        key = f"euri:todo:{todo_id}"
+        key = f"euri:memory:{todo_id}"
         self.r.json().numincrby(key, "$.reminded_count", 1)
         self.r.json().set(key, "$.last_reminded_at", to_timestamp(now()))
 
     def complete_todo(self, todo_id: str) -> bool:
-        key = f"euri:todo:{todo_id}"
+        key = f"euri:memory:{todo_id}"
         if not self.r.exists(key):
             return False
         self.r.json().set(key, "$.status", "done")
         self.r.json().set(key, "$.completed_at", to_timestamp(now()))
-        logger.info(f"Todo completato: {todo_id}")
+        logger.info(f"Impegno completato: {todo_id}")
+        return True
+
+    def reschedule_todo(self, todo_id: str, new_due: datetime) -> bool:
+        """Sposta la scadenza di un impegno e riarma consegna e clock afferente:
+        una scadenza nuova è un evento nuovo — va riannunciata (marcatore
+        euri:pulse:clock_emitted rimosso) e riconsegnata (reminded_count azzerato)."""
+        key = f"euri:memory:{todo_id}"
+        if not self.r.exists(key):
+            return False
+        self.r.json().set(key, "$.due_at", to_timestamp(new_due))
+        self.r.json().set(key, "$.reminded_count", 0)
+        self.r.json().set(key, "$.last_reminded_at", None)
+        try:
+            self.r.srem("euri:pulse:clock_emitted", todo_id)
+        except Exception:
+            pass  # fail-open: al peggio il clock afferente non ri-emette, la consegna va comunque
+        logger.info(f"Impegno riprogrammato: {todo_id} → {format_datetime(new_due)}")
         return True
 
     def find_todo_by_content(self, query: str) -> list[dict]:
-        return self._query_todos(self._sanitize_query(query), limit=3)
+        # _sanitize_query_or preserva gli OR espliciti ("a | b") costruiti dai chiamanti:
+        # una frase intera sanitizzata diventa AND di tutti i token e non trova mai nulla.
+        return self._query_todos(f"({self._sanitize_query_or(query)}) @status:{{pending}}", limit=3)
 
     @staticmethod
     def _safe_keywords(content: str) -> list[str]:
@@ -938,20 +1074,22 @@ class MemoryManager:
         }
 
     def _query_todos(self, query: str, limit: int = 20) -> list[dict]:
+        """Query sugli impegni: memorie con status pending/done in idx:memories."""
         try:
             q = Query(query).paging(0, limit).sort_by("due_at", asc=True)
-            results = self.r.ft("idx:todos").search(q)
+            results = self.r.ft("idx:memories").search(q)
             docs = []
             for doc in results.docs:
                 data = self.r.json().get(doc.id, "$")
                 if data:
                     item = data[0]
+                    item.pop("embedding", None)  # inutile ai consumatori, pesante nei log
                     item["_due_at"] = from_timestamp(item.get("due_at"))
                     item["_created_at"] = from_timestamp(item.get("created_at"))
                     docs.append(item)
             return docs
         except Exception as e:
-            logger.error(f"Errore query todos: {e}")
+            logger.error(f"Errore query impegni: {e}")
             return []
 
     # ──────────────────────────────────────────

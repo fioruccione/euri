@@ -116,6 +116,22 @@ def hydrate_related(r, event: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     return "", {}
 
 
+def _hydrate_tension_nodes(r, ids: list[Any]) -> tuple[list[dict[str, Any]], bool]:
+    """Read-only: rilegge i nodi citati da una tensione della mappa del pensiero.
+    Scarta quelli ritirati (superseded/consolidati) — se restano <2 vivi la tensione
+    si è risolta da sola (anti-nag naturale). has_primary = c'è un nodo DETTO-DA-STEFANO."""
+    nodes, has_primary = [], False
+    for mid in list(ids)[:8]:
+        doc = _json_get_one(r, _memory_key(str(mid)))
+        if not doc or doc.get("superseded_by") or doc.get("consolidated_into"):
+            continue
+        src = doc.get("source")
+        if src in {"user", "teach", "obsidian_vault"}:
+            has_primary = True
+        nodes.append({"id": str(mid)[:8], "source": src, "content": (doc.get("content") or "")[:300]})
+    return nodes, has_primary
+
+
 def build_candidate(r, event_id: str, event: dict[str, Any]) -> InitiativeCandidate:
     payload = parse_payload(event.get("payload"))
     related_key, related = hydrate_related(r, event)
@@ -149,6 +165,22 @@ def build_candidate(r, event_id: str, event: dict[str, Any]) -> InitiativeCandid
         else:
             eligible = True
             reason = clarify_reason
+            goal = "ask_memory_clarification"
+    elif sense == "thought_map" and kind == "tension":
+        # Contraddizione tra memorie trovata dal riorganizzatore. È un gap epistemico REALE
+        # per costruzione → non si gate sul tension score generico; il filtro è: i nodi in
+        # conflitto esistono ancora (≥2 vivi). Se la tua parola ne ha superseduto uno, la
+        # tensione sparisce da sola (anti-nag). related idratato qui (hydrate_related non copre).
+        nodes, has_primary = _hydrate_tension_nodes(r, payload.get("ids") or [])
+        if len(nodes) < 2:
+            reason = "tension_resolved_or_gone"
+        else:
+            related = {"subject": payload.get("subject"),
+                       "description": payload.get("description"),
+                       "nodes": nodes,
+                       "has_stefano_claim": bool(payload.get("has_stefano_claim") or has_primary)}
+            eligible = True
+            reason = "tension_vs_stefano_claim" if related["has_stefano_claim"] else "tension_derived_only"
             goal = "ask_memory_clarification"
 
     return InitiativeCandidate(
@@ -321,7 +353,74 @@ def parse_question_response(raw: str) -> dict[str, Any]:
     return data if isinstance(data, dict) else {"should_ask": False, "reason": "not_object"}
 
 
-def generate_question(candidate: InitiativeCandidate) -> dict[str, Any]:
+def _candidate_focus_material(candidate: InitiativeCandidate) -> str:
+    sense = str(candidate.event.get("sense") or "")
+    if sense == "insight":
+        return _insight_brief(candidate.related)
+    if sense == "memory":
+        return str(candidate.related.get("content") or candidate.payload)[:1400]
+    if sense == "thought_map":
+        nodes = "\n".join(
+            str(node.get("content") or "")[:260]
+            for node in candidate.related.get("nodes", [])
+        )
+        return (
+            f"{candidate.related.get('subject') or ''}: "
+            f"{candidate.related.get('description') or ''}\n{nodes}"
+        )[:1400]
+    return str(candidate.related or candidate.payload)[:1400]
+
+
+def classify_focus_relevance(
+    focus_text: str,
+    candidate: InitiativeCandidate,
+    *,
+    chat=None,
+    model: str | None = None,
+) -> str:
+    """EXTENDS soltanto se l'iniziativa prosegue davvero il filo corrente.
+
+    RELATED e UNRELATED non possono interrompere una conversazione attiva. Errori,
+    output vuoti o ambigui sono fail-closed a UNRELATED.
+    """
+    if not focus_text.strip() or not candidate.eligible:
+        return "UNRELATED"
+    if chat is None:
+        chat = chat_client
+    material = _candidate_focus_material(candidate)
+    prompt = f"""Sei il gate conservativo che decide se un pensiero proattivo di Euri può inserirsi nella conversazione in corso.
+
+CONVERSAZIONE ATTUALE, composta solo dalle parole recenti dell'utente:
+"{focus_text[-1800:]}"
+
+PENSIERO CANDIDATO:
+"{material[:1400]}"
+
+Classifica:
+- EXTENDS: il pensiero aggiunge un meccanismo, un dato o una domanda direttamente utile al problema specifico di cui l'utente sta parlando adesso.
+- RELATED: condivide dominio, parole o un'analogia generale, ma sposterebbe il filo su un altro problema.
+- UNRELATED: tratta un argomento diverso.
+
+La sola appartenenza allo stesso settore, parole come controllo/processo/dati, o un'analogia astratta NON bastano per EXTENDS. Nel dubbio scegli RELATED o UNRELATED.
+Rispondi SOLO con EXTENDS, RELATED oppure UNRELATED."""
+    try:
+        response = chat.chat(
+            model=model or config.OLLAMA_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0.0, "num_predict": 2500},
+            think=True,
+        )
+        raw = response.message.content or ""
+        if "<channel|>" in raw:
+            raw = raw.split("<channel|>", 1)[-1]
+        label = raw.strip().upper().rstrip(".")
+        return label if label in {"EXTENDS", "RELATED", "UNRELATED"} else "UNRELATED"
+    except Exception as e:
+        logger.warning(f"Initiative focus relevance fallita ({e}) → UNRELATED")
+        return "UNRELATED"
+
+
+def generate_question(candidate: InitiativeCandidate, *, focus_text: str = "") -> dict[str, Any]:
     """Chiede al modello se formulare una domanda e con quali parole.
 
     Le regole qui sono il contratto epistemico; la frase resta generata dal LLM.
@@ -348,10 +447,29 @@ def generate_question(candidate: InitiativeCandidate) -> dict[str, Any]:
             "- La domanda deve aiutare a fissare o correggere la memoria, non commentarla.\n"
             "- Se il fatto è banale, troppo generico o non vale interrompere Stefano, should_ask=false."
         )
+    elif str(event.get("sense") or "") == "thought_map":
+        subj = related.get("subject") or "una cosa"
+        conflitto = "\n".join(f"  - [{n.get('source')}] {n.get('content')}" for n in related.get("nodes", []))
+        event_text = f"Tensione su «{subj}»: {related.get('description','')}\nNote in conflitto:\n{conflitto}"[:1400]
+        event_label = "contraddizione tra memorie (trovata dal riorganizzatore)"
+        specific_contract = (
+            "- È una contraddizione REALE tra note di memoria sullo stesso soggetto.\n"
+            "- Chiedi a Stefano QUALE versione è corretta, o di confermare il dato, nominando il soggetto in modo naturale.\n"
+            "- NON dire tu quale è giusta; NON elencare id o citare 'note': parla come a voce.\n"
+            "- should_ask=false se la contraddizione è banale o non risolvibile con una frase."
+        )
     else:
         event_text = str(related.get("content") or candidate.payload)[:1200]
         event_label = kind
         specific_contract = "- Chiedi solo se la risposta di Stefano cambierebbe davvero la memoria."
+
+    focus_contract = ""
+    if focus_text.strip():
+        focus_contract = (
+            "\nLa domanda entra dentro una conversazione già attiva. Deve nominare in modo "
+            "naturale il legame concreto col filo corrente e aggiungerlo, non cambiare argomento.\n"
+            f"FILO CORRENTE (parole dell'utente): {focus_text[-1200:]}\n"
+        )
 
     prompt = f"""Sei il controllore proattivo di Euri. Non stai rispondendo a Stefano: devi decidere se Euri deve fare UNA domanda breve adesso.
 
@@ -361,6 +479,7 @@ Contratto:
 - Se la domanda sarebbe ridondante, troppo astratta o non ancorata all'evento, should_ask=false.
 - Niente markdown, niente elenco, niente formule burocratiche.
 {specific_contract}
+{focus_contract}
 
 EVENTO: {event_label}
 TENSIONE: {candidate.score.tension:.2f}

@@ -144,7 +144,9 @@ GESTIONE CONOSCENZA E MEMORIA:
 - Quando rispondi su elenchi tecnici reali (macchinari, impianti, presse, codici, capacità), distingui le specifiche nominali dai dati operativi aggiornati se entrambi compaiono in memoria. Esempio: "ICMA2: nominale 1.200-1.600 kg/h secondo scheda precedente; dato operativo aggiornato: stabile intorno a 1.800 kg/h dopo modifica motore." Non fondere versioni diverse come se fossero un unico dato senza storia.
 
 CALIBRAZIONE — DISTINGUI CIÒ CHE SAI DA CIÒ CHE DEDUCI (impara a "battere ciglio"):
-- Tratta come CERTO solo ciò che trovi nei blocchi di contesto che hai davanti (memorie, dati, conversazione di questa sessione): lì sii diretto e sicuro, senza esitazioni inutili.
+- I blocchi di contesto rendono CERTO che una cosa sia stata detta o registrata, non rendono automaticamente vera la proposizione. Preserva sempre la modalità originale: "stimo", "probabilmente", "dovrebbe", "non ho controllato" restano stima, previsione o ipotesi anche se li ha detti Stefano.
+- Su una previsione tecnica separa con naturalezza: dato già osservato, stima di Stefano, meccanismo plausibile e verifica che manca. Non promuovere un risultato atteso a risultato ottenuto e non chiamare "vantaggio puro" un beneficio prima della prova decisiva.
+- Sui fatti diretti realmente presenti nel contesto sii netto, senza esitazioni inutili.
 - Quando vai OLTRE il contesto — applichi conoscenza generale, fai un'inferenza, stimi un valore o una percentuale — DICHIARALO: "questo lo deduco, non l'ho da un tuo dato", "a naso direi…", "di solito in generale…". Non spacciare mai un'inferenza o una stima per un dato che hai in memoria.
 - Su un dato tecnico specifico (un valore, un limite, una percentuale, l'obiettivo di un progetto, una spec di una macchina) che NON è nel contesto: NON arrotondarlo a un numero o a una risposta plausibile. Dì "non ho quel dato preciso" oppure chiedi. Un numero inventato che suona giusto è più pericoloso di un "non lo so".
 - Hai il PERMESSO di esitare: "aspetta, qui non sono sicuro", "questo dammelo che lo verifico" sono risposte legittime e PREFERIBILI a una risposta liscia ma incerta. Ammettere un'incertezza ti rende più affidabile, non meno utile: un vero esperto esita sui punti deboli, e quell'esitazione è informazione.
@@ -221,6 +223,41 @@ DREAM_LIGHT_CYCLE_INTERVAL_S = 20 * 60       # insight eval, correzioni, ipotesi
 DREAM_CREATIVE_CYCLE_INTERVAL_S = 90 * 60    # nuovo sogno cross-domain + promozione
 DREAM_MAINTENANCE_CYCLE_INTERVAL_S = 24 * 3600  # 2f/2h/cleanup/pruning/2e
 DREAM_INSIGHT_MIN_CONVERGENCES = 3   # era 2 — soglia alzata per ridurre promozioni facili
+# Instrumentazione ADDITIVA: logga la convergenza-al-momento-della-decisione su
+# euri:convergence:trace (ogni esito: promoted/denied_format/denied_repromotion/below_threshold),
+# per correlarla OFFLINE col recall futuro — misura convergenza↔uso su dati NON selezionati.
+# Non altera nessuna promozione. Read-only sulla decisione. Vedi analisi diag_convergence_*.
+CONVERGENCE_TRACE_ENABLED = True
+# Policy v2 (15/07/2026): la distanza vettoriale seleziona soltanto le coppie da
+# confrontare. Nessun vicino, neppure a distanza zero, conta come convergenza senza
+# conferma semantica dello stesso meccanismo operativo. Il cambio chiude il falso
+# positivo da template osservato nei primi 16 candidate del braccio dream_trace.
+CONVERGENCE_POLICY_VERSION = "claim_judge_v2"
+CONVERGENCE_VECTOR_SHORTLIST_MAX_DISTANCE = 0.40
+CONVERGENCE_JUDGE_BUDGET = 6          # nuove coppie LLM per ciclo; cache hit escluse
+CONVERGENCE_JUDGE_CACHE_TTL_S = 30 * 86400
+# Esperimento continuità 2b (dream_trace): tra un ciclo creativo e il successivo persiste
+# un residuo di ESPLORAZIONE a livello di STRATEGIA (tipi di ponte tentati e trovati deboli,
+# max 5 righe, mai contenuti né conclusioni). Con ~145 domini e pairing random la coppia non
+# si ripete quasi mai → un residuo per-coppia sarebbe inerte; quello per-strategia trasferisce.
+# Pre-registrazione e criteri: ESPERIMENTO_DREAM_TRACE.md. A flag spento: zero differenze.
+DREAM_TRACE_ENABLED = True  # ON dal 13/07 (ok Stefano) — raccolta braccio trattamento
+DREAM_TRACE_TTL_S = 48 * 3600  # residuo stantio dopo 2 giorni di fermo → scade, non contamina
+# Risveglio lucido — FASE MISURA (14/07): fedeltà-di-premessa dei candidate rispetto alle
+# memorie sorgente (source_memory_ids): il sogno ha detto la verità sulle proprie fonti?
+# ADDITIVA: nessuna decisione di promozione cambiata; punteggio calcolato UNA volta per
+# candidate (cacheato sul doc) e loggato nella convergence trace, da correlare OFFLINE
+# coi verdetti external_reaction di Stefano. Diventa gate SOLO se separa i suoi SÌ dai
+# NO — e comunque dopo la fine dell'esperimento dream_trace.
+PREMISE_FIDELITY_ENABLED = True
+PREMISE_FIDELITY_BUDGET = 5  # max valutazioni LLM per ciclo leggero (ammortizza il backfill)
+# Qualita' del ponte — FASE MISURA (17/07): distingue una deduzione sostenuta dalle
+# fonti da un'ipotesi utile ma incompleta o da una connessione forzata. Soltanto i
+# candidate creati dopo l'introduzione della misura sono eleggibili: niente costoso
+# backfill del pool storico. Il risultato e' osservativo e NON modifica la promozione.
+BRIDGE_VALIDITY_ENABLED = True
+BRIDGE_VALIDITY_BUDGET = 3
+BRIDGE_VALIDITY_POLICY_VERSION = "bridge_observer_v1"
 INSIGHT_TTL_DAYS = 30
 INSIGHT_DEMOTE_DAYS = 14  # PROMOTED non richiamato entro X giorni → torna CANDIDATE
 
@@ -279,6 +316,29 @@ OBSIDIAN_VAULT_PATH = "/home/fio/EuriVault"
 # insight/promoted), lasciando il Pulse come ground truth osservabile.
 PULSE_ENABLED = True
 
+# Interocezione hardware — recettore locale osservativo.
+# Campiona lo stato fisico senza LLM; pubblica l'ultimo snapshot e soltanto le
+# transizioni di stato su Redis/Pulse. In questa fase nessun consumer esegue
+# azioni protettive: prima raccogliamo una baseline reale della workstation.
+HARDWARE_INTEROCEPTION_ENABLED = True
+HARDWARE_INTEROCEPTION_INTERVAL_S = 3.0
+HARDWARE_INTEROCEPTION_LATEST_TTL_S = 30
+HARDWARE_INTEROCEPTION_BASELINE_INTERVAL_S = 60
+HARDWARE_INTEROCEPTION_REVIEW_AFTER_S = 72 * 3600
+HARDWARE_INTEROCEPTION_MIN_COVERAGE = 0.70
+HARDWARE_INTEROCEPTION_EVENT_COOLDOWN_S = 5 * 60
+HARDWARE_INTEROCEPTION_WARNING_SAMPLES = 3
+HARDWARE_INTEROCEPTION_RECOVERY_SAMPLES = 3
+HARDWARE_RAM_WARNING_PCT = 85.0
+HARDWARE_RAM_CRITICAL_PCT = 95.0
+HARDWARE_CPU_TEMP_WARNING_C = 90.0
+HARDWARE_CPU_TEMP_CRITICAL_C = 98.0
+HARDWARE_GPU_TEMP_WARNING_C = 82.0
+HARDWARE_GPU_TEMP_CRITICAL_C = 90.0
+# L'allocazione VRAM alta e' normale quando Ollama/Whisper tengono i modelli
+# residenti: segnala pressione persistente, ma da sola non genera CRITICAL.
+HARDWARE_VRAM_WARNING_PCT = 92.0
+
 # Initiative controller — prima "scintilla" proattiva.
 # Il daemon ascolta euri:pulse da `$` (solo eventi nuovi dal boot), rilegge il
 # JSON reale collegato all'evento, valuta tensione e chiede al modello se vale
@@ -289,8 +349,34 @@ INITIATIVE_SHADOW_ONLY = False
 INITIATIVE_MIN_TENSION = 0.25
 INITIATIVE_IDLE_SECONDS = 90
 INITIATIVE_COOLDOWN_S = 3 * 3600
+CONVERSATION_LEASE_SECONDS = 45
+CONVERSATION_FOCUS_SECONDS = 5 * 60
+CONVERSATION_FOCUS_MAX_TURNS = 4
+AUDIT_MEMORY_MAX_CANDIDATES = 40
+AUDIT_MEMORY_BATCH_SIZE = 10
+# Oltre questa pausa la history resta disponibile, ma viene marcata come un nuovo
+# segmento: il modello puo' riaprire il filo senza fingere che fosse "poco fa".
+TEMPORAL_EPISODE_GAP_SECONDS = 30 * 60
+# Un'iniziativa che ESTENDE davvero il focus può entrare al confine di turno,
+# ma non immediatamente né ripetutamente. RELATED/UNRELATED restano in coda.
+INITIATIVE_CONTEXTUAL_MIN_IDLE_S = 8
+INITIATIVE_CONTEXTUAL_COOLDOWN_S = 3 * 60
 INITIATIVE_PULSE_BLOCK_MS = 5000
 INITIATIVE_PENDING_MIN_AGE_S = 5  # stabilizza memory/saved prima di idratare (post-flag passive)
+
+# FaceAuth — riconoscimento facciale locale (sorella visiva di SpeakerAuth).
+# Il VisualGate distingue due segnali che prima collassavano in uno:
+#   "qualcuno è presente"  → basta per ASCOLTARE (SpeakerAuth protegge i comandi)
+#   "il proprietario è presente" → serve per PARLARE PER PRIMI (initiative, reminder, saluto)
+# Il laboratorio è usato di notte dai capoturno: una faccia qualunque non deve
+# far parlare Euri. Detection YuNet + embedding SFace (OpenCV, tutto locale);
+# i faceprint sono dati biometrici: restano su disco locale, mai i frame.
+FACE_AUTH_ENABLED = True
+FACE_AUTH_OWNER = "stefano"           # identità che abilita l'efferente
+FACE_AUTH_THRESHOLD = 0.363           # cosine SFace (soglia canonica OpenCV)
+FACE_DETECT_MODEL = str(Path.home() / "euri" / "models" / "face_detection_yunet_2023mar.onnx")
+FACE_RECOG_MODEL = str(Path.home() / "euri" / "models" / "face_recognition_sface_2021dec.onnx")
+FACEPRINT_DIR = str(Path.home() / "euri" / "models" / "faceprints")
 
 # Propagazione di provenienza (invariante A della primitiva cognitiva).
 # Un nodo derivato (consolidated_from) la cui fondamenta è caduta — genitori
@@ -314,7 +400,13 @@ CODE_RUNNER_INPUT_DIR = str(Path.home() / "Scrivania" / "dati_per_Euri")
 CODE_RUNNER_OUTPUT_DIR = str(Path.home() / "Scrivania" / "scambio_dati")
 CODE_RUNNER_SANDBOX_DIR = str(Path(__file__).parent / "sandbox")
 CODE_RUNNER_TIMEOUT = 30           # secondi max per esecuzione script
+# Confinamento OS del subprocess via bubblewrap (difesa runtime oltre lo scanner AST):
+# namespace mount read-only tranne sandbox+output, /tmp isolato, $HOME/etc assenti.
+# Kill-switch: a False si degrada al lancio diretto + scanner (comportamento storico).
+CODE_RUNNER_BWRAP_ENABLED = True
 CODE_RUNNER_MAX_OUTPUT_BYTES = 10240  # max stdout catturato
+SILENT_CHAT_UPLOAD_TTL_SECONDS = 24 * 3600  # upload chat effimeri: cleanup dopo 24h
+SILENT_CHAT_UPLOAD_MAX_MB = 200
 # Timeout dell'intero handler run_code = pre-extract Vision + code-gen + esecuzione.
 # Settato V2.18.2 dopo osservazione 28/05 ore 16:29: pre-extract di 5 file
 # (con 3 chiamate Vision Gemma 4) + code-gen Gemma + execution = ~57s.

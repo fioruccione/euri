@@ -33,6 +33,19 @@ import time
 PULSE_STREAM = "euri:pulse"
 _MAXLEN = 50000  # tetto morbido: teniamo la storia sensoriale recente, non infinita
 
+_PULSE_EMIT_ONCE_LUA = """
+if redis.call('HGET', KEYS[2], 'pulse_sent') == '1' then
+    return 0
+end
+redis.call(
+    'XADD', KEYS[1], 'MAXLEN', '~', ARGV[1], '*',
+    'sense', ARGV[2], 'source', ARGV[3], 'kind', ARGV[4],
+    'payload', ARGV[5], 'salience', ARGV[6], 'ts', ARGV[7]
+)
+redis.call('HSET', KEYS[2], 'pulse_sent', '1')
+return 1
+"""
+
 
 def pulse_emit(r, sense, source, kind, payload=None, salience=0.5):
     """Emette un evento sul bus afferente. Non solleva mai."""
@@ -60,3 +73,41 @@ def pulse_emit(r, sense, source, kind, payload=None, salience=0.5):
         )
     except Exception:
         pass
+
+
+def pulse_emit_once(
+    r,
+    event_id,
+    sense,
+    source,
+    kind,
+    payload=None,
+    salience=0.5,
+    marker_key: str | None = None,
+) -> bool:
+    """Emette un evento una sola volta; False indica che il retry deve restare pendente."""
+    if r is None:
+        return False
+    try:
+        import config
+        if not getattr(config, "PULSE_ENABLED", True):
+            return True
+    except Exception:
+        pass
+    try:
+        r.eval(
+            _PULSE_EMIT_ONCE_LUA,
+            2,
+            PULSE_STREAM,
+            marker_key or f"euri:pulse:dedup:{event_id}",
+            str(_MAXLEN),
+            str(sense),
+            str(source),
+            str(kind),
+            json.dumps(payload or {}, ensure_ascii=False, default=str),
+            f"{float(salience):.3f}",
+            f"{time.time():.3f}",
+        )
+        return True
+    except Exception:
+        return False

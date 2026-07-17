@@ -10,7 +10,27 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from core.initiative import build_candidate, hydrate_related, parse_question_response
+from core.initiative import (
+    build_candidate,
+    classify_focus_relevance,
+    hydrate_related,
+    parse_question_response,
+)
+
+
+class _Msg:
+    def __init__(self, content):
+        self.message = type("M", (), {"content": content})
+
+
+class FakeChat:
+    def __init__(self, content):
+        self.content = content
+        self.calls = []
+
+    def chat(self, **kwargs):
+        self.calls.append(kwargs)
+        return _Msg(self.content)
 
 
 class FakeJSON:
@@ -156,6 +176,22 @@ def run():
         "parser tollera fence",
         parsed.get("should_ask") is True and parsed.get("question") == "Ti torna?",
         parsed,
+    ))
+
+    focus_chat = FakeChat("UNRELATED")
+    verdict = classify_focus_relevance(
+        "Simone sta facendo prove IZOD e forse i provini erano posizionati male.",
+        cand,
+        chat=focus_chat,
+    )
+    ok.append(check(
+        "insight protocollo/pallet non interrompe focus IZOD",
+        verdict == "UNRELATED" and focus_chat.calls[-1]["think"] is True,
+        verdict,
+    ))
+    ok.append(check(
+        "focus relevance fail-closed su output ambiguo",
+        classify_focus_relevance("focus vivo", cand, chat=FakeChat("forse RELATED")) == "UNRELATED",
     ))
 
     passed = sum(ok)
