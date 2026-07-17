@@ -38,26 +38,61 @@ CAPABILITIES = {
 
 _VALID_CAPS = set(CAPABILITIES)
 
-# Verbi-azione GENERICI (non modi di dire di settore — vedi feedback no-overfit):
-# pre-gate economico per decidere se vale la pena chiamare il planner. Non è
-# classificazione, solo "sembra una richiesta operativa-composta?". Sostituibile
-# dal modello quando le regex toccano il soffitto (pipeline_model_routing).
-_ACTION_VERBS = re.compile(
-    r"\b(legg\w*|riassum\w*|sintetizz\w*|prepar\w*|scriv\w*|bozz\w*|mail|email|"
-    r"mand\w*|invi\w*|salv\w*|controll\w*|verific\w*|analizz\w*|estra\w*|"
-    r"revision\w*|rived\w*|rispond\w*|rispost\w*)\b",
+# Il gate deve riconoscere un ATTO OPERATIVO, non parole vagamente simili a verbi.
+# Il vecchio `legg\w*` contava "leggero" come "leggere" e una spiegazione tecnica
+# diventava un workflow. Le famiglie sotto usano forme lessicali finite e contano
+# CAPACITA' distinte, non due flessioni dello stesso verbo.
+_ACTION_FAMILIES = {
+    "READ": re.compile(r"\b(?:leggi(?:mi)?|leggere)\b", re.IGNORECASE),
+    "SUMMARIZE": re.compile(
+        r"\b(?:riassumi(?:mi)?|riassumere|sintetizza(?:mi)?|sintetizzare)\b",
+        re.IGNORECASE,
+    ),
+    "CHECK": re.compile(
+        r"\b(?:controlla(?:mi)?|controllare|verifica(?:mi)?|verificare|"
+        r"analizza(?:mi)?|analizzare|estrai|estrarre|rivedi|rivedere|"
+        r"revisiona(?:mi)?|revisionare)\b",
+        re.IGNORECASE,
+    ),
+    "DRAFT": re.compile(
+        r"\b(?:prepara(?:mi)?|preparare|scrivi(?:mi)?|scrivere|bozza|"
+        r"rispondi|rispondere)\b",
+        re.IGNORECASE,
+    ),
+    "SAVE_FOR_REVIEW": re.compile(
+        r"\b(?:salva(?:mi)?|salvare|manda(?:mi)?|mandare|invia(?:mi)?|inviare)\b",
+        re.IGNORECASE,
+    ),
+}
+
+_DIRECTIVE = re.compile(
+    r"\b(?:leggi(?:mi)?|riassumi(?:mi)?|sintetizza(?:mi)?|controlla(?:mi)?|"
+    r"verifica(?:mi)?|analizza(?:mi)?|estrai|rivedi|revisiona(?:mi)?|"
+    r"prepara(?:mi)?|scrivi(?:mi)?|rispondi|salva(?:mi)?|manda(?:mi)?|"
+    r"invia(?:mi)?|puoi|potresti|vorrei|voglio|fammi)\b",
+    re.IGNORECASE,
+)
+
+_TEXT_ARTIFACT = re.compile(
+    r"\b(?:document\w*|file|allegat\w*|testo|mail|email|bozza|risposta|"
+    r"relazione|report|contenuto|cartella|nota|appunti)\b|"
+    r"\b(?:quello|quanto)\s+che\s+(?:ho|abbiamo)\s+detto\b|"
+    r"\bquesto\s+discorso\b",
     re.IGNORECASE,
 )
 
 
 def looks_like_workflow(text: str) -> bool:
     """
-    Pre-gate economico: True se la frase contiene ≥2 verbi-azione DISTINTI
-    (= probabile richiesta multi-step). Heuristica fail-safe: se sbaglia, il
-    planner ritorna comunque [] o un piano da 1 step e si torna al dispatch.
+    True solo per una richiesta esplicita su testo/documenti con almeno due
+    capability distinte. E' intenzionalmente precision-first: una falsa azione
+    crea effetti reali, un falso negativo torna al normale dispatch conversazionale.
     """
-    hits = {m.group(0).lower() for m in _ACTION_VERBS.finditer(text or "")}
-    return len(hits) >= 2
+    utterance = text or ""
+    if not _DIRECTIVE.search(utterance) or not _TEXT_ARTIFACT.search(utterance):
+        return False
+    families = {name for name, pattern in _ACTION_FAMILIES.items() if pattern.search(utterance)}
+    return len(families) >= 2
 
 
 # ──────────────────────────────────────────
@@ -79,6 +114,10 @@ def _plan_prompt(utterance: str, history_brief: str = "") -> str:
         f"{convo}\n"
         f'Richiesta: "{utterance}"\n\n'
         "Regole:\n"
+        "- Se il turno corrente e' una spiegazione, una constatazione, una domanda di "
+        "opinione o il racconto di cosa l'utente ha/non ha fatto, restituisci []. Non "
+        "inventare un'azione basandoti sulla conversazione precedente.\n"
+        "- Pianifica soltanto comandi operativi ESPLICITI presenti nel turno corrente.\n"
         "- Usa solo le capability elencate, in ordine logico.\n"
         '- Ogni passo prende in input l\'output del passo precedente con "$N" '
         "(N = numero del passo, 1-based), oppure null se non serve input.\n"
