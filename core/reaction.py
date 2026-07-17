@@ -144,7 +144,7 @@ def gather_grounded_evidence(r, topic: str, embedder=None, limit: int = 6) -> li
             o = r.json().get(d.id)
         except Exception:
             continue
-        if o and o.get("content"):
+        if o and o.get("content") and o.get("memory_kind") != "conversation_anchor":
             docs.append(o)
     if not docs:
         return []

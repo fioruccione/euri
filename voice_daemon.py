@@ -136,9 +136,10 @@ class VoiceDaemon:
         self.memory = MemoryManager(self.r, embedder=self.embedder)
         self.brain = Brain()
         Brain._shared_instance = self.brain  # Condivisa col CodeRunner
-        self.brain._episode_callback = lambda summary: self.memory.save_memory(
+        self.brain._episode_callback = lambda summary, temporal_context: self.memory.save_memory(
             summary,
-            category="episodio", source="episode"
+            category="episodio", source="episode",
+            memory_kind="conversation_episode", temporal_context=temporal_context,
         )
         self.executor = Executor()
         self.executor.brain  = self.brain
@@ -766,7 +767,9 @@ class VoiceDaemon:
         self.memory.log_conversation("Euri", reply)
         self._speak(reply)
 
-    def _handle_search(self, text: str, *, trusted: bool = False):
+    def _handle_search(
+        self, text: str, *, trusted: bool = False, observed_at: float | None = None
+    ):
         """SEARCH path allineato a CHAT: usa _build_context per evitare
         l'allucinazione di assenza ('non ce l'ho' su memorie che invece esistono).
         Prima della V2.16 questo handler usava solo search_memories+search_notes
@@ -803,7 +806,9 @@ class VoiceDaemon:
         )
         context = (context + "\n\n" if context else "") + search_hint
         with self._brain_lock:
-            reply = self.brain.respond(text, context=context, trusted=trusted)
+            reply = self.brain.respond(
+                text, context=context, trusted=trusted, observed_at=observed_at
+            )
         reply = scrub_unbacked_save_claim(reply)  # pavimento di onestà: SEARCH non salva
         emit_unbacked_action_commitment(self.r, reply, set(), channel="voice_search")
         reply = scrub_unbacked_action_claim(reply, set())  # SEARCH non agisce: niente claim d'azione
@@ -1083,6 +1088,26 @@ class VoiceDaemon:
         self._speak("Alert riattivati.")
 
     def _handle_status(self, text: str):
+        if re.search(r"\b(memori[ae]|ricord[oi])\b", text, re.IGNORECASE):
+            by_source: dict[str, int] = {}
+            total = 0
+            for key in self.memory.r.scan_iter("euri:memory:*"):
+                try:
+                    source = self.memory.r.json().get(key, "$.source")
+                    source = source[0] if source else "?"
+                except Exception:
+                    source = "?"
+                by_source[str(source)] = by_source.get(str(source), 0) + 1
+                total += 1
+            details = ", ".join(
+                f"{count} da {source}"
+                for source, count in sorted(by_source.items(), key=lambda item: -item[1])
+            )
+            reply = f"Ho {total} memorie in totale"
+            if details:
+                reply += f": {details}"
+            self._speak(reply + ".")
+            return
         todos = self.memory.get_pending_todos()
         overdue = self.memory.get_overdue_todos()
         memories = self.memory.get_recent_memories(limit=999, touch=False)
@@ -1247,7 +1272,7 @@ class VoiceDaemon:
         self._speak(reply)
 
     def _handle_audit_memory(self, text: str):
-        """Audit vocale delle memorie: analizza con LLM e propone cancellazione del rumore."""
+        """Audit vocale limitato: analizza candidati prioritari e propone il rumore."""
         import json as _json
         _ollama = chat_client  # instradato: chat_client.chat(...) == _ollama.chat(...)
 
@@ -1279,7 +1304,7 @@ class VoiceDaemon:
 
         totale = len(all_docs)
         stats_str = ", ".join(f"{v} da {k}" for k, v in sorted(by_source.items(), key=lambda x: -x[1]))
-        self._speak(f"Ho {totale} memorie in totale: {stats_str}. Analizzo le passive.")
+        self._speak(f"Ho {totale} memorie in totale: {stats_str}.")
 
         # Audita solo le passive
         passive_docs = [d for d in all_docs if d.get("source") == "passive"]
@@ -1287,40 +1312,90 @@ class VoiceDaemon:
             self._speak("Nessuna memoria passiva da analizzare. Tutto pulito.")
             return
 
+        audit_limit = max(1, int(getattr(config, "AUDIT_MEMORY_MAX_CANDIDATES", 40)))
+        batch_size = max(1, int(getattr(config, "AUDIT_MEMORY_BATCH_SIZE", 10)))
+        candidates = self._select_memory_audit_candidates(passive_docs, limit=audit_limit)
+        self._speak(
+            f"Faccio un controllo mirato su {len(candidates)} memorie passive prioritarie "
+            f"delle {len(passive_docs)} presenti."
+        )
+
         rumore = []
-        for doc in passive_docs:
-            content = doc.get("content", "")
+        for offset in range(0, len(candidates), batch_size):
+            if not getattr(self, "_running", True):
+                logger.info("Audit memoria interrotto dallo shutdown")
+                return
+            batch = candidates[offset:offset + batch_size]
+            rows = "\n".join(
+                f"{index}. {str(doc.get('content', ''))[:700]}"
+                for index, doc in enumerate(batch, start=1)
+            )
             prompt = (
-                f"Valuta se questo testo è un FATTO UTILE da ricordare su Stefano "
-                f"oppure è RUMORE (frase generica, conversazione ambient, dato non personale).\n"
-                f"Memoria: \"{content}\"\n"
-                f"Rispondi SOLO con UTILE o RUMORE."
+                "Valuta queste memorie passive. Una memoria e' RUMORE solo se e' una frase "
+                "generica, un artefatto di conversazione o un dato privo di un soggetto e di "
+                "riuso futuro. Non chiamare rumore un fatto concreto solo perche' richiede "
+                "verifica. Rispondi in JSON: {\"noise\": [numeri delle righe]} .\n\n"
+                + rows
             )
             try:
                 resp = _ollama.chat(
                     model=config.OLLAMA_MODEL,
                     messages=[{"role": "user", "content": prompt}],
-                    options={"temperature": 0, "num_predict": 300},
+                    options={"temperature": 0, "num_predict": 500},
+                    format="json",
                     think=False,
                 )
-                verdetto = (resp.message.content or "").strip().upper()
-                if "RUMORE" in verdetto:
-                    rumore.append(doc)
-            except Exception:
-                pass
+                parsed = _json.loads(resp.message.content or "{}")
+                noise_rows = parsed.get("noise", []) if isinstance(parsed, dict) else []
+                for row in noise_rows:
+                    try:
+                        index = int(row) - 1
+                    except (TypeError, ValueError):
+                        continue
+                    if 0 <= index < len(batch):
+                        rumore.append(batch[index])
+            except Exception as exc:
+                logger.warning(f"Audit memoria: batch {offset // batch_size + 1} non valutato: {exc}")
 
-        utili_count = len(passive_docs) - len(rumore)
+        checked_count = len(candidates)
+        utili_count = checked_count - len(rumore)
 
         if not rumore:
-            self._speak(f"Memoria pulita. Tutte e {len(passive_docs)} le memorie passive sono utili.")
+            self._speak(
+                f"Nel campione prioritario di {checked_count} memorie passive non ho trovato rumore."
+            )
             return
 
         self._audit_rumore = rumore
         self._audit_confirm_mode = True
         self._speak(
-            f"Su {len(passive_docs)} memorie passive: {utili_count} utili, {len(rumore)} rumore. "
+            f"Nel campione di {checked_count} memorie passive: {utili_count} utili, "
+            f"{len(rumore)} possibili rumori. "
             f"Le cancello?"
         )
+
+    @staticmethod
+    def _select_memory_audit_candidates(passive_docs: list[dict], limit: int) -> list[dict]:
+        """Prioritizza rischio epistemico e recenza, escludendo i fili episodici."""
+        eligible = [
+            doc for doc in passive_docs
+            if doc.get("memory_kind") != "conversation_anchor"
+            and not doc.get("superseded_by")
+            and not doc.get("correction_pending")
+        ]
+
+        def priority(doc: dict) -> tuple[int, float]:
+            risk = 0
+            risk += 100 if doc.get("audit_flag") else 0
+            risk += 40 if doc.get("requires_verification") else 0
+            risk += 25 if doc.get("passive_support") == "tacit_acceptance" else 0
+            try:
+                created_at = float(doc.get("created_at") or 0)
+            except (TypeError, ValueError):
+                created_at = 0.0
+            return risk, created_at
+
+        return sorted(eligible, key=priority, reverse=True)[:max(0, int(limit))]
 
     def _handle_audit_confirm(self, text: str):
         """Gestisce sì/no dopo l'audit vocale."""
@@ -1585,7 +1660,9 @@ class VoiceDaemon:
 
 
 
-    def _handle_chat(self, text: str, *, trusted: bool = False):
+    def _handle_chat(
+        self, text: str, *, trusted: bool = False, observed_at: float | None = None
+    ):
         # Audit di Coerenza: capture correction signal PRIMA di loggare/rispondere,
         # così last_rag_ctx contiene ancora il ctx del turno precedente (corretto).
         if self.memory.detect_correction(text):
@@ -1614,7 +1691,9 @@ class VoiceDaemon:
         context = self._augment_context_by_strategy(text, context)
         context = (context + "\n\n" if context else "") + "[Modalità conversazione: sii presente e naturale, non rigido.]"
         with self._brain_lock:
-            reply = self.brain.respond(text, context=context, trusted=trusted)
+            reply = self.brain.respond(
+                text, context=context, trusted=trusted, observed_at=observed_at
+            )
         reply = scrub_unbacked_save_claim(reply)  # pavimento di onestà: CHAT non salva
         emit_unbacked_action_commitment(self.r, reply, set(), channel="voice_chat")
         reply = scrub_unbacked_action_claim(reply, set())  # CHAT non agisce: niente claim d'azione
@@ -1770,7 +1849,14 @@ class VoiceDaemon:
             self._teach_snapshot_content = ""
             self._speak("Ok, ho cancellato la sessione precedente.")
 
-    def _dispatch(self, text: str, detected_lang: str = "it", *, trusted: bool = False):
+    def _dispatch(
+        self,
+        text: str,
+        detected_lang: str = "it",
+        *,
+        trusted: bool = False,
+        observed_at: float | None = None,
+    ):
         """Smista il testo trascritto all'handler corretto."""
         if self.memory.is_silent_mode():
             # Anche in silenzio: ripristino e shutdown passano sempre
@@ -1958,7 +2044,7 @@ class VoiceDaemon:
         handler = handlers.get(intent, self._handle_chat)
         _t_handler = time.perf_counter()
         if intent in {Intent.CHAT, Intent.SEARCH}:
-            handler(text, trusted=trusted)
+            handler(text, trusted=trusted, observed_at=observed_at)
         else:
             handler(text)
         logger.info(f"[TIMING] Handler {intent.value}: {(time.perf_counter()-_t_handler)*1000:.0f}ms")
@@ -2006,20 +2092,33 @@ class VoiceDaemon:
                 for segment_addressed, segment_history in self._passive_extraction_batches(new_history):
                     facts = self.brain.extract_passive_memories(segment_history) or []
                     for fact_item in facts:
+                        from core.temporal_context import derive_passive_memory_metadata
                         support = fact_item.get("support") if isinstance(fact_item, dict) else None
                         weak_support = self._passive_weak_support(support, segment_addressed)
                         fact = fact_item.get("content", "") if isinstance(fact_item, dict) else str(fact_item)
+                        metadata = derive_passive_memory_metadata(
+                            fact_item if isinstance(fact_item, dict) else {"content": fact},
+                            segment_history,
+                        )
                         clean = validate_payload(fact, "memory")
                         if not clean:
                             continue
                         if self.memory.is_duplicate_memory(clean, llm_probe_fn=self.brain.probe_same_meaning):
                             continue
-                        mid = self.memory.save_memory(clean, category="passivo", source="passive", idempotent=True)
-                        if mid and weak_support:
+                        mid = self.memory.save_memory(
+                            clean,
+                            category="passivo",
+                            source="passive",
+                            idempotent=True,
+                            memory_kind=metadata["memory_kind"],
+                            temporal_context=metadata["temporal_context"],
+                        )
+                        if mid and (weak_support or metadata["memory_kind"] == "conversation_anchor"):
                             from core.memory_attention import remove_loop2e_candidate
                             key = f"euri:memory:{mid}"
-                            self.memory.r.json().set(key, "$.requires_verification", True)
-                            self.memory.r.json().set(key, "$.passive_support", "tacit_acceptance")
+                            if weak_support:
+                                self.memory.r.json().set(key, "$.requires_verification", True)
+                                self.memory.r.json().set(key, "$.passive_support", "tacit_acceptance")
                             remove_loop2e_candidate(self.memory.r, mid)
                         saved += 1
 
@@ -2664,14 +2763,24 @@ class VoiceDaemon:
                     self._voice_input_inflight.clear()
                     continue
 
-                # Trascrizione
+                # Trascrizione. Il consenso conversazionale appartiene all'inizio
+                # fisico del turno, non alla fine di VAD+STT: un intervento lungo
+                # iniziato dentro la lease non deve scadere mentre viene acquisito.
+                segment_ended_at = time.time()
+                segment_duration_s = (
+                    len(segment) / config.VAD_SAMPLING_RATE if segment is not None else 0.0
+                )
+                utterance_started_at = max(0.0, segment_ended_at - segment_duration_s)
                 force_lang = None if self._translate_bidir else "it"
                 _t_stt = time.perf_counter()
                 text, detected_lang = self.stt.transcribe(segment, force_lang=force_lang)
                 logger.info(f"[TIMING] STT: {(time.perf_counter()-_t_stt)*1000:.0f}ms")
                 self.vad.reset()
 
-                accepted = self._accept_voice_transcript(text)
+                accepted = self._accept_voice_transcript(
+                    text,
+                    addressed_at=utterance_started_at,
+                )
                 if accepted is None:
                     self._voice_input_inflight.clear()
                     continue
@@ -2684,7 +2793,12 @@ class VoiceDaemon:
                 # Dispatch. Se un handler termina senza TTS, chiude comunque la fase
                 # PROCESSING; gli handler che parlano la chiudono via finish_speech.
                 try:
-                    self._dispatch(text, detected_lang=detected_lang, trusted=has_wake_word)
+                    self._dispatch(
+                        text,
+                        detected_lang=detected_lang,
+                        trusted=has_wake_word,
+                        observed_at=utterance_started_at,
+                    )
                 finally:
                     try:
                         if self.present.snapshot().phase is InteractionPhase.PROCESSING:
@@ -2749,8 +2863,19 @@ class VoiceDaemon:
         ratio = max(words.count(word) for word in set(words)) / len(words)
         return ratio > 0.60, ratio
 
-    def _accept_voice_transcript(self, text: str, now_ts: float | None = None) -> tuple[str, bool] | None:
-        """Valida consenso e STT; solo una voce accettata rinnova l'attività."""
+    def _accept_voice_transcript(
+        self,
+        text: str,
+        now_ts: float | None = None,
+        *,
+        addressed_at: float | None = None,
+    ) -> tuple[str, bool] | None:
+        """Valida consenso e STT; solo una voce accettata rinnova l'attività.
+
+        Il consenso si valuta quando l'utente ha iniziato a parlare. Un turno
+        lungo, iniziato dentro la lease, non deve scadere mentre VAD e STT lo
+        stanno ancora acquisendo.
+        """
         if not text:
             return None
 
@@ -2767,15 +2892,24 @@ class VoiceDaemon:
                     break
 
         now_ts = time.time() if now_ts is None else now_ts
+        guard_at = now_ts if addressed_at is None else min(float(addressed_at), now_ts)
         has_wake_word = bool(_WAKE_WORD_RE.search(text))
-        since_last = now_ts - self._last_activity_ts
+        # Prima interazione dopo l'avvio: non esiste un turno precedente. Manteniamo
+        # chiusa la lease senza stampare nel log l'intera epoch come durata trascorsa.
+        has_previous_activity = self._last_activity_ts > 0
+        since_last = (
+            guard_at - self._last_activity_ts
+            if has_previous_activity else float("inf")
+        )
         try:
-            conversation_open = self.present.snapshot(now=now_ts).conversation_open(now_ts)
+            conversation_open = self.present.snapshot(now=guard_at).conversation_open(guard_at)
         except Exception:
             conversation_open = False
         if not self._utterance_is_addressed(has_wake_word, since_last, conversation_open):
+            elapsed = f"{since_last:.0f}s" if has_previous_activity else "nessun turno precedente"
             logger.debug(
-                f"Wake word assente e fuori finestra ({since_last:.0f}s) — ignorato: '{text[:40]}'"
+                "Wake word assente e inizio turno fuori finestra "
+                f"({elapsed}) — ignorato: '{text[:40]}'"
             )
             return None
 

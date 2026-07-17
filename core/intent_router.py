@@ -49,7 +49,8 @@ _PATTERNS: list[tuple[Intent, list[str]]] = [
         r"\bche\s+stato\s+(hai|c[''è])\b",
         r"\bdammi\s+(uno\s+)?stato\b",
         r"\bstato\s+(del\s+sistema|di\s+euri)\b",
-        r"quant[ie]\s+(todo|ricordi|appunti|scadenz)",
+        r"quant[ie]\s+(todo|ricordi|memori[ae]|appunti|scadenz)",
+        r"\bstato\s+(della\s+)?memoria\b",
         r"riassumimi",
     ]),
     (Intent.LIST_TODAY, [
@@ -140,7 +141,8 @@ _PATTERNS: list[tuple[Intent, list[str]]] = [
         r"\bsalva\s+in\s+memoria\b",
     ]),
     (Intent.EXECUTE, [
-        r"\b(controlla|verifica|monitora|dimmi|mostrami)\s+(cpu|ram|memoria|disco|processi?|gpu|vram|temperatura|carico)\b",
+        r"\b(controlla|verifica|monitora|dimmi|mostrami)\s+(cpu|ram|disco|processi?|gpu|vram|temperatura|carico)\b",
+        r"\b(controlla|verifica|monitora|dimmi|mostrami)\s+(la\s+)?memoria\s+(ram|libera|usata|del\s+sistema|della\s+workstation)\b",
         r"\b(controlla|verifica|monitora|dimmi|mostrami)\s+(i\s+)?processi\s+(del\s+)?(pc|sistema|workstation|linux)\b",
         r"\b(controlla|verifica|monitora|dimmi|mostrami)\s+(i\s+)?processi\s+(attivi|aperti|pesanti|in\s+esecuzione)\b",
         r"\b(quanta|quanto)\s+(ram|memoria|cpu|disco|vram)\s+(usa|c[''è]|ho|è\s+liber[ao])\b",
@@ -193,13 +195,12 @@ _PATTERNS: list[tuple[Intent, list[str]]] = [
     ]),
     (Intent.AUDIT_MEMORY, [
         r"\baudit\s+(della\s+)?(memoria|memorie)\b",
-        r"\bcontrolla\s+(la\s+)?(memoria|memorie)\b",
-        r"\bpulisci\s+(la\s+)?(memoria|memorie)\b",
-        r"\bquante\s+memorie\s+(hai|ho|ci\s+sono)\b",
-        r"\bcosa\s+(hai|ho)\s+in\s+memoria\b",
-        r"\bcosa\s+sai\s+di\s+me\b",
-        r"\bstato\s+(della\s+)?memoria\b",
+        r"\bpulisci\s+((la|le)\s+)?(memoria|memorie)\b",
         r"\banalizza\s+(la\s+)?(memoria|memorie)\b",
+        r"\b(?:cerca|trova|individua|controlla)\b.{0,50}\bmemori[ae]\b.{0,40}"
+        r"\b(?:inutili|errate|sbagliate|duplicate|doppie|rumore)\b",
+        r"\b(?:controlla|analizza|valuta)\s+(?:(?:la|il|i)\s+)?(?:qualit[aà]|coerenza|rumore|duplicati)"
+        r"\s+(?:della|delle|nella|nelle)\s+memori[ae]\b",
     ]),
     (Intent.DICTATION, [
         r"\bmodalit[àa]\s+dettatura\b",
@@ -241,6 +242,10 @@ _PATTERNS: list[tuple[Intent, list[str]]] = [
     ]),
     (Intent.SEARCH, [
         r"cosa\s+(avevo|ho)\s+detto\s+(su|di|del|della|dei|degli)",
+        r"\bcosa\s+(?:hai|ho)\s+in\s+memoria\b",
+        r"\bcosa\s+sai\s+di\s+me\b",
+        r"\b(?:cosa|che\s+cosa)\s+ricordi\b",
+        r"\bdimmi\s+(?:che\s+cosa|cosa)\s+ricordi\b",
         r"che\s+(appunti|ricordi|note|todo)\s+(ho|avevo|ci\s+sono)",
         r"cercami\b",
         r"cerca\s+(tra|nei|nei)\b",
@@ -282,7 +287,6 @@ _COMPLETE_CONDITIONAL = re.compile(
     r'|abbiamo\s+(fatto|risolto|completato|finito)\b)\b',
     re.IGNORECASE
 )
-
 
 def classify(text: str) -> tuple[Intent, dict]:
     """

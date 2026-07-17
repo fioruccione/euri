@@ -29,6 +29,7 @@ _stub_module("voice.speaker_auth", SpeakerAuth=_HardwareStub, ENROLL_UTTERANCES=
 
 import voice_daemon as vd
 from core.cognitive_present import CognitivePresent
+from core.intent_router import Intent, classify
 
 WIN = vd._CONVERSATION_WINDOW_SEC
 
@@ -98,6 +99,17 @@ def test_activity_only_after_acceptance():
     print("OK  vuoto, garbage e fuori-finestra non rinnovano activity")
 
 
+def test_first_utterance_without_wake_does_not_open_a_session():
+    d = make(last_activity=0.0)
+
+    assert d._accept_voice_transcript(
+        "Questa è soltanto una conversazione ambientale.", now_ts=1000.0
+    ) is None
+    assert d._last_activity_ts == 0.0
+    assert d._last_auth_voice_ts == 50.0
+    print("OK  primo turno senza wake: lease chiusa senza timestamp epoch")
+
+
 def test_long_tts_lease_accepts_followup_without_wake_word():
     d = make(last_activity=110.0)
     d.present.accept_user_turn("Euri, rileggi la memoria", at=100.0)
@@ -110,6 +122,75 @@ def test_long_tts_lease_accepts_followup_without_wake_word():
     )
     assert accepted is not None and accepted[1] is False
     print("OK  lease dalla fine TTS: follow-up accettato dopo risposta lunga")
+
+
+def test_long_utterance_keeps_consent_from_speech_start():
+    d = make(last_activity=100.0)
+
+    accepted = d._accept_voice_transcript(
+        "Il bancale pesa dieci chili e il ciclo dura ottantuno secondi.",
+        now_ts=170.0,
+        addressed_at=120.0,
+    )
+
+    assert accepted is not None and accepted[1] is False
+    assert d._last_activity_ts == 170.0
+    assert d._last_auth_voice_ts == 170.0
+
+    outside = make(last_activity=100.0)
+    assert outside._accept_voice_transcript(
+        "Questa conversazione ambientale riguarda soltanto il bancale.",
+        now_ts=210.0,
+        addressed_at=100.0 + WIN + 1,
+    ) is None
+    print("OK  turno lungo conserva il consenso dall'inizio, senza fail-open ambientale")
+
+
+def test_memory_operations_are_domain_independent():
+    recall_cases = [
+        "Euri, cosa hai in memoria?",
+        "Euri, cosa sai di me?",
+        "Euri, a proposito delle prove sul Poseidon di ieri, cosa hai in memoria?",
+        "Cosa ricordi del viaggio in Giappone?",
+        "Cosa hai in memoria riguardo alla terapia?",
+        "Cosa ricordi del romanzo che sto scrivendo?",
+    ]
+    for text in recall_cases:
+        assert classify(text)[0] == Intent.SEARCH, text
+
+    status_cases = [
+        "Euri, quante memorie hai?",
+        "Euri, qual e' lo stato della memoria?",
+    ]
+    for text in status_cases:
+        assert classify(text)[0] == Intent.STATUS, text
+
+    audit_cases = [
+        "Euri, fai un audit della memoria",
+        "Euri, pulisci le memorie",
+        "Euri, cerca le memorie duplicate",
+        "Euri, analizza il rumore nella memoria",
+    ]
+    for text in audit_cases:
+        assert classify(text)[0] == Intent.AUDIT_MEMORY, text
+
+    assert classify("Euri, controlla la memoria")[0] == Intent.CHAT
+    assert classify("Euri, controlla la memoria RAM")[0] == Intent.EXECUTE
+    print("OK  recall, stato e manutenzione distinti senza dipendere dal dominio")
+
+
+def test_memory_audit_candidates_are_bounded_and_risk_first():
+    docs = [
+        {"id": "clean-new", "created_at": 30},
+        {"id": "risky", "created_at": 10, "requires_verification": True},
+        {"id": "flagged", "created_at": 5, "audit_flag": "check"},
+        {"id": "anchor", "created_at": 100, "memory_kind": "conversation_anchor"},
+        {"id": "old", "created_at": 1},
+    ]
+    selected = vd.VoiceDaemon._select_memory_audit_candidates(docs, limit=3)
+    assert [doc["id"] for doc in selected] == ["flagged", "risky", "clean-new"]
+    assert all(doc["id"] != "anchor" for doc in selected)
+    print("OK  audit memoria limitato, risk-first e senza anchor episodici")
 
 
 def test_offtopic_reaction_returns_turn_to_dispatch():
@@ -152,7 +233,11 @@ if __name__ == "__main__":
     test_addressed_guard()
     test_passive_weak_and_mixed_segment()
     test_activity_only_after_acceptance()
+    test_first_utterance_without_wake_does_not_open_a_session()
     test_long_tts_lease_accepts_followup_without_wake_word()
+    test_long_utterance_keeps_consent_from_speech_start()
+    test_memory_operations_are_domain_independent()
+    test_memory_audit_candidates_are_bounded_and_risk_first()
     test_offtopic_reaction_returns_turn_to_dispatch()
     test_initiative_token_is_cancelled_by_voice_inflight()
     print("PASS")
