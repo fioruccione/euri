@@ -24,6 +24,7 @@ torchaudio>=2.0
 # Utilities
 pyperclip>=1.8
 psutil>=5.9
+nvidia-ml-py>=12.0
 loguru>=0.7
 ddgs>=0.1
 beautifulsoup4>=4.12
