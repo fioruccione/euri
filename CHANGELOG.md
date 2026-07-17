@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-17 - CHAT non promette lavoro autonomo inesistente
+
+- Chiuso il caso live "Vado a dare un'occhiata al codice": il turno era `CHAT`,
+  nessun tool era partito e la promessa restava senza esecuzione.
+- Il paraurti atto-parola riconosce ora impegni immediati in prima persona come
+  "vado a studiare" e "ora controllo", preservando offerte e futuri condizionati.
+- La risposta infondata viene rimossa deterministicamente e sostituita con una
+  dichiarazione onesta: CHAT non continua a lavorare in background.
+
 ## 2026-07-17 - VisualGate non dipende piu' da `/dev/video0`
 
 - Corretto il mancato avvio della webcam dopo il cambio di enumerazione USB:

@@ -13,6 +13,7 @@ from core.act_word_check import (
     needs_honest_correction,
     scrub_unbacked_action_claim,
     honest_correction,
+    honest_commitment_correction,
 )
 
 # (descrizione, reply, turn_actions, atteso_flag)
@@ -24,6 +25,8 @@ CASES = [
     ("claim elimina senza azione", "L'ho eliminato come mi avevi chiesto.", set(), True),
     ("claim a prefisso", "Salvato: la lezione sul settore plastiche.", set(), True),
     ("claim creato senza azione", "Ho creato il documento e te l'ho messo nella cartella.", set(), True),
+    ("promessa live studio codice", "Vado a dare un'occhiata al codice, specialmente alla gestione dei cicli.", set(), True),
+    ("promessa immediata controllo", "Ora controllo il codice e ti dico.", set(), True),
 
     # --- NON deve scattare: claim + azione realmente eseguita (binario lascia passare) ---
     ("17:43 reale: ho aggiornato ma ha creato (azione c'è)", "Ho aggiornato la memoria: Lezione sul settore plastiche.", {"save"}, False),
@@ -41,6 +44,7 @@ CASES = [
     ("possibilità", "Posso salvarlo per te quando vuoi.", set(), False),
     ("istruzione all'utente", "Dimmi 'memorizza questo' e lo salvo subito.", set(), False),
     ("futuro/intenzione", "Lo memorizzerò appena confermi.", set(), False),
+    ("offerta condizionata", "Se vuoi, provo a controllare il codice.", set(), False),
 
     # --- NON deve scattare: claim VERO su azione PASSATA-distante (turno vuoto) ---
     ("azione passata: ieri", "Sì, l'ho salvata ieri quella nota.", set(), False),
@@ -55,6 +59,7 @@ CASES = [
 
 
 _TAIL = honest_correction()
+_COMMITMENT_TAIL = honest_commitment_correction()
 
 # scrub_unbacked_action_claim: (descrizione, reply, turn_actions, predicato sull'output)
 SCRUB_CASES = [
@@ -78,6 +83,10 @@ SCRUB_CASES = [
     ("passato-distante → invariato",
      "Sì, l'ho salvata ieri quella nota.", set(),
      lambda out: out == "Sì, l'ho salvata ieri quella nota."),
+    ("promessa background → coda onesta",
+     "Capisco il punto. Vado a dare un'occhiata al codice.", set(),
+     lambda out: "Capisco il punto" in out and "dare un'occhiata" not in out
+     and out.endswith(_COMMITMENT_TAIL)),
 ]
 
 

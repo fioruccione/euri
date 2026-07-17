@@ -6,11 +6,11 @@ racconto di averla compiuta (confabulazione di agency: 11/06 17:18, "Ho aggiorna
 la nota" con intent CHAT e nessun salvataggio). Non curabile dall'interno: si
 confronta il CLAIM con la GROUND TRUTH del turno (gli handler eseguiti).
 
-Check BINARIO (decisione di Stefano, 12/06): scatta solo se la risposta afferma
-un'azione in prima persona compiuta MA in quel turno nessuna azione è stata
-eseguita. Non distingue il verbo (update≠create): lascia passare il claim impreciso
-su un'azione realmente avvenuta (17:43) — è il bias conservativo, non erodere
-fiducia negando azioni vere.
+Check BINARIO (decisione di Stefano, 12/06): scatta se la risposta afferma
+un'azione in prima persona compiuta, oppure promette di iniziarla autonomamente
+subito, MA in quel turno nessuna azione è stata eseguita. Non distingue il verbo
+(update≠create): lascia passare il claim impreciso su un'azione realmente avvenuta
+(17:43) — è il bias conservativo, non erodere fiducia negando azioni vere.
 
 Il discriminante è il participio passato in prima persona ("ho salvato"): offerte
 ("vuoi che salvi?"), condizionali ("lo salvo se…") e descrizioni ("di solito salvo")
@@ -48,6 +48,31 @@ _PAST_DISTANCE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Impegno operativo immediato senza tool: "vado a studiare il codice", "ora
+# controllo e ti dico". Non cattura futuri condizionati/offerte ("se vuoi provo",
+# "lo memorizzerò appena confermi"), che non fingono lavoro autonomo già avviato.
+_ACTION_INFINITIVE = (
+    r"(?:studiare|analizzare|controllare|verificare|leggere|guardare|esaminare|"
+    r"approfondire|cercare|elaborare|sistemare|aggiornare|salvare|memorizzare|"
+    r"creare|generare|eseguire|avviare|lanciare)"
+)
+_ACTION_PRESENT = (
+    r"(?:studio|analizzo|controllo|verifico|leggo|guardo|esamino|approfondisco|"
+    r"cerco|elaboro|sistemo|aggiorno|salvo|memorizzo|creo|genero|eseguo|avvio|lancio)"
+)
+_IMMEDIATE_COMMITMENT_RE = re.compile(
+    rf"\b(?:vado|provo|inizio|comincio|procedo)\s+"
+    rf"(?:subito\s+|ora\s+|adesso\s+)?a\s+"
+    rf"(?:{_ACTION_INFINITIVE}|dare\s+un['’ ]occhiata)\b"
+    rf"|\b(?:ora|adesso|intanto)\s+(?:mi\s+metto\s+a\s+{_ACTION_INFINITIVE}|{_ACTION_PRESENT})\b",
+    re.IGNORECASE,
+)
+_CONDITIONAL_OFFER_RE = re.compile(
+    r"\b(?:se\s+vuoi|se\s+preferisci|se\s+mi\s+dici|quando\s+vuoi|"
+    r"appena\s+confermi|dimmi\s+e)\b",
+    re.IGNORECASE,
+)
+
 
 def claims_completed_action(text: str) -> bool:
     """True se il testo afferma un'azione COMPIUTA in prima persona NEL turno corrente
@@ -66,19 +91,34 @@ def claims_completed_action(text: str) -> bool:
     return True
 
 
+def claims_immediate_action_commitment(text: str) -> bool:
+    """True se Euri promette lavoro autonomo immediato senza attendere un tool."""
+    if not text or _CONDITIONAL_OFFER_RE.search(text):
+        return False
+    return bool(_IMMEDIATE_COMMITMENT_RE.search(text))
+
+
 def needs_honest_correction(reply: str, turn_actions: set) -> bool:
     """
     True (mismatch) se la risposta afferma un'azione compiuta ma nel turno NON è
     stata eseguita alcuna azione. `turn_actions` = azioni reali del turno (vuoto
     se nessun handler ha agito). Check binario: qualsiasi azione "copre" il claim.
     """
-    return claims_completed_action(reply) and not turn_actions
+    return (
+        claims_completed_action(reply) or claims_immediate_action_commitment(reply)
+    ) and not turn_actions
 
 
 def honest_correction() -> str:
     """Riga onesta da pronunciare al posto del claim falso."""
     return ("Aspetta — in realtà non ho eseguito quell'azione in questo turno. "
             "Vuoi che la faccia adesso?")
+
+
+def honest_commitment_correction() -> str:
+    """Correzione per una promessa di lavoro futuro non sostenuta da un tool."""
+    return ("Per essere preciso: non posso continuare quell'azione in background. "
+            "In questo turno non è partito alcun tool reale.")
 
 
 def scrub_unbacked_action_claim(reply: str, turn_actions: set) -> str:
@@ -94,12 +134,17 @@ def scrub_unbacked_action_claim(reply: str, turn_actions: set) -> str:
     Specchia la forma di scrub_unbacked_save_claim: si applica a valle, frase per
     frase, così le frasi vere restano e solo il claim infondato cade.
     """
-    if turn_actions or not claims_completed_action(reply):
+    completed = claims_completed_action(reply)
+    commitment = claims_immediate_action_commitment(reply)
+    if turn_actions or not (completed or commitment):
         return reply
     sentences = re.split(r"(?<=[.!?…])\s+", reply.strip())
-    kept = [s for s in sentences if not claims_completed_action(s)]
+    kept = [
+        s for s in sentences
+        if not claims_completed_action(s) and not claims_immediate_action_commitment(s)
+    ]
     cleaned = " ".join(kept).strip()
-    tail = honest_correction()
+    tail = honest_correction() if completed else honest_commitment_correction()
     return f"{cleaned}\n\n{tail}" if cleaned else tail
 
 
