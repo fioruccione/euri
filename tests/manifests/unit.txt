@@ -13,6 +13,7 @@ test_face_gate.py
 test_focus_replay.py
 test_giada_consolidation.py
 test_history_provenance.py
+test_hardware_interoception.py
 test_identifier_extraction.py
 test_initiative.py
 test_loop2e_attention.py
@@ -22,6 +23,7 @@ test_reaction_briefing.py
 test_reaction_verdict.py
 test_save_service_merge_guard.py
 test_tension.py
+test_temporal_context.py
 test_utterance_pragmatics.py
 test_wake_guard.py
 test_worker_supervisor.py

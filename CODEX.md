@@ -1,5 +1,95 @@
 # Handoff Euri — 2026-07-14
 
+## Falso workflow Poseidon e modalita' delle previsioni — 2026-07-17
+
+- Caso live 11:23: una normale spiegazione tecnica ha prodotto
+  `summarize -> draft -> save_for_review`. Causa deterministica: `legg\w*` matchava
+  `leggero`; `controllato` forniva il secondo hit e il planner inventava il resto.
+- `looks_like_workflow` e' ora precision-first: comando corrente esplicito, artefatto
+  testuale e due famiglie di capability distinte. Nessun effetto viene inferito dalla
+  storia recente. Il turno reale e' una regressione in `test_workflow_planner.py`.
+- Il prompt principale distingue certezza della provenienza e certezza del contenuto:
+  una frase realmente pronunciata puo' contenere una previsione. Euri deve preservare
+  `stimo/probabilmente/dovrebbe/non ho controllato` e non promuoverli a risultati.
+
+## Interocezione hardware Fase 0 — 2026-07-17
+
+- `hardware_monitor.py` e' un processo indipendente avviato da `start_euri.sh`; il
+  singleton lock `/tmp/euri-hardware-monitor.lock` evita doppi recettori ai restart.
+- Contratto in `core/hardware_interoception.py`: lettura -> stato stabilizzato ->
+  transizione. Nessun LLM, nessuna azione protettiva e nessuna memoria cognitiva.
+- Redis: `euri:hardware:latest` e `euri:hardware:state` hanno TTL 30s; la loro assenza
+  segnala recettore non vivo. `euri:hardware:baseline` conserva circa 14 giorni a un
+  punto/minuto. `euri:hardware:events` contiene soltanto cambi, reminder e fault.
+- Le transizioni vengono replicate nel Pulse come `sense=hardware`, `source=intero`.
+  L'attuale Initiative non elegge questo sense: Euri non parla spontaneamente per
+  un warning hardware e nessun modello riceve il flusso grezzo.
+- Prima della Fase 1 raccogliere una baseline che includa chat, Whisper, Dream,
+  maintenance e model load. Calibrare i falsi positivi e definire una matrice esplicita
+  evento -> azione reversibile. Un riflesso dovra' rivalidare uno snapshot fresco,
+  degradare prima il lavoro differibile e non uccidere processi da un singolo sensore.
+- Specifica completa: `SPEC_HARDWARE_INTEROCEPTION.md`. Test:
+  `test_hardware_interoception.py`; baseline unit 29/29.
+- Checkpoint operativo: 72 ore dal primo avvio. Eseguire
+  `./venv/bin/python scripts/audit_hardware_baseline.py`; il report e' read-only e
+  stabilisce se durata/copertura sono sufficienti, non abilita automaticamente riflessi.
+
+## Paternita' delle interpretazioni e bridge observer — 2026-07-17
+
+- Decisione di prodotto: non sterilizzare le interpretazioni di Euri. Anche una lettura
+  incompleta contribuisce alla personalita'; il vincolo e' non archiviarla o riproporla
+  come dichiarazione/fatto di Stefano.
+- Tutte le memorie `source=reflection` sono etichettate nel contesto come interpretazioni
+  interne, inclusi i nodi storici. Il Loop 2a deve formulare la terza frase come
+  `Ipotesi di Euri:` e non inventare piani, certificazioni o intenzioni dell'utente.
+- I dieci sogni della notte 16→17/07 hanno prodotto zero promozioni: il judge semantico
+  ha rimosso quasi tutte le false convergenze della vecchia scorciatoia. Resta misurato un
+  rischio: claim forzati ma simili possono essere `SAME` pur non essendo fondati.
+- `bridge_observer_v1` misura quindi la terza riga rispetto alle due fonti reali:
+  `supported`, `hypothesis`, `forced`. Solo candidate nuovi, budget 3/ciclo, thinking
+  ampio, campi nella convergence trace. E' strumentazione read-only e non e' un gate.
+- Il wake guard al primo turno usa distanza infinita internamente ma non logga piu'
+  l'epoch come durata; consenso ambientale invariato e fail-closed.
+
+## Grounding temporale conversazionale — 2026-07-15
+
+- Caso origine: alle 17:19 Euri ha detto "come ti dicevo poco fa" riferendosi al turno
+  delle 10:56. La history aveva ordine ma nessun timestamp; una memoria passiva aveva
+  inoltre trasformato l'apertura del tema IZOD in un fatto condiviso da Stefano ed Euri.
+- I turni Brain hanno ora tempo, conversazione e segmento. Dopo 30 minuti nasce un nuovo
+  segmento senza cancellare il precedente; il modello vede distanze qualitative e un
+  contratto che vieta di narrarle salvo utilita' conversazionale.
+- Schema memoria additivo e retrocompatibile: `memory_kind`, `asserted_at`, `event_start`,
+  `event_end`, `temporal_context` con provenienza dei turni. `created_at` resta il momento
+  della scrittura canonica. Il recall temporale indicizzato considera tutti e tre i tempi.
+- Il passive learner distingue fatti da `conversation_anchor`. Un anchor ricorda che un
+  filo e' stato aperto/riaperto e quali dettagli mancano; non fonda Dream, consolidamenti,
+  ipotesi cross-episode o reaction. Il RAG lo etichetta esplicitamente come non-fattuale.
+- Il resolver temporale vale per tutte le sorgenti e copre parti del giorno, oggi/ieri,
+  N giorni/ore fa e date testuali o numeriche. Silent Chat ed episodi compressi propagano
+  lo stesso contratto.
+- Verifica: unit 28/28, integration 3/3, `py_compile` e diff-check puliti. Sonda Ollama sul
+  dialogo IZOD: `memory_kind=episode`, turni 1-4, nessun valore tecnico inventato.
+- Test live delle 18:38: la riapertura IZOD ha recuperato correttamente solo il filo e i
+  dettagli mancanti. Due risposte successive hanno pero' copiato il prefisso `[tempo interno]`:
+  la timeline e' ora un blocco system separato dai messaggi storici e `_clean` applica un
+  ultimo scrub deterministico. Il contratto risolve i valori ellittici sul tema aperto e
+  non consente valutazioni tecniche di numeri privi di unita'/metodo/riferimento.
+- Alle 18:42 un turno Poseidon di 60 secondi e' stato trascritto integralmente ma scartato
+  dal wake guard (`fuori finestra (69s)`), perche' la lease veniva verificata dopo VAD+STT.
+  Il daemon ricava ora l'inizio fisico dalla durata del segmento: quello decide il consenso;
+  fine STT continua a decidere il rinnovo dell'activity. Regressione e contro-caso ambient
+  inclusi in `test_wake_guard.py`; unit ancora 28/28.
+- Caso live 16/07 08:35: "a proposito delle prove sul Poseidon ... cosa hai in memoria?"
+  e' finito in `AUDIT_MEMORY`: ha completato correttamente dopo 782689 ms (13m03s), ma ha
+  occupato il main thread con 542 chiamate Ollama seriali e prodotto 350 candidati-rumore,
+  poi non cancellati su risposta esplicita di Stefano. Il routing ora separa per operazione,
+  non per soggetto: recall generico o tematico=`SEARCH`, conteggio/stato=`STATUS`, qualita',
+  rumore, duplicati e pulizia=`AUDIT_MEMORY`. La distinzione RAM/memoria cognitiva e'
+  esplicita; una frase ambigua non puo' avviare manutenzione. L'audit e' limitato a 40
+  candidati prioritari, batch da 10, interrompibile e onesto sul campione; nessuna anchor
+  episodica e' candidata.
+
 ## Cognitive Present runtime v1 — 2026-07-15
 
 - Attivato per decisione esplicita di Stefano dopo il caso live IZOD: Initiative
@@ -216,6 +306,11 @@ I sei finding sopra sono stati corretti:
 Verifiche passate: `test_wake_guard.py`, `test_coderunner_sandbox.py`,
 `test_executor_routing.py`, `test_initiative.py`,
 `test_save_service_merge_guard.py`, `pip check`, `git diff --check`.
+
+Spot-check host ripetuto il 17/07 fuori dal sandbox Codex: il preflight `bwrap`
+reale passa, la barriera filesystem nega le letture host, timeout e interrupt
+terminano il job confinato e il fallback `SIGKILL` raccoglie un processo resistente
+a `SIGTERM`. Il punto kill/timeout sotto `bwrap` non e' piu' soltanto copertura mock.
 
 Note:
 

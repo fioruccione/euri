@@ -1,5 +1,92 @@
 # Changelog
 
+## 2026-07-17 - Workflow solo su comando e modalita' epistemica preservata
+
+- Corretto il falso workflow live sul discorso Poseidon: il vecchio `legg\w*`
+  interpretava `leggero` come verbo leggere e, insieme a `controllato`, attivava il
+  planner, che ha creato una bozza non richiesta. Il gate ora richiede un comando
+  esplicito, un artefatto testuale e almeno due capability distinte; conta famiglie
+  lessicali finite, non frammenti o flessioni. Regressione sul turno reale inclusa.
+- Il planner riceve anche un divieto esplicito: spiegazioni, constatazioni, domande di
+  opinione e racconti di azioni passate devono produrre piano vuoto.
+- Chiarita la calibrazione del dialogo: il contesto certifica che Stefano ha detto una
+  frase, non che una sua stima sia gia' un risultato. Previsioni tecniche conservano
+  parole come `stimo`, `probabilmente`, `dovrebbe` e distinguono dati, meccanismo e
+  verifica mancante.
+
+## 2026-07-17 - Interocezione hardware osservativa
+
+- Aggiunto un recettore hardware indipendente e privo di LLM: CPU/RAM via `psutil`,
+  GPU via `pynvml` quando disponibile con fallback `nvidia-smi`. Letture corrotte o
+  sentinel di temperatura vengono escluse.
+- La macchina a stati distingue `NORMAL`, `WARNING` e `CRITICAL` con persistenza,
+  isteresi, escalation immediata, cooldown, recovery e guasto/ripristino del sensore.
+  La VRAM alta e' pressione, non emergenza: non puo' produrre `CRITICAL` da sola.
+- Redis conserva lo snapshot effimero `euri:hardware:latest`, lo stato corrente,
+  una baseline bounded al minuto per circa 14 giorni e lo stream delle transizioni.
+  Solo transizioni, reminder e fault entrano nel Pulse; Initiative le ignora.
+- `hardware_monitor.py` viene avviato in background da `start_euri.sh` e usa un lock
+  di processo per evitare duplicati. Questa e' Fase 0: nessun riflesso arresta Dream,
+  Ollama o altri processi. Roadmap e criteri per la Fase 1 sono nel modulo e nella spec.
+- Regressioni pure per persistenza, isteresi, cooldown, escalation, VRAM, parser GPU,
+  snapshot/eventi e recovery del provider. Suite unit completa: 29/29 verde.
+- Ownership del checkpoint resa esplicita: dopo 72 ore il report read-only
+  `scripts/audit_hardware_baseline.py` misura copertura, percentili, picchi, fault,
+  eventi e carico rappresentativo. Un promemoria persistente in Euri evita che la
+  review dipenda dalla memoria di Stefano.
+
+## 2026-07-17 - Interpretazioni con paternita' e qualita' del ponte osservabile
+
+- Le reflection restano libere di interpretare: nel RAG sono ora presentate come
+  `INTERPRETAZIONE DI EURI`, non come fatti attribuiti a Stefano. Il prompt del Loop 2a
+  separa il tema osservato dall'ultima frase `Ipotesi di Euri`, vietando di trasformare
+  possibilita' in piani o decisioni dell'utente.
+- Aggiunta una seconda misura Dream, distinta da `premise_fidelity`: per i soli candidate
+  nuovi il modello classifica la terza riga come `supported`, `hypothesis` o `forced` e
+  salva nota e punteggio nella convergence trace. La misura e' read-only: non promuove,
+  non blocca e non modifica l'esperimento `dream_trace`.
+- Il primo parlato senza wake word dopo un riavvio resta correttamente escluso, ma il log
+  mostra `nessun turno precedente` invece dei secondi trascorsi dall'epoch.
+- Test mirati aggiornati per paternita' delle reflection, parser/misura del ponte e primo
+  turno vocale fail-closed.
+
+## 2026-07-15 - Grounding temporale della memoria conversazionale
+
+- Ogni turno nella history porta ora `observed_at`, `conversation_id` e un segmento
+  incrementato dopo pause superiori a 30 minuti. Il prompt riceve distanze temporali
+  qualitative come metadati interni: sei ore prima non puo' piu' diventare "poco fa",
+  ma Euri non recita gli orari se non servono.
+- Le memorie distinguono `created_at` (scrittura), `asserted_at` (quando e' stato detto)
+  ed eventuale intervallo `event_start`/`event_end` (quando sarebbe avvenuto). Espressioni
+  relative e date numeriche vengono risolte rispetto all'affermazione, non al recall.
+- Il passive learner produce `semantic_fact` oppure `conversation_anchor`, conserva i
+  turni sorgente e registra esplicitamente i dettagli ancora mancanti. Gli anchor entrano
+  nel RAG come fili da riprendere, non come prove fattuali, e sono esclusi da Dream,
+  Loop 2e, ipotesi trasversali e grounding delle reaction.
+- Compressione episodica e Silent Chat propagano la stessa cronologia. Obsidian e Pulse
+  ricevono i nuovi metadati; `idx:memories` migra automaticamente i campi temporali.
+- Regressione sul caso IZOD: gap 10:56 -> 17:19, riferimento "questa mattina" e
+  completamento successivo del filo. Unit 28/28 e integration 3/3 verdi; la sonda Ollama
+  classifica il caso come `EPISODIO` senza inventare valori o risultati.
+- Test vocale live: il recall ha ripreso correttamente il tema IZOD senza attribuirgli
+  valori preesistenti. Le etichette temporali, imitate due volte dal modello, sono ora
+  separate dai contenuti dei turni e rimosse deterministicamente dall'output. Il contratto
+  collega i valori ellittici al tema immediatamente aperto ma vieta giudizi tecnici senza
+  unita', metodo o riferimento.
+- Corretto il drop di utterance lunghe: un turno Poseidon di 60 secondi, iniziato dentro
+  la lease, veniva valutato dal wake guard solo dopo VAD+STT e quindi scartato a 69 secondi.
+  Il consenso viene ora congelato all'inizio fisico del parlato, mentre activity e lease
+  si rinnovano soltanto dopo l'accettazione. Il contro-caso ambient fuori finestra resta chiuso.
+- Il routing memoria distingue ora il gesto, non il dominio: qualunque "cosa hai in
+  memoria?"/"cosa ricordi di X?" e' recall (`SEARCH`); conteggi e stato sono `STATUS`;
+  solo richieste esplicite di audit, rumore, duplicati o pulizia avviano manutenzione.
+  "Memoria RAM/libera/usata" resta hardware, mentre l'ambiguo "controlla la memoria"
+  non puo' avviare da solo una procedura distruttiva.
+- L'audit esplicito non esegue piu' una chiamata LLM sincrona per ciascuna memoria passiva:
+  seleziona al massimo 40 candidati risk-first, li valuta in quattro batch, dichiara che il
+  risultato riguarda un campione ed esce tra i batch quando riceve shutdown. Le ancore
+  conversazionali sono escluse dal gesto di pulizia.
+
 ## 2026-07-15 - Cognitive Present runtime e Initiative contestuale
 
 - La finestra di follow-up vocale parte ora dalla fine reale del playback, quindi

@@ -136,6 +136,34 @@ effetti indiretti sul contesto futuro, perché cambia quali insight entrano nel 
 L'analisi finale deve quindi riportare anche il risultato stratificato trattamento 1–16 vs
 17–60 e non presentare la raccolta come runtime perfettamente invariato.
 
+## DEVIAZIONE DOCUMENTATA (15/07/2026) — Cognitive Present attivato nel runtime
+
+Durante la stessa raccolta e per decisione esplicita di Stefano è stato attivato nel daemon
+il Cognitive Present (`266551a`). L'intervento nasce da un problema conversazionale reale:
+Initiative poteva interrompere un turno ancora vivo con una domanda estranea e la risposta
+successiva poteva essere attribuita alla reaction sbagliata. Il runtime ora mantiene un lease
+dalla fine effettiva del TTS, un focus conversazionale breve, ammette durante quel focus solo
+interventi che lo estendono e rivalida la decisione subito prima di parlare.
+
+La generazione del Dream Engine, il residuo `dream_trace` e il formato dei candidate non sono
+stati modificati. L'unità primaria e l'audit cieco sul contenuto dei candidate restano quindi
+validi. Esiste però un secondo percorso indiretto: Cognitive Present cambia quali iniziative
+arrivano all'utente e come le risposte diventano reaction/lezioni; queste memorie possono poi
+entrare nel retrieval e nutrire sogni successivi. Di conseguenza l'attribuzione causale al
+solo residuo è più debole di quanto previsto dalla pre-registrazione.
+
+Nell'analisi finale vanno distinti almeno i seguenti regimi:
+
+- trattamento precedente a `claim_judge_v2`;
+- trattamento con `claim_judge_v2` ma precedente all'attivazione live di Cognitive Present;
+- trattamento con entrambi gli interventi attivi.
+
+Il confine del terzo regime va ricavato dal timestamp del riavvio del daemon e dalla trace,
+non dall'orario del commit. Se un regime contiene pochi candidate, si riporta comunque come
+strato descrittivo senza inferenze forti. Tasso di promozione, reazioni e lezioni restano
+misure secondarie osservazionali; il risultato primario non va descritto come effetto puro
+del solo `dream_trace`.
+
 ## Annotazioni per esperimenti futuri (NON in questo)
 
 - Pairing: sostituire `random.choice` con ricerca del dominio semanticamente DISTANTE
