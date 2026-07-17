@@ -59,21 +59,20 @@ def _has_field(r: redis.Redis, index: str, field_name: str) -> bool:
 
 
 def _ensure_memory_index(r: redis.Redis):
-    """Crea o migra idx:memories per includere VECTOR, domain e status (impegni)."""
+    """Crea o migra idx:memories includendo ricerca semantica, stato e cronologia."""
     try:
         r.ft("idx:memories").info()
-        # Controlla se ha già VECTOR, domain e status
-        has_vector = _has_field(r, "idx:memories", "embedding")
-        has_domain = _has_field(r, "idx:memories", "domain")
-        has_status = _has_field(r, "idx:memories", "status")
-        if not has_vector or not has_domain or not has_status:
-            missing = []
-            if not has_vector:
-                missing.append("VECTOR")
-            if not has_domain:
-                missing.append("domain")
-            if not has_status:
-                missing.append("status")
+        required = {
+            "embedding": "VECTOR",
+            "domain": "domain",
+            "status": "status",
+            "memory_kind": "memory_kind",
+            "asserted_at": "asserted_at",
+            "event_start": "event_start",
+            "event_end": "event_end",
+        }
+        missing = [label for field, label in required.items() if not _has_field(r, "idx:memories", field)]
+        if missing:
             logger.info(f"Migrazione idx:memories: aggiunta campi {missing}...")
             r.ft("idx:memories").dropindex()
             _create_memory_index(r)
@@ -89,7 +88,11 @@ def _create_memory_index(r: redis.Redis):
         TagField("$.category", as_name="category"),
         TagField("$.source", as_name="source"),
         TagField("$.domain", as_name="domain"),          # ← NUOVO: domain gating
+        TagField("$.memory_kind", as_name="memory_kind"),
         NumericField("$.created_at", as_name="created_at", sortable=True),
+        NumericField("$.asserted_at", as_name="asserted_at", sortable=True),
+        NumericField("$.event_start", as_name="event_start", sortable=True),
+        NumericField("$.event_end", as_name="event_end", sortable=True),
         NumericField("$.due_at", as_name="due_at", sortable=True),
         # Impegni assorbiti nel modello memoria: pending/done vive solo sulle
         # memorie-impegno (le altre hanno status null → fuori da @status:{...}).

@@ -60,10 +60,20 @@ def write_memory(doc: dict):
     frontmatter = {
         "id": mem_id,
         "type": "memory",
+        "memory_kind": doc.get("memory_kind", "semantic_fact"),
         "domain": domain,
         "source": doc.get("source", "user"),
         "created_at": date_str
     }
+    asserted_dt = from_timestamp(doc.get("asserted_at"))
+    event_start_dt = from_timestamp(doc.get("event_start"))
+    event_end_dt = from_timestamp(doc.get("event_end"))
+    if asserted_dt:
+        frontmatter["asserted_at"] = asserted_dt.strftime("%Y-%m-%d %H:%M:%S")
+    if event_start_dt:
+        frontmatter["event_start"] = event_start_dt.strftime("%Y-%m-%d %H:%M:%S")
+    if event_end_dt:
+        frontmatter["event_end"] = event_end_dt.strftime("%Y-%m-%d %H:%M:%S")
     if doc.get("tags"):
         frontmatter["tags"] = doc["tags"]
         

@@ -144,7 +144,9 @@ GESTIONE CONOSCENZA E MEMORIA:
 - Quando rispondi su elenchi tecnici reali (macchinari, impianti, presse, codici, capacità), distingui le specifiche nominali dai dati operativi aggiornati se entrambi compaiono in memoria. Esempio: "ICMA2: nominale 1.200-1.600 kg/h secondo scheda precedente; dato operativo aggiornato: stabile intorno a 1.800 kg/h dopo modifica motore." Non fondere versioni diverse come se fossero un unico dato senza storia.
 
 CALIBRAZIONE — DISTINGUI CIÒ CHE SAI DA CIÒ CHE DEDUCI (impara a "battere ciglio"):
-- Tratta come CERTO solo ciò che trovi nei blocchi di contesto che hai davanti (memorie, dati, conversazione di questa sessione): lì sii diretto e sicuro, senza esitazioni inutili.
+- I blocchi di contesto rendono CERTO che una cosa sia stata detta o registrata, non rendono automaticamente vera la proposizione. Preserva sempre la modalità originale: "stimo", "probabilmente", "dovrebbe", "non ho controllato" restano stima, previsione o ipotesi anche se li ha detti Stefano.
+- Su una previsione tecnica separa con naturalezza: dato già osservato, stima di Stefano, meccanismo plausibile e verifica che manca. Non promuovere un risultato atteso a risultato ottenuto e non chiamare "vantaggio puro" un beneficio prima della prova decisiva.
+- Sui fatti diretti realmente presenti nel contesto sii netto, senza esitazioni inutili.
 - Quando vai OLTRE il contesto — applichi conoscenza generale, fai un'inferenza, stimi un valore o una percentuale — DICHIARALO: "questo lo deduco, non l'ho da un tuo dato", "a naso direi…", "di solito in generale…". Non spacciare mai un'inferenza o una stima per un dato che hai in memoria.
 - Su un dato tecnico specifico (un valore, un limite, una percentuale, l'obiettivo di un progetto, una spec di una macchina) che NON è nel contesto: NON arrotondarlo a un numero o a una risposta plausibile. Dì "non ho quel dato preciso" oppure chiedi. Un numero inventato che suona giusto è più pericoloso di un "non lo so".
 - Hai il PERMESSO di esitare: "aspetta, qui non sono sicuro", "questo dammelo che lo verifico" sono risposte legittime e PREFERIBILI a una risposta liscia ma incerta. Ammettere un'incertezza ti rende più affidabile, non meno utile: un vero esperto esita sui punti deboli, e quell'esitazione è informazione.
@@ -249,6 +251,13 @@ DREAM_TRACE_TTL_S = 48 * 3600  # residuo stantio dopo 2 giorni di fermo → scad
 # NO — e comunque dopo la fine dell'esperimento dream_trace.
 PREMISE_FIDELITY_ENABLED = True
 PREMISE_FIDELITY_BUDGET = 5  # max valutazioni LLM per ciclo leggero (ammortizza il backfill)
+# Qualita' del ponte — FASE MISURA (17/07): distingue una deduzione sostenuta dalle
+# fonti da un'ipotesi utile ma incompleta o da una connessione forzata. Soltanto i
+# candidate creati dopo l'introduzione della misura sono eleggibili: niente costoso
+# backfill del pool storico. Il risultato e' osservativo e NON modifica la promozione.
+BRIDGE_VALIDITY_ENABLED = True
+BRIDGE_VALIDITY_BUDGET = 3
+BRIDGE_VALIDITY_POLICY_VERSION = "bridge_observer_v1"
 INSIGHT_TTL_DAYS = 30
 INSIGHT_DEMOTE_DAYS = 14  # PROMOTED non richiamato entro X giorni → torna CANDIDATE
 
@@ -307,6 +316,29 @@ OBSIDIAN_VAULT_PATH = "/home/fio/EuriVault"
 # insight/promoted), lasciando il Pulse come ground truth osservabile.
 PULSE_ENABLED = True
 
+# Interocezione hardware — recettore locale osservativo.
+# Campiona lo stato fisico senza LLM; pubblica l'ultimo snapshot e soltanto le
+# transizioni di stato su Redis/Pulse. In questa fase nessun consumer esegue
+# azioni protettive: prima raccogliamo una baseline reale della workstation.
+HARDWARE_INTEROCEPTION_ENABLED = True
+HARDWARE_INTEROCEPTION_INTERVAL_S = 3.0
+HARDWARE_INTEROCEPTION_LATEST_TTL_S = 30
+HARDWARE_INTEROCEPTION_BASELINE_INTERVAL_S = 60
+HARDWARE_INTEROCEPTION_REVIEW_AFTER_S = 72 * 3600
+HARDWARE_INTEROCEPTION_MIN_COVERAGE = 0.70
+HARDWARE_INTEROCEPTION_EVENT_COOLDOWN_S = 5 * 60
+HARDWARE_INTEROCEPTION_WARNING_SAMPLES = 3
+HARDWARE_INTEROCEPTION_RECOVERY_SAMPLES = 3
+HARDWARE_RAM_WARNING_PCT = 85.0
+HARDWARE_RAM_CRITICAL_PCT = 95.0
+HARDWARE_CPU_TEMP_WARNING_C = 90.0
+HARDWARE_CPU_TEMP_CRITICAL_C = 98.0
+HARDWARE_GPU_TEMP_WARNING_C = 82.0
+HARDWARE_GPU_TEMP_CRITICAL_C = 90.0
+# L'allocazione VRAM alta e' normale quando Ollama/Whisper tengono i modelli
+# residenti: segnala pressione persistente, ma da sola non genera CRITICAL.
+HARDWARE_VRAM_WARNING_PCT = 92.0
+
 # Initiative controller — prima "scintilla" proattiva.
 # Il daemon ascolta euri:pulse da `$` (solo eventi nuovi dal boot), rilegge il
 # JSON reale collegato all'evento, valuta tensione e chiede al modello se vale
@@ -320,6 +352,11 @@ INITIATIVE_COOLDOWN_S = 3 * 3600
 CONVERSATION_LEASE_SECONDS = 45
 CONVERSATION_FOCUS_SECONDS = 5 * 60
 CONVERSATION_FOCUS_MAX_TURNS = 4
+AUDIT_MEMORY_MAX_CANDIDATES = 40
+AUDIT_MEMORY_BATCH_SIZE = 10
+# Oltre questa pausa la history resta disponibile, ma viene marcata come un nuovo
+# segmento: il modello puo' riaprire il filo senza fingere che fosse "poco fa".
+TEMPORAL_EPISODE_GAP_SECONDS = 30 * 60
 # Un'iniziativa che ESTENDE davvero il focus può entrare al confine di turno,
 # ma non immediatamente né ripetutamente. RELATED/UNRELATED restano in coda.
 INITIATIVE_CONTEXTUAL_MIN_IDLE_S = 8

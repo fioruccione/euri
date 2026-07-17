@@ -118,9 +118,41 @@ def test_stale_mapping_is_replaced():
     assert f"euri:memory:{winner}" in redis.docs
 
 
+def test_temporal_context_is_canonical_memory_metadata():
+    redis = FakeRedis()
+    manager = _manager(redis)
+    asserted_at = 1784105760.0
+    with (
+        patch("core.memory_manager.assign_domain", return_value="chimica polimeri"),
+        patch("core.memory_manager.process_memory_outbox_event", return_value=True),
+    ):
+        mid = manager.save_memory(
+            "Stefano ha riaperto il tema IZOD senza fornire risultati.",
+            source="passive",
+            idempotent=True,
+            memory_kind="conversation_anchor",
+            temporal_context={
+                "asserted_at": asserted_at,
+                "event_start": 1784066400.0,
+                "event_end": asserted_at,
+                "event_precision": "part_of_day",
+                "source_turn_ids": [7, 8],
+            },
+        )
+
+    doc = redis.docs[f"euri:memory:{mid}"]
+    assert doc["memory_kind"] == "conversation_anchor"
+    assert doc["asserted_at"] == asserted_at
+    assert doc["event_start"] == 1784066400.0
+    assert doc["event_end"] == asserted_at
+    assert doc["temporal_context"]["source_turn_ids"] == [7, 8]
+    assert doc["memory_axes"]["observed_at"] == asserted_at
+
+
 if __name__ == "__main__":
     test_failed_commit_leaves_no_phantom_winner()
     test_document_build_failure_never_reserves_winner()
     test_duplicate_returns_only_existing_document()
     test_stale_mapping_is_replaced()
+    test_temporal_context_is_canonical_memory_metadata()
     print("test_memory_idempotency: OK")

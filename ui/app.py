@@ -183,9 +183,10 @@ executor = get_executor()
 executor.brain = brain
 executor.memory = memory_manager
 if brain._episode_callback is None:
-    brain._episode_callback = lambda summary: memory_manager.save_memory(
+    brain._episode_callback = lambda summary, temporal_context: memory_manager.save_memory(
         summary,
-        category="episodio", source="episode"
+        category="episodio", source="episode",
+        memory_kind="conversation_episode", temporal_context=temporal_context,
     )
 
 # Layout generale: 2 colonne (Main a sinistra, Terminale a destra)
@@ -817,7 +818,9 @@ with main_col:
 
             _pending = st.session_state.pop("sc_awaiting", None)
             if _pending is not None:
-                st.session_state.messages.append({"role": "user", "content": prompt})
+                st.session_state.messages.append({
+                    "role": "user", "content": prompt, "observed_at": time.time()
+                })
                 with st.chat_message("user"):
                     st.markdown(prompt)
                 with st.chat_message("assistant"):
@@ -828,7 +831,9 @@ with main_col:
                         except Exception as e:
                             ack = f"(Non sono riuscito a fissare la lezione: {e})"
                     st.markdown(ack)
-                st.session_state.messages.append({"role": "assistant", "content": ack})
+                st.session_state.messages.append({
+                    "role": "assistant", "content": ack, "observed_at": time.time()
+                })
                 memory_manager.log_conversation("Stefano", prompt)
                 memory_manager.log_conversation("Euri", ack)
                 st.stop()
@@ -836,14 +841,18 @@ with main_col:
             if _rx.BRIEFING_HINT_RE.search(prompt):
                 _is_brief, _topic = _rx.understand_briefing(prompt)
                 if _is_brief:
-                    st.session_state.messages.append({"role": "user", "content": prompt})
+                    st.session_state.messages.append({
+                        "role": "user", "content": prompt, "observed_at": time.time()
+                    })
                     with st.chat_message("user"):
                         st.markdown(prompt)
                     with st.chat_message("assistant"):
                         with st.spinner("Euri cerca un sogno da chiederti…"):
                             text, insight = _rx.run_briefing(memory_manager.r, embedder, _topic)
                         st.markdown(text)
-                    st.session_state.messages.append({"role": "assistant", "content": text})
+                    st.session_state.messages.append({
+                        "role": "assistant", "content": text, "observed_at": time.time()
+                    })
                     memory_manager.log_conversation("Stefano", prompt)
                     memory_manager.log_conversation("Euri", text)
                     if insight is not None:
@@ -868,7 +877,9 @@ with main_col:
                 )
 
             # Mostra utente
-            st.session_state.messages.append({"role": "user", "content": prompt})
+            st.session_state.messages.append({
+                "role": "user", "content": prompt, "observed_at": time.time()
+            })
             with st.chat_message("user"):
                 st.markdown(prompt)
 
@@ -877,7 +888,11 @@ with main_col:
                 from core.rag_context import build_rag_context, infer_context_mode
                 _context_mode = infer_context_mode(prompt, default="chat")
                 _recent_hist = [
-                    {"role": m["role"], "content": m["content"]}
+                    {
+                        "role": m["role"],
+                        "content": m["content"],
+                        "observed_at": m.get("observed_at"),
+                    }
                     for m in st.session_state.messages[:-1]
                 ]
                 _rag = build_rag_context(
@@ -928,7 +943,11 @@ with main_col:
                             # History recente per il risolutore SAVE semantico (Gradino 1):
                             # escludo il "memorizza…" corrente (messages[-1]).
                             recent_history = [
-                                {"role": _m["role"], "content": _m["content"]}
+                                {
+                                    "role": _m["role"],
+                                    "content": _m["content"],
+                                    "observed_at": _m.get("observed_at"),
+                                }
                                 for _m in st.session_state.messages[:-1]
                             ]
                             save_res = save_memory_command(
@@ -953,7 +972,11 @@ with main_col:
                         # solo quando la pre-gate cheap scatta; specific_search → invariato.
                         from core.retrieval_strategy import augment_context_with_ids
                         _recent_hist = [
-                            {"role": m["role"], "content": m["content"]}
+                            {
+                                "role": m["role"],
+                                "content": m["content"],
+                                "observed_at": m.get("observed_at"),
+                            }
                             for m in st.session_state.messages
                         ]
                         context_full, _, augment_ids = augment_context_with_ids(
@@ -975,7 +998,9 @@ with main_col:
                     st.markdown(response)
 
             # Salva risposta
-            st.session_state.messages.append({"role": "assistant", "content": response})
+            st.session_state.messages.append({
+                "role": "assistant", "content": response, "observed_at": time.time()
+            })
 
             # Log della conversazione — alimenta il passive learner
             memory_manager.log_conversation("Stefano", prompt)
@@ -993,19 +1018,32 @@ with main_col:
                         facts = brain.extract_passive_memories(recent_msgs)
                         saved = 0
                         for fact_item in facts:
+                            from core.temporal_context import derive_passive_memory_metadata
                             weak_support = isinstance(fact_item, dict) and fact_item.get("support") == "weak"
                             fact = fact_item.get("content", "") if isinstance(fact_item, dict) else str(fact_item)
+                            metadata = derive_passive_memory_metadata(
+                                fact_item if isinstance(fact_item, dict) else {"content": fact},
+                                recent_msgs,
+                            )
                             clean = validate_payload(fact, "memory")
                             if not clean:
                                 continue
                             if memory_manager.is_duplicate_memory(clean, llm_probe_fn=brain.probe_same_meaning):
                                 continue
-                            mid = memory_manager.save_memory(clean, category="passivo", source="passive", idempotent=True)
-                            if mid and weak_support:
+                            mid = memory_manager.save_memory(
+                                clean,
+                                category="passivo",
+                                source="passive",
+                                idempotent=True,
+                                memory_kind=metadata["memory_kind"],
+                                temporal_context=metadata["temporal_context"],
+                            )
+                            if mid and (weak_support or metadata["memory_kind"] == "conversation_anchor"):
                                 from core.memory_attention import remove_loop2e_candidate
                                 key = f"euri:memory:{mid}"
-                                memory_manager.r.json().set(key, "$.requires_verification", True)
-                                memory_manager.r.json().set(key, "$.passive_support", "tacit_acceptance")
+                                if weak_support:
+                                    memory_manager.r.json().set(key, "$.requires_verification", True)
+                                    memory_manager.r.json().set(key, "$.passive_support", "tacit_acceptance")
                                 remove_loop2e_candidate(memory_manager.r, mid)
                             saved += 1
                         if saved:

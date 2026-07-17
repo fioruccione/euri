@@ -35,6 +35,27 @@ def extract_temporal_range(text: str, now: datetime) -> tuple[float, float] | No
     t = text.lower()
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
+    # Data numerica: "15/07/2026", "15-07-26", "2026-07-15".
+    m = re.search(r'\b(\d{4})-(\d{1,2})-(\d{1,2})\b', t)
+    if m:
+        year, month, day = map(int, m.groups())
+        try:
+            start = today.replace(year=year, month=month, day=day)
+            return start.timestamp(), (start + timedelta(days=1)).timestamp()
+        except ValueError:
+            pass
+    m = re.search(r'\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b', t)
+    if m:
+        day, month = int(m.group(1)), int(m.group(2))
+        year = int(m.group(3)) if m.group(3) else now.year
+        if year < 100:
+            year += 2000
+        try:
+            start = today.replace(year=year, month=month, day=day)
+            return start.timestamp(), (start + timedelta(days=1)).timestamp()
+        except ValueError:
+            pass
+
     # Data esplicita: "5 maggio", "il 5 maggio 2026", "5 mag"
     m = re.search(
         rf'\b(\d{{1,2}})\s+({_MONTH_PAT})(?:\s+(\d{{4}}))?\b', t
@@ -44,24 +65,50 @@ def extract_temporal_range(text: str, now: datetime) -> tuple[float, float] | No
         month = _MONTHS_IT[month_str]
         year = int(year_str) if year_str else now.year
         try:
-            start = datetime(year, month, day)
+            start = today.replace(year=year, month=month, day=day)
             return start.timestamp(), (start + timedelta(days=1)).timestamp()
         except ValueError:
             pass
+
+    # "l'altro ieri"
+    if re.search(r"l['’\s]altro\s+ieri", t):
+        start = today - timedelta(days=2)
+        return start.timestamp(), (today - timedelta(days=1)).timestamp()
 
     # "ieri"
     if re.search(r'\bieri\b', t):
         start = today - timedelta(days=1)
         return start.timestamp(), today.timestamp()
 
-    # "l'altro ieri"
-    if re.search(r"l['''\s]altro\s+ieri", t):
-        start = today - timedelta(days=2)
-        return start.timestamp(), (today - timedelta(days=1)).timestamp()
+    # Parti del giorno: mantengono una finestra distinta dal generico "oggi".
+    if re.search(r'\b(questa\s+mattina|stamattina|stamani|stamane)\b', t):
+        end = min(now, today + timedelta(hours=12))
+        return today.timestamp(), end.timestamp()
+    if re.search(r'\b(questa\s+sera|stasera)\b', t):
+        start = today + timedelta(hours=18)
+        return start.timestamp(), max(start, now).timestamp()
+    if re.search(r'\bstanotte\b', t):
+        end = min(now, today + timedelta(hours=6))
+        return today.timestamp(), end.timestamp()
 
-    # "oggi" / "stamattina" / "stamani" / "stamane"
-    if re.search(r'\b(oggi|stamattina|stamani|stamane|stanotte)\b', t):
+    # "oggi"
+    if re.search(r'\boggi\b', t):
         return today.timestamp(), now.timestamp()
+
+    if re.search(r'\bpoco\s+fa\b', t):
+        return (now - timedelta(minutes=30)).timestamp(), now.timestamp()
+
+    # "N ore fa": finestra approssimata di un'ora attorno al riferimento.
+    m = re.search(
+        r"(\d+|un['’]?|una|due|tre|quattro|cinque|sei|sette|otto|nove|dieci)"
+        r"\s*(?:ora|ore)\s+fa",
+        t,
+    )
+    if m:
+        raw = m.group(1)
+        n = 1 if raw.startswith("un") else int(raw) if raw.isdigit() else _NUMS_IT.get(raw, 1)
+        start = now - timedelta(hours=n, minutes=30)
+        return start.timestamp(), (start + timedelta(hours=1)).timestamp()
 
     # "N giorni fa" (numeri o parole)
     m = re.search(r'(\d+|uno|due|tre|quattro|cinque|sei|sette|otto|nove|dieci)\s+giorni\s+fa', t)

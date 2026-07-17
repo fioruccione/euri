@@ -77,7 +77,11 @@ def process_memory_outbox_event(r, event_key: str) -> bool:
             payload={
                 "id": memory_id,
                 "mem_source": source,
+                "memory_kind": doc.get("memory_kind"),
                 "domain": doc.get("domain"),
+                "asserted_at": doc.get("asserted_at"),
+                "event_start": doc.get("event_start"),
+                "event_end": doc.get("event_end"),
                 "requires_verification": bool(doc.get("requires_verification")),
                 "memory_axes": {
                     "subject_status": axes.get("subject_status"),

@@ -98,6 +98,9 @@ def memory_verification_suffix(doc: dict) -> str:
     """Nota compatta da appendere al testo iniettato nel RAG."""
     if not doc:
         return ""
+    is_interpretation = (
+        doc.get("memory_kind") == "reflection" or doc.get("source") == "reflection"
+    )
     reasons: list[str] = []
     if doc.get("correction_pending"):
         reasons.append("contestato nel contesto, correzione in sospeso")
@@ -115,6 +118,13 @@ def memory_verification_suffix(doc: dict) -> str:
         reasons.append("soggetto incerto")
     if doc.get("requires_verification") and not reasons:
         reasons.append("da verificare")
+    if is_interpretation:
+        if reasons:
+            return (
+                " [INTERPRETAZIONE DI EURI, non fatto confermato; "
+                f"DA VERIFICARE: {', '.join(dict.fromkeys(reasons))}]"
+            )
+        return " [INTERPRETAZIONE DI EURI, non fatto confermato]"
     if not reasons:
         return ""
     return f" [DATO DA VERIFICARE: {', '.join(dict.fromkeys(reasons))}]"

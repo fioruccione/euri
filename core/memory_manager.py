@@ -135,7 +135,19 @@ class MemoryManager:
             f"{time.time():.6f}",
         )
 
-    def save_memory(self, content: str, category: str = "personale", tags: list[str] = None, source: str = "user", expires_at: datetime | None = None, idempotent: bool = False, due_at: datetime | None = None, status: str | None = None) -> str | None:
+    def save_memory(
+        self,
+        content: str,
+        category: str = "personale",
+        tags: list[str] = None,
+        source: str = "user",
+        expires_at: datetime | None = None,
+        idempotent: bool = False,
+        due_at: datetime | None = None,
+        status: str | None = None,
+        memory_kind: str | None = None,
+        temporal_context: dict | None = None,
+    ) -> str | None:
         # Memory Guard: scansione anti-poisoning sull'ingest. Da fonte non fidata
         # (web/mobile_in) un contenuto con injection/esfiltrazione viene rifiutato
         # (ritorna None); da fonte fidata si salva ma marcato in safety_flag.
@@ -161,6 +173,35 @@ class MemoryManager:
         idem_key = self._idempotency_key(content, source) if idempotent else None
 
         ts = now()
+        temporal_context = dict(temporal_context or {})
+
+        def _float_or_none(value):
+            try:
+                return float(value) if value is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        asserted_at = _float_or_none(temporal_context.get("asserted_at")) or to_timestamp(ts)
+        event_start = _float_or_none(temporal_context.get("event_start"))
+        event_end = _float_or_none(temporal_context.get("event_end"))
+        if event_start is None and event_end is None:
+            from core.temporal_context import resolve_text_event_time
+            inferred_time = resolve_text_event_time(content, asserted_at=asserted_at)
+            for field, value in inferred_time.items():
+                temporal_context.setdefault(field, value)
+            event_start = _float_or_none(temporal_context.get("event_start"))
+            event_end = _float_or_none(temporal_context.get("event_end"))
+        temporal_context["schema_version"] = int(temporal_context.get("schema_version") or 1)
+        temporal_context["asserted_at"] = asserted_at
+        temporal_context["event_start"] = event_start
+        temporal_context["event_end"] = event_end
+        kind_by_source = {
+            "episode": "conversation_episode",
+            "reflection": "reflection",
+            "loop2e": "derived_consolidation",
+            "reaction": "reaction_lesson",
+        }
+        memory_kind = memory_kind or kind_by_source.get(source, "semantic_fact")
 
         # Auto-assegna expires_at in base alla source (finestra scorrevole)
         if expires_at is None:
@@ -177,7 +218,8 @@ class MemoryManager:
                 embedding = vec.tolist()
 
         # Contesto temporale arricchito
-        hour = ts.hour
+        asserted_dt = from_timestamp(asserted_at) or ts
+        hour = asserted_dt.hour
         if hour < 12:
             time_of_day = "mattina"
         elif hour < 18:
@@ -186,7 +228,7 @@ class MemoryManager:
             time_of_day = "sera"
         _DAYS_IT = ["lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato", "domenica"]
         context_meta = {
-            "day_of_week": _DAYS_IT[ts.weekday()],
+            "day_of_week": _DAYS_IT[asserted_dt.weekday()],
             "time_of_day": time_of_day,
             "session_type": source,
         }
@@ -212,7 +254,7 @@ class MemoryManager:
             _re.IGNORECASE
         )
         requires_verification = bool(_NUM_PAT.search(content))
-        memory_axes = analyze_memory_axes(content, source=source, created_at=to_timestamp(ts))
+        memory_axes = analyze_memory_axes(content, source=source, created_at=asserted_at)
         if "acephalous_subject" in memory_axes.get("audit_reasons", []):
             requires_verification = True
 
@@ -221,9 +263,13 @@ class MemoryManager:
             "content": content,
             "category": category,
             "source": source,
+            "memory_kind": memory_kind,
             "domain": domain_label,
             "requires_verification": requires_verification,
             "created_at": to_timestamp(ts),
+            "asserted_at": asserted_at,
+            "event_start": event_start,
+            "event_end": event_end,
             "due_at": to_timestamp(due_at),
             "expires_at": to_timestamp(expires_at) if expires_at else None,
             "recalled_count": 0,
@@ -231,6 +277,7 @@ class MemoryManager:
             "tags": tags or [],
             "embedding": embedding,
             "context_meta": context_meta,
+            "temporal_context": temporal_context,
             "memory_axes": memory_axes,
             "safety_flag": guard["safety_flag"],  # [] se pulito; categorie se contenuto sospetto da fonte fidata
         }
@@ -626,9 +673,14 @@ class MemoryManager:
         limit: int = 5,
         touch: bool = True,
     ) -> list[dict]:
-        """Recupera memorie in un range temporale tramite filtro numerico su created_at."""
+        """Recupera memorie per tempo dell'evento, dell'affermazione o del salvataggio."""
         try:
-            q = (Query(f"@created_at:[{ts_start} {ts_end}]")
+            temporal_query = (
+                f"((@event_start:[-inf {ts_end}] @event_end:[{ts_start} +inf]) | "
+                f"@asserted_at:[{ts_start} {ts_end}] | "
+                f"@created_at:[{ts_start} {ts_end}])"
+            )
+            q = (Query(temporal_query)
                  .sort_by("created_at", asc=False)
                  .paging(0, max(limit * 4, limit)))
             results = self.r.ft("idx:memories").search(q)

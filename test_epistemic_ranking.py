@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Regressioni pure per il ranking epistemico dei candidati di memoria."""
 
-from core.memory_risk import memory_epistemic_rank, rank_memories_epistemically
+from core.memory_risk import (
+    memory_epistemic_rank,
+    memory_verification_suffix,
+    rank_memories_epistemically,
+)
 from core.temporal_recall import prioritize_window
 
 
@@ -73,6 +77,23 @@ def test_temporal_recall_cannot_reintroduce_quarantined_memory():
     ]
 
     assert [item["id"] for item in prioritize_window(window)] == ["derived"]
+
+
+def test_reflection_is_labelled_as_euri_interpretation_not_user_fact():
+    clean = _memory("r1", source="reflection", memory_kind="reflection")
+    uncertain = _memory(
+        "r2",
+        source="reflection",
+        memory_kind="reflection",
+        requires_verification=True,
+    )
+
+    assert memory_verification_suffix(clean) == (
+        " [INTERPRETAZIONE DI EURI, non fatto confermato]"
+    )
+    suffix = memory_verification_suffix(uncertain)
+    assert "INTERPRETAZIONE DI EURI" in suffix
+    assert "DA VERIFICARE: da verificare" in suffix
 
 
 if __name__ == "__main__":

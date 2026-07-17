@@ -6,13 +6,14 @@ import re
 import json
 import time
 import threading
+import uuid
 from collections import deque
 from loguru import logger
 import ollama
 from core.ollama_client import chat_client
 from core.operational_context import load_operational_context
 import config
-from utils.date_utils import now, format_datetime_full
+from utils.date_utils import now, format_datetime_full, from_timestamp
 
 
 class Brain:
@@ -20,13 +21,16 @@ class Brain:
         self._conversation_history: list[dict] = []
         self._max_history = 10  # ultimi 10 scambi in contesto
         self._history_seq = 0
+        self._conversation_id = str(uuid.uuid4())
+        self._history_segment_id = 1
+        self._last_user_observed_at: float | None = None
         # Coda indipendente dalla history comprimibile: il passive learner usa
         # sequence ID stabili e fa ack dopo l'estrazione.
         self._passive_journal: deque[dict] = deque(maxlen=2048)
-        self._episodes: list[str] = []       # episodi compressi della sessione corrente
+        self._episodes: list[dict] = []      # episodi compressi con confini temporali
         self._compress_lock = threading.Lock()
         self.history_lock = threading.Lock()  # protegge _conversation_history da accessi concorrenti
-        self._episode_callback = None        # fn(summary: str) → salva in Redis; iniettata da voice_daemon
+        self._episode_callback = None        # fn(summary, temporal_context) -> salva in Redis
 
     @staticmethod
     def _clean(text: str) -> str:
@@ -38,16 +42,44 @@ class Brain:
             text = text.split("<channel|>", 1)[-1]
         # Formato alternativo <think>...</think>
         text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+        # Le etichette temporali appartengono al prompt interno. Il modello non
+        # dovrebbe copiarle, ma l'output vocale ha bisogno anche di un confine
+        # deterministico nel caso in cui imiti il formato dello storico.
+        text = re.sub(
+            r"^\s*(?:\[\s*tempo interno\s*:[^\]\r\n]*\]\s*)+",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        )
         return text.strip()
 
-    def _append_history_locked(self, role: str, content: str, trusted: bool) -> None:
+    def _append_history_locked(
+        self,
+        role: str,
+        content: str,
+        trusted: bool,
+        *,
+        observed_at: float | None = None,
+    ) -> None:
         """Aggiunge un messaggio alla history LLM e al journal passivo."""
+        at = time.time() if observed_at is None else float(observed_at)
+        if role == "user":
+            gap_s = getattr(config, "TEMPORAL_EPISODE_GAP_SECONDS", 30 * 60)
+            if (
+                self._last_user_observed_at is not None
+                and at - self._last_user_observed_at > gap_s
+            ):
+                self._history_segment_id += 1
+            self._last_user_observed_at = at
         self._history_seq += 1
         message = {
             "seq": self._history_seq,
             "role": role,
             "content": content,
             "trusted": bool(trusted),
+            "observed_at": at,
+            "conversation_id": self._conversation_id,
+            "segment_id": self._history_segment_id,
         }
         self._conversation_history.append(message)
         self._passive_journal.append(dict(message))
@@ -69,11 +101,24 @@ class Brain:
             while self._passive_journal and self._passive_journal[0]["seq"] <= through_seq:
                 self._passive_journal.popleft()
 
-    def respond(self, user_text: str, context: str = "", *, trusted: bool = False) -> str:
+    def respond(
+        self,
+        user_text: str,
+        context: str = "",
+        *,
+        trusted: bool = False,
+        observed_at: float | None = None,
+    ) -> str:
         """
         Genera una risposta per voce: breve, diretta, italiana.
         context: informazioni aggiuntive da iniettare (es. risultati ricerca Redis).
         """
+        from core.temporal_context import (
+            temporal_prompt_contract,
+            turn_time_label,
+        )
+
+        user_observed_at = time.time() if observed_at is None else float(observed_at)
         messages = [{"role": "system", "content": config.SYSTEM_PROMPT}]
 
         # Contesto operativo opzionale (EURI_CONTEXT.md): cornice del mondo in cui Euri opera.
@@ -94,16 +139,40 @@ class Brain:
         # Episodi compressi della sessione corrente (max EPISODE_MAX_INJECT)
         if self._episodes:
             ep_text = "\n\n".join(
-                f"[Episodio {i+1}] {ep}"
+                f"[Episodio {i+1} | "
+                f"da {turn_time_label(ep.get('started_at'), user_observed_at)} "
+                f"a {turn_time_label(ep.get('ended_at'), user_observed_at)}] "
+                f"{ep.get('summary', '')}"
                 for i, ep in enumerate(self._episodes[-config.EPISODE_MAX_INJECT:])
             )
             messages.append({"role": "system", "content": f"Episodi conversazione corrente:\n{ep_text}"})
 
         # Aggiungi storico recente sotto lock — evita race con _compress_episode
         with self.history_lock:
+            history = list(self._conversation_history[-self._max_history:])
+        if history:
+            timeline = []
+            for index, message in enumerate(history, start=1):
+                role = "Stefano" if message["role"] == "user" else "Euri"
+                segment = message.get("segment_id")
+                segment_text = f"; segmento {segment}" if segment is not None else ""
+                timeline.append(
+                    f"Turno storico {index}: {role}; "
+                    f"{turn_time_label(message.get('observed_at'), user_observed_at)}"
+                    f"{segment_text}"
+                )
+            messages.append({
+                "role": "system",
+                "content": temporal_prompt_contract()
+                + "\nTimeline dei messaggi storici (solo metadati interni):\n"
+                + "\n".join(timeline),
+            })
             messages.extend(
-                {"role": m["role"], "content": m["content"]}
-                for m in self._conversation_history[-self._max_history:]
+                {
+                    "role": m["role"],
+                    "content": m.get("content", ""),
+                }
+                for m in history
             )
         messages.append({"role": "user", "content": user_text})
 
@@ -123,8 +192,12 @@ class Brain:
             # La provenienza appartiene a QUESTO turno: parametro locale, non
             # side-channel globale condiviso tra voce e mobile.
             with self.history_lock:
-                self._append_history_locked("user", user_text, trusted)
-                self._append_history_locked("assistant", reply, trusted)
+                self._append_history_locked(
+                    "user", user_text, trusted, observed_at=user_observed_at
+                )
+                self._append_history_locked(
+                    "assistant", reply, trusted, observed_at=time.time()
+                )
                 trigger_compress = len(self._conversation_history) >= config.EPISODE_COMPRESSION_THRESHOLD
 
             # Compressione episodica in background se la history è abbastanza lunga
@@ -139,25 +212,28 @@ class Brain:
 
     def inject_tool_result(self, user_text: str, result_text: str):
         """Inietta uno scambio tool nella history LLM — visibile ai turn CHAT successivi."""
+        user_at = time.time()
         with self.history_lock:
-            self._append_history_locked("user", user_text, False)
-            self._append_history_locked("assistant", result_text, False)
+            self._append_history_locked("user", user_text, False, observed_at=user_at)
+            self._append_history_locked("assistant", result_text, False, observed_at=time.time())
 
     def _compress_episode(self):
         """Comprime i messaggi più vecchi in un episodio — gira in background."""
+        from core.temporal_context import history_line_for_prompt
+
         with self._compress_lock:
             with self.history_lock:
                 if len(self._conversation_history) < config.EPISODE_COMPRESSION_THRESHOLD:
                     return  # un altro thread ha già compresso
                 chunk = self._conversation_history[:config.EPISODE_COMPRESSION_CHUNK]
-            lines = []
-            for m in chunk:
-                role = "Stefano" if m["role"] == "user" else "Euri"
-                lines.append(f"{role}: {m['content']}")
+            reference_at = time.time()
+            lines = [history_line_for_prompt(m, reference_at=reference_at) for m in chunk]
             dialogue = "\n".join(lines)
             prompt = (
                 "Riassumi questa conversazione in modo conciso ma preciso. "
                 "Preserva: nomi propri, numeri, nomi di progetto, decisioni, fatti tecnici. "
+                "Preserva anche l'ordine temporale e segnala se un argomento resta aperto, "
+                "ma non trasformare un tema proposto in un fatto avvenuto. "
                 "Scrivi in terza persona. Max 120 parole.\n\n"
                 f"{dialogue}\n\nRiassunto:"
             )
@@ -173,10 +249,32 @@ class Brain:
                     return
                 with self.history_lock:
                     self._conversation_history = self._conversation_history[config.EPISODE_COMPRESSION_CHUNK:]
-                self._episodes.append(summary)
+                started_at = min(
+                    (float(m.get("observed_at")) for m in chunk if m.get("observed_at") is not None),
+                    default=reference_at,
+                )
+                ended_at = max(
+                    (float(m.get("observed_at")) for m in chunk if m.get("observed_at") is not None),
+                    default=reference_at,
+                )
+                temporal_context = {
+                    "schema_version": 1,
+                    "asserted_at": ended_at,
+                    "event_start": started_at,
+                    "event_end": ended_at,
+                    "event_precision": "conversation_interval",
+                    "conversation_id": self._conversation_id,
+                    "segment_id": chunk[-1].get("segment_id") if chunk else None,
+                    "source_turn_ids": [m.get("seq") for m in chunk if m.get("seq") is not None],
+                }
+                self._episodes.append({
+                    "summary": summary,
+                    "started_at": started_at,
+                    "ended_at": ended_at,
+                })
                 logger.info(f"Episodic compression: {config.EPISODE_COMPRESSION_CHUNK} messaggi → episodio #{len(self._episodes)}")
                 if self._episode_callback:
-                    self._episode_callback(summary)
+                    self._episode_callback(summary, temporal_context)
             except Exception as e:
                 logger.error(f"Episodic compression errore: {e}")
 
@@ -291,22 +389,36 @@ class Brain:
 
     def extract_passive_memories(self, conversation: list[dict]) -> list[dict]:
         """
-        Analizza la conversazione recente ed estrae fatti autosufficienti da salvare passivamente.
-        Ritorna una lista di {"content": str, "support": "strong|weak"}, vuota se nulla di rilevante.
+        Estrae fatti autosufficienti e fili conversazionali specifici ancora aperti.
+        Ogni risultato conserva supporto, tipo e turni sorgente per la cronologia.
         """
         if len(conversation) < 4:
             return []
 
         lines = []
-        for msg in conversation:
+        for index, msg in enumerate(conversation, 1):
             role = "Stefano" if msg["role"] == "user" else "Euri"
-            lines.append(f"{role}: {msg['content']}")
+            turn_id = msg.get("seq", index)
+            observed_at = msg.get("observed_at")
+            if observed_at is not None:
+                try:
+                    turn_time = from_timestamp(float(observed_at)).strftime("%d/%m/%Y %H:%M:%S")
+                except Exception:
+                    turn_time = "tempo non registrato"
+            else:
+                turn_time = "tempo non registrato"
+            lines.append(f"[T{turn_id} | {turn_time}] {role}: {msg['content']}")
         dialogue = "\n".join(lines)
 
         prompt = (
             f"Analizza questa conversazione tra Stefano e il suo assistente.\n\n"
             f"{dialogue}\n\n"
-            f"Estrai SOLO fatti concreti e autosufficienti che vale la pena ricordare per il futuro.\n"
+            f"Estrai SOLO elementi che vale la pena ricordare per una conversazione futura.\n"
+            f"Distingui due tipi:\n"
+            f"- FATTO: informazione concreta, decisione, risultato o preferenza riutilizzabile.\n"
+            f"- EPISODIO: argomento specifico introdotto o riaperto che resta incompleto. "
+            f"Descrivi chi lo ha introdotto, che cosa e' stato realmente detto e quale dettaglio "
+            f"manca. Un EPISODIO non prova che l'evento raccontato sia avvenuto.\n"
             f"Ogni fatto deve nominare esplicitamente il soggetto a cui si riferisce "
             f"(persona, azienda, cliente, prodotto, macchina, progetto, materiale...).\n"
             f"Risolvi il soggetto dal contesto conversazionale solo quando è chiaro; NON "
@@ -339,11 +451,17 @@ class Brain:
             f"('se X allora Y'), connessioni concrete tra risultati tecnici, vendite, investimenti, "
             f"decisioni hardware/software. Esempio: 'Se la vendita dei neutri va a buon fine, "
             f"Stefano userà i proventi per aggiornare la GPU della workstation.'\n\n"
-            f"IGNORA: conversazione generica, saluti, test del sistema, domande senza risposta concreta, "
+            f"IGNORA: conversazione generica, saluti, test del sistema senza un tema futuro specifico, "
             f"informazioni già ovvie (es. 'Stefano usa Euri'), frasi acefale senza soggetto esplicito.\n\n"
             f"Se trovi fatti utili: scrivi una lista numerata, un fatto per riga, max 6.\n"
-            f"Ogni riga deve iniziare con FORTE: oppure DEBOLE:.\n"
-            f"Esempio: 1. FORTE: Stefano si occupa anche di architetture agentiche e analisi DSC.\n"
+            f"Ogni riga deve avere questo formato esatto:\n"
+            f"1. FORTE: [TIPO=FATTO; TURNI=12,13] contenuto\n"
+            f"oppure: 1. FORTE: [TIPO=EPISODIO; TURNI=12,13] contenuto\n"
+            f"TURNI deve contenere soltanto i turni che sostengono quell'elemento. Non copiare "
+            f"nel contenuto l'orario tecnico tra parentesi: preserva invece gli eventuali "
+            f"riferimenti temporali detti da Stefano.\n"
+            f"Esempio FATTO: 1. FORTE: [TIPO=FATTO; TURNI=4] Stefano si occupa anche di architetture agentiche e analisi DSC.\n"
+            f"Esempio EPISODIO: 2. FORTE: [TIPO=EPISODIO; TURNI=7,8] Stefano ha riaperto il tema della prova IZOD riferita a quella mattina; non ha ancora fornito valori o risultati.\n"
             f"Se non c'è nulla di concreto da salvare: scrivi solo NOTHING."
         )
         try:
@@ -376,6 +494,10 @@ class Brain:
         r"^\s*(?:\[(FORTE|DEBOLE|STRONG|WEAK)\]|(FORTE|DEBOLE|STRONG|WEAK))\s*:\s*(.+)$",
         re.IGNORECASE,
     )
+    _PASSIVE_FACT_META_RE = re.compile(
+        r"^\s*\[TIPO=(FATTO|EPISODIO);\s*TURNI=([0-9,\s]+)\]\s*(.+)$",
+        re.IGNORECASE,
+    )
 
     @classmethod
     def _parse_passive_fact_line(cls, line: str) -> dict | None:
@@ -395,7 +517,20 @@ class Brain:
             support = "weak"
         if not content:
             return None
-        return {"content": content, "support": support}
+        parsed = {"content": content, "support": support}
+        meta = cls._PASSIVE_FACT_META_RE.match(content)
+        if meta:
+            kind = meta.group(1).lower()
+            turn_ids = []
+            for raw in meta.group(2).split(","):
+                try:
+                    turn_ids.append(int(raw.strip()))
+                except ValueError:
+                    continue
+            parsed["content"] = meta.group(3).strip()
+            parsed["memory_kind"] = "episode" if kind == "episodio" else "semantic_fact"
+            parsed["source_turn_ids"] = turn_ids
+        return parsed
 
     _ACEPHALOUS_FACT_RE = re.compile(
         r"^\s*(?:ha|aveva|avrà|lavora|lavorava|opera|gestisce|gestiva|collabora|"
@@ -419,6 +554,9 @@ class Brain:
         "- Massimo 3 frasi totali\n"
         "- Tono funzionale, non emotivo\n"
         "- Terza persona su Stefano\n"
+        "- Non trasformare possibilita' o collegamenti plausibili in piani, decisioni o fatti di Stefano\n"
+        "- La terza frase deve iniziare esattamente con 'Ipotesi di Euri:' e dichiarare "
+        "  una tua interpretazione, non una intenzione attribuita a Stefano\n"
         "- Nessun preambolo ('Ecco la sintesi:', ecc.)\n"
         "- Se le memorie sono troppo scollegate, rispondi esattamente: NO_COHERENT_PATTERN"
     )

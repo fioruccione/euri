@@ -9,13 +9,13 @@ Costruisce il contesto base da Redis senza conoscere domini specifici:
 from __future__ import annotations
 
 import re
-import time
 from dataclasses import dataclass
 
 from loguru import logger
 
 import config
 from core.memory_risk import memory_verification_suffix
+from core.temporal_context import memory_time_label, temporal_prompt_contract, turn_time_label
 from utils.date_utils import now
 
 
@@ -63,38 +63,36 @@ def infer_context_mode(text: str, default: str = "chat") -> str:
     return default
 
 
-def _relative_time(ts) -> str:
-    if not ts:
-        return ""
-    try:
-        delta = time.time() - float(ts)
-        days = delta / 86400
-        if days < 1:
-            return "oggi"
-        if days < 7:
-            d = int(days)
-            return f"{d} {'giorno' if d == 1 else 'giorni'} fa"
-        if days < 30:
-            w = int(days / 7)
-            return f"{w} {'settimana' if w == 1 else 'settimane'} fa"
-        if days < 365:
-            m = int(days / 30)
-            return f"{m} {'mese' if m == 1 else 'mesi'} fa"
-        y = int(days / 365)
-        return f"{y} {'anno' if y == 1 else 'anni'}"
-    except Exception:
-        return ""
-
-
-def _format_recent_history(recent_history: list[dict] | None, *, limit: int = 8) -> list[str]:
+def _format_recent_history(
+    recent_history: list[dict] | None,
+    *,
+    limit: int = 8,
+    reference_at: float | None = None,
+) -> list[str]:
     rows = []
+    previous_at = None
     for msg in (recent_history or [])[-limit:]:
         role = msg.get("role")
         content = (msg.get("content") or "").strip()
         if not content:
             continue
+        observed_at = msg.get("observed_at")
+        try:
+            observed_at = float(observed_at) if observed_at is not None else None
+        except (TypeError, ValueError):
+            observed_at = None
+        if (
+            previous_at is not None
+            and observed_at is not None
+            and observed_at - previous_at > getattr(config, "TEMPORAL_EPISODE_GAP_SECONDS", 1800)
+        ):
+            rows.append("- [nuovo segmento dopo una pausa]")
         who = "Stefano" if role == "user" else "Euri" if role == "assistant" else str(role or "?")
-        rows.append(f"- {who}: {content[:500]}")
+        rows.append(
+            f"- [{turn_time_label(observed_at, reference_at)}] {who}: {content[:500]}"
+        )
+        if observed_at is not None:
+            previous_at = observed_at
     return rows
 
 
@@ -112,13 +110,17 @@ def build_rag_context(
     source_filter = config.DEMO_CONTEXT_SOURCES if config.DEMO_MODE else None
     search_mode = mode == "search"
     recent_context_query = bool(_RECENT_CONTEXT_RE.search(text or ""))
-    history_lines = _format_recent_history(recent_history) if recent_context_query else []
+    reference_at = now().timestamp()
+    history_lines = (
+        _format_recent_history(recent_history, reference_at=reference_at)
+        if recent_context_query else []
+    )
     history_resolves_query = recent_context_query and bool(history_lines)
 
     reflection_lines: list[str] = []
     if not history_resolves_query and not config.DEMO_MODE and (not search_mode or recent_context_query):
         for r in memory.get_recent_reflections(limit=2, touch=False):
-            reflection_lines.append(f"- {r['content']}")
+            reflection_lines.append(f"- [INTERPRETAZIONE DI EURI] {r['content']}")
 
     if history_resolves_query:
         results = []
@@ -214,12 +216,17 @@ def build_rag_context(
             sections.append(
                 "Conversazione recente immediata:\n"
                 + "\n".join(history_lines)
-                + "\nUsala per risolvere pronomi, correzioni e riferimenti tipo 'prima', 'quella cosa', 'appena'."
+                + "\nGli orari sono metadati interni: usali per la cronologia senza recitarli. "
+                "Usa questo blocco per risolvere pronomi, correzioni e riferimenti tipo "
+                "'prima', 'quella cosa', 'appena'."
             )
 
     mem_cap = config.RAG_MEM_CAP_TEMPORAL if time_range else config.RAG_MEM_CAP
     if reflection_lines:
-        sections.append("Sintesi recenti:\n" + "\n".join(reflection_lines))
+        sections.append(
+            "Interpretazioni recenti di Euri (sintesi o ipotesi interne, non fatti "
+            "attribuiti a Stefano):\n" + "\n".join(reflection_lines)
+        )
     if commitment_lines:
         sections.append(
             "Impegni aperti (stato reale in agenda, non ricordi):\n"
@@ -230,17 +237,26 @@ def build_rag_context(
         for r in results[:mem_cap]:
             if r.get("id") in commitment_ids:
                 continue  # già nel blocco impegni, non duplicare
-            age = _relative_time(r.get("created_at"))
+            age = memory_time_label(r, reference_at=reference_at)
+            kind = r.get("memory_kind") or ""
+            kind_label = "FILO CONVERSAZIONALE | " if kind == "conversation_anchor" else ""
             label = (
-                f"[{r.get('domain', 'generale')} | {age}]"
-                if age else f"[{r.get('domain', 'generale')}]"
+                f"[{kind_label}{r.get('domain', 'generale')} | {age}]"
+                if age else f"[{kind_label}{r.get('domain', 'generale')}]"
             )
             suffix = memory_verification_suffix(r)
-            mem_lines.append(f"- {label} {r['content']}{suffix}")
+            anchor_note = (
+                " [ancora episodica: indica un discorso aperto, non prova il fatto raccontato]"
+                if kind == "conversation_anchor" else ""
+            )
+            mem_lines.append(f"- {label} {r['content']}{anchor_note}{suffix}")
         if mem_lines:
             sections.append("Ricordi/note rilevanti:\n" + "\n".join(mem_lines))
     if insight_lines:
         sections.append("Principi trasversali:\n" + "\n".join(insight_lines))
+
+    if results and not recent_history:
+        sections.insert(0, "Regola cronologica interna:\n" + temporal_prompt_contract())
 
     ids = [r.get("id") for r in results[:mem_cap] if r.get("id")]
     if results:
