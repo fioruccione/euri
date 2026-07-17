@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-17 - Tempi interni del Dream osservabili
+
+- Aggiunta instrumentazione read-only per durata totale del ciclo idle e delle fasi
+  creative, light e maintenance. Generazione e distillazione della dream trace hanno
+  tempi espliciti.
+- `evaluate_insights` riporta separatamente tempo e chiamate di premise fidelity,
+  bridge validity e giudice di convergenza, distinguendo model call e cache hit.
+- Nessun budget, gate, soglia o decisione e' cambiato. Quando creative e light sono
+  entrambi dovuti, le due valutazioni restano separate e ora sono visibili nei log;
+  l'eventuale deduplicazione va decisa dopo la raccolta Dream Trace sui tempi reali.
+
 ## 2026-07-17 - Workflow solo su comando e modalita' epistemica preservata
 
 - Corretto il falso workflow live sul discorso Poseidon: il vecchio `legg\w*`

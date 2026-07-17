@@ -240,25 +240,43 @@ class DreamEngine:
             salience=0.25,
         )
 
+        cycle_started = time.monotonic()
+        phase_timings = []
+
         if creative_due:
+            phase_started = time.monotonic()
             try:
                 self._creative_cycle()
                 self._creative_last_run = time.time()
             except Exception as e:
                 logger.error(f"Errore ciclo creativo Dream Engine: {e}")
+            finally:
+                phase_timings.append(("creative", time.monotonic() - phase_started))
         if light_due:
+            phase_started = time.monotonic()
             try:
                 self._light_cycle()
                 self._light_last_run = time.time()
             except Exception as e:
                 logger.error(f"Errore ciclo leggero Dream Engine: {e}")
+            finally:
+                phase_timings.append(("light", time.monotonic() - phase_started))
         if maintenance_due:
+            phase_started = time.monotonic()
             try:
                 self._maintenance_cycle()
                 self._maintenance_last_run = time.time()
                 self._persist_maintenance_clock(self._maintenance_last_run)
             except Exception as e:
                 logger.error(f"Errore ciclo manutentivo Dream Engine: {e}")
+            finally:
+                phase_timings.append(("maintenance", time.monotonic() - phase_started))
+
+        detail = ", ".join(f"{name}={elapsed:.1f}s" for name, elapsed in phase_timings)
+        logger.info(
+            f"[TIMING] Dream ciclo idle: {time.monotonic() - cycle_started:.1f}s"
+            f" ({detail})"
+        )
 
     def _creative_cycle(self):
         """Sogno cross-domain + promozione insight. Medio-costo, cadenza separata."""
@@ -266,12 +284,16 @@ class DreamEngine:
         if len(domains) < 2:
             logger.debug("Dream Engine: non ci sono abbastanza domini per sognare")
             return
+        generation_started = time.monotonic()
         self._generate_dream(domains)
-        self._evaluate_insights()
+        logger.info(
+            f"[TIMING] Dream generazione: {time.monotonic() - generation_started:.1f}s"
+        )
+        self._evaluate_insights(phase="creative")
 
     def _light_cycle(self):
         """Pass leggeri/frequenti: metabolizza feedback e ipotesi senza consolidare."""
-        self._evaluate_insights()
+        self._evaluate_insights(phase="light")
         self._audit_corrections_pass()
         if getattr(config, "CROSS_EPISODE_HYPOTHESIS_ENABLED", True):
             self._cross_episode_hypothesis_pass()
@@ -673,6 +695,7 @@ REGOLE:
         vuoto (failure noto, caso synthesize_lesson). Il modello del sogno è già caldo
         in VRAM → chiamata economica. NON è una memoria: niente embedding, niente
         dominio, mai nel retrieval. Fail-open: non rompe mai il sogno."""
+        started = time.monotonic()
         try:
             if not cot or len(cot.strip()) < 80:
                 return
@@ -722,6 +745,8 @@ REGOLE:
                             f"{residue[:500].replace(chr(10), ' | ')}")
         except Exception as e:
             logger.debug(f"dream_trace non aggiornata (non-critico): {e}")
+        finally:
+            logger.info(f"[TIMING] Dream trace: {time.monotonic() - started:.1f}s")
 
     # ── Loop 2c: Insight e Promozione ──────────────────────────────────────
 
@@ -1070,8 +1095,18 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
         except Exception as e:
             logger.debug(f"trace convergence fallito (non-critico): {e}")
 
-    def _evaluate_insights(self):
+    def _evaluate_insights(self, phase: str = "manual"):
         """Valuta i candidate insights per la promozione (convergenza)."""
+        started = time.monotonic()
+        candidate_count = 0
+        fidelity_seconds = 0.0
+        fidelity_calls = 0
+        bridge_seconds = 0.0
+        bridge_calls = 0
+        judge_seconds = 0.0
+        judge_checks = 0
+        judge_model_calls = 0
+        judge_cache_hits = 0
         try:
             # Cerca tutti i CANDIDATE
             q = Query("@status:{candidate}").return_fields("id", "content", "embedding", "convergence_count").paging(0, 500)
@@ -1079,6 +1114,7 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
             
             if not res.docs:
                 return
+            candidate_count = len(res.docs)
                 
             # Per ogni candidato, controlla se ci sono altri candidati molto simili
             # (Convergenza = la stessa intuizione è emersa da sogni indipendenti)
@@ -1094,10 +1130,20 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
                 if not self._r.exists(doc.id):
                     continue
 
-                if fidelity_budget > 0 and self._ensure_premise_fidelity(doc.id):
-                    fidelity_budget -= 1
-                if bridge_budget > 0 and self._ensure_bridge_validity(doc.id):
-                    bridge_budget -= 1
+                if fidelity_budget > 0:
+                    phase_started = time.monotonic()
+                    measured = self._ensure_premise_fidelity(doc.id)
+                    fidelity_seconds += time.monotonic() - phase_started
+                    if measured:
+                        fidelity_calls += 1
+                        fidelity_budget -= 1
+                if bridge_budget > 0:
+                    phase_started = time.monotonic()
+                    measured = self._ensure_bridge_validity(doc.id)
+                    bridge_seconds += time.monotonic() - phase_started
+                    if measured:
+                        bridge_calls += 1
+                        bridge_budget -= 1
 
                 vec_str = getattr(doc, "embedding", None)
                 if not vec_str:
@@ -1155,10 +1201,15 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
                                             "MISSING_CONTENT", False))
                         continue
 
+                    phase_started = time.monotonic()
                     verdict, model_called, cache_hit = self._cached_same_insight_judgement(
                         str(doc.id), doc.content, str(sim.id), sim_content,
                         allow_model_call=judge_budget > 0,
                     )
+                    judge_seconds += time.monotonic() - phase_started
+                    judge_checks += 1
+                    judge_model_calls += int(model_called)
+                    judge_cache_hits += int(cache_hit)
                     if model_called:
                         judge_budget -= 1
                     if verdict is True:
@@ -1281,6 +1332,15 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
 
         except Exception as e:
             logger.error(f"Errore valutazione insights: {e}")
+        finally:
+            logger.info(
+                f"[TIMING] Dream evaluate[{phase}]: {time.monotonic() - started:.1f}s | "
+                f"candidate={candidate_count} | "
+                f"fidelity={fidelity_seconds:.1f}s/{fidelity_calls} | "
+                f"bridge={bridge_seconds:.1f}s/{bridge_calls} | "
+                f"judge={judge_seconds:.1f}s/{judge_checks} "
+                f"(model={judge_model_calls}, cache={judge_cache_hits})"
+            )
 
     # ── Loop 2i: Ipotesi trasversali da episodi ripetuti ───────────────────
 

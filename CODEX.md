@@ -1,5 +1,17 @@
 # Handoff Euri — 2026-07-14
 
+## Instrumentazione costo Dream — 2026-07-17
+
+- Il log live ha mostrato picchi VRAM 96-97% durante i cicli creativi, con ritorno
+  spontaneo al 31-72%: pressione di workload, non emergenza. Le soglie hardware e i
+  riflessi restano invariati durante la baseline.
+- Il Dream emette ora `[TIMING]` per ciclo idle, generazione, trace e
+  `evaluate[creative|light]`, con breakdown fidelity/bridge/judge e cache/model call.
+- Osservazione strutturale da non perdere: se `creative_due` e `light_due` coincidono,
+  `_evaluate_insights` gira una volta in ciascun sotto-ciclo. Non e' stato deduplicato
+  durante Dream Trace perche' cambierebbe budget e numero di misure. Valutarlo dopo la
+  raccolta usando i nuovi tempi, non come ottimizzazione presunta.
+
 ## Falso workflow Poseidon e modalita' delle previsioni — 2026-07-17
 
 - Caso live 11:23: una normale spiegazione tecnica ha prodotto
