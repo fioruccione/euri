@@ -35,6 +35,7 @@ Thumbs.db
 # File temporanei
 *.wav
 *.tmp
+.~lock.*#
 /tmp/
 
 # Screenshot/immagini scratch (nessun .png è tracciato; force-add se serve una figura)
