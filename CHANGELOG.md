@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-20 - Intenzione per la percezione sociale visiva
+
+- Documentata in `SPEC_SOCIAL_PERCEPTION.md` la futura estensione del VisualGate:
+  osservare landmark, orientamento e variazioni espressive per regolare disponibilita',
+  tono e iniziativa senza attribuire emozioni certe.
+- Definite quattro fasi, dalla raccolta read-only alla calibrazione personale, con
+  separazione tra osservazioni effimere nel Cognitive Present e memoria cognitiva.
+- Nessun comportamento runtime e' stato attivato; immagini non persistenti, percorso
+  ospite e fail-silent dell'interpretazione restano vincoli espliciti.
+
 ## 2026-07-20 - Interlocutori sconosciuti in quarantena epistemica
 
 - SpeakerAuth restituisce ora `VERIFIED`, `REJECTED` o `INDETERMINATE`: una clip

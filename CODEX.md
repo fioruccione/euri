@@ -1,5 +1,19 @@
 # Handoff Euri — 2026-07-14
 
+## Percezione sociale visiva pianificata — 2026-07-20
+
+- Salvata in `SPEC_SOCIAL_PERCEPTION.md` l'intenzione di evolvere VisualGate da
+  gate di presenza/identita' a recettore sociale prudente: movimenti osservabili e
+  trend temporali possono regolare tempi, tono e Initiative, ma non diventano
+  automaticamente emozioni, intenzioni certe o memorie.
+- Architettura prevista: frame VisualGate condivisi -> landmark/blendshape ->
+  baseline e smoothing -> transizioni Pulse -> osservazioni con TTL nel Cognitive
+  Present -> interpretazione contestuale. Niente immagini persistenti e nessuna
+  frase cablata nel sensore.
+- Stato attuale: solo specifica, nessun runtime modificato. La prima implementazione
+  deve essere Fase 0 osservativa; l'effetto live parte dalla sola disponibilita'
+  conversazionale e richiede dati reali prima di includere segnali espressivi.
+
 ## Identita' ospite e conferma differita — 2026-07-20
 
 - Il daemon usa un verdetto vocale tri-state. `INDETERMINATE` e' assenza di prova,
