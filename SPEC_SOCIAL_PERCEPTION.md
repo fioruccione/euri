@@ -62,6 +62,9 @@ memoria cognitiva vengono scritte.
 
 La Control Room rende ripetibile la calibrazione della Fase 0. L'identita' raccoglie
 quattro prototipi SFace in posture diverse senza ridurre la soglia di autenticazione.
+La UI non acquisisce un secondo stream video: invia un comando effimero al VisualGate,
+che assegna il singolo frame richiesto all'enrollment e calcola l'embedding localmente.
+Redis conserva soltanto avanzamento ed esito per cinque minuti, mai frame o embedding.
 Il recettore sociale raccoglie quattro brevi finestre neutro/sorriso in postura
 abituale/diritta e persiste soltanto soglie e riepiloghi numerici. Distribuzioni
 sovrapposte vengono rifiutate: una calibrazione incerta non sostituisce le soglie

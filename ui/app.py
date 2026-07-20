@@ -1149,7 +1149,7 @@ with main_col:
     # ── PAGE 4: VOLTI & ACCESSI ──────────────────────────────────────────────────
     elif page == "🪪 Volti & Accessi":
         import time as _time
-        import cv2 as _cv2
+        import uuid as _uuid
         from datetime import datetime as _dt
 
         st.title("🪪 Volti & Accessi")
@@ -1171,10 +1171,6 @@ with main_col:
             fa = FaceAuth()
             fa.load()
             return fa
-
-        @st.cache_resource
-        def get_face_detector():
-            return _cv2.FaceDetectorYN_create(config.FACE_DETECT_MODEL, "", (640, 480), 0.8)
 
         face_auth = get_face_auth()
         face_auth.reload_faceprints()
@@ -1205,86 +1201,114 @@ with main_col:
             st.subheader("Registra una persona")
             st.caption(
                 "Servono 4 scatti con postura e angolazioni diverse. "
-                "Un solo volto per scatto. Usa la fotocamera del dispositivo da cui apri "
-                "questa pagina. Su Linux il browser e il VisualGate possono contendersi "
-                "la stessa webcam."
+                "Un solo volto per scatto. La Control Room comanda il VisualGate: "
+                "la webcam resta aperta una sola volta e nessuna immagine raggiunge il browser."
             )
 
             new_name = st.text_input("Nome (minuscolo, senza spazi)", key="face_enroll_name").strip().lower()
             consent = st.checkbox("La persona è informata e d'accordo alla registrazione del suo faceprint.")
+            valid_name = bool(re.fullmatch(r"[a-z0-9_-]{1,48}", new_name))
+            if new_name and not valid_name:
+                st.error("Il nome può contenere solo lettere minuscole, numeri, _ e -.")
 
-            if "face_enroll_embs" not in st.session_state:
-                st.session_state.face_enroll_embs = []
-            if st.session_state.get("face_enroll_name_active") != new_name:
-                st.session_state.face_enroll_embs = []
-                st.session_state.face_enroll_name_active = new_name
+            pose_labels = (
+                "posizione abituale",
+                "seduto diritto",
+                "viso leggermente a sinistra",
+                "viso leggermente a destra",
+            )
+            request_key = config.FACE_ENROLLMENT_REQUEST_KEY
 
-            if new_name and consent:
+            def _enrollment_status(session_id: str) -> dict:
                 try:
-                    enrollment_social = json.loads(r.get("euri:social:latest") or "{}")
+                    return json.loads(
+                        r.get(f"{config.FACE_ENROLLMENT_STATUS_PREFIX}{session_id}") or "{}"
+                    )
                 except (TypeError, ValueError):
-                    enrollment_social = {}
-                enrollment_social_age = _time.time() - float(
-                    enrollment_social.get("observed_at", 0.0) or 0.0
-                )
-                if enrollment_social_age <= config.SOCIAL_PERCEPTION_LATEST_TTL_S:
-                    st.warning(
-                        "Il VisualGate sta usando la webcam. Se l'anteprima non compare, "
-                        "arresta temporaneamente il Voice Daemon, ricarica questa pagina "
-                        "e completa i quattro scatti; poi riavvia Euri."
-                    )
-                pose_labels = (
-                    "posizione abituale",
-                    "seduto diritto",
-                    "viso leggermente a sinistra",
-                    "viso leggermente a destra",
-                )
-                if len(st.session_state.face_enroll_embs) < len(pose_labels):
-                    pose_index = len(st.session_state.face_enroll_embs)
-                    photo = st.camera_input(
-                        f"Scatto: {pose_labels[pose_index]}",
-                        key=f"face_cam_{pose_index}",
-                    )
-                    if photo is not None:
-                        img = _cv2.imdecode(
-                            np.frombuffer(photo.getvalue(), np.uint8), _cv2.IMREAD_COLOR
-                        )
-                        # Normalizza la dimensione: le foto da browser possono essere enormi
-                        if img.shape[1] > 960:
-                            scale = 960 / img.shape[1]
-                            img = _cv2.resize(img, None, fx=scale, fy=scale)
-                        det = get_face_detector()
-                        det.setInputSize((img.shape[1], img.shape[0]))
-                        _, faces = det.detect(img)
-                        if faces is None or len(faces) == 0:
-                            st.error("Nessun volto rilevato — riprova con più luce, viso frontale.")
-                        elif len(faces) > 1:
-                            st.error("Più volti nello scatto — dev'esserci solo la persona da registrare.")
-                        else:
-                            emb = face_auth.embed(img, faces[0])
-                            if emb is None:
-                                st.error("Volto rilevato ma embedding fallito — riprova.")
-                            else:
-                                st.session_state.face_enroll_embs.append(emb)
-                                st.rerun()
+                    return {}
 
-                n = len(st.session_state.face_enroll_embs)
-                if n:
-                    st.progress(min(n / 4, 1.0), text=f"{n} scatti validi raccolti (minimo 4)")
-                c1, c2 = st.columns(2)
-                with c1:
-                    if n >= 4 and st.button(f"💾 Salva faceprint di '{new_name}'"):
-                        if face_auth.enroll_from_embeddings(new_name, st.session_state.face_enroll_embs):
-                            st.session_state.face_enroll_embs = []
-                            st.success(f"'{new_name}' registrato. Il daemon lo riconosce entro 30 secondi.")
-                            _time.sleep(1.5)
-                            st.rerun()
-                        else:
-                            st.error("Salvataggio fallito — riprova.")
-                with c2:
-                    if n and st.button("↩️ Ricomincia gli scatti"):
-                        st.session_state.face_enroll_embs = []
+            def _send_enrollment(payload: dict) -> None:
+                r.set(
+                    request_key,
+                    json.dumps(payload, ensure_ascii=False),
+                    ex=config.FACE_ENROLLMENT_TTL_S,
+                )
+
+            active_session = st.session_state.get("face_enroll_session", {})
+            if active_session and active_session.get("name") != new_name:
+                _send_enrollment({**active_session, "action": "cancel"})
+                st.session_state.face_enroll_session = {}
+                active_session = {}
+
+            if valid_name and consent and not active_session:
+                if st.button("Avvia registrazione dal VisualGate", type="primary"):
+                    session = {
+                        "session_id": _uuid.uuid4().hex,
+                        "name": new_name,
+                        "action": "start",
+                        "nonce": _uuid.uuid4().hex,
+                        "pose_index": 0,
+                    }
+                    r.delete(
+                        f"{config.FACE_ENROLLMENT_STATUS_PREFIX}{session['session_id']}"
+                    )
+                    _send_enrollment(session)
+                    st.session_state.face_enroll_session = session
+                    active_session = session
+
+            if active_session:
+                status = _enrollment_status(active_session["session_id"])
+                captured = int(status.get("captured", 0) or 0)
+                state = str(status.get("state", "waiting"))
+                st.progress(
+                    min(captured / len(pose_labels), 1.0),
+                    text=f"{captured}/{len(pose_labels)} scatti acquisiti dal VisualGate",
+                )
+
+                if state == "completed":
+                    face_auth.reload_faceprints()
+                    st.success(
+                        f"Faceprint di '{active_session['name']}' aggiornato con quattro posture."
+                    )
+                    if st.button("Chiudi registrazione"):
+                        st.session_state.face_enroll_session = {}
                         st.rerun()
+                else:
+                    if state == "error":
+                        st.error(status.get("message", "Scatto non riuscito: riprova."))
+                    elif state in {"waiting", "ready"} and not status:
+                        st.info("Connessione al VisualGate in corso...")
+
+                    pose_index = min(captured, len(pose_labels) - 1)
+                    st.info(f"Posizionati: **{pose_labels[pose_index]}**")
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        if st.button(
+                            "Acquisisci questa postura",
+                            type="primary",
+                            use_container_width=True,
+                        ):
+                            nonce = _uuid.uuid4().hex
+                            request = {
+                                **active_session,
+                                "action": "capture",
+                                "nonce": nonce,
+                                "pose_index": captured,
+                            }
+                            _send_enrollment(request)
+                            deadline = _time.monotonic() + 5.0
+                            with st.spinner("VisualGate: acquisizione in corso..."):
+                                while _time.monotonic() < deadline:
+                                    result = _enrollment_status(request["session_id"])
+                                    if result.get("nonce") == nonce:
+                                        break
+                                    _time.sleep(0.2)
+                            st.rerun()
+                    with c2:
+                        if st.button("Annulla registrazione", use_container_width=True):
+                            _send_enrollment({**active_session, "action": "cancel"})
+                            st.session_state.face_enroll_session = {}
+                            st.rerun()
             elif new_name and not consent:
                 st.info("Spunta la casella del consenso per procedere con gli scatti.")
 

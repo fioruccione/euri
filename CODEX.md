@@ -51,6 +51,11 @@
   calibrazione. FaceAuth raccoglie quattro pose e le conserva come prototipi distinti
   (massimo otto), senza abbassare `FACE_AUTH_THRESHOLD`; i vecchi `.npy` 1D sono
   caricati come un singolo prototipo.
+- L'enrollment non apre la webcam dal browser. La UI pubblica comandi effimeri
+  `start/capture/cancel` e il VisualGate usa il proprio frame per calcolare l'embedding
+  in-process. Redis riceve solo stato, conteggio ed errori con TTL 5 minuti: frame ed
+  embedding non lasciano il daemon. Ogni frame di cattura e' sottratto ai normali
+  consumer di identita' e percezione sociale, poi il gate riprende immediatamente.
 - `voice/social_profile.py` deriva soglie personali del sorriso da quattro fasi
   guidate che incrociano posa abituale/diritta e neutro/sorriso lieve. Il profilo
   persiste solo numeri in `models/social_profiles/<actor>.json`, viene ricaricato a

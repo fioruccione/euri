@@ -15,6 +15,7 @@ vengono mai salvati. Le persone abilitate devono sapere di essere registrate.
 Dipendenze: opencv-contrib-python (già richiesto dal VisualGate).
 """
 import time
+import re
 
 import numpy as np
 from pathlib import Path
@@ -23,6 +24,7 @@ import config
 
 _RELOAD_CHECK_S = 30.0   # ogni quanto controllare se i faceprint su disco sono cambiati
 _MAX_PROTOTYPES = 8      # limita l'espansione dell'area biometrica di accettazione
+_SAFE_NAME_RE = re.compile(r"^[a-z0-9_-]{1,48}$")
 
 
 class FaceAuth:
@@ -137,6 +139,9 @@ class FaceAuth:
 
     def enroll_from_embeddings(self, name: str, embeddings: list[np.ndarray]) -> bool:
         """Crea il faceprint di <name> da un insieme limitato di prototipi."""
+        if not _SAFE_NAME_RE.fullmatch(name):
+            logger.warning("FaceAuth: nome enrollment non valido")
+            return False
         if len(embeddings) < 2:
             logger.warning("FaceAuth: troppi pochi campioni per enrollment")
             return False

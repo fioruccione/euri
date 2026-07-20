@@ -149,6 +149,50 @@ def run():
     gate_blind._blind = True
     ok.append(check("cieco/fail-open: owner mai presente", not gate_blind.is_owner_present()))
 
+    # Enrollment UI: il daemon riusa il frame del VisualGate. Redis trasporta
+    # solo comandi e stato; un nonce gia' consumato non duplica il prototipo.
+    enroll_auth = make_auth(tempfile.mkdtemp(prefix="guided_faceprints_test_"))
+    enrollment_request = {
+        "session_id": "session-1",
+        "name": "stefano",
+        "action": "start",
+        "nonce": "start-1",
+        "pose_index": 0,
+    }
+    enrollment_statuses = []
+    gate_enroll = VisualGate(face_auth=enroll_auth)
+    gate_enroll.set_enrollment_bridge(
+        lambda: dict(enrollment_request), enrollment_statuses.append
+    )
+    gate_enroll._face_count = 1
+    ok.append(check(
+        "enrollment guidato prepara la sessione senza consumare il frame",
+        not gate_enroll._process_enrollment(stefano, True, np.zeros(15), 1.0)
+        and enrollment_statuses[-1]["state"] == "ready",
+    ))
+    for pose_index in range(4):
+        enrollment_request.update({
+            "action": "capture",
+            "nonce": f"capture-{pose_index}",
+            "pose_index": pose_index,
+        })
+        consumed = gate_enroll._process_enrollment(
+            np.roll(stefano, pose_index), True, np.zeros(15), 2.0 + pose_index
+        )
+        duplicate = gate_enroll._process_enrollment(
+            np.roll(stefano, pose_index), True, np.zeros(15), 2.4 + pose_index
+        )
+        ok.append(check(
+            f"postura {pose_index + 1}: frame esclusivo e nonce idempotente",
+            consumed and not duplicate
+            and enrollment_statuses[-1]["captured"] == pose_index + 1,
+        ))
+    ok.append(check(
+        "enrollment guidato salva quattro prototipi",
+        enroll_auth._faceprints["stefano"].shape == (4, 128)
+        and enrollment_statuses[-1]["state"] == "completed",
+    ))
+
     # Gli indici V4L2 cambiano dopo riconnessioni USB: video0 può mancare mentre
     # la stessa webcam è disponibile su video1. La discovery accetta solo un nodo
     # che restituisce davvero un frame, non basta che il device si apra.

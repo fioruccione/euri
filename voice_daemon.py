@@ -225,6 +225,10 @@ class VoiceDaemon:
         self._last_social_baseline_ts = 0.0
         self.social_perception = build_social_perception(self._handle_social_snapshot)
         self.visual_gate.set_social_perception(self.social_perception)
+        self.visual_gate.set_enrollment_bridge(
+            self._read_face_enrollment_request,
+            self._write_face_enrollment_status,
+        )
         self._initiative_focus_cache: dict[tuple[str, int], str] = {}
 
         # Impegni verbali → azioni reali: (pattern sulla risposta di Euri, callable(text, reply))
@@ -243,6 +247,28 @@ class VoiceDaemon:
             (re.compile(r'\b(controllo|verifico)\b.{0,20}\b(cpu|ram|disco|spazio)\b', re.IGNORECASE),
              lambda t, r: self._handle_execute("controlla la cpu")),
         ]
+
+    def _read_face_enrollment_request(self) -> dict | None:
+        """Canale locale UI->VisualGate; contiene comandi, mai frame o embedding."""
+        try:
+            raw = self.r.get(
+                getattr(config, "FACE_ENROLLMENT_REQUEST_KEY", "euri:face_enrollment:request")
+            )
+            return json.loads(raw) if raw else None
+        except Exception as exc:
+            logger.debug(f"Face enrollment: richiesta Redis ignorata ({exc})")
+            return None
+
+    def _write_face_enrollment_status(self, payload: dict) -> None:
+        session_id = str(payload.get("session_id", ""))
+        if not session_id:
+            return
+        self.r.set(
+            f"{getattr(config, 'FACE_ENROLLMENT_STATUS_PREFIX', 'euri:face_enrollment:status:')}"
+            f"{session_id}",
+            json.dumps(payload, ensure_ascii=False),
+            ex=getattr(config, "FACE_ENROLLMENT_TTL_S", 300),
+        )
 
     def setup(self):
         logger.info("Inizializzazione Euri...")

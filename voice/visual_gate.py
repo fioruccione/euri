@@ -39,6 +39,7 @@ Dipendenze: opencv-contrib-python
 import threading
 import time
 from pathlib import Path
+from typing import Callable
 
 from loguru import logger
 import config
@@ -87,6 +88,19 @@ class VisualGate:
         self._detector = None              # YuNet (con landmark) oppure Haar (fallback)
         self._detector_kind = None         # "yunet" | "haar"
         self._cv2 = None
+        self._face_count = 0
+
+        # Enrollment guidato: la UI invia solo comandi, questo processo riusa
+        # il frame gia' posseduto dal VisualGate. Nessuna immagine o embedding
+        # attraversa Redis.
+        self._enrollment_request_reader: Callable[[], dict | None] | None = None
+        self._enrollment_status_writer: Callable[[dict], None] | None = None
+        self._enrollment_session_id = ""
+        self._enrollment_name = ""
+        self._enrollment_embeddings: list = []
+        self._enrollment_last_nonce = ""
+        self._enrollment_last_activity = 0.0
+        self._last_enrollment_poll = 0.0
 
     # ──────────────────────────────────────────
     # API pubblica
@@ -139,6 +153,13 @@ class VisualGate:
         if self._running:
             raise RuntimeError("social perception must be attached before VisualGate.start")
         self._social_perception = receptor
+
+    def set_enrollment_bridge(self, request_reader, status_writer) -> None:
+        """Collega il canale UI prima di `start`, senza condividere frame o biometria."""
+        if self._running:
+            raise RuntimeError("enrollment bridge must be attached before VisualGate.start")
+        self._enrollment_request_reader = request_reader
+        self._enrollment_status_writer = status_writer
 
     def is_user_present(self) -> bool:
         """True se il gate è attivo (c'è QUALCUNO, o presenza recente): processa voce."""
@@ -266,13 +287,126 @@ class VisualGate:
             self._detector.setInputSize((frame.shape[1], frame.shape[0]))
             _, faces = self._detector.detect(frame)
             if faces is None or len(faces) == 0:
+                self._face_count = 0
                 return False, None
+            self._face_count = len(faces)
             best = max(faces, key=lambda f: f[2] * f[3])
             return True, best
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = self._detector.detectMultiScale(
             gray, scaleFactor=1.1, minNeighbors=4, minSize=(60, 60))
+        self._face_count = len(faces)
         return len(faces) > 0, None
+
+    def _publish_enrollment(self, request: dict, state: str, **extra) -> None:
+        if self._enrollment_status_writer is None:
+            return
+        payload = {
+            "session_id": str(request.get("session_id", "")),
+            "name": str(request.get("name", "")),
+            "state": state,
+            "captured": len(self._enrollment_embeddings),
+            "updated_at": time.time(),
+            **extra,
+        }
+        try:
+            self._enrollment_status_writer(payload)
+        except Exception as exc:
+            logger.debug(f"VisualGate enrollment: stato non pubblicato ({exc})")
+
+    def _reset_enrollment(self, request: dict | None = None) -> None:
+        self._enrollment_session_id = str((request or {}).get("session_id", ""))
+        self._enrollment_name = str((request or {}).get("name", ""))
+        self._enrollment_embeddings = []
+        self._enrollment_last_nonce = ""
+        self._enrollment_last_activity = time.monotonic() if request else 0.0
+
+    def _process_enrollment(self, frame, face_detected: bool, face_row, now: float) -> bool:
+        """Consuma un comando UI; True sospende gli altri consumer per quel frame."""
+        if self._enrollment_request_reader is None or self._face_auth is None:
+            return False
+        if now - self._last_enrollment_poll < 0.25:
+            return False
+        self._last_enrollment_poll = now
+        try:
+            request = self._enrollment_request_reader()
+        except Exception as exc:
+            logger.debug(f"VisualGate enrollment: richiesta non leggibile ({exc})")
+            return False
+        if not isinstance(request, dict):
+            if (self._enrollment_session_id and self._enrollment_last_activity and
+                    now - self._enrollment_last_activity > float(
+                        getattr(config, "FACE_ENROLLMENT_TTL_S", 300)
+                    )):
+                self._reset_enrollment()
+            return False
+
+        session_id = str(request.get("session_id", ""))
+        name = str(request.get("name", ""))
+        action = str(request.get("action", ""))
+        nonce = str(request.get("nonce", ""))
+        if not session_id or not name:
+            return False
+        self._enrollment_last_activity = now
+
+        if action == "cancel":
+            if session_id == self._enrollment_session_id:
+                self._reset_enrollment()
+            self._publish_enrollment(request, "cancelled")
+            return False
+
+        if session_id != self._enrollment_session_id:
+            self._reset_enrollment(request)
+            self._publish_enrollment(request, "ready")
+
+        if action != "capture" or not nonce or nonce == self._enrollment_last_nonce:
+            return False
+        self._enrollment_last_nonce = nonce
+        expected_index = len(self._enrollment_embeddings)
+        try:
+            requested_index = int(request.get("pose_index", -1))
+        except (TypeError, ValueError):
+            requested_index = -1
+        if requested_index != expected_index:
+            self._publish_enrollment(
+                request, "error", nonce=nonce, message="sequenza degli scatti non valida"
+            )
+            return True
+        if not face_detected or face_row is None:
+            self._publish_enrollment(
+                request, "error", nonce=nonce, message="nessun volto rilevato"
+            )
+            return True
+        if self._face_count != 1:
+            self._publish_enrollment(
+                request, "error", nonce=nonce, message="serve esattamente un volto"
+            )
+            return True
+
+        embedding = self._face_auth.embed(frame, face_row)
+        if embedding is None:
+            self._publish_enrollment(
+                request, "error", nonce=nonce, message="embedding del volto non riuscito"
+            )
+            return True
+        self._enrollment_embeddings.append(embedding)
+        if len(self._enrollment_embeddings) < 4:
+            self._publish_enrollment(request, "captured", nonce=nonce)
+            return True
+
+        saved = self._face_auth.enroll_from_embeddings(
+            self._enrollment_name, self._enrollment_embeddings
+        )
+        if saved:
+            logger.info(
+                f"VisualGate: enrollment guidato completato per '{self._enrollment_name}'"
+            )
+            self._publish_enrollment(request, "completed", nonce=nonce)
+        else:
+            self._publish_enrollment(
+                request, "error", nonce=nonce, message="salvataggio faceprint fallito"
+            )
+        return True
 
     def _update_identity(self, frame, face_row, now: float):
         """Riconoscimento throttled + identità sticky. Chiamato SOLO con faccia nel frame."""
@@ -340,6 +474,12 @@ class VisualGate:
 
             face_detected, face_row = self._detect(frame)
 
+            # Prima dell'identificazione: l'enrollment deve funzionare anche per
+            # una persona non ancora registrata, ma soltanto su comando UI esplicito.
+            enrollment_frame = self._process_enrollment(
+                frame, face_detected, face_row, time.monotonic()
+            )
+
             with self._lock:
                 now = time.monotonic()
 
@@ -377,7 +517,7 @@ class VisualGate:
                         )
 
             # Riconoscimento fuori dal lock del frame-state (fa inference SFace)
-            if face_detected:
+            if face_detected and not enrollment_frame:
                 self._update_identity(frame, face_row, time.monotonic())
                 if self._social_perception is not None:
                     self._social_perception.process_frame(

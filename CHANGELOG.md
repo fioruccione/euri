@@ -13,10 +13,10 @@
   profilo viene rifiutato; altrimenti il daemon ricarica a caldo soglie personali.
 - Il profilo sociale contiene solo soglie, riepiloghi di posa e diagnostica numerica.
   Rimane Fase 0: nessun LLM, memoria cognitiva, tono o Initiative dipende dai segnali.
-- La pagina non dichiara piu' che la fotocamera del browser sia sempre indipendente:
-  sulla postazione Linux il VisualGate puo' occupare lo stesso nodo V4L2. Durante
-  l'enrollment un avviso propone l'arresto temporaneo del Voice Daemon se manca
-  l'anteprima; il profilo sociale gia' salvato non viene coinvolto.
+- L'enrollment non apre piu' una seconda webcam nel browser. La Control Room invia
+  al daemon soltanto comandi di cattura e il VisualGate calcola i quattro embedding
+  sui frame che possiede gia'. Immagini ed embedding non attraversano Redis; durante
+  lo scatto l'enrollment ha priorita' e al termine il riconoscimento normale prosegue.
 
 ## 2026-07-20 - Percezione sociale visiva Fase 0
 

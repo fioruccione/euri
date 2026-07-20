@@ -386,6 +386,9 @@ VISUAL_GATE_CAMERA_DEVICE = None
 FACE_DETECT_MODEL = str(Path.home() / "euri" / "models" / "face_detection_yunet_2023mar.onnx")
 FACE_RECOG_MODEL = str(Path.home() / "euri" / "models" / "face_recognition_sface_2021dec.onnx")
 FACEPRINT_DIR = str(Path.home() / "euri" / "models" / "faceprints")
+FACE_ENROLLMENT_REQUEST_KEY = "euri:face_enrollment:request"
+FACE_ENROLLMENT_STATUS_PREFIX = "euri:face_enrollment:status:"
+FACE_ENROLLMENT_TTL_S = 300
 
 # Percezione sociale visiva - Fase 0 osservativa. MediaPipe legge dagli stessi
 # frame del VisualGate e produce solo segnali descrittivi stabilizzati. Nessun LLM,
