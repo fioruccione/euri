@@ -1,5 +1,19 @@
 # Handoff Euri — 2026-07-14
 
+## Punto aperto: analisi clipboard e persistenza — 2026-07-20
+
+- Oggi `clipboard_analyze` significa per contratto "analizza e salva": la sintesi
+  prodotta dal modello entra subito in Redis come `source=teach`, anche quando
+  Stefano ha chiesto soltanto di analizzare gli appunti.
+- Non cambiare il comportamento durante la calibrazione della percezione sociale.
+  Riesaminarlo in seguito separando attenzione temporanea e apprendimento permanente:
+  `analizza` usa il contenuto solo nella sessione; `analizza e salva` crea la memoria;
+  in alternativa Euri chiede conferma esplicita al termine dell'analisi.
+- Rischio da evitare: documenti temporanei, testi di terzi o descrizioni di Euri
+  possono diventare `teach` e rientrare nel RAG come conferma autorevole, creando
+  contaminazione o circuiti autoreferenziali. Il punto e' di policy epistemica,
+  non un guasto osservato del tool.
+
 ## Percezione sociale visiva Fase 0 — 2026-07-20
 
 - `voice/social_perception.py` riusa i frame del VisualGate e misura localmente
