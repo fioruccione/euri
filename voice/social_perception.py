@@ -20,6 +20,8 @@ from typing import Any, Callable, Mapping
 import numpy as np
 from loguru import logger
 
+from voice.social_profile import load_profile
+
 
 FEATURES = ("smile", "brow_contraction", "gaze_down")
 AUXILIARY_METRICS = (
@@ -36,6 +38,13 @@ AUXILIARY_METRICS = (
     "raw_eye_up_left",
     "raw_eye_up_right",
 )
+
+DEFAULT_THRESHOLDS = {
+    "smile_entry": 0.28,
+    "smile_stay": 0.18,
+    "smile_marked_entry": 0.58,
+    "smile_marked_stay": 0.46,
+}
 
 
 def _clamp(value: Any, lo: float = 0.0, hi: float = 1.0) -> float:
@@ -72,6 +81,7 @@ class SocialSnapshot:
     states: dict[str, str]
     confidences: dict[str, float]
     auxiliary_metrics: dict[str, float]
+    thresholds: dict[str, float]
     transitions: tuple[SocialTransition, ...] = ()
 
     def to_dict(self, *, include_transitions: bool = True) -> dict[str, Any]:
@@ -89,6 +99,9 @@ class SocialSnapshot:
             "auxiliary_metrics": {
                 key: round(value, 3) for key, value in self.auxiliary_metrics.items()
             },
+            "thresholds": {
+                key: round(value, 4) for key, value in self.thresholds.items()
+            },
         }
         if include_transitions:
             payload["transitions"] = [item.to_dict() for item in self.transitions]
@@ -105,6 +118,7 @@ class SocialSignalState:
         window_samples: int = 6,
         stability_samples: int = 4,
         baseline_cap: float = 0.25,
+        thresholds: Mapping[str, float] | None = None,
     ) -> None:
         if calibration_samples < 2 or window_samples < 1 or stability_samples < 1:
             raise ValueError("invalid social perception window configuration")
@@ -112,6 +126,8 @@ class SocialSignalState:
         self.window_samples = int(window_samples)
         self.stability_samples = int(stability_samples)
         self.baseline_cap = _clamp(baseline_cap)
+        self._thresholds = dict(DEFAULT_THRESHOLDS)
+        self.set_thresholds(thresholds or {})
         self._actor_id = ""
         self._samples: deque[dict[str, float]] = deque(
             maxlen=max(self.calibration_samples, self.window_samples)
@@ -129,18 +145,33 @@ class SocialSignalState:
         self._baselines = {feature: 0.0 for feature in FEATURES}
         self._sample_count = 0
 
-    @staticmethod
-    def _state_for(feature: str, value: float, current: str) -> str:
+    @property
+    def thresholds(self) -> dict[str, float]:
+        return dict(self._thresholds)
+
+    def set_thresholds(self, thresholds: Mapping[str, float]) -> None:
+        updated = dict(self._thresholds)
+        for key in DEFAULT_THRESHOLDS:
+            if key in thresholds:
+                updated[key] = _clamp(thresholds[key])
+        if not (
+            0.0 < updated["smile_stay"] < updated["smile_entry"]
+            <= updated["smile_marked_stay"] < updated["smile_marked_entry"] <= 1.0
+        ):
+            raise ValueError("invalid social perception thresholds")
+        self._thresholds = updated
+
+    def _state_for(self, feature: str, value: float, current: str) -> str:
         # Hysteresis is deliberately descriptive: these are visible movements,
         # not emotion labels. Thresholds are initial hypotheses for Phase 0.
         if feature == "smile":
-            if current == "marked" and value >= 0.46:
+            if current == "marked" and value >= self._thresholds["smile_marked_stay"]:
                 return "marked"
-            if value >= 0.58:
+            if value >= self._thresholds["smile_marked_entry"]:
                 return "marked"
-            if current in {"slight", "marked"} and value >= 0.18:
+            if current in {"slight", "marked"} and value >= self._thresholds["smile_stay"]:
                 return "slight"
-            return "slight" if value >= 0.28 else "neutral"
+            return "slight" if value >= self._thresholds["smile_entry"] else "neutral"
         if feature == "brow_contraction":
             if current == "present" and value >= 0.28:
                 return "present"
@@ -231,6 +262,7 @@ class SocialSignalState:
             states=dict(self._states),
             confidences=confidence,
             auxiliary_metrics=auxiliary,
+            thresholds=self.thresholds,
             transitions=tuple(transitions),
         )
 
@@ -368,6 +400,7 @@ class SocialPerception:
         calibration_samples: int = 12,
         window_samples: int = 6,
         stability_samples: int = 4,
+        profile_path: str | Path | None = None,
     ) -> None:
         if fps <= 0 or refresh_s <= 0:
             raise ValueError("fps and refresh_s must be positive")
@@ -381,6 +414,9 @@ class SocialPerception:
             window_samples=window_samples,
             stability_samples=stability_samples,
         )
+        self.profile_path = Path(profile_path) if profile_path else None
+        self._profile_mtime_ns = 0
+        self._last_profile_check_mono = 0.0
         self._enabled = False
         self._last_process_mono = 0.0
         self._last_emit_mono = 0.0
@@ -393,10 +429,35 @@ class SocialPerception:
             logger.warning(f"Percezione sociale non disponibile ({exc})")
             self._enabled = False
         if self._enabled:
+            self._reload_profile(force=True)
             logger.info(
                 "Percezione sociale Fase 0 attiva - osservazione soltanto, nessun LLM"
             )
         return self._enabled
+
+    def _reload_profile(self, *, force: bool = False, monotonic_at: float | None = None) -> None:
+        if self.profile_path is None:
+            return
+        mono = time.monotonic() if monotonic_at is None else float(monotonic_at)
+        if not force and mono - self._last_profile_check_mono < 5.0:
+            return
+        self._last_profile_check_mono = mono
+        try:
+            mtime_ns = self.profile_path.stat().st_mtime_ns
+        except FileNotFoundError:
+            return
+        if not force and mtime_ns == self._profile_mtime_ns:
+            return
+        try:
+            profile = load_profile(self.profile_path, actor_id=self.owner_id)
+            self.state.set_thresholds(profile.thresholds)
+            self._profile_mtime_ns = mtime_ns
+            logger.info(
+                "Percezione sociale: profilo personale caricato "
+                f"({self.owner_id}, smile_entry={profile.thresholds['smile_entry']:.3f})"
+            )
+        except Exception as exc:
+            logger.warning(f"Percezione sociale: profilo ignorato ({exc})")
 
     def stop(self) -> None:
         self._enabled = False
@@ -420,6 +481,7 @@ class SocialPerception:
         if not self._enabled or actor_id != self.owner_id:
             return None
         mono = time.monotonic() if monotonic_at is None else float(monotonic_at)
+        self._reload_profile(monotonic_at=mono)
         if self._last_process_mono and mono - self._last_process_mono < self.interval_s:
             return None
         self._last_process_mono = mono
@@ -461,6 +523,8 @@ def build_social_perception(on_update=None) -> SocialPerception | None:
     if not getattr(config, "SOCIAL_PERCEPTION_ENABLED", False):
         return None
     backend = MediaPipeFaceBackend(getattr(config, "SOCIAL_PERCEPTION_MODEL"))
+    profile_dir = Path(getattr(config, "SOCIAL_PERCEPTION_PROFILE_DIR", ""))
+    social_profile = profile_dir / f"{getattr(config, 'FACE_AUTH_OWNER', 'stefano')}.json"
     return SocialPerception(
         backend,
         owner_id=getattr(config, "FACE_AUTH_OWNER", "stefano"),
@@ -470,4 +534,5 @@ def build_social_perception(on_update=None) -> SocialPerception | None:
         calibration_samples=getattr(config, "SOCIAL_PERCEPTION_CALIBRATION_SAMPLES", 12),
         window_samples=getattr(config, "SOCIAL_PERCEPTION_WINDOW_SAMPLES", 6),
         stability_samples=getattr(config, "SOCIAL_PERCEPTION_STABILITY_SAMPLES", 4),
+        profile_path=social_profile,
     )

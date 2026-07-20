@@ -6,8 +6,8 @@ dal volto allineato sui landmark YuNet. Il confronto è cosine similarity
 contro i faceprint delle persone abilitate.
 
 Flusso:
-  Enrollment: N frame con volto → embedding medio → faceprints/<nome>.npy
-  Identifica: 1 frame + face row YuNet → embedding → best match sopra soglia
+  Enrollment: N frame con volto → N prototipi normalizzati → faceprints/<nome>.npy
+  Identifica: 1 frame + face row YuNet → embedding → best prototype sopra soglia
 
 I faceprint sono dati biometrici: restano file locali su disco, i frame non
 vengono mai salvati. Le persone abilitate devono sapere di essere registrate.
@@ -22,12 +22,13 @@ from loguru import logger
 import config
 
 _RELOAD_CHECK_S = 30.0   # ogni quanto controllare se i faceprint su disco sono cambiati
+_MAX_PROTOTYPES = 8      # limita l'espansione dell'area biometrica di accettazione
 
 
 class FaceAuth:
     def __init__(self):
         self._recognizer = None
-        self._faceprints: dict[str, np.ndarray] = {}   # nome → embedding normalizzato
+        self._faceprints: dict[str, np.ndarray] = {}   # nome → matrice di prototipi
         self._disk_sig: tuple = ()                     # firma (nome, mtime) dei file all'ultimo reload
         self._last_reload_check: float = 0.0
 
@@ -59,10 +60,13 @@ class FaceAuth:
         self._disk_sig = self._disk_signature()
         for f in fdir.glob("*.npy"):
             try:
-                vec = np.load(f)
-                norm = np.linalg.norm(vec)
-                if norm > 0:
-                    self._faceprints[f.stem] = vec / norm
+                stored = np.asarray(np.load(f), dtype=np.float32)
+                prototypes = stored.reshape(1, -1) if stored.ndim == 1 else stored
+                prototypes = prototypes[:_MAX_PROTOTYPES]
+                norms = np.linalg.norm(prototypes, axis=1, keepdims=True)
+                valid = norms[:, 0] > 0
+                if np.any(valid):
+                    self._faceprints[f.stem] = prototypes[valid] / norms[valid]
             except Exception as e:
                 logger.warning(f"FaceAuth: faceprint {f.name} illeggibile ({e})")
 
@@ -120,8 +124,11 @@ class FaceAuth:
         if emb is None:
             return None, 0.0
         best_name, best_sim = None, -1.0
-        for name, ref in self._faceprints.items():
-            sim = float(np.dot(emb, ref))
+        for name, prototypes in self._faceprints.items():
+            # Max-per-prototype preserves posture/angle examples. Averaging diverse
+            # poses diluted the owner vector toward the threshold and caused the
+            # repeated owner->unknown oscillation seen in normal chair movement.
+            sim = float(np.max(prototypes @ emb))
             if sim > best_sim:
                 best_name, best_sim = name, sim
         if best_sim >= config.FACE_AUTH_THRESHOLD:
@@ -129,18 +136,25 @@ class FaceAuth:
         return None, best_sim
 
     def enroll_from_embeddings(self, name: str, embeddings: list[np.ndarray]) -> bool:
-        """Crea il faceprint di <name> dalla media di più embedding già calcolati."""
+        """Crea il faceprint di <name> da un insieme limitato di prototipi."""
         if len(embeddings) < 2:
             logger.warning("FaceAuth: troppi pochi campioni per enrollment")
             return False
         try:
-            faceprint = np.mean(np.stack(embeddings), axis=0)
-            faceprint /= np.linalg.norm(faceprint)
+            prototypes = np.asarray(
+                np.stack(embeddings[:_MAX_PROTOTYPES]), dtype=np.float32
+            )
+            norms = np.linalg.norm(prototypes, axis=1, keepdims=True)
+            if np.any(norms[:, 0] <= 0):
+                raise ValueError("embedding nullo")
+            prototypes = prototypes / norms
             fdir = Path(config.FACEPRINT_DIR)
             fdir.mkdir(parents=True, exist_ok=True)
-            np.save(fdir / f"{name}.npy", faceprint)
-            self._faceprints[name] = faceprint
-            logger.info(f"FaceAuth: faceprint '{name}' salvato ({len(embeddings)} campioni)")
+            np.save(fdir / f"{name}.npy", prototypes)
+            self._faceprints[name] = prototypes
+            logger.info(
+                f"FaceAuth: faceprint '{name}' salvato ({len(prototypes)} prototipi)"
+            )
             return True
         except Exception as e:
             logger.error(f"FaceAuth enrollment error: {e}")

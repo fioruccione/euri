@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-07-20 - Calibrazione visiva guidata e multi-postura
+
+- La pagina `Volti & Accessi` guida ora quattro scatti distinti per il faceprint:
+  postura abituale, seduto diritto e viso leggermente ruotato nei due versi.
+  SFace conserva prototipi separati invece di mediare pose diverse; la soglia di
+  identita' non viene abbassata e i vecchi faceprint a vettore singolo restano validi.
+- I prototipi biometrici sono limitati a otto per persona. Nessuna foto viene salvata:
+  persistono soltanto gli embedding locali gia' previsti dal FaceAuth.
+- La stessa pagina offre una calibrazione sociale guidata in quattro fasi neutro/
+  sorriso e postura abituale/diritta. Se le distribuzioni non sono separabili il
+  profilo viene rifiutato; altrimenti il daemon ricarica a caldo soglie personali.
+- Il profilo sociale contiene solo soglie, riepiloghi di posa e diagnostica numerica.
+  Rimane Fase 0: nessun LLM, memoria cognitiva, tono o Initiative dipende dai segnali.
+
 ## 2026-07-20 - Percezione sociale visiva Fase 0
 
 - Il VisualGate riusa la propria webcam per estrarre localmente pochi blendshape e

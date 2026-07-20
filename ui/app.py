@@ -1204,7 +1204,7 @@ with main_col:
             st.markdown("---")
             st.subheader("Registra una persona")
             st.caption(
-                "Servono almeno 3 scatti con angolazioni leggermente diverse. "
+                "Servono 4 scatti con postura e angolazioni diverse. "
                 "Un solo volto per scatto. Usa la fotocamera del dispositivo da cui apri "
                 "questa pagina (non entra in conflitto con la webcam del daemon)."
             )
@@ -1214,37 +1214,52 @@ with main_col:
 
             if "face_enroll_embs" not in st.session_state:
                 st.session_state.face_enroll_embs = []
+            if st.session_state.get("face_enroll_name_active") != new_name:
+                st.session_state.face_enroll_embs = []
+                st.session_state.face_enroll_name_active = new_name
 
             if new_name and consent:
-                photo = st.camera_input(f"Scatto {len(st.session_state.face_enroll_embs) + 1}",
-                                        key=f"face_cam_{len(st.session_state.face_enroll_embs)}")
-                if photo is not None:
-                    img = _cv2.imdecode(np.frombuffer(photo.getvalue(), np.uint8), _cv2.IMREAD_COLOR)
-                    # Normalizza la dimensione: le foto da browser possono essere enormi
-                    if img.shape[1] > 960:
-                        scale = 960 / img.shape[1]
-                        img = _cv2.resize(img, None, fx=scale, fy=scale)
-                    det = get_face_detector()
-                    det.setInputSize((img.shape[1], img.shape[0]))
-                    _, faces = det.detect(img)
-                    if faces is None or len(faces) == 0:
-                        st.error("Nessun volto rilevato — riprova con più luce, viso frontale.")
-                    elif len(faces) > 1:
-                        st.error("Più volti nello scatto — dev'esserci solo la persona da registrare.")
-                    else:
-                        emb = face_auth.embed(img, faces[0])
-                        if emb is None:
-                            st.error("Volto rilevato ma embedding fallito — riprova.")
+                pose_labels = (
+                    "posizione abituale",
+                    "seduto diritto",
+                    "viso leggermente a sinistra",
+                    "viso leggermente a destra",
+                )
+                if len(st.session_state.face_enroll_embs) < len(pose_labels):
+                    pose_index = len(st.session_state.face_enroll_embs)
+                    photo = st.camera_input(
+                        f"Scatto: {pose_labels[pose_index]}",
+                        key=f"face_cam_{pose_index}",
+                    )
+                    if photo is not None:
+                        img = _cv2.imdecode(
+                            np.frombuffer(photo.getvalue(), np.uint8), _cv2.IMREAD_COLOR
+                        )
+                        # Normalizza la dimensione: le foto da browser possono essere enormi
+                        if img.shape[1] > 960:
+                            scale = 960 / img.shape[1]
+                            img = _cv2.resize(img, None, fx=scale, fy=scale)
+                        det = get_face_detector()
+                        det.setInputSize((img.shape[1], img.shape[0]))
+                        _, faces = det.detect(img)
+                        if faces is None or len(faces) == 0:
+                            st.error("Nessun volto rilevato — riprova con più luce, viso frontale.")
+                        elif len(faces) > 1:
+                            st.error("Più volti nello scatto — dev'esserci solo la persona da registrare.")
                         else:
-                            st.session_state.face_enroll_embs.append(emb)
-                            st.rerun()
+                            emb = face_auth.embed(img, faces[0])
+                            if emb is None:
+                                st.error("Volto rilevato ma embedding fallito — riprova.")
+                            else:
+                                st.session_state.face_enroll_embs.append(emb)
+                                st.rerun()
 
                 n = len(st.session_state.face_enroll_embs)
                 if n:
-                    st.progress(min(n / 3, 1.0), text=f"{n} scatti validi raccolti (minimo 3)")
+                    st.progress(min(n / 4, 1.0), text=f"{n} scatti validi raccolti (minimo 4)")
                 c1, c2 = st.columns(2)
                 with c1:
-                    if n >= 3 and st.button(f"💾 Salva faceprint di '{new_name}'"):
+                    if n >= 4 and st.button(f"💾 Salva faceprint di '{new_name}'"):
                         if face_auth.enroll_from_embeddings(new_name, st.session_state.face_enroll_embs):
                             st.session_state.face_enroll_embs = []
                             st.success(f"'{new_name}' registrato. Il daemon lo riconosce entro 30 secondi.")
@@ -1258,3 +1273,108 @@ with main_col:
                         st.rerun()
             elif new_name and not consent:
                 st.info("Spunta la casella del consenso per procedere con gli scatti.")
+
+        # ── Calibrazione sociale numerica ────────────────────────────────────
+        st.markdown("---")
+        st.subheader("Calibrazione percezione sociale")
+        from voice.social_profile import derive_profile, load_profile, profile_path, save_profile
+
+        owner_id = config.FACE_AUTH_OWNER
+        social_profile_path = profile_path(owner_id, config.SOCIAL_PERCEPTION_PROFILE_DIR)
+        if social_profile_path.exists():
+            try:
+                active_profile = load_profile(social_profile_path, actor_id=owner_id)
+                pc1, pc2, pc3 = st.columns(3)
+                pc1.metric("Sorriso lieve", f"{active_profile.thresholds['smile_entry']:.2f}")
+                pc2.metric("Margine", f"{active_profile.diagnostics['separation_margin']:.2f}")
+                pc3.metric("Profilo", _dt.fromtimestamp(active_profile.created_at).strftime("%d/%m %H:%M"))
+            except Exception as exc:
+                st.warning(f"Profilo presente ma non valido: {exc}")
+        else:
+            st.info("Soglie generiche attive. Nessun profilo personale registrato.")
+
+        try:
+            social_latest = json.loads(r.get("euri:social:latest") or "{}")
+        except (TypeError, ValueError):
+            social_latest = {}
+        social_age = _time.time() - float(social_latest.get("observed_at", 0.0) or 0.0)
+        receptor_ready = (
+            social_latest.get("actor_id") == owner_id
+            and social_latest.get("calibrated") is True
+            and social_age <= config.SOCIAL_PERCEPTION_LATEST_TTL_S
+        )
+        sc1, sc2, sc3 = st.columns(3)
+        sc1.metric("Recettore", "Pronto" if receptor_ready else "In attesa")
+        sc2.metric("Sorriso ora", f"{float(social_latest.get('metrics', {}).get('smile', 0.0)):.2f}")
+        sc3.metric("Postura", f"{float(social_latest.get('auxiliary_metrics', {}).get('head_pitch_deg', 0.0)):.1f}°")
+
+        if st.button(
+            "Avvia calibrazione guidata",
+            type="primary",
+            disabled=not receptor_ready,
+            use_container_width=True,
+        ):
+            phase_specs = (
+                ("relaxed_neutral", "Posizione abituale, volto neutro", 12),
+                ("upright_neutral", "Seduto diritto, volto neutro", 12),
+                ("relaxed_smile", "Posizione abituale, sorriso lieve", 12),
+                ("upright_smile", "Seduto diritto, sorriso lieve", 12),
+            )
+            captured: dict[str, list[dict]] = {}
+            phase_box = st.empty()
+            progress = st.progress(0.0)
+            total_s = sum(item[2] for item in phase_specs)
+            elapsed_s = 0.0
+
+            for phase_name, instruction, duration_s in phase_specs:
+                phase_box.info(instruction)
+                rows: list[dict] = []
+                seen: set[float] = set()
+                started = _time.monotonic()
+                while True:
+                    phase_elapsed = _time.monotonic() - started
+                    if phase_elapsed >= duration_s:
+                        break
+                    try:
+                        current = json.loads(r.get("euri:social:latest") or "{}")
+                    except (TypeError, ValueError):
+                        current = {}
+                    observed_at = float(current.get("observed_at", 0.0) or 0.0)
+                    fresh = _time.time() - observed_at <= config.SOCIAL_PERCEPTION_LATEST_TTL_S
+                    if (
+                        fresh
+                        and current.get("actor_id") == owner_id
+                        and current.get("calibrated") is True
+                        and observed_at not in seen
+                    ):
+                        rows.append(current)
+                        seen.add(observed_at)
+                    progress.progress(min((elapsed_s + phase_elapsed) / total_s, 1.0))
+                    _time.sleep(0.25)
+                captured[phase_name] = rows
+                elapsed_s += duration_s
+
+            progress.progress(1.0)
+            phase_box.empty()
+            try:
+                profile = derive_profile(owner_id, captured)
+                save_profile(profile, social_profile_path)
+                r.set(
+                    f"euri:social:calibration:{owner_id}",
+                    json.dumps(
+                        {
+                            "profile": profile.to_dict(),
+                            "sample_counts": {
+                                name: len(samples) for name, samples in captured.items()
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+                st.success(
+                    "Calibrazione salvata. "
+                    f"Soglia sorriso lieve: {profile.thresholds['smile_entry']:.2f}. "
+                    "Il daemon la ricarica automaticamente."
+                )
+            except ValueError as exc:
+                st.error(f"Calibrazione non applicata: {exc}")

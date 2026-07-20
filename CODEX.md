@@ -47,6 +47,17 @@
   `17.6°`; `eyeLookUp` vale circa `0.45` sulla tastiera contro `0.05-0.07` sul piano
   schermo/webcam. La direzione semantica e' invertita rispetto al nome blendshape:
   `gaze_down` e' ora derivato dalla coppia empiricamente corretta (gate 0.25/0.15).
+- La Control Room, pagina `Volti & Accessi`, e' il percorso canonico per ripetere la
+  calibrazione. FaceAuth raccoglie quattro pose e le conserva come prototipi distinti
+  (massimo otto), senza abbassare `FACE_AUTH_THRESHOLD`; i vecchi `.npy` 1D sono
+  caricati come un singolo prototipo.
+- `voice/social_profile.py` deriva soglie personali del sorriso da quattro fasi
+  guidate che incrociano posa abituale/diritta e neutro/sorriso lieve. Il profilo
+  persiste solo numeri in `models/social_profiles/<actor>.json`, viene ricaricato a
+  caldo e fallisce chiuso se neutro e sorriso non sono separabili.
+- Questa calibrazione non promuove la percezione oltre la Fase 0. La postura serve a
+  rendere il sensore robusto alla posizione reale sulla sedia; non autorizza etichette
+  emotive, azioni, memoria o inferenze multimodali.
 
 ## Identita' ospite e conferma differita — 2026-07-20
 

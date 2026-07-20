@@ -2,6 +2,7 @@
 """Unit tests for Phase-0 social perception; no camera, Redis or MediaPipe."""
 import sys
 import math
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent))
 
 from voice.social_perception import MediaPipeFaceBackend, SocialPerception, SocialSignalState
+from voice.social_profile import derive_profile, load_profile, save_profile
 
 
 def check(name, condition, detail=""):
@@ -51,6 +53,17 @@ def sample(smile=0.05, brow=0.05, gaze=0.05, pitch=0.0, yaw=0.0):
     return metrics, confidence
 
 
+def profile_sample(smile, pitch):
+    return {
+        "metrics": {"smile": smile},
+        "auxiliary_metrics": {
+            "head_pitch_deg": pitch,
+            "head_yaw_deg": 1.0,
+            "head_roll_deg": 0.5,
+        },
+    }
+
+
 def run():
     ok = []
 
@@ -79,6 +92,10 @@ def run():
     ok.append(check(
         "snapshot non contiene immagini",
         not any("image" in key or "frame" in key for key in serialized),
+    ))
+    ok.append(check(
+        "snapshot espone le soglie applicate",
+        serialized["thresholds"]["smile_entry"] == 0.28,
     ))
 
     pitch_rad, yaw_rad, roll_rad = map(math.radians, (20.0, 15.0, 10.0))
@@ -131,6 +148,49 @@ def run():
                     reset.actor_id == "altra_persona" and
                     reset.sample_count == 1 and not reset.calibrated))
 
+    phases = {
+        "relaxed_neutral": [profile_sample(v, 6.0) for v in (0.01, 0.01, 0.02, 0.01)],
+        "upright_neutral": [profile_sample(v, 18.0) for v in (0.02, 0.02, 0.03, 0.02)],
+        "relaxed_smile": [profile_sample(v, 6.0) for v in (0.08, 0.18, 0.20, 0.22)],
+        "upright_smile": [profile_sample(v, 18.0) for v in (0.09, 0.17, 0.19, 0.21)],
+    }
+    profile = derive_profile("stefano", phases, created_at=10.0)
+    ok.append(check(
+        "profilo personale abbassa la soglia solo con classi separabili",
+        0.08 <= profile.thresholds["smile_entry"] < 0.17
+        and profile.diagnostics["separation_margin"] > 0.1,
+    ))
+    ok.append(check(
+        "profilo conserva entrambe le posture",
+        profile.posture["relaxed_neutral"]["head_pitch_deg"] == 6.0
+        and profile.posture["upright_neutral"]["head_pitch_deg"] == 18.0,
+    ))
+    profile_file = Path(tempfile.mkdtemp(prefix="social_profile_test_")) / "stefano.json"
+    save_profile(profile, profile_file)
+    loaded_profile = load_profile(profile_file, actor_id="stefano")
+    ok.append(check(
+        "profilo numerico persiste senza immagini",
+        loaded_profile.thresholds == profile.thresholds
+        and "image" not in profile_file.read_text(encoding="utf-8"),
+    ))
+
+    personalized = SocialSignalState(
+        calibration_samples=3,
+        window_samples=1,
+        stability_samples=2,
+        thresholds=profile.thresholds,
+    )
+    for index in range(3):
+        personalized.observe("stefano", sample(smile=0.01)[0], sample()[1], observed_at=index)
+    personalized.observe("stefano", sample(smile=0.18)[0], sample()[1], observed_at=4)
+    personalized_result = personalized.observe(
+        "stefano", sample(smile=0.18)[0], sample()[1], observed_at=5
+    )
+    ok.append(check(
+        "sorriso lieve personale supera la soglia calibrata",
+        personalized_result.states["smile"] == "slight",
+    ))
+
     updates = []
     backend = FakeBackend([sample(), sample(), sample(), sample(smile=0.9)])
     receptor = SocialPerception(
@@ -142,8 +202,13 @@ def run():
         calibration_samples=3,
         window_samples=1,
         stability_samples=1,
+        profile_path=profile_file,
     )
     ok.append(check("backend opzionale si avvia", receptor.start()))
+    ok.append(check(
+        "recettore carica il profilo personale",
+        receptor.state.thresholds == profile.thresholds,
+    ))
     frame = np.zeros((4, 4, 3), dtype=np.uint8)
     receptor.process_frame(frame, "ospite", monotonic_at=1.0, observed_at=1.0)
     ok.append(check("persona non owner non viene profilata", backend.extract_calls == 0))

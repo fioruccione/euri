@@ -392,6 +392,7 @@ FACEPRINT_DIR = str(Path.home() / "euri" / "models" / "faceprints")
 # nessuna memoria e nessun effetto su tono/Initiative. Il modello resta locale.
 SOCIAL_PERCEPTION_ENABLED = True
 SOCIAL_PERCEPTION_MODEL = str(MODELS_DIR / "face_landmarker.task")
+SOCIAL_PERCEPTION_PROFILE_DIR = str(MODELS_DIR / "social_profiles")
 SOCIAL_PERCEPTION_FPS = 2.0
 SOCIAL_PERCEPTION_REFRESH_S = 2.0
 SOCIAL_PERCEPTION_CALIBRATION_SAMPLES = 12

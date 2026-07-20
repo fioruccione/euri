@@ -60,6 +60,12 @@ def run():
                     not auth.enroll_from_embeddings("stefano", [stefano])))
     ok.append(check("enroll salva il faceprint",
                     auth.enroll_from_embeddings("stefano", [stefano, stefano * 0.99])))
+    ok.append(check("enrollment conserva prototipi distinti",
+                    auth._faceprints["stefano"].shape == (2, 128)))
+    many = [np.roll(stefano, shift) for shift in range(12)]
+    ok.append(check("enrollment limita i prototipi biometrici",
+                    auth.enroll_from_embeddings("stefano", many)
+                    and auth._faceprints["stefano"].shape == (8, 128)))
     ok.append(check("is_enabled dopo enrollment", auth.is_enabled()))
 
     name, sim = auth.identify(stefano, None)
@@ -79,6 +85,15 @@ def run():
     auth2 = make_auth(tmp)
     auth2.reload_faceprints()
     ok.append(check("faceprint persistono su disco", auth2.enrolled_names() == ["stefano"]))
+
+    # Compatibilita' con i vecchi file a vettore singolo: il reload li promuove
+    # a matrice con un prototipo senza richiedere una migrazione distruttiva.
+    np.save(Path(tmp) / "legacy.npy", capoturno)
+    auth2.reload_faceprints()
+    ok.append(check("faceprint storico 1D resta leggibile",
+                    auth2._faceprints["legacy"].shape == (1, 128)))
+    Path(tmp, "legacy.npy").unlink()
+    auth2.reload_faceprints()
 
     # ── VisualGate: gate sdoppiato ──────────────────────────────────────
     config.FACE_AUTH_OWNER = "stefano"

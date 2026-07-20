@@ -60,6 +60,13 @@ numerico al minuto alimenta `euri:social:baseline` per l'audit. Le sole transizi
 persistenti entrano in `euri:pulse` con salienza bassa. Nessuna immagine e nessuna
 memoria cognitiva vengono scritte.
 
+La Control Room rende ripetibile la calibrazione della Fase 0. L'identita' raccoglie
+quattro prototipi SFace in posture diverse senza ridurre la soglia di autenticazione.
+Il recettore sociale raccoglie quattro brevi finestre neutro/sorriso in postura
+abituale/diritta e persiste soltanto soglie e riepiloghi numerici. Distribuzioni
+sovrapposte vengono rifiutate: una calibrazione incerta non sostituisce le soglie
+generiche. Questo migliora la misura, ma non abilita ancora alcun effetto cognitivo.
+
 Esempio di stato transitorio, non di memoria:
 
 ```text
