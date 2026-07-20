@@ -327,6 +327,16 @@ def test_initiative_token_is_cancelled_by_voice_inflight():
     print("OK  voce VAD in volo invalida l'efferenza Initiative")
 
 
+def test_implicit_read_log_requires_sentence_level_commitment():
+    assert vd._IMPLICIT_READ_LOG_RE.search("Controllo il log e ti dico.")
+    assert vd._IMPLICIT_READ_LOG_RE.search("Ora leggo il log.")
+    assert not vd._IMPLICIT_READ_LOG_RE.search(
+        "Finché c'è qualcosa da sintonizzare tra quello che leggo nei log "
+        "e come lo interpreto, il lavoro non è finito."
+    )
+    print("OK  read_log implicito: azione esplicita, non descrizione metacognitiva")
+
+
 if __name__ == "__main__":
     test_addressed_guard()
     test_passive_weak_and_mixed_segment()
@@ -341,6 +351,7 @@ if __name__ == "__main__":
     test_memory_audit_candidates_are_bounded_and_risk_first()
     test_offtopic_reaction_returns_turn_to_dispatch()
     test_initiative_token_is_cancelled_by_voice_inflight()
+    test_implicit_read_log_requires_sentence_level_commitment()
     print("PASS")
 
 

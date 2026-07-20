@@ -67,6 +67,17 @@ from agent.executor import Executor, build_injected_context
 # ──────────────────────────────────────────
 _INTERRUPT_KEYWORDS = frozenset({"stop", "fermati", "basta", "taci", "silenzio"})
 
+# Le azioni implicite devono essere impegni operativi del turno, non descrizioni
+# metacognitive come "quello che leggo nei log e come lo interpreto". L'ancoraggio
+# a inizio frase conserva "Controllo il log" / "Ora leggo il log" e scarta il
+# verbo presente quando e' subordinato a un ragionamento piu' ampio.
+_IMPLICIT_READ_LOG_RE = re.compile(
+    r'(?:^|(?<=[.!?])\s+)'
+    r'(?:(?:ora|adesso|intanto)\s+)?'
+    r'(?:leggo|guardo|controllo)\b[^.\n]{0,20}\b(?:il\s+)?log\b',
+    re.IGNORECASE,
+)
+
 # ──────────────────────────────────────────
 # Correzioni misrecognition STT (Whisper IT)
 # ──────────────────────────────────────────
@@ -227,7 +238,7 @@ class VoiceDaemon:
                         r'\bho\s+(spostato|riprogrammato|aggiornato)\b.{0,30}\b(impegno|promemoria|scadenza)',
                         re.IGNORECASE),
              lambda t, r: self._handle_reschedule(t, reply_hint=r)),
-            (re.compile(r'\b(leggo|guardo|controllo)\b.{0,20}\blog\b', re.IGNORECASE),
+            (_IMPLICIT_READ_LOG_RE,
              lambda t, r: self._handle_execute("leggi il log")),
             (re.compile(r'\b(controllo|verifico)\b.{0,20}\b(cpu|ram|disco|spazio)\b', re.IGNORECASE),
              lambda t, r: self._handle_execute("controlla la cpu")),
