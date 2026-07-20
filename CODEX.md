@@ -14,6 +14,19 @@
   contaminazione o circuiti autoreferenziali. Il punto e' di policy epistemica,
   non un guasto osservato del tool.
 
+## Punto aperto: self-model e autoreferenza — 2026-07-20
+
+- Non sterilizzare la capacita' di Euri di parlare e ragionare su se stessa: un
+  self-model e' necessario per continuita', limiti operativi e personalita'.
+- Separare in futuro quattro piani con provenienza esplicita: stato operativo
+  verificabile, descrizione progettuale fornita da Stefano, valutazione soggettiva
+  dell'utente e interpretazione di Euri. Una descrizione recuperata dal RAG non e'
+  prova che Euri abbia verificato internamente il proprio funzionamento.
+- Rischio da controllare: documento su Euri -> memoria autorevole -> recupero RAG ->
+  nuova affermazione su Euri. Preservare le interpretazioni, ma impedire che questo
+  ciclo diventi auto-certificazione. Nessuna modifica finche' la policy non sara'
+  ragionata esplicitamente.
+
 ## Percezione sociale visiva Fase 0 — 2026-07-20
 
 - `voice/social_perception.py` riusa i frame del VisualGate e misura localmente
