@@ -106,6 +106,8 @@ def memory_verification_suffix(doc: dict) -> str:
         reasons.append("contestato nel contesto, correzione in sospeso")
     if doc.get("provenance_stale"):
         reasons.append("provenienza fragile")
+    if doc.get("passive_support") == "tacit_acceptance":
+        reasons.append("vecchio assenso tacito, non conferma di Stefano")
     cr = doc.get("consolidation_risk") or {}
     if isinstance(cr, dict):
         level = str(cr.get("level") or "ok").lower()

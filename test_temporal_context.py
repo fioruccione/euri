@@ -61,6 +61,40 @@ def test_structured_passive_parser_preserves_kind_and_turns():
     }
 
 
+def test_passive_fact_requires_user_only_source_turns():
+    conversation = [
+        {"seq": 10, "role": "user", "content": "Il pezzo pesa 10,1 kg."},
+        {"seq": 11, "role": "assistant", "content": "Quindi il ciclo e' 81 secondi."},
+        {"seq": 12, "role": "user", "content": "Esatto."},
+    ]
+
+    user_fact = {
+        "content": "Il pezzo pesa 10,1 kg.",
+        "support": "strong",
+        "memory_kind": "semantic_fact",
+        "source_turn_ids": [10],
+    }
+    assistant_fact = {
+        "content": "Il ciclo e' 81 secondi.",
+        "support": "strong",
+        "memory_kind": "semantic_fact",
+        "source_turn_ids": [11, 12],
+    }
+    episode = {
+        "content": "Stefano ed Euri hanno lasciato aperto il dato sul ciclo.",
+        "support": "strong",
+        "memory_kind": "episode",
+        "source_turn_ids": [10, 11, 12],
+    }
+
+    assert Brain._passive_item_has_valid_provenance(user_fact, conversation)
+    assert not Brain._passive_item_has_valid_provenance(assistant_fact, conversation)
+    assert Brain._passive_item_has_valid_provenance(episode, conversation)
+    assert not Brain._passive_item_has_valid_provenance(
+        {"content": "Senza turni", "memory_kind": "semantic_fact"}, conversation
+    )
+
+
 def test_passive_anchor_resolves_this_morning_against_assertion_time():
     conversation = [
         {
@@ -171,6 +205,7 @@ if __name__ == "__main__":
     test_six_hour_gap_is_not_immediate()
     test_brain_starts_a_new_segment_after_idle_gap()
     test_structured_passive_parser_preserves_kind_and_turns()
+    test_passive_fact_requires_user_only_source_turns()
     test_passive_anchor_resolves_this_morning_against_assertion_time()
     test_generic_memories_resolve_numeric_and_relative_time()
     test_brain_prompt_exposes_time_but_marks_it_internal()

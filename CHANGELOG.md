@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-07-20 - Provenienza continua senza intreccio dei ruoli
+
+- Il passive learner non accetta piu' fatti sostenuti da turni dell'assistente:
+  ogni `semantic_fact` deve citare esclusivamente uno o piu' turni di Stefano.
+  Silenzio, cambio di argomento e assenso breve non promuovono una frase di Euri.
+- Gli episodi compressi separano `DETTO DA STEFANO`, `CONTRIBUTI DI EURI` e
+  `FILO APERTO`; restano utili alla continuita' ma sono esclusi dal consolidamento
+  fattuale e marcati come tali nel RAG.
+- Le lezioni del Loop 2g nate da correzioni usano ora
+  `source=reaction`, `memory_kind=reaction_lesson`. Migrazione idempotente applicata
+  a 35 nodi storici senza alterarne il contenuto; rimossi anche il vecchio TTL e
+  `expires_at` da passive, coerentemente con le reaction lesson native.
+- Le vecchie passive da assenso tacito non vengono cancellate, ma il contesto le
+  presenta esplicitamente come ipotesi di Euri non confermate da Stefano.
+
 ## 2026-07-20 - Baseline interocezione hardware chiusa
 
 - Chiusa la prima osservazione dopo 70,8 ore: 4152 campioni validi, copertura

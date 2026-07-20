@@ -2094,7 +2094,7 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
         2. Chiede al LLM-judge se l'errore è bad_memory o bad_reasoning.
         3. Azioni differenziate:
            - bad_memory: incrementa audit_flag sulle memorie nel rag_ctx (segnale debole, niente azione automatica per ora).
-           - bad_reasoning: salva la correzione come passive memory di tipo 'lesson' (nutrimento per il futuro).
+           - bad_reasoning: salva una reaction_lesson separata dai fatti passivi.
            - ambiguous: nessuna azione, solo marca lo status.
         Max 10 correzioni per ciclo per evitare cicli lunghi.
         """
@@ -2201,7 +2201,7 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
                                 content=lesson_text,
                                 category="lesson",
                                 tags=["lesson", "from_correction"],
-                                source="passive",
+                                source="reaction",
                             )
                         except Exception as e:
                             effect_ok = False

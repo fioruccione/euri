@@ -230,11 +230,15 @@ class Brain:
             lines = [history_line_for_prompt(m, reference_at=reference_at) for m in chunk]
             dialogue = "\n".join(lines)
             prompt = (
-                "Riassumi questa conversazione in modo conciso ma preciso. "
-                "Preserva: nomi propri, numeri, nomi di progetto, decisioni, fatti tecnici. "
-                "Preserva anche l'ordine temporale e segnala se un argomento resta aperto, "
-                "ma non trasformare un tema proposto in un fatto avvenuto. "
-                "Scrivi in terza persona. Max 120 parole.\n\n"
+                "Comprimi questa conversazione senza fondere le fonti. Produci esattamente "
+                "questi tre blocchi, anche quando uno e' vuoto:\n"
+                "DETTO DA STEFANO: fatti, decisioni, numeri e preferenze affermati da Stefano.\n"
+                "CONTRIBUTI DI EURI: domande, ipotesi, interpretazioni o proposte formulate da Euri.\n"
+                "FILO APERTO: argomenti incompleti e dettagli ancora mancanti.\n"
+                "Preserva nomi propri, numeri, progetti e ordine temporale. Non spostare mai "
+                "una frase di Euri nel blocco di Stefano, neppure se sembra plausibile o non "
+                "viene contestata. Non trasformare un tema proposto in un fatto avvenuto. "
+                "Scrivi in terza persona. Max 150 parole.\n\n"
                 f"{dialogue}\n\nRiassunto:"
             )
             try:
@@ -424,11 +428,13 @@ class Brain:
             f"Risolvi il soggetto dal contesto conversazionale solo quando è chiaro; NON "
             f"defaultare mai a Stefano. Se il soggetto non è risolvibile con certezza, scarta il fatto.\n\n"
             f"Fonte epistemica:\n"
-            f"- FORTE: il fatto è detto, corretto, confermato o ripreso operativamente da Stefano.\n"
-            f"- DEBOLE: il fatto è detto da Euri e Stefano non lo contesta nel segmento; vale come "
-            f"consenso tacito, non come verità piena.\n"
-            f"- SCARTA: il fatto è solo una supposizione di Euri, o Stefano cambia argomento senza "
-            f"riusarlo, o c'è una correzione.\n\n"
+            f"- FORTE: il fatto è affermato, corretto o ripreso operativamente da Stefano.\n"
+            f"- DEBOLE: il fatto viene comunque dalle parole di Stefano, ma e' incerto, "
+            f"provvisorio o espresso come possibilita'.\n"
+            f"- SCARTA SEMPRE: fatti, spiegazioni, inferenze o autocorrezioni formulate da Euri. "
+            f"Il silenzio, il cambio di argomento e la mancata contestazione NON sono conferma. "
+            f"Una risposta breve come 'si' o 'esatto' non autorizza a copiare la formulazione di "
+            f"Euri in un FATTO passivo: se il dettaglio non compare nelle parole di Stefano, scartalo.\n\n"
             f"Memorie aggiuntive: se il fatto aggiunge un nuovo asse a un soggetto già noto, "
             f"formulalo come aggiunta, non come definizione esaustiva. Usa parole come 'anche' "
             f"o 'inoltre' quando servono.\n\n"
@@ -459,7 +465,9 @@ class Brain:
             f"oppure: 1. FORTE: [TIPO=EPISODIO; TURNI=12,13] contenuto\n"
             f"TURNI deve contenere soltanto i turni che sostengono quell'elemento. Non copiare "
             f"nel contenuto l'orario tecnico tra parentesi: preserva invece gli eventuali "
-            f"riferimenti temporali detti da Stefano.\n"
+            f"riferimenti temporali detti da Stefano. Per TIPO=FATTO, TURNI deve contenere "
+            f"ESCLUSIVAMENTE turni di Stefano; i turni di Euri possono comparire solo in un "
+            f"TIPO=EPISODIO, che descrive il filo del dialogo e non e' una prova fattuale.\n"
             f"Esempio FATTO: 1. FORTE: [TIPO=FATTO; TURNI=4] Stefano si occupa anche di architetture agentiche e analisi DSC.\n"
             f"Esempio EPISODIO: 2. FORTE: [TIPO=EPISODIO; TURNI=7,8] Stefano ha riaperto il tema della prova IZOD riferita a quella mattina; non ha ancora fornito valori o risultati.\n"
             f"Se non c'è nulla di concreto da salvare: scrivi solo NOTHING."
@@ -483,6 +491,8 @@ class Brain:
                 if not item:
                     continue
                 if len(item["content"]) <= 10 or self._looks_acephalous_fact(item["content"]):
+                    continue
+                if not self._passive_item_has_valid_provenance(item, conversation):
                     continue
                 parsed.append(item)
             return parsed
@@ -531,6 +541,40 @@ class Brain:
             parsed["memory_kind"] = "episode" if kind == "episodio" else "semantic_fact"
             parsed["source_turn_ids"] = turn_ids
         return parsed
+
+    @staticmethod
+    def _passive_item_has_valid_provenance(item: dict, conversation: list[dict]) -> bool:
+        """Fail-closed sulla provenienza dei derivati passivi.
+
+        Un fatto persistente deve puntare a uno o piu' turni di Stefano e a nessun
+        turno dell'assistente. Gli episodi possono citare entrambi i ruoli per
+        conservare il filo, ma restano memorie non fattuali a valle.
+        """
+        requested: list[int] = []
+        for value in item.get("source_turn_ids") or []:
+            try:
+                requested.append(int(value))
+            except (TypeError, ValueError):
+                return False
+        if not requested:
+            return False
+
+        by_id: dict[int, dict] = {}
+        for index, message in enumerate(conversation, 1):
+            try:
+                turn_id = int(message.get("seq", index))
+            except (TypeError, ValueError):
+                turn_id = index
+            by_id[turn_id] = message
+
+        selected = [by_id.get(turn_id) for turn_id in requested]
+        if any(message is None for message in selected):
+            return False
+        if not any(message.get("role") == "user" for message in selected):
+            return False
+        if item.get("memory_kind") == "episode":
+            return True
+        return all(message.get("role") == "user" for message in selected)
 
     _ACEPHALOUS_FACT_RE = re.compile(
         r"^\s*(?:ha|aveva|avrà|lavora|lavorava|opera|gestisce|gestiva|collabora|"

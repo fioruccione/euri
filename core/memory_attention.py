@@ -18,7 +18,7 @@ LOOP2E_ZSET = "euri:idx:loop2e:candidates"
 LOOP2E_MIN_RECALLED = 3
 LOOP2E_RECENCY_WINDOW_S = 30 * 86400
 LOOP2E_SKIP_SOURCES = {"loop2e", "campus", "web", "reflection"}
-NON_FACTUAL_MEMORY_KINDS = {"conversation_anchor"}
+NON_FACTUAL_MEMORY_KINDS = {"conversation_anchor", "conversation_episode"}
 
 
 def memory_key(memory_id: str) -> str:

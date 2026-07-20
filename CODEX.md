@@ -1,5 +1,22 @@
 # Handoff Euri — 2026-07-14
 
+## Provenienza della memoria continua — 2026-07-20
+
+- Invariante: una memoria passiva `semantic_fact` deve essere sostenuta da
+  `source_turn_ids` che puntano esclusivamente a turni `role=user`. Il modello puo'
+  leggere le risposte di Euri per capire il tema, ma non usarle come evidenza del fatto.
+- La mancata contestazione non e' conferma. I vecchi nodi
+  `passive_support=tacit_acceptance` restano conservati e fuori dal Loop 2e, ma il RAG
+  li etichetta come ipotesi storiche di Euri non confermate.
+- `conversation_episode` conserva la continuita' separando parole di Stefano,
+  contributi di Euri e fili aperti. E' memoria contestuale non fattuale e non puo'
+  diventare evidenza di consolidamento.
+- Le lezioni estratte dal Loop 2g dopo una correzione sono
+  `source=reaction`, `memory_kind=reaction_lesson`: sono interpretazioni operative di
+  Euri fondate sul feedback, non fatti passivi attribuibili a Stefano. Lo script
+  `scripts/migrate_correction_lessons.py` ha riclassificato 35 nodi storici e rimosso
+  il loro vecchio TTL da passive; e' idempotente e senza `--apply` opera in dry-run.
+
 ## Instrumentazione costo Dream — 2026-07-17
 
 - Il log live ha mostrato picchi VRAM 96-97% durante i cicli creativi, con ritorno

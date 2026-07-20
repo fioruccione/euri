@@ -239,7 +239,17 @@ def build_rag_context(
                 continue  # già nel blocco impegni, non duplicare
             age = memory_time_label(r, reference_at=reference_at)
             kind = r.get("memory_kind") or ""
-            kind_label = "FILO CONVERSAZIONALE | " if kind == "conversation_anchor" else ""
+            source = r.get("source") or ""
+            if kind == "conversation_anchor":
+                kind_label = "FILO CONVERSAZIONALE | "
+            elif kind == "conversation_episode":
+                kind_label = "EPISODIO CONVERSAZIONALE | "
+            elif kind == "reaction_lesson" or source == "reaction":
+                kind_label = "LEZIONE DI EURI DA FEEDBACK | "
+            elif r.get("passive_support") == "tacit_acceptance":
+                kind_label = "VECCHIA IPOTESI DI EURI NON CONFERMATA | "
+            else:
+                kind_label = ""
             label = (
                 f"[{kind_label}{r.get('domain', 'generale')} | {age}]"
                 if age else f"[{kind_label}{r.get('domain', 'generale')}]"
@@ -249,7 +259,25 @@ def build_rag_context(
                 " [ancora episodica: indica un discorso aperto, non prova il fatto raccontato]"
                 if kind == "conversation_anchor" else ""
             )
-            mem_lines.append(f"- {label} {r['content']}{anchor_note}{suffix}")
+            episode_note = (
+                " [sintesi del dialogo: preserva il filo ma non usare le parole di Euri "
+                "come fatti di Stefano]"
+                if kind == "conversation_episode" else ""
+            )
+            reaction_note = (
+                " [interpretazione operativa di Euri derivata da un feedback: non attribuire "
+                "questa formulazione a Stefano]"
+                if kind == "reaction_lesson" or source == "reaction" else ""
+            )
+            tacit_note = (
+                " [derivata storicamente dalla mancata contestazione: non vale come "
+                "affermazione di Stefano]"
+                if r.get("passive_support") == "tacit_acceptance" else ""
+            )
+            mem_lines.append(
+                f"- {label} {r['content']}{anchor_note}{episode_note}{reaction_note}"
+                f"{tacit_note}{suffix}"
+            )
         if mem_lines:
             sections.append("Ricordi/note rilevanti:\n" + "\n".join(mem_lines))
     if insight_lines:

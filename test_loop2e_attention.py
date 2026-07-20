@@ -99,10 +99,11 @@ def test_acephalous_or_untouched_does_not_enter():
     assert r.zsets.get(LOOP2E_ZSET, {}) == {}
 
 
-def test_conversation_anchor_never_becomes_consolidation_evidence():
-    r = _FakeRedis()
-    update_loop2e_candidate_index(r, _doc(memory_kind="conversation_anchor"))
-    assert r.zsets.get(LOOP2E_ZSET, {}) == {}
+def test_conversation_context_never_becomes_consolidation_evidence():
+    for kind in ("conversation_anchor", "conversation_episode"):
+        r = _FakeRedis()
+        update_loop2e_candidate_index(r, _doc(memory_kind=kind))
+        assert r.zsets.get(LOOP2E_ZSET, {}) == {}
 
 
 def test_explicit_remove_is_idempotent():
@@ -121,6 +122,6 @@ if __name__ == "__main__":
     test_correction_pending_exits_index()
     test_consolidated_or_superseded_exits_index()
     test_acephalous_or_untouched_does_not_enter()
-    test_conversation_anchor_never_becomes_consolidation_evidence()
+    test_conversation_context_never_becomes_consolidation_evidence()
     test_explicit_remove_is_idempotent()
     print("test_loop2e_attention: OK")

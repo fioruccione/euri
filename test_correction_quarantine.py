@@ -107,6 +107,17 @@ def test_correction_pending_suffix_is_stronger_than_generic_verification():
     assert "correzione in sospeso" in suffix
 
 
+def test_tacit_acceptance_is_named_as_unconfirmed_provenance():
+    suffix = memory_verification_suffix({
+        "requires_verification": True,
+        "passive_support": "tacit_acceptance",
+    })
+
+    assert "DATO DA VERIFICARE" in suffix
+    assert "assenso tacito" in suffix
+    assert "non conferma di Stefano" in suffix
+
+
 def test_soft_correction_does_not_quarantine_immediately():
     docs = {
         "euri:memory:food": {
@@ -366,6 +377,7 @@ if __name__ == "__main__":
     test_explicit_same_context_correction_quarantines_only_matching_memory()
     test_joke_clarification_is_detected_as_correction_signal()
     test_correction_pending_suffix_is_stronger_than_generic_verification()
+    test_tacit_acceptance_is_named_as_unconfirmed_provenance()
     test_soft_correction_does_not_quarantine_immediately()
     test_tied_max_score_quarantines_all_tied_targets()
     test_settle_not_a_correction_preserves_preexisting_requires_verification_true()
