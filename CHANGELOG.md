@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-20 - Baseline interocezione hardware chiusa
+
+- Chiusa la prima osservazione dopo 70,8 ore: 4152 campioni validi, copertura
+  97,7%, zero fault; temperature CPU/GPU e RAM ampiamente sane.
+- La VRAM della GPU 0 al 95-97% coincide con il normale caricamento dei modelli:
+  la soglia osservativa passa dal 92% al 98% per non trasformare il carico sano
+  in dolore simulato.
+- Nessun riflesso protettivo e nessun consumer LLM attivati: l'interocezione
+  resta in osservazione mentre si raccolgono eventuali eventi davvero anomali.
+
 ## 2026-07-17 - CHAT non promette lavoro autonomo inesistente
 
 - Chiuso il caso live "Vado a dare un'occhiata al codice": il turno era `CHAT`,

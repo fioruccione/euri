@@ -101,7 +101,7 @@ def test_cooldown_suppresses_repeats_without_blocking_escalation():
 def test_vram_pressure_has_no_critical_state_by_default():
     collector = object.__new__(HardwareCollector)
     collector.config = SimpleNamespace(
-        HARDWARE_VRAM_WARNING_PCT=92.0,
+        HARDWARE_VRAM_WARNING_PCT=98.0,
         HARDWARE_INTEROCEPTION_WARNING_SAMPLES=3,
         HARDWARE_INTEROCEPTION_RECOVERY_SAMPLES=3,
         HARDWARE_GPU_TEMP_WARNING_C=82.0,
@@ -117,7 +117,7 @@ def test_vram_pressure_has_no_critical_state_by_default():
         "memory_total_bytes": 100,
     }])
     vram = next(item for item in readings if item.spec.sensor == "gpu_0_vram")
-    assert vram.spec.warning == 92.0
+    assert vram.spec.warning == 98.0
     assert vram.spec.critical is None
 
     machine = InteroceptiveStateMachine(monotonic=FakeClock())

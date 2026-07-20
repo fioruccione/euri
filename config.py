@@ -336,9 +336,10 @@ HARDWARE_CPU_TEMP_WARNING_C = 90.0
 HARDWARE_CPU_TEMP_CRITICAL_C = 98.0
 HARDWARE_GPU_TEMP_WARNING_C = 82.0
 HARDWARE_GPU_TEMP_CRITICAL_C = 90.0
-# L'allocazione VRAM alta e' normale quando Ollama/Whisper tengono i modelli
-# residenti: segnala pressione persistente, ma da sola non genera CRITICAL.
-HARDWARE_VRAM_WARNING_PCT = 92.0
+# Baseline 17-20/07/2026: p95=95.818%, max=97.106% durante carico sano.
+# L'allocazione dei modelli residenti non e' dolore; 98% segnala soltanto margine
+# quasi esaurito e, da sola, non genera mai CRITICAL ne' un riflesso protettivo.
+HARDWARE_VRAM_WARNING_PCT = 98.0
 
 # Initiative controller — prima "scintilla" proattiva.
 # Il daemon ascolta euri:pulse da `$` (solo eventi nuovi dal boot), rilegge il

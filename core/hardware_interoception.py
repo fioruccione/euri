@@ -6,9 +6,10 @@ Redis conserva uno snapshot effimero e uno stream delle sole transizioni.
 
 ROADMAP COGNITIVA (non rimuovere senza sostituirla con una specifica):
 
-Fase 0, attiva oggi: OSSERVAZIONE. Raccogliere una baseline reale, verificare le
-soglie e distinguere carico normale, pressione persistente, guasto del sensore e
-pericolo. Nessun consumer deve ancora fermare processi o coinvolgere un LLM.
+Fase 0, attiva oggi: OSSERVAZIONE. La prima baseline e' stata chiusa il 20/07/2026
+(70.8h, copertura 97.7%, zero fault): temperature e RAM sane; VRAM 95-97% e'
+carico normale dei modelli residenti, non dolore. Continuare a osservare. Nessun
+consumer deve ancora fermare processi o coinvolgere un LLM.
 
 Fase 1: RIFLESSO PROTETTIVO DETERMINISTICO. Solo dopo la baseline, un consumer
 separato potra' reagire a CRITICAL con azioni reversibili e idempotenti (prima
