@@ -4,6 +4,7 @@ voice_daemon.py — Loop principale always-on vocale di Euri.
 Flusso:
   microfono → VAD → STT → intent_router → [branch] → brain → TTS → speaker
 """
+import json
 import re
 import sys
 import signal
@@ -25,6 +26,7 @@ from voice.tts import TTS
 from voice.visual_gate import VisualGate
 from voice.face_auth import FaceAuth
 from voice.speaker_auth import SpeakerAuth, SpeakerVerdict, ENROLL_UTTERANCES
+from voice.social_perception import SocialSnapshot, build_social_perception
 
 from core.pulse import pulse_emit
 from core.intent_router import (
@@ -52,6 +54,7 @@ from core.guest_claims import (
 )
 from core.cognitive_present import (
     CognitivePresent,
+    EpistemicStatus,
     InteractionChannel,
     InteractionPhase,
 )
@@ -208,6 +211,9 @@ class VoiceDaemon:
             focus_window_s=getattr(config, "CONVERSATION_FOCUS_SECONDS", 5 * 60),
             max_focus_turns=getattr(config, "CONVERSATION_FOCUS_MAX_TURNS", 4),
         )
+        self._last_social_baseline_ts = 0.0
+        self.social_perception = build_social_perception(self._handle_social_snapshot)
+        self.visual_gate.set_social_perception(self.social_perception)
         self._initiative_focus_cache: dict[tuple[str, int], str] = {}
 
         # Impegni verbali → azioni reali: (pattern sulla risposta di Euri, callable(text, reply))
@@ -274,6 +280,75 @@ class VoiceDaemon:
         else:
             logger.warning("Audio output: Jabra non trovato — uso device di sistema")
         logger.info("Euri pronto. In ascolto...")
+
+    def _handle_social_snapshot(self, snapshot: SocialSnapshot) -> None:
+        """Persist Phase-0 numbers and transitions, without changing behavior."""
+        payload = snapshot.to_dict()
+        try:
+            self.r.set(
+                "euri:social:latest",
+                json.dumps(payload, ensure_ascii=False),
+                ex=getattr(config, "SOCIAL_PERCEPTION_LATEST_TTL_S", 30),
+            )
+            interval = getattr(config, "SOCIAL_PERCEPTION_BASELINE_INTERVAL_S", 60)
+            if (snapshot.calibrated and
+                    snapshot.observed_at - self._last_social_baseline_ts >= interval):
+                self.r.xadd(
+                    "euri:social:baseline",
+                    {
+                        "actor_id": snapshot.actor_id,
+                        "metrics": json.dumps(snapshot.metrics, separators=(",", ":")),
+                        "baselines": json.dumps(snapshot.baselines, separators=(",", ":")),
+                        "states": json.dumps(snapshot.states, separators=(",", ":")),
+                        "confidences": json.dumps(snapshot.confidences, separators=(",", ":")),
+                        "auxiliary_metrics": json.dumps(
+                            snapshot.auxiliary_metrics, separators=(",", ":")
+                        ),
+                        "ts": f"{snapshot.observed_at:.3f}",
+                    },
+                    maxlen=20160,  # circa 14 giorni a un punto/minuto
+                    approximate=True,
+                )
+                self._last_social_baseline_ts = snapshot.observed_at
+        except Exception as exc:
+            logger.debug(f"Percezione sociale: persistenza ignorata ({exc})")
+
+        # Preparato per una fase successiva. Spento in Fase 0 per non cambiare
+        # neppure indirettamente la rivalidazione delle decisioni asincrone.
+        if getattr(config, "SOCIAL_PERCEPTION_PRESENT_ENABLED", False):
+            try:
+                self.present.observe(
+                    "social.visual",
+                    {
+                        "actor_id": snapshot.actor_id,
+                        "states": snapshot.states,
+                        "auxiliary_metrics": snapshot.auxiliary_metrics,
+                        "calibrated": snapshot.calibrated,
+                    },
+                    status=EpistemicStatus.OBSERVED,
+                    source="visual_gate",
+                    ttl_s=max(3.0, getattr(config, "SOCIAL_PERCEPTION_REFRESH_S", 2.0) * 3),
+                )
+            except Exception as exc:
+                logger.debug(f"Percezione sociale: Cognitive Present ignorato ({exc})")
+
+        for transition in snapshot.transitions:
+            item = transition.to_dict()
+            item["actor_id"] = snapshot.actor_id
+            item["calibrated"] = snapshot.calibrated
+            pulse_emit(
+                self.r,
+                "social",
+                "extero",
+                "movement_transition",
+                payload=item,
+                salience=0.2,
+            )
+            logger.info(
+                "Percezione sociale: "
+                f"{transition.feature} {transition.previous}->{transition.current} "
+                f"({transition.value:.2f}, conf={transition.confidence:.2f})"
+            )
 
     _URL_RE = re.compile(r'https?://\S+|www\.\S+', re.IGNORECASE)
 

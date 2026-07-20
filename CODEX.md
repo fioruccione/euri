@@ -1,18 +1,18 @@
 # Handoff Euri — 2026-07-14
 
-## Percezione sociale visiva pianificata — 2026-07-20
+## Percezione sociale visiva Fase 0 — 2026-07-20
 
-- Salvata in `SPEC_SOCIAL_PERCEPTION.md` l'intenzione di evolvere VisualGate da
-  gate di presenza/identita' a recettore sociale prudente: movimenti osservabili e
-  trend temporali possono regolare tempi, tono e Initiative, ma non diventano
-  automaticamente emozioni, intenzioni certe o memorie.
-- Architettura prevista: frame VisualGate condivisi -> landmark/blendshape ->
-  baseline e smoothing -> transizioni Pulse -> osservazioni con TTL nel Cognitive
-  Present -> interpretazione contestuale. Niente immagini persistenti e nessuna
-  frase cablata nel sensore.
-- Stato attuale: solo specifica, nessun runtime modificato. La prima implementazione
-  deve essere Fase 0 osservativa; l'effetto live parte dalla sola disponibilita'
-  conversazionale e richiede dati reali prima di includere segnali espressivi.
+- `voice/social_perception.py` riusa i frame del VisualGate e misura localmente
+  sorriso, contrazione sopracciglia, sguardo verso il basso e posa grezza della
+  testa. Baseline, mediana, isteresi e persistenza evitano reazioni al singolo frame.
+- Il recettore profila solo Stefano dopo un match SFace recente. Non salva immagini,
+  non chiama LLM, non crea memorie e non modifica ancora tono o Initiative.
+- Redis conserva lo snapshot effimero in `euri:social:latest`, una baseline numerica
+  campionata in `euri:social:baseline` e le transizioni a bassa salienza nel Pulse.
+- `scripts/audit_social_perception.py` rende verificabili vita del recettore,
+  distribuzioni numeriche, stati e transizioni senza rileggere alcuna immagine.
+- Gemma multimodale resta una Fase 2: uso occasionale in pausa con un frame volatile
+  e contesto dialogico, mai scansione continua. Il flag predisposto e' spento.
 
 ## Identita' ospite e conferma differita — 2026-07-20
 

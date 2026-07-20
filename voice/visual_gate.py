@@ -55,7 +55,7 @@ class VisualGate:
 
     def __init__(self, camera_index: int | str | None = None, fps: float = 2.0,
                  resolution: tuple = (640, 480),
-                 face_auth=None):
+                 face_auth=None, social_perception=None):
         self._camera_index = (
             camera_index if camera_index is not None
             else getattr(config, "VISUAL_GATE_CAMERA_DEVICE", None)
@@ -63,6 +63,7 @@ class VisualGate:
         self._interval = 1.0 / fps
         self._resolution = resolution
         self._face_auth = face_auth
+        self._social_perception = social_perception
 
         self._gate_active = False          # True = processa voce
         self._last_seen: float = 0.0       # ultimo frame con faccia
@@ -75,6 +76,7 @@ class VisualGate:
 
         self._identity: str | None = None  # chi è davanti allo schermo (None = ignoto)
         self._identity_sim: float = 0.0
+        self._last_identity_positive_ts: float = 0.0
         self._owner_arrived = False        # one-shot: l'identità è DIVENTATA il proprietario
         self._last_recog_ts: float = 0.0
         self._recog_fails = 0
@@ -112,6 +114,10 @@ class VisualGate:
                     raise RuntimeError("Haar cascade non trovato")
                 self._detector_kind = "haar"
             self._running = True
+            if self._social_perception is not None:
+                # Fase 0: backend opzionale e fail-silent. Presence/identity non
+                # dipendono mai dalla percezione sociale.
+                self._social_perception.start()
             self._thread = threading.Thread(target=self._loop, daemon=True, name="visual-gate")
             self._thread.start()
             recog = "riconoscimento attivo" if (self._detector_kind == "yunet" and
@@ -125,6 +131,14 @@ class VisualGate:
 
     def stop(self):
         self._running = False
+        if self._social_perception is not None:
+            self._social_perception.stop()
+
+    def set_social_perception(self, receptor) -> None:
+        """Collega il recettore prima di `start`; presenza/identita' restano autonome."""
+        if self._running:
+            raise RuntimeError("social perception must be attached before VisualGate.start")
+        self._social_perception = receptor
 
     def is_user_present(self) -> bool:
         """True se il gate è attivo (c'è QUALCUNO, o presenza recente): processa voce."""
@@ -146,6 +160,22 @@ class VisualGate:
         """Nome della persona riconosciuta davanti allo schermo, o None se ignota."""
         with self._lock:
             return self._identity
+
+    def fresh_owner_identity(self, *, now: float | None = None) -> str | None:
+        """Owner only when a positive face match is recent enough for profiling.
+
+        Normal presence may use sticky identity across a temporary bad pose. Social
+        perception has a stricter privacy boundary: stickiness alone is not proof
+        that the current face still belongs to the owner.
+        """
+        at = time.monotonic() if now is None else float(now)
+        max_age = getattr(config, "SOCIAL_PERCEPTION_IDENTITY_MAX_AGE_S", 8)
+        with self._lock:
+            owner = getattr(config, "FACE_AUTH_OWNER", "stefano")
+            if (self._identity == owner and self._last_identity_positive_ts > 0 and
+                    at - self._last_identity_positive_ts <= max_age):
+                return owner
+            return None
 
     def is_blind(self) -> bool:
         """True se la webcam non è disponibile (fail-open): is_user_present() vale sempre True
@@ -249,6 +279,12 @@ class VisualGate:
         if face_row is None or not (self._face_auth and self._face_auth.is_enabled()):
             return
         interval = RECOG_RETRY_S if self._identity is None else RECOG_REFRESH_S
+        if self._social_perception is not None and self._identity == getattr(
+                config, "FACE_AUTH_OWNER", "stefano"):
+            # Keep the stricter social identity proof fresh without changing the
+            # sticky presence semantics used by the rest of Euri.
+            max_age = getattr(config, "SOCIAL_PERCEPTION_IDENTITY_MAX_AGE_S", 8)
+            interval = min(interval, max(1.0, float(max_age) / 2.0))
         if now - self._last_recog_ts < interval:
             return
         self._last_recog_ts = now
@@ -263,6 +299,7 @@ class VisualGate:
                     if name == getattr(config, "FACE_AUTH_OWNER", "stefano"):
                         self._owner_arrived = True
                 self._identity_sim = sim
+                self._last_identity_positive_ts = now
             elif self._identity is not None:
                 # Faccia presente ma non verificabile (profilo, luce): l'identità è
                 # sticky, ma dopo RECOG_MAX_FAILS ri-verifiche fallite non possiamo
@@ -271,6 +308,7 @@ class VisualGate:
                 if self._recog_fails >= RECOG_MAX_FAILS:
                     logger.info(f"VisualGate: identità '{self._identity}' non più verificabile → ignoto")
                     self._identity = None
+                    self._last_identity_positive_ts = 0.0
                     self._recog_fails = 0
 
     def _loop(self):
@@ -322,6 +360,7 @@ class VisualGate:
                         logger.info(f"VisualGate: '{self._identity}' non visto da "
                                     f"{IDENTITY_TIMEOUT_S/60:.0f} min → identità dimenticata")
                         self._identity = None
+                        self._last_identity_positive_ts = 0.0
                         self._recog_fails = 0
 
                 # Controlla se passare a INACTIVE
@@ -340,6 +379,13 @@ class VisualGate:
             # Riconoscimento fuori dal lock del frame-state (fa inference SFace)
             if face_detected:
                 self._update_identity(frame, face_row, time.monotonic())
+                if self._social_perception is not None:
+                    self._social_perception.process_frame(
+                        frame,
+                        self.fresh_owner_identity(),
+                        monotonic_at=time.monotonic(),
+                        observed_at=time.time(),
+                    )
 
             elapsed = time.monotonic() - t_start
             time.sleep(max(0.0, self._interval - elapsed))

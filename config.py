@@ -387,6 +387,25 @@ FACE_DETECT_MODEL = str(Path.home() / "euri" / "models" / "face_detection_yunet_
 FACE_RECOG_MODEL = str(Path.home() / "euri" / "models" / "face_recognition_sface_2021dec.onnx")
 FACEPRINT_DIR = str(Path.home() / "euri" / "models" / "faceprints")
 
+# Percezione sociale visiva - Fase 0 osservativa. MediaPipe legge dagli stessi
+# frame del VisualGate e produce solo segnali descrittivi stabilizzati. Nessun LLM,
+# nessuna memoria e nessun effetto su tono/Initiative. Il modello resta locale.
+SOCIAL_PERCEPTION_ENABLED = True
+SOCIAL_PERCEPTION_MODEL = str(MODELS_DIR / "face_landmarker.task")
+SOCIAL_PERCEPTION_FPS = 2.0
+SOCIAL_PERCEPTION_REFRESH_S = 2.0
+SOCIAL_PERCEPTION_CALIBRATION_SAMPLES = 12
+SOCIAL_PERCEPTION_WINDOW_SAMPLES = 6
+SOCIAL_PERCEPTION_STABILITY_SAMPLES = 4
+SOCIAL_PERCEPTION_IDENTITY_MAX_AGE_S = 8
+SOCIAL_PERCEPTION_LATEST_TTL_S = 30
+SOCIAL_PERCEPTION_BASELINE_INTERVAL_S = 60
+# Preparato ma spento: abilitarlo cambierebbe la versione del Cognitive Present
+# e potrebbe quindi influire indirettamente sulle decisioni asincrone.
+SOCIAL_PERCEPTION_PRESENT_ENABLED = False
+# Futuro interprete occasionale Gemma4 Vision in idle. Non implementato in Fase 0.
+SOCIAL_PERCEPTION_MULTIMODAL_ENABLED = False
+
 # Propagazione di provenienza (invariante A della primitiva cognitiva).
 # Un nodo derivato (consolidated_from) la cui fondamenta è caduta — genitori
 # superseded/spariti/da-verificare — viene tenuto SOSPETTO: provenance_stale (down-rank

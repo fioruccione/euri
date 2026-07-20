@@ -94,6 +94,12 @@ def run():
     ok.append(check("one-shot owner_arrived", gate.consume_owner_arrived()))
     ok.append(check("one-shot consumato", not gate.consume_owner_arrived()))
     ok.append(check("present_identity", gate.present_identity() == "stefano"))
+    ok.append(check("owner fresco abilita recettore sociale",
+                    gate.fresh_owner_identity(now=time.monotonic()) == "stefano"))
+    ok.append(check("identita sticky vecchia non autorizza profilazione",
+                    gate.fresh_owner_identity(
+                        now=time.monotonic() + config.SOCIAL_PERCEPTION_IDENTITY_MAX_AGE_S + 1
+                    ) is None))
 
     # identità sticky: una verifica fallita non la fa cadere...
     now = time.monotonic()

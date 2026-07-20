@@ -1,6 +1,6 @@
 # Percezione sociale visiva di Euri
 
-**Stato: intenzione progettuale salvata il 20/07/2026. NON implementata e NON attiva.**
+**Stato: Fase 0 implementata il 20/07/2026; attiva dal prossimo riavvio, solo osservativa.**
 
 ## Intenzione
 
@@ -52,6 +52,14 @@ emotivo dipende da persona e contesto e non ha una corrispondenza univoca.
 6. Il livello cognitivo decide se il segnale modifica il comportamento. Nessuna
    frase e' cablata nel recettore e nessuna singola osservazione autorizza il TTS.
 
+La Fase 0 implementata usa gli stessi frame del VisualGate a 2 fps, esclusivamente
+dopo un riconoscimento recente di Stefano. MediaPipe riduce i blendshape a tre
+segnali (`smile`, `brow_contraction`, `gaze_down`) e conserva orientamento grezzo
+della testa. Il dato corrente vive in `euri:social:latest` per 30 secondi; un punto
+numerico al minuto alimenta `euri:social:baseline` per l'audit. Le sole transizioni
+persistenti entrano in `euri:pulse` con salienza bassa. Nessuna immagine e nessuna
+memoria cognitiva vengono scritte.
+
 Esempio di stato transitorio, non di memoria:
 
 ```text
@@ -96,6 +104,14 @@ non **che cosa considera vero**.
 - Consentire al modello di adattare brevita', tono o richiesta di chiarimento.
 - Rivalidare lo snapshot immediatamente prima di ogni eventuale efferenza.
 
+Un eventuale interprete multimodale Gemma appartiene a questa fase, non al sensore.
+Non deve analizzare continuamente la webcam: puo' ricevere un solo frame volatile
+durante una pausa reale o per chiarire un evento ambiguo, insieme agli ultimi turni
+e ai segnali stabilizzati. L'output deve separare osservazioni e ipotesi con relativa
+confidenza; non puo' produrre verita' fattuali o memorie. Il flag
+`SOCIAL_PERCEPTION_MULTIMODAL_ENABLED` e' predisposto ma resta spento e il consumer
+non e' ancora implementato.
+
 ### Fase 3 - Calibrazione personale
 
 - Apprendere soltanto dalle correzioni esplicite dell'utente quali segnali sono utili.
@@ -116,11 +132,23 @@ non **che cosa considera vero**.
 
 ## Criterio per riprendere il lavoro
 
-La prima implementazione deve fermarsi alla Fase 0 e includere test deterministici
+La prima implementazione si ferma alla Fase 0 e include test deterministici
 su smoothing, TTL, transizioni, cambio identita' e assenza di persistenza delle
 immagini. Solo dati reali raccolti con la webcam di Stefano possono autorizzare la
 Fase 1; la Fase 2 richiede inoltre esempi annotati da Stefano per distinguere almeno
 concentrazione, indisponibilita' e riscontro positivo.
+
+Installazione del modello locale ufficiale:
+
+```bash
+./venv/bin/python scripts/install_social_perception_model.py
+```
+
+Audit read-only dopo il riavvio:
+
+```bash
+./venv/bin/python scripts/audit_social_perception.py
+```
 
 Riferimenti tecnici iniziali:
 

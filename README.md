@@ -100,6 +100,12 @@ Euri può ora **manipolare file locali** tramite comandi vocali. Genera script P
 ### 6. Visione Artificiale ⭐ Nuovo in V2.1
 Euri può analizzare immagini locali usando **Gemma 4 Vision** (multimodale), senza nessun servizio esterno. Basta mettere un'immagine nella cartella dati e chiedere: *"Analizza la foto"*.
 
+Il VisualGate include inoltre una **percezione sociale Fase 0** locale e osservativa:
+MediaPipe misura pochi movimenti facciali stabilizzati e la posa della testa sugli
+stessi frame usati per presenza e identita'. Non assegna emozioni, non salva immagini,
+non chiama l'LLM e non modifica ancora il comportamento di Euri. Specifica e percorso
+di attivazione progressiva sono in `SPEC_SOCIAL_PERCEPTION.md`.
+
 ### 7. Control Room (Streamlit UI)
 Un'interfaccia web leggera (`ui/app.py`) per:
 - Monitorare la telemetria dei classificatori (AdaptiveClassifier sospeso — sezione disponibile ma non aggiornata).
@@ -122,7 +128,7 @@ Un'interfaccia web leggera (`ui/app.py`) per:
 | Embedding | sentence-transformers `intfloat/multilingual-e5-large` (1024-dim, asimmetrico query/passage) |
 | Classificatore Veloce | AdaptiveClassifier V2 (plasticità ancorata) — in ricostruzione, Fase −1 harvest (vedi sezione 1) |
 | Web search | ddgs (DuckDuckGo, no API key) + beautifulsoup4 |
-| Gate visivo | OpenCV Haar cascade (webcam, 2fps) |
+| Gate visivo | OpenCV YuNet + SFace (webcam, 2fps), MediaPipe Face Landmarker osservativo |
 | CodeRunner / Sandbox | subprocess isolato + AST SecurityScanner |
 
 ---

@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-07-20 - Percezione sociale visiva Fase 0
+
+- Il VisualGate riusa la propria webcam per estrarre localmente pochi blendshape e
+  la posa della testa tramite MediaPipe, senza seconda acquisizione e senza immagini
+  persistenti. Il recettore opera solo dopo un riconoscimento recente di Stefano.
+- Baseline personale di sessione, finestra mediana, isteresi e persistenza producono
+  segnali descrittivi e transizioni, non etichette emotive. Redis conserva un latest
+  con TTL 30 secondi e una baseline numerica; il Pulse riceve solo cambi stabili.
+- La Fase 0 non chiama Gemma, non scrive memorie e non cambia tono, Initiative o TTS.
+  L'eventuale interprete multimodale occasionale in idle resta esplicitamente spento.
+- Aggiunto `scripts/audit_social_perception.py` per controllare in sola lettura stato,
+  baseline e transizioni dopo il riavvio.
+
 ## 2026-07-20 - Intenzione per la percezione sociale visiva
 
 - Documentata in `SPEC_SOCIAL_PERCEPTION.md` la futura estensione del VisualGate:

@@ -54,8 +54,10 @@ matplotlib>=3.8
 reportlab>=4.0
 tabulate>=0.9
 
-# Vision / face gate (YuNet + SFace richiedono opencv-contrib)
-opencv-contrib-python-headless>=4.8
+# Vision / face gate + percezione sociale locale. MediaPipe richiede il pacchetto
+# opencv-contrib non-headless; non installare anche la variante headless nello stesso venv.
+opencv-contrib-python>=5.0,<5.1
+mediapipe>=0.10.35,<0.11
 
 # Diagnostics / experiments
 scikit-learn>=1.4

@@ -23,6 +23,7 @@ test_memory_outbox.py
 test_reaction_briefing.py
 test_reaction_verdict.py
 test_save_service_merge_guard.py
+test_social_perception.py
 test_tension.py
 test_temporal_context.py
 test_utterance_pragmatics.py
