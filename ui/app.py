@@ -1206,7 +1206,8 @@ with main_col:
             st.caption(
                 "Servono 4 scatti con postura e angolazioni diverse. "
                 "Un solo volto per scatto. Usa la fotocamera del dispositivo da cui apri "
-                "questa pagina (non entra in conflitto con la webcam del daemon)."
+                "questa pagina. Su Linux il browser e il VisualGate possono contendersi "
+                "la stessa webcam."
             )
 
             new_name = st.text_input("Nome (minuscolo, senza spazi)", key="face_enroll_name").strip().lower()
@@ -1219,6 +1220,19 @@ with main_col:
                 st.session_state.face_enroll_name_active = new_name
 
             if new_name and consent:
+                try:
+                    enrollment_social = json.loads(r.get("euri:social:latest") or "{}")
+                except (TypeError, ValueError):
+                    enrollment_social = {}
+                enrollment_social_age = _time.time() - float(
+                    enrollment_social.get("observed_at", 0.0) or 0.0
+                )
+                if enrollment_social_age <= config.SOCIAL_PERCEPTION_LATEST_TTL_S:
+                    st.warning(
+                        "Il VisualGate sta usando la webcam. Se l'anteprima non compare, "
+                        "arresta temporaneamente il Voice Daemon, ricarica questa pagina "
+                        "e completa i quattro scatti; poi riavvia Euri."
+                    )
                 pose_labels = (
                     "posizione abituale",
                     "seduto diritto",
