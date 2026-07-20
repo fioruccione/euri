@@ -22,7 +22,20 @@ from loguru import logger
 
 
 FEATURES = ("smile", "brow_contraction", "gaze_down")
-AUXILIARY_METRICS = ("head_pitch_deg", "head_yaw_deg")
+AUXILIARY_METRICS = (
+    "head_pitch_deg",
+    "head_yaw_deg",
+    "head_roll_deg",
+    "raw_smile_left",
+    "raw_smile_right",
+    "raw_brow_down_left",
+    "raw_brow_down_right",
+    "raw_brow_inner_up",
+    "raw_eye_down_left",
+    "raw_eye_down_right",
+    "raw_eye_up_left",
+    "raw_eye_up_right",
+)
 
 
 def _clamp(value: Any, lo: float = 0.0, hi: float = 1.0) -> float:
@@ -274,17 +287,19 @@ class MediaPipeFaceBackend:
         return (a + b) / 2.0, confidence
 
     @staticmethod
-    def _head_pose(result: Any) -> tuple[float, float]:
+    def _head_pose(result: Any) -> tuple[float, float, float]:
         matrices = getattr(result, "facial_transformation_matrixes", None) or []
         if not matrices:
-            return 0.0, 0.0
+            return 0.0, 0.0, 0.0
         try:
             matrix = np.asarray(matrices[0], dtype=float).reshape(4, 4)
-            pitch = math.degrees(math.atan2(-matrix[2, 0], math.hypot(matrix[0, 0], matrix[1, 0])))
-            yaw = math.degrees(math.atan2(matrix[1, 0], matrix[0, 0]))
-            return float(pitch), float(yaw)
+            horizontal = math.hypot(matrix[0, 0], matrix[1, 0])
+            pitch = math.degrees(math.atan2(matrix[2, 1], matrix[2, 2]))
+            yaw = math.degrees(math.atan2(-matrix[2, 0], horizontal))
+            roll = math.degrees(math.atan2(matrix[1, 0], matrix[0, 0]))
+            return float(pitch), float(yaw), float(roll)
         except Exception:
-            return 0.0, 0.0
+            return 0.0, 0.0, 0.0
 
     def extract(self, frame_bgr: np.ndarray, timestamp_ms: int) -> tuple[dict[str, float], dict[str, float]] | None:
         if self._landmarker is None or self._mp is None:
@@ -305,7 +320,7 @@ class MediaPipeFaceBackend:
         smile, smile_conf = self._pair(scores, "mouthSmileLeft", "mouthSmileRight")
         brow, brow_conf = self._pair(scores, "browDownLeft", "browDownRight")
         gaze, gaze_conf = self._pair(scores, "eyeLookDownLeft", "eyeLookDownRight")
-        pitch, yaw = self._head_pose(result)
+        pitch, yaw, roll = self._head_pose(result)
         return (
             {
                 "smile": smile,
@@ -313,6 +328,18 @@ class MediaPipeFaceBackend:
                 "gaze_down": gaze,
                 "head_pitch_deg": pitch,
                 "head_yaw_deg": yaw,
+                "head_roll_deg": roll,
+                # Phase-0 diagnostics: selected raw coefficients let the guided
+                # audit calibrate this camera/person before changing thresholds.
+                "raw_smile_left": scores.get("mouthSmileLeft", 0.0),
+                "raw_smile_right": scores.get("mouthSmileRight", 0.0),
+                "raw_brow_down_left": scores.get("browDownLeft", 0.0),
+                "raw_brow_down_right": scores.get("browDownRight", 0.0),
+                "raw_brow_inner_up": scores.get("browInnerUp", 0.0),
+                "raw_eye_down_left": scores.get("eyeLookDownLeft", 0.0),
+                "raw_eye_down_right": scores.get("eyeLookDownRight", 0.0),
+                "raw_eye_up_left": scores.get("eyeLookUpLeft", 0.0),
+                "raw_eye_up_right": scores.get("eyeLookUpRight", 0.0),
             },
             {
                 "smile": smile_conf,

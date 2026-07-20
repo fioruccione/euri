@@ -13,6 +13,9 @@
   distribuzioni numeriche, stati e transizioni senza rileggere alcuna immagine.
 - Gemma multimodale resta una Fase 2: uso occasionale in pausa con un frame volatile
   e contesto dialogico, mai scansione continua. Il flag predisposto e' spento.
+- Primo protocollo guidato: sorriso lieve e marcato distinti; brow/gaze non validati.
+  La posa MediaPipe ora usa assi Euler corretti e conserva coefficienti grezzi
+  selezionati per il prossimo audit, senza trasformarli in stati o azioni.
 
 ## Identita' ospite e conferma differita — 2026-07-20
 

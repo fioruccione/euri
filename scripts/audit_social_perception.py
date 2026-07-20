@@ -69,9 +69,11 @@ def main() -> int:
         live = age <= getattr(config, "SOCIAL_PERCEPTION_LATEST_TTL_S", 30)
         print(
             f"Recettore: {'vivo' if live else 'dato scaduto'} | ultimo {_when(observed_at)} | "
-            f"eta' {age:.1f}s | calibrato: {'si' if latest.get('calibrated') else 'no'}"
+            f"eta' {age:.1f}s | calibrato: {'si' if latest.get('calibrated') else 'no'} | "
+            f"campioni sessione: {latest.get('sample_count', 0)}"
         )
         print(f"Stato attuale: {json.dumps(latest.get('states', {}), ensure_ascii=False)}")
+        print(f"Baseline sessione: {json.dumps(latest.get('baselines', {}), ensure_ascii=False)}")
     else:
         print("Recettore: nessun dato corrente (non avviato, volto owner assente o backend non disponibile)")
 

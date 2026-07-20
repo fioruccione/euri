@@ -12,6 +12,9 @@
   L'eventuale interprete multimodale occasionale in idle resta esplicitamente spento.
 - Aggiunto `scripts/audit_social_perception.py` per controllare in sola lettura stato,
   baseline e transizioni dopo il riavvio.
+- Il primo protocollo guidato ha validato sorriso lieve/marcato ma non sopracciglia
+  e sguardo. Corretta la decomposizione pitch/yaw/roll della matrice MediaPipe e
+  aggiunti coefficienti grezzi selezionati per calibrare senza abbassare soglie alla cieca.
 
 ## 2026-07-20 - Intenzione per la percezione sociale visiva
 

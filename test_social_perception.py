@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Unit tests for Phase-0 social perception; no camera, Redis or MediaPipe."""
 import sys
+import math
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from voice.social_perception import SocialPerception, SocialSignalState
+from voice.social_perception import MediaPipeFaceBackend, SocialPerception, SocialSignalState
 
 
 def check(name, condition, detail=""):
@@ -70,12 +72,33 @@ def run():
     serialized = pose.to_dict()
     ok.append(check(
         "posa testa resta misura descrittiva",
-        pose.auxiliary_metrics == {"head_pitch_deg": 18.5, "head_yaw_deg": -7.0}
+        pose.auxiliary_metrics["head_pitch_deg"] == 18.5
+        and pose.auxiliary_metrics["head_yaw_deg"] == -7.0
         and serialized["auxiliary_metrics"]["head_pitch_deg"] == 18.5,
     ))
     ok.append(check(
         "snapshot non contiene immagini",
         not any("image" in key or "frame" in key for key in serialized),
+    ))
+
+    pitch_rad, yaw_rad, roll_rad = map(math.radians, (20.0, 15.0, 10.0))
+    cx, sx = math.cos(pitch_rad), math.sin(pitch_rad)
+    cy, sy = math.cos(yaw_rad), math.sin(yaw_rad)
+    cz, sz = math.cos(roll_rad), math.sin(roll_rad)
+    rotation = np.array([
+        [cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx, 0.0],
+        [sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx, 0.0],
+        [-sy, cy * sx, cy * cx, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ])
+    measured_pose = MediaPipeFaceBackend._head_pose(
+        SimpleNamespace(facial_transformation_matrixes=[rotation])
+    )
+    ok.append(check(
+        "assi posa testa nominati correttamente",
+        all(abs(got - expected) < 0.01
+            for got, expected in zip(measured_pose, (20.0, 15.0, 10.0))),
+        detail=str(tuple(round(value, 2) for value in measured_pose)),
     ))
 
     spike = state.observe("stefano", sample(smile=0.9)[0], sample()[1], observed_at=3)
