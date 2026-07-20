@@ -15,6 +15,10 @@
 - Il primo protocollo guidato ha validato sorriso lieve/marcato ma non sopracciglia
   e sguardo. Corretta la decomposizione pitch/yaw/roll della matrice MediaPipe e
   aggiunti coefficienti grezzi selezionati per calibrare senza abbassare soglie alla cieca.
+- Il protocollo schermo/webcam/tastiera ha mostrato la convenzione effettiva del
+  modello: sulla postazione reale `eyeLookUp` cresce guardando sotto la webcam
+  (`~0.45` sulla tastiera contro `~0.05-0.07` su schermo/webcam). `gaze_down` usa ora
+  questa coppia con isteresi 0.25/0.15; i coefficienti originali restano nell'audit.
 
 ## 2026-07-20 - Intenzione per la percezione sociale visiva
 

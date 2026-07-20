@@ -16,6 +16,10 @@
 - Primo protocollo guidato: sorriso lieve e marcato distinti; brow/gaze non validati.
   La posa MediaPipe ora usa assi Euler corretti e conserva coefficienti grezzi
   selezionati per il prossimo audit, senza trasformarli in stati o azioni.
+- Secondo protocollo controllato: screen pitch `9.5°`, camera `5.8°`, keyboard
+  `17.6°`; `eyeLookUp` vale circa `0.45` sulla tastiera contro `0.05-0.07` sul piano
+  schermo/webcam. La direzione semantica e' invertita rispetto al nome blendshape:
+  `gaze_down` e' ora derivato dalla coppia empiricamente corretta (gate 0.25/0.15).
 
 ## Identita' ospite e conferma differita — 2026-07-20
 

@@ -117,7 +117,16 @@ def run():
                     falling2.states["smile"] == "neutral" and
                     falling2.transitions[0].previous == "marked"))
 
-    reset = state.observe("altra_persona", sample()[0], sample()[1], observed_at=7)
+    gaze1 = state.observe("stefano", sample(gaze=0.4)[0], sample()[1], observed_at=7)
+    gaze2 = state.observe("stefano", sample(gaze=0.4)[0], sample()[1], observed_at=8)
+    ok.append(check(
+        "sguardo basso persistente usa soglia calibrata",
+        not gaze1.transitions
+        and gaze2.states["gaze_down"] == "present"
+        and gaze2.transitions[0].feature == "gaze_down",
+    ))
+
+    reset = state.observe("altra_persona", sample()[0], sample()[1], observed_at=9)
     ok.append(check("cambio identita resetta calibrazione",
                     reset.actor_id == "altra_persona" and
                     reset.sample_count == 1 and not reset.calibrated))

@@ -146,9 +146,9 @@ class SocialSignalState:
                 return "present"
             return "present" if value >= 0.42 else "neutral"
         if feature == "gaze_down":
-            if current == "present" and value >= 0.30:
+            if current == "present" and value >= 0.15:
                 return "present"
-            return "present" if value >= 0.50 else "neutral"
+            return "present" if value >= 0.25 else "neutral"
         return "neutral"
 
     def observe(
@@ -319,7 +319,12 @@ class MediaPipeFaceBackend:
         }
         smile, smile_conf = self._pair(scores, "mouthSmileLeft", "mouthSmileRight")
         brow, brow_conf = self._pair(scores, "browDownLeft", "browDownRight")
-        gaze, gaze_conf = self._pair(scores, "eyeLookDownLeft", "eyeLookDownRight")
+        # MediaPipe's blendshape coordinates describe the modeled eyeball, not the
+        # observer's semantic direction. On the installed camera/model pair the
+        # controlled screen/camera/keyboard protocol showed that eyeLookUp rises
+        # monotonically when Stefano looks below the camera. Preserve both raw pairs
+        # below, but drive the descriptive state from the empirically mapped pair.
+        gaze, gaze_conf = self._pair(scores, "eyeLookUpLeft", "eyeLookUpRight")
         pitch, yaw, roll = self._head_pose(result)
         return (
             {
