@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-07-20 - Interlocutori sconosciuti in quarantena epistemica
+
+- SpeakerAuth restituisce ora `VERIFIED`, `REJECTED` o `INDETERMINATE`: una clip
+  breve o un errore del recettore non equivalgono piu' automaticamente a Stefano.
+  Gli esiti incerti vengono fusi con volto del proprietario o voce autenticata
+  recente; fuori da queste condizioni restano sconosciuti.
+- Una voce sconosciuta che chiama esplicitamente Euri entra in un percorso ospite
+  isolato: niente memoria privata, RAG, intenti operativi, tool, agenda o history
+  condivisa. Puo' conversare in generale, ma non agire per conto di Stefano.
+- Le sole affermazioni durevoli dell'ospite diventano `guest_claim` in una coda Redis
+  limitata e con TTL 30 giorni, esterna a RediSearch, Dream e consolidamento. Quando
+  Stefano torna autenticato, Euri chiede un verdetto; solo il si' crea una memoria
+  fattuale che conserva `origin_actor_id=unknown` e `confirmed_by_actor_id=stefano`.
+- Un rifiuto scarta il claim; "piu' tardi" lo lascia in quarantena. Nessun assenso
+  pronunciato dal percorso ospite puo' confermare una richiesta rivolta a Stefano.
+
 ## 2026-07-20 - Provenienza continua senza intreccio dei ruoli
 
 - Il passive learner non accetta piu' fatti sostenuti da turni dell'assistente:

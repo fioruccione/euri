@@ -1,7 +1,9 @@
 """Regressioni wake guard, activity timing e provenienza passive learner."""
 import sys
 import threading
+import time
 import types
+from enum import Enum
 
 sys.path.insert(0, '/home/fio/Euri')
 
@@ -17,6 +19,12 @@ class _HardwareStub:
     pass
 
 
+class _SpeakerVerdict(str, Enum):
+    VERIFIED = "verified"
+    REJECTED = "rejected"
+    INDETERMINATE = "indeterminate"
+
+
 # Il test esercita helper logici via __new__: i backend audio/video non devono
 # inizializzare librerie native durante l'import del daemon.
 _stub_module("voice.audio_io", AudioCapture=_HardwareStub, play_audio=lambda *_a, **_k: None)
@@ -25,7 +33,12 @@ _stub_module("voice.stt", STT=_HardwareStub)
 _stub_module("voice.tts", TTS=_HardwareStub)
 _stub_module("voice.visual_gate", VisualGate=_HardwareStub)
 _stub_module("voice.face_auth", FaceAuth=_HardwareStub)
-_stub_module("voice.speaker_auth", SpeakerAuth=_HardwareStub, ENROLL_UTTERANCES=3)
+_stub_module(
+    "voice.speaker_auth",
+    SpeakerAuth=_HardwareStub,
+    SpeakerVerdict=_SpeakerVerdict,
+    ENROLL_UTTERANCES=3,
+)
 
 import voice_daemon as vd
 from core.cognitive_present import CognitivePresent
@@ -97,6 +110,91 @@ def test_activity_only_after_acceptance():
     assert accepted == ("Euri, ascoltami", True)
     assert d._last_activity_ts == 1000.0 and d._last_auth_voice_ts == 1000.0
     print("OK  vuoto, garbage e fuori-finestra non rinnovano activity")
+
+
+def test_guest_turn_requires_wake_and_does_not_authenticate():
+    d = make(last_activity=100.0)
+    d.present.accept_user_turn("Euri, dimmi qualcosa", at=100.0)
+
+    assert d._accept_voice_transcript(
+        "Questa informazione non è rivolta a te.",
+        now_ts=110.0,
+        authenticated=False,
+        require_wake_word=True,
+        track_present=False,
+    ) is None
+    accepted = d._accept_voice_transcript(
+        "Euri, il lotto di oggi è 24B17.",
+        now_ts=120.0,
+        authenticated=False,
+        require_wake_word=True,
+        track_present=False,
+    )
+    assert accepted is not None
+    assert d._last_auth_voice_ts == 50.0
+    print("OK  ospite: wake obbligatoria e nessun rinnovo autenticazione")
+
+
+def test_multimodal_actor_resolution():
+    d = make()
+    d.visual_gate = type("Gate", (), {"is_owner_present": lambda _self: True})()
+    assert d._resolve_voice_actor(_SpeakerVerdict.VERIFIED) == "stefano"
+    assert d._resolve_voice_actor(_SpeakerVerdict.INDETERMINATE) == "stefano"
+    assert d._resolve_voice_actor(_SpeakerVerdict.REJECTED) == "unknown"
+
+    d.visual_gate = type("Gate", (), {"is_owner_present": lambda _self: False})()
+    assert d._resolve_voice_actor(_SpeakerVerdict.INDETERMINATE) == "unknown"
+
+    now_ts = time.time()
+    d._last_auth_voice_ts = now_ts
+    d.present.accept_user_turn("Euri, apro la conversazione", at=now_ts)
+    assert d._resolve_voice_actor(_SpeakerVerdict.INDETERMINATE) == "stefano"
+    print("OK  fusione voce/volto: indeterminato non equivale a Stefano")
+
+
+def test_owner_confirmation_promotes_guest_claim_with_provenance():
+    d = make()
+    saved = {}
+    settled = {}
+    spoken = []
+
+    class Memory:
+        def save_memory(self, content, **kwargs):
+            saved.update({"content": content, **kwargs})
+            return "memory-1"
+
+        def log_conversation(self, *_args):
+            return None
+
+    class Store:
+        def settle(self, claim_id, status, **kwargs):
+            settled.update({"id": claim_id, "status": status, **kwargs})
+
+    d.memory = Memory()
+    d.guest_claims = Store()
+    d._guest_review_cooldown_until = 0.0
+    d._pending_guest_review = vd._PendingState({
+        "id": "claim-1",
+        "claim": "Il lotto Poseidon è 24B17.",
+        "observed_at": 123.0,
+    }, timeout=300)
+    d._speak = lambda text, **_kwargs: spoken.append(text)
+
+    d._handle_pending_guest_review("Sì, confermo che è corretto.")
+
+    assert saved["source"] == "user"
+    assert saved["memory_kind"] == "semantic_fact"
+    assert saved["temporal_context"]["origin_actor_id"] == "unknown"
+    assert saved["temporal_context"]["confirmed_by_actor_id"] == "stefano"
+    assert settled == {
+        "id": "claim-1",
+        "status": "confirmed",
+        "reviewed_by": "stefano",
+        "promoted_memory_id": "memory-1",
+    }
+    assert d._pending_guest_review is None
+    assert spoken and "provenienza" in spoken[-1]
+    print("OK  conferma proprietario promuove il claim mantenendo la provenienza")
 
 
 def test_first_utterance_without_wake_does_not_open_a_session():
@@ -233,6 +331,9 @@ if __name__ == "__main__":
     test_addressed_guard()
     test_passive_weak_and_mixed_segment()
     test_activity_only_after_acceptance()
+    test_guest_turn_requires_wake_and_does_not_authenticate()
+    test_multimodal_actor_resolution()
+    test_owner_confirmation_promotes_guest_claim_with_provenance()
     test_first_utterance_without_wake_does_not_open_a_session()
     test_long_tts_lease_accepts_followup_without_wake_word()
     test_long_utterance_keeps_consent_from_speech_start()

@@ -24,7 +24,7 @@ from voice.stt import STT
 from voice.tts import TTS
 from voice.visual_gate import VisualGate
 from voice.face_auth import FaceAuth
-from voice.speaker_auth import SpeakerAuth, ENROLL_UTTERANCES
+from voice.speaker_auth import SpeakerAuth, SpeakerVerdict, ENROLL_UTTERANCES
 
 from core.pulse import pulse_emit
 from core.intent_router import (
@@ -45,6 +45,11 @@ from core.embedder import Embedder
 from core.honesty import scrub_unbacked_save_claim
 from core.act_word_check import emit_unbacked_action_commitment, scrub_unbacked_action_claim
 from core.ollama_client import chat_client
+from core.guest_claims import (
+    GuestClaimStore,
+    extract_guest_claim,
+    respond_to_guest,
+)
 from core.cognitive_present import (
     CognitivePresent,
     InteractionChannel,
@@ -134,6 +139,7 @@ class VoiceDaemon:
         self.r: redis_lib.Redis = get_client()
         self.embedder = Embedder()
         self.memory = MemoryManager(self.r, embedder=self.embedder)
+        self.guest_claims = GuestClaimStore(self.r)
         self.brain = Brain()
         Brain._shared_instance = self.brain  # Condivisa col CodeRunner
         self.brain._episode_callback = lambda summary, temporal_context: self.memory.save_memory(
@@ -173,6 +179,8 @@ class VoiceDaemon:
         self._pending_readback: _PendingState | None = None   # memoria riletta, attesa correzione/aggiunta (180s)
         self._pending_write: _PendingState | None = None  # richiesta scrittura file in attesa (timeout 120s)
         self._awaiting_reaction: _PendingState | None = None  # insight su cui Euri ha chiesto conferma, in attesa della reazione di Stefano (timeout 300s)
+        self._pending_guest_review: _PendingState | None = None  # claim ospite chiesto esplicitamente a Stefano
+        self._guest_review_cooldown_until: float = 0.0
         self._last_created_file: str | None = None  # ultimo file creato da Euri (per "aprilo")
         self._last_created_file_ts: float = 0.0  # quando — recency per disambiguare "apri il documento"
         self._last_speech_content: str = ""      # ultima risposta lunga di Euri (per "scrivilo")
@@ -287,7 +295,7 @@ class VoiceDaemon:
         """Rimuove URL e artefatti non leggibili prima del TTS."""
         return self._URL_RE.sub('', text).strip()
 
-    def _speak(self, text: str, lang: str = "it"):
+    def _speak(self, text: str, lang: str = "it", *, opens_conversation: bool = True):
         """Sintetizza e riproduce testo con interrupt listener attivo."""
         text = self._clean_for_speech(text)
         if not text:
@@ -297,7 +305,7 @@ class VoiceDaemon:
         try:
             self.present.begin_speech(
                 channel=InteractionChannel.VOICE,
-                opens_conversation=True,
+                opens_conversation=opens_conversation,
             )
             present_started = True
         except Exception as e:
@@ -1849,6 +1857,163 @@ class VoiceDaemon:
             self._teach_snapshot_content = ""
             self._speak("Ok, ho cancellato la sessione precedente.")
 
+    def _resolve_voice_actor(self, verdict: SpeakerVerdict) -> str:
+        """Fonde voce e volto senza trasformare l'incertezza in identita'."""
+        if verdict == SpeakerVerdict.VERIFIED:
+            return "stefano"
+        if verdict == SpeakerVerdict.INDETERMINATE:
+            try:
+                if self.visual_gate.is_owner_present():
+                    return "stefano"
+            except Exception:
+                pass
+            # Webcam cieca o volto temporaneamente perso: una clip breve puo'
+            # appartenere a Stefano solo dentro una conversazione appena aperta
+            # da una sua voce verificata. Fuori da questa finestra resta ospite.
+            if 0 < time.time() - self._last_auth_voice_ts <= _CONVERSATION_WINDOW_SEC:
+                try:
+                    if self.present.snapshot().conversation_open():
+                        return "stefano"
+                except Exception:
+                    pass
+        return "unknown"
+
+    def _handle_guest_turn(self, text: str, *, observed_at: float | None = None) -> None:
+        """Conversazione ospite isolata da memoria privata, intenti e strumenti."""
+        at = float(observed_at or time.time())
+
+        with self._brain_lock:
+            claim = extract_guest_claim(text)
+        quarantined = None
+        if claim:
+            quarantined = self.guest_claims.add(
+                claim,
+                original_text=text,
+                observed_at=at,
+                channel="voice",
+            )
+
+        # Senza un'identita' stabile non si presume che due turni appartengano
+        # alla stessa persona: niente history condivisa tra ospiti sconosciuti.
+        with self._brain_lock:
+            reply = respond_to_guest(text)
+        if quarantined:
+            reply = (
+                f"{reply} Terrò questa informazione separata e chiederò a Stefano "
+                "di confermarla."
+            )
+
+        self.memory.log_conversation("Ospite non identificato", text)
+        self.memory.log_conversation("Euri", reply)
+        logger.info(f"Guest mode: turno isolato — '{text[:70]}'")
+        self._speak(reply, opens_conversation=False)
+
+    def _guest_review_blocked(self) -> bool:
+        return any((
+            self._teach_recovery_mode,
+            self._teach_mode,
+            self._teach_confirm_mode,
+            self._audit_confirm_mode,
+            self._pending_todo is not None,
+            self._pending_reschedule is not None,
+            self._pending_readback is not None,
+            self._pending_write is not None,
+            self._awaiting_reaction is not None,
+        ))
+
+    def _offer_next_guest_claim(self) -> bool:
+        """Chiede a Stefano un solo verdetto per volta, mai a un ospite."""
+        if (
+            not getattr(self, "_running", True)
+            or self._pending_guest_review
+            or time.time() < self._guest_review_cooldown_until
+            or self._guest_review_blocked()
+        ):
+            return False
+        pending = self.guest_claims.pending(limit=1)
+        if not pending:
+            return False
+        claim = pending[0]
+        self._pending_guest_review = _PendingState(claim, timeout=5 * 60)
+        self._speak(
+            "Una persona non identificata mi ha riferito questa informazione: "
+            f"{claim['claim']}. È corretta?"
+        )
+        return True
+
+    _GUEST_REVIEW_YES = re.compile(
+        r"\b(s[iì]|esatto|corretto|confermo|va\s+bene|salvala|memorizzala)\b",
+        re.IGNORECASE,
+    )
+    _GUEST_REVIEW_NO = re.compile(
+        r"\b(no|falso|sbagliat[oa]|non\s+[èe]\s+corrett[oa]|scartala|eliminala)\b",
+        re.IGNORECASE,
+    )
+    _GUEST_REVIEW_LATER = re.compile(
+        r"\b(pi[uù]\s+tardi|dopo|non\s+ora|non\s+lo\s+so|da\s+verificare)\b",
+        re.IGNORECASE,
+    )
+
+    def _handle_pending_guest_review(self, text: str) -> None:
+        pending = self._pending_guest_review
+        if pending is None:
+            return
+        claim = dict(pending.data)
+        claim_id = str(claim.get("id") or "")
+
+        if self._GUEST_REVIEW_YES.search(text):
+            confirmed_at = time.time()
+            content = (
+                "Stefano conferma come corretta un'informazione riferita da un "
+                f"interlocutore non identificato: {claim.get('claim', '')}"
+            )
+            temporal_context = {
+                "schema_version": 1,
+                "asserted_at": confirmed_at,
+                "event_start": None,
+                "event_end": None,
+                "origin_actor_id": "unknown",
+                "confirmed_by_actor_id": "stefano",
+                "guest_claim_id": claim_id,
+                "guest_reported_at": claim.get("observed_at"),
+            }
+            mid = self.memory.save_memory(
+                content,
+                category="conoscenza",
+                tags=["guest_confirmed"],
+                source="user",
+                idempotent=True,
+                memory_kind="semantic_fact",
+                temporal_context=temporal_context,
+            )
+            if mid:
+                self.guest_claims.settle(
+                    claim_id,
+                    "confirmed",
+                    reviewed_by="stefano",
+                    promoted_memory_id=mid,
+                )
+                reply = "Confermata. Ora è in memoria con la provenienza dell'ospite."
+            else:
+                reply = "Non sono riuscita a salvarla. La lascio in attesa."
+            self._pending_guest_review = None
+            self._guest_review_cooldown_until = time.time() + 5 * 60
+        elif self._GUEST_REVIEW_NO.search(text):
+            self.guest_claims.settle(claim_id, "rejected", reviewed_by="stefano")
+            self._pending_guest_review = None
+            self._guest_review_cooldown_until = time.time() + 5 * 60
+            reply = "Scartata. Non entrerà nella memoria."
+        elif self._GUEST_REVIEW_LATER.search(text):
+            self._pending_guest_review = None
+            self._guest_review_cooldown_until = time.time() + 30 * 60
+            reply = "Va bene, resta in quarantena e te la richiederò più avanti."
+        else:
+            reply = "Per questa verifica dimmi sì, no oppure più tardi."
+
+        self.memory.log_conversation("Stefano", text)
+        self.memory.log_conversation("Euri", reply)
+        self._speak(reply)
+
     def _dispatch(
         self,
         text: str,
@@ -1858,6 +2023,14 @@ class VoiceDaemon:
         observed_at: float | None = None,
     ):
         """Smista il testo trascritto all'handler corretto."""
+        if self._pending_guest_review:
+            if self._pending_guest_review.expired():
+                self._pending_guest_review = None
+                logger.debug("Guest review pending scaduta; claim ancora in quarantena")
+            else:
+                self._handle_pending_guest_review(text)
+                return
+
         if self.memory.is_silent_mode():
             # Anche in silenzio: ripristino e shutdown passano sempre
             _intent_check, _ = classify(text)
@@ -2705,6 +2878,8 @@ class VoiceDaemon:
                         self._teach_snapshot_content = snapshot
                         self._teach_recovery_mode = True
                         self._speak("Ho trovato una sessione di insegnamento non completata. Vuoi riprendere da dove eravamo?")
+                    else:
+                        self._offer_next_guest_claim()
 
                 # Salta se proactive_agent sta parlando
                 if self.r.exists("euri:audio:lock"):
@@ -2755,13 +2930,15 @@ class VoiceDaemon:
                     self._voice_input_inflight.clear()
                     continue
 
-                # Verifica identità vocale (prima di STT per risparmiare CPU)
-                # In modalità interprete le voci esterne sono attese — skip auth
-                if not self._translate_bidir and not self.speaker_auth.verify(segment):
-                    logger.info("SpeakerAuth: voce non riconosciuta — comando ignorato")
-                    self.vad.reset()
-                    self._voice_input_inflight.clear()
-                    continue
+                # La voce produce un verdetto a tre stati. Anche una voce rifiutata
+                # viene trascritta: potra' parlare soltanto nel percorso ospite,
+                # senza RAG privato, tool o memoria diretta. In modalita' interprete
+                # le voci esterne sono previste e restano nel solo flusso traduzione.
+                speaker_verdict = (
+                    SpeakerVerdict.INDETERMINATE
+                    if self._translate_bidir
+                    else self.speaker_auth.classify(segment)
+                )
 
                 # Trascrizione. Il consenso conversazionale appartiene all'inizio
                 # fisico del turno, non alla fine di VAD+STT: un intervento lungo
@@ -2777,9 +2954,22 @@ class VoiceDaemon:
                 logger.info(f"[TIMING] STT: {(time.perf_counter()-_t_stt)*1000:.0f}ms")
                 self.vad.reset()
 
+                actor_id = (
+                    "interpreter"
+                    if self._translate_bidir
+                    else self._resolve_voice_actor(speaker_verdict)
+                )
+                if actor_id == "unknown":
+                    logger.info(
+                        "SpeakerAuth: interlocutore non verificato — percorso ospite isolato"
+                    )
+
                 accepted = self._accept_voice_transcript(
                     text,
                     addressed_at=utterance_started_at,
+                    authenticated=actor_id == "stefano",
+                    require_wake_word=actor_id == "unknown",
+                    track_present=actor_id == "stefano",
                 )
                 if accepted is None:
                     self._voice_input_inflight.clear()
@@ -2793,12 +2983,17 @@ class VoiceDaemon:
                 # Dispatch. Se un handler termina senza TTS, chiude comunque la fase
                 # PROCESSING; gli handler che parlano la chiudono via finish_speech.
                 try:
-                    self._dispatch(
-                        text,
-                        detected_lang=detected_lang,
-                        trusted=has_wake_word,
-                        observed_at=utterance_started_at,
-                    )
+                    if actor_id == "unknown":
+                        self._handle_guest_turn(text, observed_at=utterance_started_at)
+                    else:
+                        self._dispatch(
+                            text,
+                            detected_lang=detected_lang,
+                            trusted=has_wake_word,
+                            observed_at=utterance_started_at,
+                        )
+                        if actor_id == "stefano":
+                            self._offer_next_guest_claim()
                 finally:
                     try:
                         if self.present.snapshot().phase is InteractionPhase.PROCESSING:
@@ -2869,6 +3064,9 @@ class VoiceDaemon:
         now_ts: float | None = None,
         *,
         addressed_at: float | None = None,
+        authenticated: bool = True,
+        require_wake_word: bool = False,
+        track_present: bool = True,
     ) -> tuple[str, bool] | None:
         """Valida consenso e STT; solo una voce accettata rinnova l'attività.
 
@@ -2905,7 +3103,10 @@ class VoiceDaemon:
             conversation_open = self.present.snapshot(now=guard_at).conversation_open(guard_at)
         except Exception:
             conversation_open = False
-        if not self._utterance_is_addressed(has_wake_word, since_last, conversation_open):
+        addressed = self._utterance_is_addressed(has_wake_word, since_last, conversation_open)
+        if require_wake_word:
+            addressed = has_wake_word
+        if not addressed:
             elapsed = f"{since_last:.0f}s" if has_previous_activity else "nessun turno precedente"
             logger.debug(
                 "Wake word assente e inizio turno fuori finestra "
@@ -2914,16 +3115,17 @@ class VoiceDaemon:
             return None
 
         self._last_activity_ts = now_ts
-        if not self._translate_bidir:
+        if authenticated and not self._translate_bidir:
             self._last_auth_voice_ts = now_ts
-        try:
-            self.present.accept_user_turn(
-                text,
-                channel=InteractionChannel.VOICE,
-                at=now_ts,
-            )
-        except Exception as e:
-            logger.debug(f"Cognitive Present: accept_user_turn ignorato: {e}")
+        if track_present:
+            try:
+                self.present.accept_user_turn(
+                    text,
+                    channel=InteractionChannel.VOICE,
+                    at=now_ts,
+                )
+            except Exception as e:
+                logger.debug(f"Cognitive Present: accept_user_turn ignorato: {e}")
         return text, has_wake_word
 
     def _mobile_worker(self):

@@ -11,6 +11,10 @@ DEMO_MODE = False
 # In DEMO_MODE, _build_context inietta solo memorie con queste source — le altre restano in Redis
 # ma non compaiono nel contesto LLM durante la demo.
 DEMO_CONTEXT_SOURCES: list[str] = ["campus"]
+# Le informazioni dette da voci non verificate restano fuori dalla memoria
+# cognitiva finche' Stefano non le conferma. La coda e' persistente ma limitata.
+GUEST_CLAIM_TTL_DAYS = 30
+GUEST_CLAIM_MAX_PENDING = 100
 MODELS_DIR = BASE_DIR / "models"
 TTS_MODEL_DIR = MODELS_DIR / "tts" / "vits-piper-it_IT-paola-medium"
 TTS_MODEL_DIR_EN = MODELS_DIR / "tts" / "vits-piper-en_US-lessac-medium"

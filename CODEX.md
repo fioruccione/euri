@@ -1,5 +1,26 @@
 # Handoff Euri — 2026-07-14
 
+## Identita' ospite e conferma differita — 2026-07-20
+
+- Il daemon usa un verdetto vocale tri-state. `INDETERMINATE` e' assenza di prova,
+  non autenticazione: il volto owner o una conversazione aperta da voce verificata
+  possono risolvere una clip breve; altrimenti l'attore e' `unknown`.
+- Un attore `unknown` deve pronunciare la wake word e non attraversa `_dispatch`:
+  `respond_to_guest` non riceve SYSTEM_PROMPT privato, RAG, history di Stefano o tool.
+  Anche la history tra ospiti ignoti e' vietata, per non assumere che siano la stessa
+  persona. Il ring conversazionale usa il ruolo `Ospite non identificato`.
+- `core/guest_claims.py` e' il confine intenzionale da preservare: i claim sono
+  documenti Redis separati sotto `euri:guest_claim:*`, indicizzati solo dalla coda
+  bounded `euri:guest_claims:pending`, con TTL 30 giorni. Non devono diventare nodi
+  `euri:memory:*` prima della conferma owner.
+- La promozione scrive una memoria esplicita con testo che distingue chi ha riferito
+  il dato da chi lo ha confermato e conserva nei metadati `origin_actor_id`,
+  `confirmed_by_actor_id`, `guest_claim_id` e `guest_reported_at`. Rifiuto e rinvio
+  non producono memoria cognitiva.
+- Limite consapevole: mobile e Silent Chat restano canali assunti come autenticati
+  dall'accesso all'interfaccia e continuano a rappresentare Stefano. Il tri-state
+  introdotto qui riguarda il microfono locale.
+
 ## Provenienza della memoria continua — 2026-07-20
 
 - Invariante: una memoria passiva `semantic_fact` deve essere sostenuta da

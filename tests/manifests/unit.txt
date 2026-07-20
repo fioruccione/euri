@@ -12,6 +12,7 @@ test_executor_routing.py
 test_face_gate.py
 test_focus_replay.py
 test_giada_consolidation.py
+test_guest_identity.py
 test_history_provenance.py
 test_hardware_interoception.py
 test_identifier_extraction.py

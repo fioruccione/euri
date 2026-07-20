@@ -11,6 +11,7 @@ Flusso:
 Dipendenze: resemblyzer (installa anche librosa, numba)
 """
 import numpy as np
+from enum import Enum
 from pathlib import Path
 from loguru import logger
 import config
@@ -19,6 +20,19 @@ import config
 VOICEPRINT_PATH = Path.home() / "euri" / "models" / "voiceprint.npy"
 SIMILARITY_THRESHOLD = 0.65   # cosine similarity minima — abbassa se troppe false reject
 ENROLL_UTTERANCES = 3         # frasi da registrare per l'enrollment
+
+
+class SpeakerVerdict(str, Enum):
+    """Esito epistemico della verifica vocale.
+
+    INDETERMINATE non significa autenticato: indica che il recettore vocale non
+    dispone di abbastanza evidenza e deve essere fuso con un altro segnale
+    (faccia del proprietario, canale autenticato) oppure instradato come ospite.
+    """
+
+    VERIFIED = "verified"
+    REJECTED = "rejected"
+    INDETERMINATE = "indeterminate"
 
 
 class SpeakerAuth:
@@ -49,24 +63,28 @@ class SpeakerAuth:
     def is_enabled(self) -> bool:
         return self._enabled and self._encoder is not None
 
-    def verify(self, audio: np.ndarray, sample_rate: int = 16000) -> bool:
+    def classify(self, audio: np.ndarray, sample_rate: int = 16000) -> SpeakerVerdict:
         """
-        Verifica se l'audio appartiene a Stefano.
-        Ritorna True se autenticato (o se autenticazione non attiva).
+        Classifica l'evidenza che l'audio appartenga a Stefano.
+
+        Non confonde piu' l'assenza di evidenza con un'autenticazione riuscita:
+        clip brevi, modello assente ed errori sono INDETERMINATE. Il chiamante
+        decide poi se la faccia del proprietario basta oppure se usare il
+        percorso ospite.
         audio: float32 array normalizzato in [-1, 1]
         """
         if config.DEMO_MODE:
-            return True  # modalità demo: accetta tutti
+            return SpeakerVerdict.INDETERMINATE
 
         if not self.is_enabled():
-            return True  # fail-open
+            return SpeakerVerdict.INDETERMINATE
 
         # Sotto ~1.3s il GE2E non ha abbastanza voce per un d-vector stabile: le conferme brevi
         # ("ok"/"sì"/"va bene") producevano similarity ballerine (0.48–0.66) e venivano RIFIUTATE,
         # bloccando l'utente vero. Sotto la soglia di affidabilità del modello non si finge di
-        # verificare — si lascia passare (il costo-sicurezza di una clip <1.3s è minimo).
+        # verificare: il daemon fonde l'esito con volto o autenticazione vocale recente.
         if len(audio) < sample_rate * 1.3:
-            return True  # troppo corto per una verifica affidabile — lascia passare
+            return SpeakerVerdict.INDETERMINATE
 
         try:
             embedding = self._embed(audio, sample_rate)
@@ -74,10 +92,22 @@ class SpeakerAuth:
                                (np.linalg.norm(embedding) * np.linalg.norm(self._voiceprint)))
             verdict = "OK" if similarity >= SIMILARITY_THRESHOLD else "RIFIUTATO"
             logger.info(f"SpeakerAuth: similarity={similarity:.3f} soglia={SIMILARITY_THRESHOLD} → {verdict}")
-            return similarity >= SIMILARITY_THRESHOLD
+            return (
+                SpeakerVerdict.VERIFIED
+                if similarity >= SIMILARITY_THRESHOLD
+                else SpeakerVerdict.REJECTED
+            )
         except Exception as e:
-            logger.warning(f"SpeakerAuth verify error: {e} — fail-open")
-            return True
+            logger.warning(f"SpeakerAuth verify error: {e} — esito indeterminato")
+            return SpeakerVerdict.INDETERMINATE
+
+    def verify(self, audio: np.ndarray, sample_rate: int = 16000) -> bool:
+        """Compatibilita' per i chiamanti storici.
+
+        Un esito indeterminato conserva il vecchio comportamento fail-open;
+        il daemon vivo usa invece classify() e non lo considera autenticato.
+        """
+        return self.classify(audio, sample_rate) is not SpeakerVerdict.REJECTED
 
     def enroll_from_segments(self, segments: list[np.ndarray], sample_rate: int = 16000) -> bool:
         """
