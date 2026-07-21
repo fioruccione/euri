@@ -3361,8 +3361,8 @@ if __name__ == "__main__":
     os.makedirs("logs", exist_ok=True)
 
     daemon = VoiceDaemon()
-    daemon.setup()
     try:
+        daemon.setup()
         daemon.run()
     finally:
         daemon._shutdown_components()

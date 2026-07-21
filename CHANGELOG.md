@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-07-21 - Convivenza GPU e ciclo di vita Control Room
+
+- Whisper non assume piu' che CUDA:0 sia disponibile: interroga NVML oppure
+  `nvidia-smi`, prova le GPU in ordine di VRAM libera e, solo in caso di OOM,
+  ritenta sulla successiva. `WHISPER_CUDA_DEVICE_INDEX` consente comunque un
+  indice fisso sulle installazioni dedicate.
+- La scelta serve alla workstation di prova condivisa con PlastVision: il suo
+  Guardian resta correttamente permanente e puo' tenere caldo un modello Ollama,
+  senza essere terminato dal launcher di Euri. La separazione futura su hardware
+  dedicato resta la soluzione definitiva al contendere della VRAM.
+- `start_euri.sh` lega la Control Room al ciclo di vita del Voice Daemon, usa la
+  porta fissa 8501 e chiude Streamlit anche se il setup vocale fallisce. Il monitor
+  hardware viene avviato in una sessione separata e resta invece intenzionalmente
+  indipendente, protetto dal proprio lock, per non interrompere baseline e
+  interocezione tra i riavvii o dopo un `Ctrl+C` di Euri.
+- Il teardown idempotente del Voice Daemon copre ora anche le eccezioni durante
+  `setup()`, non soltanto l'uscita dal loop principale, evitando componenti avviati
+  a meta' dopo errori CUDA o di inizializzazione.
+- Le regressioni coprono ordinamento GPU, fallback dopo OOM e ciclo di vita dei tre
+  processi del launcher; il test live post-riavvio ha caricato Whisper su CUDA:1.
+
 ## 2026-07-20 - Calibrazione visiva guidata e multi-postura
 
 - La pagina `Volti & Accessi` guida ora quattro scatti distinti per il faceprint:

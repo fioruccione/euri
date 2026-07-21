@@ -610,3 +610,80 @@ Se lo fa senza prompt diretto, il caso diventa molto forte per il paper.
 ## Nota metodo
 
 Non pulire troppo le memorie. Rumore e correzioni naturali fanno parte del ciclo di apprendistato. Intervenire manualmente solo se un'ipotesi sbagliata distorce una risposta importante.
+
+---
+
+# Handoff Euri - 2026-07-21 - Riavvio workstation e convivenza GPU
+
+## Stato prima del riavvio
+
+- I commit della calibrazione visiva guidata sono gia' pubblicati:
+  `725b6ab` e `fdc3b3b`.
+- Il tentativo di avvio Euri delle 19:00 e' fallito caricando Whisper con
+  `CUDA out of memory`.
+- Causa accertata dalla cronologia processi: il Guardian permanente di PlastVision
+  e' partito alle 18:51:50 e ha caricato alle 18:53:09 `qwen3.6:35b` (24 GB,
+  `Until=Forever`). Euri non era ancora partito. `/home/fio/plastvision/.env`
+  configura proprio `PLASTVISION_LLM=qwen3.6:35b`; alcuni call site PlastVision
+  usano `keep_alive=-1`.
+- Il Guardian deve restare permanente: non va trattato come processo orfano.
+  Sulla workstation condivisa puo' pero' contendere la VRAM; su hardware dedicato
+  il modello tenuto caldo e' una scelta sensata.
+- Tre Streamlit Euri orfani (`8501`, `8502`, `8503`) sono stati terminati. Qwen e'
+  stato scaricato con `ollama stop`, senza fermare il Guardian. Il monitor hardware
+  indipendente e' rimasto attivo come previsto.
+- Ultimo controllo prima del riavvio: nessun modello in `ollama ps`; VRAM libera
+  circa 14.6 GiB su GPU 0 e 15.8 GiB su GPU 1.
+
+## Delta validato
+
+File modificati:
+
+- `voice/stt.py`: selezione automatica GPU per Whisper tramite NVML o fallback
+  `nvidia-smi`, ordinata per VRAM libera; su OOM prova la GPU successiva.
+- `config.py`: `WHISPER_CUDA_DEVICE_INDEX=auto`, sovrascrivibile da ambiente.
+- `start_euri.sh`: Control Room su porta fissa 8501, PID supervisionato e teardown
+  TERM/KILL anche se il Voice Daemon fallisce. Il monitor hardware resta volutamente
+  indipendente e protetto dal proprio singleton lock.
+- `voice_daemon.py`: il `finally` copre ora anche le eccezioni di `setup()`.
+- `test_stt_gpu_selection.py`: regressioni per ordinamento/fallback e retry OOM.
+- `test_start_euri_lifecycle.py`: regressione che invia `SIGINT` al gruppo del
+  launcher e verifica UI/Voice spenti, monitor vivo in una sessione separata.
+- `tests/manifests/unit.txt`: entrambi i nuovi test sono nel tier non distruttivo.
+- `CHANGELOG.md`: motivazione e intenzione futura documentate.
+
+Verifiche passate:
+
+```text
+bash -n start_euri.sh
+test_stt_gpu_selection.py: 2/2
+test_start_euri_lifecycle.py: OK
+manifest unit: 33/33 in 26.6s
+py_compile: OK
+git diff --check: OK
+```
+
+Il test live post-riavvio ha scelto CUDA:1 con 15.5 GiB liberi, caricato Whisper in
+circa 5 secondi e completato piu' cicli Dream senza OOM. Il desktop e' tornato fluido.
+
+## Diagnosi scatti desktop
+
+- CPU globale 97-98% idle, 106 GiB RAM disponibili, swap zero, I/O wait zero.
+- GPU non sature (circa 20%/17%, 43/40 C, P8).
+- `cosmic-comp` era invece stabile tra 78% e 91% di un core e pilotava entrambe le
+  GPU. Con otto giorni di uptime, `xfreerdp` e screen sharing attivi, il compositore
+  era il candidato concreto per gli scatti del mouse. Motivo del riavvio host.
+
+## Esito teardown e punto separato emerso dal live
+
+- Il primo `Ctrl+C` ha chiuso correttamente Voice Daemon, Streamlit e le porte
+  8501-8503, ma ha rivelato che anche il monitor riceveva `SIGINT` perche' condivideva
+  il process group del launcher. `start_euri.sh` usa ora `setsid --fork`; verifica
+  host: monitor con `PPID=1`, PGID/SID propri e snapshot Redis fresco con TTL 30s.
+- La risposta al riepilogo Poseidon e' stata classificata `CHAT`: Euri ha detto
+  "Lascio il test in sospeso" senza mutare l'impegno. Redis lo conserva `pending`
+  con scadenza 20/07 09:00. Inoltre il riepilogo del 21/07 08:08 ha detto "da oggi"
+  perche' misura giorni completi trascorsi, non giorni civili.
+- Questo bug agenda resta fuori dal commit GPU. Semantica da implementare in un
+  intervento separato: "in sospeso senza data" mantiene l'impegno pending ma
+  rimuove la scadenza, con un handler reale e senza claim d'azione da `CHAT`.

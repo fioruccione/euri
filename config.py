@@ -45,6 +45,9 @@ DREAM_OLLAMA_MODEL = "qwen3.6:35b"
 WHISPER_LANGUAGE = "it"
 # Modello: "large-v3-turbo" (veloce, ~800ms) o "large-v3" (più preciso sui nomi propri, ~1500ms)
 WHISPER_MODEL = "large-v3"
+# "auto" sceglie a ogni avvio la GPU con piu' VRAM libera. Un indice esplicito
+# (es. WHISPER_CUDA_DEVICE_INDEX=1) resta disponibile per installazioni dedicate.
+WHISPER_CUDA_DEVICE_INDEX = os.environ.get("WHISPER_CUDA_DEVICE_INDEX", "auto")
 # Prompt iniziale per Whisper: nomi propri, termini tecnici, brand specifici di Stefano.
 # Aiuta il decoder a riconoscere correttamente questi termini senza costo di latenza.
 WHISPER_INITIAL_PROMPT = (
