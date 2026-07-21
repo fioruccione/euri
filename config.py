@@ -249,7 +249,7 @@ CONVERGENCE_JUDGE_CACHE_TTL_S = 30 * 86400
 # max 5 righe, mai contenuti né conclusioni). Con ~145 domini e pairing random la coppia non
 # si ripete quasi mai → un residuo per-coppia sarebbe inerte; quello per-strategia trasferisce.
 # Pre-registrazione e criteri: ESPERIMENTO_DREAM_TRACE.md. A flag spento: zero differenze.
-DREAM_TRACE_ENABLED = True  # ON dal 13/07 (ok Stefano) — raccolta braccio trattamento
+DREAM_TRACE_ENABLED = False  # raccolta congelata 21/07: 160 baseline, 74 trattamento validi
 DREAM_TRACE_TTL_S = 48 * 3600  # residuo stantio dopo 2 giorni di fermo → scade, non contamina
 # Risveglio lucido — FASE MISURA (14/07): fedeltà-di-premessa dei candidate rispetto alle
 # memorie sorgente (source_memory_ids): il sogno ha detto la verità sulle proprie fonti?

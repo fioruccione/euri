@@ -1,3 +1,47 @@
+# Handoff Euri - 2026-07-21 - Dream seed gate e raccolta congelata
+
+## Intervento concluso
+
+- Euri e' stata fermata prima dell'intervento. La trace e' stata letta senza mutare
+  Redis: baseline 160, trattamento 76 grezzi. Il riavvio che ha caricato il fix
+  anti-eco e' quello delle 17:35:58 del 13/07 (`ts=1783956958`): i due candidate
+  precedenti sono esclusi, restano 74 trattamento validi.
+- `scripts/experiments/sample_dream_audit.py` incorpora il cutoff e ha generato
+  `audit_output/AUDIT_DREAM_TRACE_items_20260721.md` (120 item ciechi) piu' la chiave
+  separata. `audit_output/` e' ignorata da Git. Non aprire la chiave prima che Stefano
+  abbia marcato ogni item N/O/?.
+- `DREAM_TRACE_ENABLED=False` dal prossimo riavvio. L'esperimento ha chiuso la raccolta,
+  non ancora l'analisi: quote/delta/strati vanno scritti in `ESPERIMENTO_DREAM_TRACE.md`
+  solo dopo l'unblinding.
+
+## Gate epistemico Loop 2b
+
+- `_get_unique_domains` considera solo domini con fonti dirette o deliberate.
+  `_get_random_memory_from_domain` usa RediSearch solo come shortlist, idrata ogni
+  RedisJSON e applica `dream_seed_rejection_reason()` sullo stato vivo.
+- Ammessi: `user`, `teach`, `passive`, `conversation`, `obsidian_vault`, `mobile_in`.
+  Esclusi: fonti derivate, anchor/episodi, reflection/reaction/consolidamenti, tag
+  derivati, superseded/consolidated, correction pending, requires verification,
+  provenance stale, safety/audit flag, consolidation risk, soggetto acefalo, vecchio
+  assenso tacito e documenti incompleti.
+- `_pick_dream_seed` prova al massimo 12 domini per lato: il fallimento resta prudente,
+  ma un dominio interamente quarantinato non annulla il ciclo per semplice sfortuna.
+- Sonda read-only reale: 114 domini con fonti dirette, 95 con un seme eleggibile.
+  `01d1b73d` (Leonardo) respinto come fonte derivata; `9560261f` (VistaMax nel dominio
+  test medico) respinto per `audit_flag` gia' presente. Nessuna memoria viva e' stata
+  modificata in questo intervento.
+- Verifiche: test mirati Dream verdi, `py_compile`, `diff --check`, manifest unitario
+  35/35, inventario completo 44 file.
+
+## Prossimi passi
+
+1. Stefano compila il file cieco, poi si esegue l'unblinding e si documenta l'esito.
+2. Audit mirato dei discendenti gia' promossi di Leonardo/VistaMax: il gate previene
+   nuovi figli fragili, ma non bonifica retroattivamente gli insight esistenti.
+3. Riavvio Euri necessario per caricare il gate e spegnere `dream_trace`.
+
+---
+
 # Handoff Euri — 2026-07-14
 
 ## Punto aperto: analisi clipboard e persistenza — 2026-07-20

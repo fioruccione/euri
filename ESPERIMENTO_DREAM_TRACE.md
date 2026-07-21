@@ -103,7 +103,16 @@ bozza web era sotto il rumore: 0.6 σ):
 
 ## Esiti
 
-*(da compilare a raccolta finita — includere il negativo)*
+**Raccolta congelata il 21/07/2026, prima del nuovo gate epistemico sui semi.**
+La convergence trace contiene 160 candidate baseline e 76 trattamento grezzi; i due
+trattamento precedenti al riavvio anti-eco del 13/07 17:35:58 sono esclusi come
+pre-registrato, lasciando 74 candidate trattamento valide. Il campionatore applica ora
+questo cutoff in codice e ha prodotto un audit cieco riproducibile da 60+60 item sotto
+`audit_output/`, con chiave separata e ignorata da Git. `DREAM_TRACE_ENABLED` torna
+`False` dal prossimo riavvio.
+
+Il risultato resta **non letto**: Stefano deve compilare N/O/? senza aprire la chiave.
+Dopo l'unblinding, riportare qui quote, delta e strati temporali/policy previsti sopra.
 
 ## DEVIAZIONE DOCUMENTATA (15/07/2026) — gate di promozione corretto
 

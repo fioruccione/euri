@@ -60,3 +60,5 @@ EURI_CONTEXT.md
 # backup dump del backfill memory_axes (grossi, non versionare)
 backups/
 thought_maps/
+# Output locali degli audit ciechi (la chiave non va versionata prima dell'unblinding)
+audit_output/

@@ -8,6 +8,7 @@ test_cognitive_present.py
 test_convergence_policy.py
 test_cross_episode_hypothesis.py
 test_dream_schedule.py
+test_dream_seed_gate.py
 test_epistemic_ranking.py
 test_executor_routing.py
 test_face_gate.py

@@ -46,9 +46,12 @@ Quando non gli parli per un po', Euri entra in cicli cognitivi offline. Non è p
 - **Ciclo leggero** (~20 min di cadenza mentre è idle): valuta insight candidati, metabolizza correzioni pending, genera ipotesi trasversali da episodi ripetuti e propaga la provenienza.
 - **Ciclo creativo** (~90 min): genera nuovi sogni cross-domain e promuove insight per convergenza.
 - **Ciclo manutentivo** (~24h): risoluzione contraddizioni, self-observation, cleanup, pruning e consolidamento semantico.
-- Pesca due memorie appartenenti a due domini *completamente diversi*.
+- Pesca due memorie appartenenti a due domini *completamente diversi*, ma solo da
+  fonti dirette o deliberatamente acquisite. Reflection, reaction, consolidamenti,
+  anchor/episodi conversazionali, nodi superseded, contestati o da verificare non
+  possono fondare un nuovo sogno; il JSON viene rivalidato dopo la shortlist Redis.
 - **Loop 2b** — Chiede a **Qwen3.6 35B** (*thinking attivo*, modello dedicato) di cercare isomorfismi strutturali tra i due concetti usando un processo in 3 passi: astrazione logica → ricerca della dinamica condivisa → formulazione del principio generale. Qwen3.6 è separato da Gemma4: più lento ma con ragionamento astratto superiore, usato nei cicli offline senza vincoli di latenza realtime.
-- **dream_trace (esperimento, dietro flag):** tra un ciclo creativo e il successivo sopravvive un **residuo di esplorazione** distillato dal chain-of-thought del sogno appena concluso — max 5 righe, a livello di *strategia* ("che tipo di ponte ho provato e perché era debole"), mai contenuti né conclusioni. Il ciclo dopo lo riceve con l'istruzione di **non ripercorrere** i tipi di connessione già trovati deboli. Stato effimero (TTL 48h), mai nel retrieval né nelle memorie. Ipotesi pre-registrata e criteri di misura (audit cieco sui candidate): `ESPERIMENTO_DREAM_TRACE.md`.
+- **dream_trace (esperimento concluso nella raccolta, flag spento):** tra un ciclo creativo e il successivo sopravviveva un **residuo di esplorazione** distillato dal chain-of-thought del sogno appena concluso — max 5 righe, a livello di *strategia* ("che tipo di ponte ho provato e perché era debole"), mai contenuti né conclusioni. Raccolta congelata il 21/07 a 160 baseline / 74 trattamento validi; resta da compilare e aprire l'audit cieco descritto in `ESPERIMENTO_DREAM_TRACE.md`.
 - Se l'analogia è forte, genera un **CANDIDATE Insight**.
 - **Loop 2c** — La promozione CANDIDATE→PROMOTED usa un sistema a due livelli: distanza cosine vettoriale (fast path) + **LLM judge con thinking** per la zona grigia (score 0.15–0.40). Il judge valuta se due insight formulati diversamente esprimono lo stesso principio strutturale profondo — un giudizio che il solo vettore cosine non può dare.
 - Se abbastanza sogni indipendenti convergono, l'insight viene **PROMOSSO** e scritto permanentemente in Obsidian.

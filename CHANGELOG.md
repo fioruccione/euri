@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-07-21 - Raccolta Dream Trace congelata e semi epistemicamente puliti
+
+- La raccolta `dream_trace` e' stata chiusa prima di modificare la generazione:
+  160 candidate baseline, 76 trattamento grezzi, 2 esclusi perche' precedenti al
+  riavvio anti-eco del 13/07 17:35:58, quindi 74 trattamento validi. Il campionatore
+  applica ora il cutoff pre-registrato e salva sotto `audit_output/` un audit cieco
+  riproducibile da 60+60 item con chiave separata e non versionata.
+- `DREAM_TRACE_ENABLED` torna `False`. Il risultato non e' stato aperto: Stefano deve
+  ancora etichettare N/O/? prima dell'unblinding.
+- Il Loop 2b puo' fondare sogni soltanto su fonti dirette/deliberate (`user`, `teach`,
+  `passive`, `conversation`, `obsidian_vault`, `mobile_in`). Reflection, reaction,
+  consolidamenti, anchor/episodi conversazionali e tag derivati sono esclusi.
+- Ogni candidato viene idratato dal RedisJSON vivo e rivalidato fail-closed: niente
+  nodi superseded/consolidati, sotto correzione, da verificare, stale, con safety/audit
+  flag, rischio di consolidamento, soggetto acefalo o vecchio assenso tacito.
+- La selezione prova fino a 12 domini per ciascun lato: un dominio composto soltanto
+  da memorie fragili non fa fallire casualmente tutto il ciclo creativo. Sonda read-only
+  sullo store reale: 114 domini diretti, 95 con almeno un seme eleggibile; i nodi noti
+  Leonardo e VistaMax contaminato vengono respinti dal gate corrente.
+- Nuovo `test_dream_seed_gate.py`; manifest unitario 35/35, inventario 44 test.
+
 ## 2026-07-21 - Intenzione conversazionale, azione reale e proposte fattibili
 
 - Introdotto un `ActionController` generale per il canale vocale: il modello puo'

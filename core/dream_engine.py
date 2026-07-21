@@ -44,6 +44,62 @@ _CAUSAL_EPISODE_RE = re.compile(
 
 _DERIVED_CROSS_EPISODE_TAGS = {"lesson", "from_correction"}
 
+# Il Dream creativo deve partire da materiale vissuto o deliberatamente acquisito,
+# non da interpretazioni che Euri ha prodotto su se stessa. I flag del singolo JSON
+# vengono rivalidati dopo la shortlist RediSearch: l'indice accelera, non decide.
+DREAM_SEED_ALLOWED_SOURCES = frozenset({
+    "user", "teach", "passive", "conversation", "obsidian_vault", "mobile_in",
+})
+DREAM_SEED_BLOCKED_KINDS = frozenset({
+    "conversation_anchor", "conversation_episode", "reflection",
+    "reaction_lesson", "derived_consolidation",
+})
+DREAM_SEED_BLOCKED_TAGS = frozenset({
+    "confronto", "lesson", "from_correction", "self_observation",
+})
+
+
+def dream_seed_rejection_reason(doc: dict) -> str | None:
+    """Motivo fail-closed per cui una memoria non puo' fondare un sogno creativo."""
+    if not doc:
+        return "missing"
+    if str(doc.get("source") or "").lower() not in DREAM_SEED_ALLOWED_SOURCES:
+        return "derived_source"
+    if str(doc.get("memory_kind") or "").lower() in DREAM_SEED_BLOCKED_KINDS:
+        return "non_factual_kind"
+    tags = {str(tag).lower() for tag in _as_list(doc.get("tags"))}
+    if tags & DREAM_SEED_BLOCKED_TAGS:
+        return "derived_tag"
+    if doc.get("superseded_by") or doc.get("consolidated_into"):
+        return "superseded"
+    if doc.get("correction_pending"):
+        return "correction_pending"
+    if doc.get("requires_verification") or doc.get("provenance_stale"):
+        return "requires_verification"
+    if doc.get("safety_flag"):
+        return "safety_flag"
+    try:
+        if int(doc.get("audit_flag") or 0) > 0:
+            return "audit_flag"
+    except (TypeError, ValueError):
+        return "audit_flag_invalid"
+    consolidation_risk = doc.get("consolidation_risk") or {}
+    if isinstance(consolidation_risk, dict):
+        if str(consolidation_risk.get("level") or "ok").lower() in {"watch", "high"}:
+            return "consolidation_risk"
+    axes = doc.get("memory_axes") or {}
+    if isinstance(axes, dict) and axes.get("subject_status") == "acephalous":
+        return "acephalous"
+    if doc.get("passive_support") == "tacit_acceptance":
+        return "tacit_acceptance"
+    if not doc.get("content") or not doc.get("embedding"):
+        return "incomplete"
+    return None
+
+
+def is_dream_seed_eligible(doc: dict) -> bool:
+    return dream_seed_rejection_reason(doc) is None
+
 
 def _case_has_causal_hint(text: str) -> bool:
     """Prefiltro linguistico leggero, non-domain-specific: cerca forma causa/effetto."""
@@ -435,11 +491,14 @@ class DreamEngine:
     # ── Loop 2b: Sogni Onirici ─────────────────────────────────────────────
 
     def _get_unique_domains(self) -> list[str]:
-        """Recupera tutti i domini unici dalle memorie (escludendo 'generale')."""
+        """Recupera i domini con almeno una fonte diretta (escludendo 'generale')."""
         try:
-            # Usa FT.AGGREGATE per raggruppare per dominio
+            # Il filtro per fonte evita di sorteggiare domini popolati soltanto da
+            # reflection/reaction/consolidamenti. I flag del documento vengono poi
+            # rivalidati da _get_random_memory_from_domain.
+            allowed_sources = "|".join(sorted(DREAM_SEED_ALLOWED_SOURCES))
             res = self._r.execute_command(
-                "FT.AGGREGATE", "idx:memories", "*",
+                "FT.AGGREGATE", "idx:memories", f"@source:{{{allowed_sources}}}",
                 "GROUPBY", "1", "@domain"
             )
             domains = []
@@ -455,32 +514,64 @@ class DreamEngine:
             return []
 
     def _get_random_memory_from_domain(self, domain: str) -> dict | None:
-        """Recupera una memoria casuale da uno specifico dominio."""
+        """Recupera un seme diretto e epistemicamente pulito da un dominio."""
         try:
             safe_domain = domain.replace(" ", "\\ ")
-            # Prende un campione casuale (Redis stack non ha RANDOM natively in FT.SEARCH, 
-            # ma possiamo prendere le prime con sort_by null e limit 10 e poi scegliere)
+            allowed_sources = "|".join(sorted(DREAM_SEED_ALLOWED_SOURCES))
             q = (
-                Query(f"@domain:{{{safe_domain}}} -@memory_kind:{{conversation_anchor}}")
-                .paging(0, 10)
-                .return_fields("id", "content", "embedding", "created_at")
+                Query(f"@domain:{{{safe_domain}}} @source:{{{allowed_sources}}}")
+                .paging(0, 200)
+                .return_fields("id")
             )
             res = self._r.ft("idx:memories").search(q)
             if not res.docs:
                 return None
 
             import random
-            doc = random.choice(res.docs)
+            eligible = []
+            rejected: dict[str, int] = {}
+            for hit in res.docs:
+                try:
+                    raw = self._r.json().get(hit.id)
+                    doc = raw[0] if isinstance(raw, list) and raw else raw
+                except Exception:
+                    doc = None
+                reason = dream_seed_rejection_reason(doc)
+                if reason:
+                    rejected[reason] = rejected.get(reason, 0) + 1
+                    continue
+                eligible.append((hit.id, doc))
+            if not eligible:
+                logger.debug(
+                    f"Dream seed gate: nessun seme eleggibile in '{domain}' ({rejected})"
+                )
+                return None
+
+            key, doc = random.choice(eligible)
             return {
-                "id": doc.id,
-                "content": doc.content,
+                "id": key,
+                "content": doc["content"],
                 "domain": domain,
-                "embedding": getattr(doc, "embedding", None),
-                "created_at": getattr(doc, "created_at", None),
+                "embedding": doc.get("embedding"),
+                "created_at": doc.get("created_at"),
             }
         except Exception as e:
             logger.debug(f"Errore fetch memoria da {domain}: {e}")
             return None
+
+    def _pick_dream_seed(
+        self, domains: list[str], *, exclude: set[str] | None = None, max_attempts: int = 12
+    ) -> tuple[str, dict] | None:
+        """Trova un dominio con un seme pulito senza far fallire il ciclo al primo vuoto."""
+        import random
+
+        pool = [domain for domain in domains if domain not in (exclude or set())]
+        random.shuffle(pool)
+        for domain in pool[:max_attempts]:
+            memory = self._get_random_memory_from_domain(domain)
+            if memory is not None:
+                return domain, memory
+        return None
 
     @staticmethod
     def _has_required_structure(text: str) -> bool:
@@ -521,25 +612,18 @@ class DreamEngine:
 
     def _generate_dream(self, domains: list[str]) -> dict | None:
         """Seleziona due memorie da domini diversi e cerca un'analogia."""
-        import random
-        
-        # Sceglie un dominio a caso
-        dom_a = random.choice(domains)
-        mem_a = self._get_random_memory_from_domain(dom_a)
-        if not mem_a or not mem_a.get("embedding"):
+        first = self._pick_dream_seed(domains)
+        if first is None:
             return None
-            
-        # Per massimizzare la creatività, cerchiamo un dominio B semanticamente DISTANTE
-        # (Idealmente qui faremmo una vector search invertita, ma per ora scegliamo random
-        # garantendo che sia diverso da A)
-        other_domains = [d for d in domains if d != dom_a]
-        if not other_domains:
+        dom_a, mem_a = first
+
+        # Per massimizzare la creatività, cerchiamo un dominio B diverso da A.
+        # La distanza semantica resta un esperimento separato; qui il gate si limita
+        # a garantire che entrambi i lati abbiano fondamenta ammissibili.
+        second = self._pick_dream_seed(domains, exclude={dom_a})
+        if second is None:
             return None
-            
-        dom_b = random.choice(other_domains)
-        mem_b = self._get_random_memory_from_domain(dom_b)
-        if not mem_b:
-            return None
+        dom_b, mem_b = second
             
         logger.info(f"Dream Engine: sogno tra '{dom_a}' e '{dom_b}'")
         
