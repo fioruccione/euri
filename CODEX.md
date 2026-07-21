@@ -756,14 +756,26 @@ vengono prima della latenza. L'upgrade hardware arrivera' in seguito per sostene
 carico; non ridurre nel frattempo il ragionamento semantico a euristiche rigide solo
 per mascherare i limiti della workstation attuale.
 
-## Collaudo ancora necessario dopo il riavvio daemon
+## Collaudo vocale post-riavvio: riuscito
 
-1. Chiedere i todo e dire a Euri: "Considero chiuso, lo rifacciamo piu' avanti ma
-   decido la data io".
-2. Verificare nel log `ActionController: eseguita agenda.complete target=...`.
-3. Richiedere i todo: Poseidon non deve piu' risultare pending.
-4. Provare separatamente una sospensione esplicita senza data e un controllo GPU
-   contestuale. Non riusare Poseidon per la sospensione dopo averlo chiuso.
+Alle 11:00 Stefano ha detto: "Considero chiuso, dobbiamo rifare le prove quando posso
+farle, ma ti do io la data precisa" dopo che Euri aveva nominato il todo Poseidon.
+Esito osservato:
+
+```text
+ActionController: execute cap=agenda.complete
+target=f621c34c-710a-48b8-a360-5eb527d73d13
+confidence=1.00 authority=user_explicit
+Impegno completato: f621c34c-710a-48b8-a360-5eb527d73d13
+```
+
+Verifica Redis successiva: `status=done`, `completed_at=1784624435.186903`; la vecchia
+scadenza resta nel record storico. Il caso originario e' quindi chiuso end-to-end:
+voce -> STT -> ragionamento grounded -> adapter -> mutazione reale -> risposta da esito.
+
+Restano utili, come copertura successiva e non come blocco di questa feature, una
+sospensione esplicita senza data e un controllo GPU contestuale. Non riusare Poseidon
+per la sospensione dopo averlo chiuso.
 
 ## Prossimo lavoro esplicito: audit completo del cantiere
 

@@ -15,8 +15,8 @@
   Una proposta di Euri viene sempre marcata `euri_proposed` e non si auto-autorizza.
 - L'agenda supporta ora tre adapter grounded: completamento, sospensione senza data
   e riprogrammazione. Il caso live "Considero chiuso... decido io la data" seleziona
-  il todo Poseidon esatto e `agenda.complete`; il record reale resta intenzionalmente
-  pending fino al collaudo vocale dopo il riavvio del daemon.
+  il todo Poseidon esatto e `agenda.complete`. Collaudo vocale post-riavvio riuscito:
+  confidenza 1.00, adapter eseguito e record Redis passato da `pending` a `done`.
 - Le intenzioni read-only formulate dalla stessa Euri (per esempio "ora controllo
   la GPU") possono diventare una lettura reale prima della risposta. I claim presenti
   non coperti come "lo tolgo dai sospesi" restano intercettati dal paraurti atto-parola.
