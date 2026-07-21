@@ -28,6 +28,8 @@ class ToolSpec:
     handler: Callable
     timeout_seconds: int = 5
     requires_confirm: bool = False       # True per operazioni distruttive
+    effect: str = "local_write"          # contratto per ActionController
+    contextual: bool = False             # proponibile da una frase CHAT contestuale
 
 
 @dataclass
@@ -57,6 +59,9 @@ class SandboxGuard:
 
     def validate_parameters(self, spec: ToolSpec, params: dict) -> tuple[bool, str]:
         schema = spec.parameters_schema
+        unknown = sorted(set(params) - set(schema))
+        if unknown:
+            return False, f"Parametri non ammessi: {', '.join(unknown)}"
         for param_name, rules in schema.items():
             required = rules.get("required", False)
             value = params.get(param_name)
@@ -152,18 +157,24 @@ class Executor:
                 description="Legge l'utilizzo della CPU in percentuale. Parametro opzionale: process_name (str) per filtrare un processo specifico.",
                 parameters_schema={"process_name": {"type": "str", "required": False}},
                 handler=tool_cpu_usage,
+                effect="read_only",
+                contextual=True,
             ),
             ToolSpec(
                 name="ram_usage",
                 description="Legge l'utilizzo della RAM: totale, usata e libera in gigabyte.",
                 parameters_schema={},
                 handler=tool_ram_usage,
+                effect="read_only",
+                contextual=True,
             ),
             ToolSpec(
                 name="disk_usage",
                 description="Legge lo spazio disco disponibile. Parametro opzionale: drive (str, es. 'C' o 'D').",
                 parameters_schema={"drive": {"type": "str", "required": False, "values": ["C", "D", "E", "F"]}},
                 handler=tool_disk_usage,
+                effect="read_only",
+                contextual=True,
             ),
             ToolSpec(
                 name="top_processes",
@@ -173,24 +184,32 @@ class Executor:
                     "sort_by": {"type": "str", "required": False, "values": ["cpu", "memory"]},
                 },
                 handler=tool_top_processes,
+                effect="read_only",
+                contextual=True,
             ),
             ToolSpec(
                 name="uptime",
                 description="Legge da quanto tempo è accesa la workstation.",
                 parameters_schema={},
                 handler=tool_uptime,
+                effect="read_only",
+                contextual=True,
             ),
             ToolSpec(
                 name="gpu_usage",
                 description="Legge l'utilizzo delle GPU NVIDIA: VRAM usata e libera, utilizzo percentuale.",
                 parameters_schema={},
                 handler=tool_gpu_usage,
+                effect="read_only",
+                contextual=True,
             ),
             ToolSpec(
                 name="read_log",
                 description="Legge le ultime righe del log di Euri. Parametro opzionale: n_lines (int, default 20).",
                 parameters_schema={"n_lines": {"type": "int", "required": False, "min": 5, "max": 100}},
                 handler=tool_read_log,
+                effect="read_only",
+                contextual=True,
             ),
             ToolSpec(
                 name="evaluate_math",
@@ -198,6 +217,8 @@ class Executor:
                 parameters_schema={"expression": {"type": "str", "required": True}},
                 handler=tool_evaluate_math,
                 timeout_seconds=2,
+                effect="read_only",
+                contextual=True,
             ),
             ToolSpec(
                 name="write_text",
@@ -220,6 +241,8 @@ class Executor:
                 description="Legge il contenuto degli appunti e lo riporta vocalmente.",
                 parameters_schema={},
                 handler=tool_clipboard_read,
+                effect="read_only",
+                contextual=True,
             ),
             ToolSpec(
                 name="clipboard_analyze",
@@ -600,6 +623,8 @@ class Executor:
                 handler=_tool_read_document,
                 # pre-extract (pypdf, eventuale Vision) + 1 chiamata di comprensione.
                 timeout_seconds=config.CODE_RUNNER_TOOL_TIMEOUT,
+                effect="read_only",
+                contextual=True,
             ),
             ToolSpec(
                 name="ingest_documents",
@@ -644,12 +669,16 @@ class Executor:
                 # carica Gemma 4 multimodale in VRAM (~35s osservati il 29/05),
                 # superando il vecchio cap di 30s. Le successive (caldo) ~5s.
                 timeout_seconds=60,
+                effect="read_only",
+                contextual=True,
             ),
             ToolSpec(
                 name="list_data_files",
                 description="Elenca i file presenti nella cartella dati di input (Scrivania/dati_per_Euri).",
                 parameters_schema={},
                 handler=_tool_list_data_files,
+                effect="read_only",
+                contextual=True,
             ),
         ]
 
@@ -662,6 +691,24 @@ class Executor:
         for name, spec in self._registry.items():
             lines.append(f"- {name}: {spec.description}")
         return "\n".join(lines)
+
+    def get_contextual_capabilities(self) -> list[dict]:
+        """Catalogo read-only/whitelist per il ponte intenzione→azione.
+
+        Gli handler restano nell'Executor: il controller vede soltanto nome,
+        descrizione, schema ed effetto e non puo' inventare nuovi tool.
+        """
+        return [
+            {
+                "name": name,
+                "description": spec.description,
+                "parameters_schema": spec.parameters_schema,
+                "effect": spec.effect,
+                "requires_confirm": spec.requires_confirm,
+            }
+            for name, spec in self._registry.items()
+            if spec.contextual
+        ]
 
     # Patterns ordinati dal più specifico al più generico
     _TOOL_PATTERNS: list[tuple[re.Pattern, str, dict]] = [

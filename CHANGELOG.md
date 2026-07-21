@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-07-21 - Intenzione conversazionale, azione reale e proposte fattibili
+
+- Introdotto un `ActionController` generale per il canale vocale: il modello puo'
+  proporre soltanto capability registrate e bersagli presenti nello stato corrente;
+  policy e adapter deterministici decidono se eseguire, chiarire, confermare o
+  astenersi. Il contesto risolve riferimenti come "lo", ma non crea autorizzazione.
+- Le formulazioni CHAT non dipendono da una regex per essere capite. La regex resta
+  un fast-path; il fallback LLM puo' emettere `ACTION_REASONING` e invocare il prompt
+  semantico su obiettivo, sottopassi, capability e stato reale.
+- Quando il gesto completo non e' disponibile, Euri puo' proporre un solo passo
+  alternativo realmente fattibile. Le alternative read-only possono essere eseguite
+  e riferite; scritture, effetti esterni e azioni distruttive richiedono conferma.
+  Una proposta di Euri viene sempre marcata `euri_proposed` e non si auto-autorizza.
+- L'agenda supporta ora tre adapter grounded: completamento, sospensione senza data
+  e riprogrammazione. Il caso live "Considero chiuso... decido io la data" seleziona
+  il todo Poseidon esatto e `agenda.complete`; il record reale resta intenzionalmente
+  pending fino al collaudo vocale dopo il riavvio del daemon.
+- Le intenzioni read-only formulate dalla stessa Euri (per esempio "ora controllo
+  la GPU") possono diventare una lettura reale prima della risposta. I claim presenti
+  non coperti come "lo tolgo dai sospesi" restano intercettati dal paraurti atto-parola.
+- Il riepilogo degli scaduti usa giorni civili: una scadenza del giorno precedente
+  viene detta "da ieri", anche se non sono trascorse 24 ore complete.
+- Probe read-only sul modello e stato reali: chiusura e sospensione Poseidon grounded,
+  controllo GPU, astensione su conversazione, formula senza trigger "non e' piu' da
+  fare" e proposta `read_log` quando il riavvio richiesto non e' disponibile.
+- Per scelta di prodotto, qualita' del ragionamento e delle proposte prevalgono sulla
+  latenza sotto contesa; il futuro upgrade hardware dovra' sostenere il modello, non
+  giustificare una regressione verso routing rigido a parole chiave.
+- Regressioni: 13 casi specifici ActionController, 37/37 sul paraurti atto-parola,
+  manifest unit completo 34/34 e inventario test 43 file.
+
 ## 2026-07-21 - Convivenza GPU e ciclo di vita Control Room
 
 - Whisper non assume piu' che CUDA:0 sia disponibile: interroga NVML oppure

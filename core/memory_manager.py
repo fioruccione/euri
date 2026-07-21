@@ -745,6 +745,23 @@ class MemoryManager:
         logger.info(f"Impegno completato: {todo_id}")
         return True
 
+    def suspend_todo(self, todo_id: str) -> bool:
+        """Mantiene l'impegno aperto ma rimuove la scadenza e i relativi trigger."""
+        key = f"euri:memory:{todo_id}"
+        if not self.r.exists(key):
+            return False
+        self.r.json().set(key, "$.status", "pending")
+        self.r.json().set(key, "$.due_at", None)
+        self.r.json().set(key, "$.suspended_at", to_timestamp(now()))
+        self.r.json().set(key, "$.reminded_count", 0)
+        self.r.json().set(key, "$.last_reminded_at", None)
+        try:
+            self.r.srem("euri:pulse:clock_emitted", todo_id)
+        except Exception:
+            pass
+        logger.info(f"Impegno sospeso senza scadenza: {todo_id}")
+        return True
+
     def reschedule_todo(self, todo_id: str, new_due: datetime) -> bool:
         """Sposta la scadenza di un impegno e riarma consegna e clock afferente:
         una scadenza nuova è un evento nuovo — va riannunciata (marcatore
@@ -753,6 +770,7 @@ class MemoryManager:
         if not self.r.exists(key):
             return False
         self.r.json().set(key, "$.due_at", to_timestamp(new_due))
+        self.r.json().set(key, "$.suspended_at", None)
         self.r.json().set(key, "$.reminded_count", 0)
         self.r.json().set(key, "$.last_reminded_at", None)
         try:

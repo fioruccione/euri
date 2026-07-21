@@ -687,3 +687,99 @@ circa 5 secondi e completato piu' cicli Dream senza OOM. Il desktop e' tornato f
 - Questo bug agenda resta fuori dal commit GPU. Semantica da implementare in un
   intervento separato: "in sospeso senza data" mantiene l'impegno pending ma
   rimuove la scadenza, con un handler reale e senza claim d'azione da `CHAT`.
+
+---
+
+# Handoff Euri - 2026-07-21 - Ponte intenzione -> azione
+
+## Perche' esiste
+
+Il caso live Poseidon ha mostrato una frattura netta: Euri comprendeva il significato
+del turno e rispondeva "lo tolgo dai sospesi", ma il ramo `CHAT` non mutava Redis.
+La risposta linguistica non deve essere usata come prova o autorizzazione di un atto.
+
+## Contratto implementato
+
+- `core/action_controller.py` riceve il turno corrente, l'ultimo turno Euri solo per
+  risolvere riferimenti, il catalogo whitelist e uno snapshot dei bersagli reali.
+- Il prompt distingue `direct`, `alternative` e `none`; valuta obiettivo, sottopassi
+  e capability prima di restituire il solo JSON strutturato.
+- Il modello propone. `ActionController.decide()` applica confidenza, autorita',
+  effetto, target e conferma. `voice_daemon.py` rivalida lo snapshot subito prima
+  dell'adapter, quindi parla soltanto usando l'esito reale.
+- Il contesto passato non autorizza mai. `origin=euri` e ogni `mode=alternative`
+  forzano `authority=euri_proposed`, anche se l'output del modello dice altro.
+- User esplicito + read-only/reversible/local-write grounded: esecuzione. Effetti
+  external/destructive o capability `requires_confirm`: conferma. Proposta di Euri:
+  auto-esecuzione solo read-only; ogni mutazione richiede il consenso di Stefano.
+- Se manca il bersaglio, Euri chiede quale e riesegue il ragionamento sul chiarimento.
+  La conferma e il chiarimento scadono dopo 120 secondi.
+
+Capability collegate nella prima versione:
+
+- `agenda.complete`, `agenda.suspend`, `agenda.reschedule` sui soli todo pending;
+- letture contestuali whitelist dell'Executor: CPU, RAM, disco, processi, uptime,
+  GPU, log, calcolo, clipboard e, quando CodeRunner e' attivo, documenti/immagini/file.
+
+La regex `looks_actionable()` e' soltanto un fast-path. Per i turni rimasti `CHAT`,
+il fallback LLM puo' produrre `ACTION_REASONING`, percio' una formulazione nuova come
+"Quello del Poseidon per me non e' piu' da fare" arriva comunque al controller.
+Il probe reale l'ha risolta come `agenda.complete` sul target Poseidon pur avendo
+`PRE-GATE: False`.
+
+## Fase propositiva
+
+Se l'azione completa non esiste, il prompt cerca al massimo un passo alternativo che
+avanzi lo stesso obiettivo. Esempio reale del probe: "riavvia e assicurati che sia
+sano" non puo' riavviare, ma propone `executor.read_log` per verificare lo stato.
+L'alternativa e' sempre una proposta di Euri: una lettura puo' partire, una scrittura
+o un effetto maggiore resta in attesa di conferma.
+
+## Verifiche
+
+```text
+test_action_controller.py: 13/13
+test_act_word.py: 37/37
+manifest unit: 34/34 in 29.4s
+manifest inventory: 43 file in 3 livelli
+py_compile: OK
+git diff --check: OK
+```
+
+I probe Ollama/Redis sono read-only e non hanno modificato il todo Poseidon. Sotto
+contesa col Dream il gate semantico ha atteso anche 59.6 secondi; Stefano preferisce
+attendere il ragionamento invece di introdurre un timeout corto. Un errore effettivo
+resta fail-safe e non esegue azioni.
+
+Priorita' esplicita di prodotto: intelligenza del modello e qualita' delle proposte
+vengono prima della latenza. L'upgrade hardware arrivera' in seguito per sostenere il
+carico; non ridurre nel frattempo il ragionamento semantico a euristiche rigide solo
+per mascherare i limiti della workstation attuale.
+
+## Collaudo ancora necessario dopo il riavvio daemon
+
+1. Chiedere i todo e dire a Euri: "Considero chiuso, lo rifacciamo piu' avanti ma
+   decido la data io".
+2. Verificare nel log `ActionController: eseguita agenda.complete target=...`.
+3. Richiedere i todo: Poseidon non deve piu' risultare pending.
+4. Provare separatamente una sospensione esplicita senza data e un controllo GPU
+   contestuale. Non riusare Poseidon per la sospensione dopo averlo chiuso.
+
+## Prossimo lavoro esplicito: audit completo del cantiere
+
+Stefano ha chiesto di controllare l'intero progetto per individuare cio' che e' stato
+avviato ma non portato a termine. Va trattato come intervento separato e read-only
+prima di decidere nuove modifiche. Inventariare almeno:
+
+- punti aperti e caveat in tutti gli handoff `CODEX.md`;
+- `TODO`/`FIXME`, feature flag spente, fasi dichiarate nelle specifiche e script di
+  migrazione/probe non promossi a percorso operativo;
+- differenze tra documentazione, test, adapter registrati e canali runtime (voce,
+  Silent Chat, mobile, Initiative);
+- file non tracciati/scratch e rami o commit non pubblicati, senza cancellarli;
+- per ogni voce: stato osservabile, evidenza, rischio, dipendenze e prossimo passo.
+
+Output consigliato: un unico registro ordinato `finito / parziale / solo specificato /
+obsoleto / da decidere`, evitando di confondere un'idea documentata con una feature
+attiva. L'ActionController v1 e' oggi integrato nel canale vocale; l'estensione agli
+altri canali deve emergere nell'audit come copertura parziale, non essere assunta.

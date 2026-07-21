@@ -45,7 +45,18 @@ from core.memory_manager import MemoryManager
 from core.brain import Brain
 from core.embedder import Embedder
 from core.honesty import scrub_unbacked_save_claim
-from core.act_word_check import emit_unbacked_action_commitment, scrub_unbacked_action_claim
+from core.act_word_check import (
+    emit_unbacked_action_commitment,
+    needs_honest_correction,
+    scrub_unbacked_action_claim,
+)
+from core.action_controller import (
+    ActionController,
+    ActionDisposition,
+    ActionEffect,
+    build_capability_snapshot,
+    looks_actionable,
+)
 from core.ollama_client import chat_client
 from core.guest_claims import (
     GuestClaimStore,
@@ -59,7 +70,7 @@ from core.cognitive_present import (
     InteractionPhase,
 )
 from core.worker_supervisor import WorkerSupervisor
-from agent.executor import Executor, build_injected_context
+from agent.executor import Executor, ToolCall, build_injected_context
 
 
 # ──────────────────────────────────────────
@@ -164,6 +175,7 @@ class VoiceDaemon:
         self.executor = Executor()
         self.executor.brain  = self.brain
         self.executor.memory = self.memory
+        self.action_controller = ActionController()
         self.vad = VAD()
         self.stt = STT()
         self.tts = TTS()
@@ -190,6 +202,7 @@ class VoiceDaemon:
         self._web_pending: dict = {}  # contesto ultima ricerca web (per "approfondisci" / "salva")
         self._pending_todo: _PendingState | None = None   # todo in attesa di conferma (timeout 60s)
         self._pending_reschedule: _PendingState | None = None  # impegno da spostare, manca la data (timeout 120s)
+        self._pending_action: _PendingState | None = None  # proposta ad alto impatto in attesa owner
         self._pending_readback: _PendingState | None = None   # memoria riletta, attesa correzione/aggiunta (180s)
         self._pending_write: _PendingState | None = None  # richiesta scrittura file in attesa (timeout 120s)
         self._awaiting_reaction: _PendingState | None = None  # insight su cui Euri ha chiesto conferma, in attesa della reazione di Stefano (timeout 300s)
@@ -930,6 +943,8 @@ class VoiceDaemon:
                 text, context=context, trusted=trusted, observed_at=observed_at
             )
         reply = scrub_unbacked_save_claim(reply)  # pavimento di onestà: SEARCH non salva
+        if needs_honest_correction(reply, set()) and self._try_euri_readonly_action(reply, text):
+            return
         emit_unbacked_action_commitment(self.r, reply, set(), channel="voice_search")
         reply = scrub_unbacked_action_claim(reply, set())  # SEARCH non agisce: niente claim d'azione
         self.memory.log_conversation("Euri", reply)
@@ -940,6 +955,243 @@ class VoiceDaemon:
         todos = self.memory.get_todos_today()
         overdue = self.memory.get_overdue_todos()
         reply = self.brain.format_today_summary(todos, overdue)
+        self.memory.log_conversation("Euri", reply)
+        self._speak(reply)
+
+    def _action_snapshot(self):
+        """Catalogo vivo + bersagli ammessi per il controller intenzione→azione."""
+        return build_capability_snapshot(
+            self.memory.get_pending_todos(),
+            self.executor.get_contextual_capabilities(),
+        )
+
+    def _execute_action_proposal(
+        self,
+        proposal,
+        text: str,
+        *,
+        log_user: bool = True,
+        allow_euri_read_only: bool = False,
+        confirmed: bool = False,
+    ) -> bool:
+        """Adapter deterministico: rivalida lo stato e parla soltanto dopo l'esito."""
+        capabilities, _state, todos_by_id = self._action_snapshot()
+        fresh = self.action_controller.decide(
+            proposal, capabilities, allow_euri_read_only=allow_euri_read_only
+        )
+        allowed = fresh.disposition == ActionDisposition.EXECUTE or (
+            confirmed and fresh.disposition == ActionDisposition.CONFIRM
+        )
+        if not allowed:
+            reply = "Lo stato è cambiato e non posso più eseguire quell'azione con certezza."
+            if log_user:
+                self.memory.log_conversation("Stefano", text)
+            self.memory.log_conversation("Euri", reply)
+            self._speak(reply)
+            return True
+
+        if log_user:
+            self.memory.log_conversation("Stefano", text)
+        capability = proposal.capability
+        todo = todos_by_id.get(proposal.target_id or "")
+
+        if capability == "agenda.complete" and todo:
+            ok = self.memory.complete_todo(todo["id"])
+            reply = (self.brain.complete_todo_response(todo.get("content", "")) if ok
+                     else "Non riesco a chiuderlo: quell'impegno non è più disponibile.")
+        elif capability == "agenda.suspend" and todo:
+            ok = self.memory.suspend_todo(todo["id"])
+            reply = (f"Fatto. Tengo in sospeso senza scadenza: {todo.get('content', '')}"
+                     if ok else "Non riesco a sospenderlo: quell'impegno non è più disponibile.")
+        elif capability == "agenda.reschedule" and todo:
+            new_due = self._extract_reschedule_date(text)
+            if new_due is None:
+                self._pending_reschedule = _PendingState(
+                    {"id": todo["id"], "content": todo.get("content", "")}, timeout=120
+                )
+                reply = f"A quando lo sposto: {todo.get('content', '')[:70]}?"
+            else:
+                ok = self.memory.reschedule_todo(todo["id"], new_due)
+                reply = (f"Fatto. Spostato a {format_datetime(new_due)}: "
+                         f"{todo.get('content', '')[:80]}" if ok
+                         else "Non riesco a spostarlo: quell'impegno non è più disponibile.")
+        elif capability.startswith("executor."):
+            tool_name = capability.split(".", 1)[1]
+            call = ToolCall(tool_name=tool_name, parameters=dict(proposal.args))
+            self.executor.stop_event.clear()
+            result = self.executor.execute(call)
+            reply = result.output
+            try:
+                self.memory.set_last_rag_ctx([])
+            except Exception as exc:
+                logger.debug(f"clear last_rag_ctx contextual action fallito: {exc}")
+            if tool_name in {"analyze_image", "read_document"}:
+                self.brain.inject_tool_result(
+                    text, build_injected_context(reply, result.raw_data)
+                )
+        else:
+            reply = "Non ho un adapter reale per quell'azione; non ho eseguito nulla."
+
+        if proposal.alternative:
+            reply = f"L'azione esatta non è disponibile. Come alternativa: {reply}"
+        self.memory.log_conversation("Euri", reply)
+        self._speak(reply)
+        logger.info(
+            f"ActionController: eseguita {capability} target={proposal.target_id or '-'}"
+        )
+        return True
+
+    def _try_contextual_action(self, text: str) -> tuple[bool, bool]:
+        """Ritorna (turno_gestito, veto_semantico_su_azione).
+
+        Il veto distingue un vero NONE/low-confidence del controller da un guasto
+        del modello: nel primo caso un classificatore piu' largo non puo' scavalcare
+        il grounding e far partire comunque un handler mutante.
+        """
+        capabilities, state_context, _todos = self._action_snapshot()
+        previous = self.memory.get_last_euri_turn()
+        with self._brain_lock:
+            proposal = self.action_controller.propose(
+                text,
+                previous_euri_turn=previous,
+                capabilities=capabilities,
+                state_context=state_context,
+            )
+        if proposal is None:
+            return False, False
+        decision = self.action_controller.decide(
+            proposal,
+            capabilities,
+            allow_euri_read_only=bool(proposal.alternative),
+        )
+        logger.info(
+            f"ActionController: {decision.disposition.value} cap={proposal.capability or '-'} "
+            f"target={proposal.target_id or '-'} conf={proposal.confidence:.2f} "
+            f"authority={proposal.authority.value}"
+        )
+        if decision.disposition == ActionDisposition.ABSTAIN:
+            return False, True
+        if decision.disposition == ActionDisposition.CLARIFY:
+            self.memory.log_conversation("Stefano", text)
+            self._pending_action = _PendingState(
+                {"kind": "clarify", "proposal": proposal, "text": text}, timeout=120
+            )
+            reply = ("Ho capito l'azione, ma non quale impegno intendi. Quale devo usare?"
+                     if proposal.capability.startswith("agenda.")
+                     else "Ho capito l'azione, ma il bersaglio non è abbastanza chiaro.")
+            self.memory.log_conversation("Euri", reply)
+            self._speak(reply)
+            return True, False
+        if decision.disposition == ActionDisposition.CONFIRM:
+            self.memory.log_conversation("Stefano", text)
+            self._pending_action = _PendingState(
+                {"kind": "confirm", "proposal": proposal, "text": text}, timeout=120
+            )
+            capability = next(
+                (cap for cap in capabilities if cap.name == proposal.capability), None
+            )
+            description = (
+                capability.description.split(".", 1)[0]
+                if capability else proposal.capability
+            )
+            if proposal.alternative:
+                reply = (
+                    "Non posso eseguire esattamente la richiesta. "
+                    f"Posso però proporti questa alternativa: {description}. Procedo?"
+                )
+            else:
+                reply = f"Posso eseguire {description}, ma richiede conferma. Procedo?"
+            self.memory.log_conversation("Euri", reply)
+            self._speak(reply)
+            return True, False
+        return self._execute_action_proposal(
+            proposal,
+            text,
+            allow_euri_read_only=bool(proposal.alternative),
+        ), False
+
+    def _try_euri_readonly_action(self, draft_reply: str, user_text: str) -> bool:
+        """Una intenzione di Euri puo' auto-eseguire soltanto osservazioni read-only.
+
+        Il draft non viene pronunciato ne' usato come autorizzazione. Viene convertito
+        in proposta, ristretto alle capability read-only e poi rivalidato dall'Executor.
+        """
+        capabilities, state_context, _todos = self._action_snapshot()
+        capabilities = [
+            cap for cap in capabilities
+            if cap.effect == ActionEffect.READ_ONLY and cap.name.startswith("executor.")
+        ]
+        if not capabilities:
+            return False
+        with self._brain_lock:
+            proposal = self.action_controller.propose(
+                draft_reply,
+                previous_euri_turn=user_text,
+                capabilities=capabilities,
+                state_context=state_context,
+                origin="euri",
+            )
+        decision = self.action_controller.decide(
+            proposal, capabilities, allow_euri_read_only=True
+        )
+        if decision.disposition != ActionDisposition.EXECUTE or proposal is None:
+            return False
+        logger.info(
+            f"ActionController: intenzione Euri read-only → {proposal.capability}"
+        )
+        return self._execute_action_proposal(
+            proposal,
+            user_text,
+            log_user=False,
+            allow_euri_read_only=True,
+        )
+
+    def _handle_pending_action(self, text: str):
+        pending = self._pending_action
+        self._pending_action = None
+        if pending is None:
+            return
+        self.memory.log_conversation("Stefano", text)
+        if pending.data.get("kind") == "clarify":
+            capabilities, state_context, _todos = self._action_snapshot()
+            combined = f"{pending.data['text']}\nChiarimento dell'utente: {text}"
+            with self._brain_lock:
+                proposal = self.action_controller.propose(
+                    combined,
+                    previous_euri_turn="Quale bersaglio intendi?",
+                    capabilities=capabilities,
+                    state_context=state_context,
+                )
+            decision = self.action_controller.decide(
+                proposal,
+                capabilities,
+                allow_euri_read_only=bool(proposal and proposal.alternative),
+            )
+            if decision.disposition == ActionDisposition.EXECUTE and proposal is not None:
+                self._execute_action_proposal(
+                    proposal,
+                    combined,
+                    log_user=False,
+                    allow_euri_read_only=bool(proposal.alternative),
+                )
+                return
+            if decision.disposition == ActionDisposition.CONFIRM and proposal is not None:
+                self._pending_action = _PendingState(
+                    {"kind": "confirm", "proposal": proposal, "text": combined}, timeout=120
+                )
+                reply = f"Ora il bersaglio è chiaro. Confermi {proposal.capability}?"
+            else:
+                reply = "Non riesco ancora a collegarlo a un bersaglio univoco; non ho eseguito nulla."
+            self.memory.log_conversation("Euri", reply)
+            self._speak(reply)
+            return
+        if re.search(r"\b(sì|si|vai|procedi|fallo|confermo)\b", text, re.IGNORECASE):
+            self._execute_action_proposal(
+                pending.data["proposal"], pending.data["text"],
+                log_user=False, confirmed=True
+            )
+            return
+        reply = "Va bene, non ho eseguito l'azione."
         self.memory.log_conversation("Euri", reply)
         self._speak(reply)
 
@@ -1815,6 +2067,8 @@ class VoiceDaemon:
                 text, context=context, trusted=trusted, observed_at=observed_at
             )
         reply = scrub_unbacked_save_claim(reply)  # pavimento di onestà: CHAT non salva
+        if needs_honest_correction(reply, set()) and self._try_euri_readonly_action(reply, text):
+            return
         emit_unbacked_action_commitment(self.r, reply, set(), channel="voice_chat")
         reply = scrub_unbacked_action_claim(reply, set())  # CHAT non agisce: niente claim d'azione
         self.memory.log_conversation("Euri", reply)
@@ -2028,6 +2282,7 @@ class VoiceDaemon:
             self._audit_confirm_mode,
             self._pending_todo is not None,
             self._pending_reschedule is not None,
+            self._pending_action is not None,
             self._pending_readback is not None,
             self._pending_write is not None,
             self._awaiting_reaction is not None,
@@ -2148,6 +2403,14 @@ class VoiceDaemon:
             _intent_check, _ = classify(text)
             if _intent_check not in (Intent.RESTORE_ALERTS, Intent.SHUTDOWN):
                 logger.debug("Modalità silenziosa attiva — input ignorato")
+                return
+
+        if self._pending_action:
+            if self._pending_action.expired():
+                self._pending_action = None
+                logger.debug("Action confirmation pending scaduta")
+            else:
+                self._handle_pending_action(text)
                 return
 
         # TEACH recovery: attende sì/no dopo domanda di ripristino sessione
@@ -2291,6 +2554,17 @@ class VoiceDaemon:
         intent, _ = classify(text)
         logger.info(f"[TIMING] Intent regex: {(time.perf_counter()-_t_classify)*1000:.0f}ms → {intent.value}")
 
+        action_checked = False
+        action_veto = False
+        if intent in {Intent.COMPLETE, Intent.RESCHEDULE} or (
+                intent == Intent.CHAT and looks_actionable(text)):
+            action_checked = True
+            handled, action_veto = self._try_contextual_action(text)
+            if handled:
+                return
+            if action_veto and intent in {Intent.COMPLETE, Intent.RESCHEDULE}:
+                intent = Intent.CHAT
+
         # Fallback LLM per intent critici non catturati dalle regex
         if intent == Intent.CHAT:
             from core.llm_classifier import llm_fallback_classify
@@ -2298,7 +2572,27 @@ class VoiceDaemon:
             fallback = llm_fallback_classify(text)
             logger.info(f"[TIMING] LLM classifier: {(time.perf_counter()-_t_llm_cls)*1000:.0f}ms → {fallback or 'CHAT'}")
             if fallback:
-                intent = Intent(fallback)
+                if fallback == "ACTION_REASONING":
+                    fallback_intent = Intent.CHAT
+                    if not action_checked:
+                        handled, veto = self._try_contextual_action(text)
+                        action_checked = True
+                        if handled:
+                            return
+                        action_veto = action_veto or veto
+                else:
+                    fallback_intent = Intent(fallback)
+                if fallback_intent in {Intent.COMPLETE, Intent.RESCHEDULE}:
+                    if action_veto:
+                        fallback_intent = Intent.CHAT
+                    elif not action_checked:
+                        handled, veto = self._try_contextual_action(text)
+                        action_checked = True
+                        if handled:
+                            return
+                        if veto:
+                            fallback_intent = Intent.CHAT
+                intent = fallback_intent
 
         logger.info(f"Intent: {intent.value} — '{text}'")
 
@@ -2649,6 +2943,7 @@ class VoiceDaemon:
         if any([
             self._pending_todo,
             self._pending_reschedule,
+            self._pending_action,
             self._pending_readback,
             self._pending_write,
             self._teach_recovery_mode,

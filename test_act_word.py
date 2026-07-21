@@ -27,6 +27,8 @@ CASES = [
     ("claim creato senza azione", "Ho creato il documento e te l'ho messo nella cartella.", set(), True),
     ("promessa live studio codice", "Vado a dare un'occhiata al codice, specialmente alla gestione dei cicli.", set(), True),
     ("promessa immediata controllo", "Ora controllo il codice e ti dico.", set(), True),
+    ("claim agenda presente live", "Ricevuto. Lo tolgo dai sospesi.", set(), True),
+    ("claim sospensione presente live", "Lascio il test in sospeso.", set(), True),
 
     # --- NON deve scattare: claim + azione realmente eseguita (binario lascia passare) ---
     ("17:43 reale: ho aggiornato ma ha creato (azione c'è)", "Ho aggiornato la memoria: Lezione sul settore plastiche.", {"save"}, False),
@@ -87,6 +89,9 @@ SCRUB_CASES = [
      "Capisco il punto. Vado a dare un'occhiata al codice.", set(),
      lambda out: "Capisco il punto" in out and "dare un'occhiata" not in out
      and out.endswith(_COMMITMENT_TAIL)),
+    ("claim agenda presente → coda onesta",
+     "Ricevuto. Lo tolgo dai sospesi.", set(),
+     lambda out: "tolgo" not in out.lower() and out.endswith(_COMMITMENT_TAIL)),
 ]
 
 

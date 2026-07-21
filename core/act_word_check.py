@@ -67,6 +67,17 @@ _IMMEDIATE_COMMITMENT_RE = re.compile(
     rf"|\b(?:ora|adesso|intanto)\s+(?:mi\s+metto\s+a\s+{_ACTION_INFINITIVE}|{_ACTION_PRESENT})\b",
     re.IGNORECASE,
 )
+# Claim presenti e transitivi che nei dialoghi agenda suonano come un esito
+# immediato (caso live 21/07: "Lo tolgo dai sospesi" dopo routing CHAT). Sono
+# ancorati a inizio frase/periodo e a un oggetto, per non catturare spiegazioni
+# generiche come "quando chiudo un progetto...".
+_DIRECT_PRESENT_ACTION_RE = re.compile(
+    r"(?:^|(?<=[.!?])\s+)(?:ricevuto[,.]?\s*)?"
+    r"(?:(?:lo|la|li|le|questo|questa)\s+"
+    r"(?:tolgo|chiudo|completo|cancello|rimuovo|sospendo|sposto|riprogrammo)\b"
+    r"|lascio\b[^.!?\n]{0,50}\bin\s+sospeso\b)",
+    re.IGNORECASE,
+)
 _CONDITIONAL_OFFER_RE = re.compile(
     r"\b(?:se\s+vuoi|se\s+preferisci|se\s+mi\s+dici|quando\s+vuoi|"
     r"appena\s+confermi|dimmi\s+e)\b",
@@ -95,7 +106,10 @@ def claims_immediate_action_commitment(text: str) -> bool:
     """True se Euri promette lavoro autonomo immediato senza attendere un tool."""
     if not text or _CONDITIONAL_OFFER_RE.search(text):
         return False
-    return bool(_IMMEDIATE_COMMITMENT_RE.search(text))
+    return bool(
+        _IMMEDIATE_COMMITMENT_RE.search(text)
+        or _DIRECT_PRESENT_ACTION_RE.search(text)
+    )
 
 
 def needs_honest_correction(reply: str, turn_actions: set) -> bool:

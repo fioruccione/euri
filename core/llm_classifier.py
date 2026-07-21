@@ -104,7 +104,7 @@ def _is_manufacturing_context(text: str) -> bool:
 
 
 _PROMPT = """\
-Classifica questa frase con UNA SOLA parola tra: WEB_SEARCH, SEARCH, SAVE_TODO, SAVE_MEMORY, EXECUTE, COMPLETE, READ_BACK, CHAT.
+Classifica questa frase con UNA SOLA parola tra: WEB_SEARCH, SEARCH, SAVE_TODO, SAVE_MEMORY, EXECUTE, COMPLETE, READ_BACK, ACTION_REASONING, CHAT.
 
 Definizioni PRECISE — ogni confine è importante:
 
@@ -121,6 +121,13 @@ SAVE_MEMORY: vuole che Euri ricordi un FATTO. Es: "ricordati che X", "segna che 
 COMPLETE: l'utente dice di aver APPENA COMPLETATO un compito specifico, in modo diretto e breve. Es: "l'ho fatto", "ho chiamato Mario", "ho inviato la mail", "ho pagato la fattura". NON è COMPLETE: narrazioni lunghe di ciò che è successo durante la giornata, racconti con dettagli tecnici, frasi che descrivono un processo o un risultato.
 
 READ_BACK: l'utente chiede a Euri di RILEGGERE/fargli sentire una memoria che LEI ha salvato o scritto — l'ultima, quella di poco fa, la lezione appena creata. Es: "leggimi l'ultima memoria", "cosa hai salvato poco fa?", "sei in grado di leggermi la memoria che hai creato dopo la mia risposta?", "fammi sentire la lezione che hai appena scritto", "rileggimi quello che hai memorizzato". NON è READ_BACK: cercare fatti nei ricordi per rispondere a una domanda su un argomento (quello è SEARCH).
+
+ACTION_REASONING: il turno vuole ottenere un effetto operativo, un controllo reale o
+una proposta fattibile, ma la formulazione e' contestuale oppure non coincide in modo
+sicuro con gli intenti sopra. Include riferimenti come "fallo", "quello non e' piu'
+da fare", una richiesta impossibile per cui Euri potrebbe offrire un passo alternativo,
+o "proponimi cosa puoi fare" riferito al contesto. Non usarlo per opinioni, racconti,
+ipotesi astratte o semplici domande generali.
 
 CHAT: tutto il resto — conversazione, domande generali, narrazioni, spiegazioni, saluti.
 
@@ -186,7 +193,10 @@ def llm_fallback_classify(text: str) -> str | None:
         )
         elapsed_ms = (time.time() - t0) * 1000
         result = _clean(response.message.content or "").upper().split()[0] if (response.message.content or "").strip() else ""
-        if result in ("WEB_SEARCH", "SEARCH", "SAVE_TODO", "SAVE_MEMORY", "EXECUTE", "COMPLETE", "READ_BACK"):
+        if result in (
+            "WEB_SEARCH", "SEARCH", "SAVE_TODO", "SAVE_MEMORY", "EXECUTE",
+            "COMPLETE", "READ_BACK", "ACTION_REASONING",
+        ):
             if result == "EXECUTE" and _is_manufacturing_context(text):
                 logger.debug(f"[INTENT_SLOW] EXECUTE LLM bloccato: contesto manifatturiero — '{text[:50]}'")
                 # Ramo 3: hard-negative d'oro per il canary — linguaggio manifatturiero

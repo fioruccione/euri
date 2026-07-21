@@ -1,5 +1,6 @@
 # Nessun Redis/Ollama/hardware reale. Ammessi fake, temp file e subprocess locali.
 test_act_word.py
+test_action_controller.py
 test_coderunner_sandbox.py
 test_correction_quarantine.py
 test_cognitive_audit.py

@@ -332,8 +332,13 @@ class Brain:
                 due = t.get("_due_at")
                 age = ""
                 if due:
-                    days = max(0, (now() - due).days)
-                    age = f", da {days} {'giorno' if days == 1 else 'giorni'}" if days else ", da oggi"
+                    days = max(0, (now().date() - due.date()).days)
+                    if days == 0:
+                        age = ", da oggi"
+                    elif days == 1:
+                        age = ", da ieri"
+                    else:
+                        age = f", da {days} giorni"
                 lines.append(f"{t['content']}{age}.")
             if len(overdue) > 3:
                 lines.append(f"E {len(overdue) - 3} altri.")
