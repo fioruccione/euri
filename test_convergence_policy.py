@@ -273,6 +273,63 @@ def test_budget_exhaustion_is_fail_closed():
     assert traces[-1][1]["n_judge_deferred"] == 1
 
 
+def test_external_refutation_skips_all_expensive_repromotion_work_once():
+    subject = _candidate(
+        "seed",
+        "Nel dominio [a] succede: A. Nel dominio [b] succede: B. "
+        "La connessione operativa non ovvia è: C.",
+    )
+    neighbor = _candidate("neighbor", "stesso claim", 0.0)
+    engine, redis, traces = _engine_for(subject, [neighbor])
+    redis.docs["seed"].update({
+        "demoted_once": True,
+        "recalled_count": 9,
+        "external_reaction": {"verdict": "SMENTITA"},
+        "epistemic_status": "externally_refuted",
+    })
+    calls = []
+    engine._ensure_premise_fidelity = (
+        lambda *_args, **_kwargs: calls.append("fidelity") or True
+    )
+    engine._ensure_bridge_validity = (
+        lambda *_args, **_kwargs: calls.append("bridge") or True
+    )
+    engine._cached_same_insight_judgement = (
+        lambda *_args, **_kwargs: calls.append("judge") or (True, True, False)
+    )
+
+    engine._evaluate_insights()
+    first_stream_count = len(redis.streams)
+    engine._evaluate_insights()
+
+    assert calls == []
+    assert redis.docs["seed"]["status"] == "candidate"
+    assert redis.docs["seed"]["promotion_blocked_reason"] == "external_refutation"
+    assert len(traces) == 1
+    assert traces[0][0][4] == "denied_repromotion"
+    assert first_stream_count == 1
+    assert len(redis.streams) == first_stream_count
+
+
+def test_unused_age_demotion_is_blocked_before_judges():
+    subject = _candidate("seed", "claim già demoto")
+    engine, redis, traces = _engine_for(subject, [])
+    redis.docs["seed"].update({
+        "demoted_once": True,
+        "recalled_count": 0,
+    })
+    calls = []
+    engine._ensure_premise_fidelity = (
+        lambda *_args, **_kwargs: calls.append("fidelity") or True
+    )
+
+    engine._evaluate_insights()
+
+    assert calls == []
+    assert redis.docs["seed"]["promotion_blocked_reason"] == "demoted_without_use"
+    assert traces[0][0][4] == "denied_repromotion"
+
+
 def test_bridge_validity_is_observational_and_preserves_hypotheses():
     insight_key = "euri:insight:new"
     redis = FakeRedis(docs={
@@ -319,6 +376,8 @@ if __name__ == "__main__":
     test_pair_cache_is_symmetric_and_avoids_second_model_call()
     test_judge_accepts_only_exact_same_label()
     test_budget_exhaustion_is_fail_closed()
+    test_external_refutation_skips_all_expensive_repromotion_work_once()
+    test_unused_age_demotion_is_blocked_before_judges()
     test_bridge_validity_is_observational_and_preserves_hypotheses()
     test_bridge_parser_rejects_explanatory_free_text()
     print("test_convergence_policy: OK")

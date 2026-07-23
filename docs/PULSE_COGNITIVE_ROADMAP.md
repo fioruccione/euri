@@ -1,10 +1,10 @@
 # Pulse cognitivo — roadmap persistente
 
-Stato aggiornato: 2026-07-23 12:35
+Stato aggiornato: 2026-07-23 15:20
 
-Fase corrente: **1 — lineage osservazionale verificata, hardening post-incidente da riavviare**
+Fase corrente: **1 — lineage osservazionale verificata, hardening Loop 2h applicato**
 
-Prossima azione esatta: **riavviare Euri; verificare `lag 1 -> 0`, unicità di `audit/repaired` e assenza di reflection pre-checkpoint**
+Prossima azione esatta: **commit/push; riavviare Euri e verificare `lag=0` e un light cycle senza judge sul candidato smentito**
 
 Questo file è il punto di ripresa canonico del cantiere Pulse. Va letto insieme
 alla prima sezione di `CODEX.md` prima di modificare Pulse, Dream, memoria,
@@ -125,6 +125,25 @@ diff-check puliti; integrazione VectorSet/Redis 16/16 con cleanup completo.
 Le sonde dipendenti da Ollama restano differite perché il servizio è fermo insieme
 a Euri, non per un fallimento del percorso modificato.
 
+Verifica idle naturale dopo riavvio, 12:48–14:57:
+
+- Loop 2a non ha pubblicato alcuna reflection del dialogo UBQ e il projector è
+  rimasto `pending=0`, `lag=0`;
+- Loop 2h ha reso visibile un gap residuo: `92bac556` era semanticamente coerente
+  ma priva di parent e marcata come verificata; Redis `SCAN` aveva inoltre contato
+  due volte una delle due coppie reali;
+- il candidate smentito `cb4d3541...3dfe567e` veniva correttamente fermato solo
+  dopo 6 judge LLM per ciclo, causando pass light da circa 160 secondi;
+- hardening implementato: self-observation causale, dedup e precommit guard;
+  blocco di ri-promozione prima di ogni lavoro LLM, one-shot e subordinato alla
+  smentita esterna;
+- manifest 53 file, unit 44/44;
+- repair applicato a Euri ferma: la reflection live porta ora quattro parent,
+  due coppie causali, `requires_verification=true` e
+  `epistemic_status=internal_self_observation`; Obsidian è allineato;
+- audit post-repair: 3.952 Pulse, 11 cognitivi proiettati, `pending=0`, `lag=1`.
+  Il solo evento in coda è il repair appena emesso mentre il projector è fermo.
+
 ### Fase 2 — Lineage dell’uso reale: da fare
 
 Strumentare, senza cambiare ranking o risposte:
@@ -202,6 +221,7 @@ Ogni policy richiede flag, shadow mode, metrica prima/dopo e rollback.
 | 2026-07-23 | 1 | 42/42 unit; audit pre-boot 3.924 legacy e 0 cognitivi; runtime da riavviare | commit che introduce questa roadmap |
 | 2026-07-23 | 1 | Boot verificato: group sano, backlog esaurito, presenza rimasta telemetria; attesa prima trace naturale | checkpoint successivo |
 | 2026-07-23 | 1 | Prima trace naturale valida; scoperto e riparato incidente Loop 2a/agenda; repair in attesa di projector fermo | questo commit |
+| 2026-07-23 | 1 | Idle test: Loop 2a sano; chiusi lineage Loop 2h e hot-loop judge su insight smentito | commit corrente |
 
 ## Protocollo di ripresa
 

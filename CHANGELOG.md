@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-07-23 - Loop 2h con lineage e smentite escluse dal judge
+
+- La prova idle reale ha confermato che Loop 2a non riprocessa più dialoghi
+  precedenti al checkpoint. Ha però mostrato che Loop 2h pubblicava le proprie
+  narrative senza parent né confine epistemico e poteva contare due volte una
+  coppia restituita più volte da Redis `SCAN`.
+- Ogni self-observation porta ora loser/winner, coppie causali deduplicate e stato
+  `internal_self_observation`; resta da verificare e produce un evento cognitivo
+  `reflection/created`. Un cambio di attività o di supersessione durante il lavoro
+  annulla il commit senza consumare le coppie.
+- I candidate già demoti vengono esclusi prima delle misure e dei judge costosi.
+  Una smentita esterna non può essere superata da convergenza interna o richiamo
+  incidentale; annotazione, log, trace e Pulse del blocco sono emessi una sola volta.
+- Aggiunto un repair idempotente per completare la lineage della reflection live
+  `92bac556` senza alterarne il contenuto.
+
 ## 2026-07-23 - Reflection sessionali e agenda protetta dal parlato descrittivo
 
 - Il Loop 2a non tratta più una finestra globale di quattro ore come sessione:

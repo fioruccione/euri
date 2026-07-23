@@ -1,3 +1,35 @@
+# Handoff Euri - 2026-07-23 - Idle test: Loop 2h causale e smentite fuori dal judge
+
+- Test naturale 12:48–14:57 senza interazione: VisualGate è passato correttamente
+  a `INACTIVE`; Loop 2a non ha riprocessato né resuscitato il dialogo UBQ. Pulse e
+  Cognitive Projector sono rimasti allineati (`pending=0`, `lag=0`).
+- La manutenzione ha esposto due percorsi legacy. Loop 2h ha salvato la reflection
+  `92bac556` senza parent, con `requires_verification=false`; inoltre il log diceva
+  3 evoluzioni ma erano 2, perché Redis `SCAN` aveva restituito due volte la coppia
+  `10b6d176 -> fd66ecb3`.
+- Loop 2h deduplica ora le coppie nello stesso pass, salva loser/winner e
+  `self_observation_pairs` nel documento canonico, usa
+  `epistemic_status=internal_self_observation`, emette `reflection/created` con
+  lineage e non consuma una coppia se il commit fallisce. Se STT/TTS riprende o
+  l'arco superseded cambia durante l'LLM, il `precommit_guard` annulla la
+  pubblicazione.
+- L'insight smentito `cb4d3541...3dfe567e` veniva bloccato correttamente soltanto
+  dopo aver consumato ogni ciclo fino a 6 judge LLM (~150–166 s). Il gate è ora
+  prima di fedeltà/bridge/judge. Una smentita esterna prevale anche su un eventuale
+  `recalled_count`; la decisione viene annotata ed emessa una sola volta come
+  `insight/promotion_blocked`.
+- `scripts/repair_20260723_loop2h_lineage.py` ha ricostruito in modo idempotente i
+  quattro parent e le due coppie reali della reflection live, aggiornando anche
+  Obsidian. Il record è ora `internal_self_observation`,
+  `requires_verification=true`; l'evento audit è in attesa del projector fermo.
+- Verifica: manifest 53 file, unit 44/44, test mirati Loop 2h 3/3 e convergenza
+  verdi. Audit post-repair: Pulse 3.952, cognitivi proiettati 11, `pending=0`,
+  `lag=1` (il solo repair, con Euri ferma). Prossimo passo: commit/push; poi
+  riavviare e verificare `lag=0` e un light cycle rapido senza la ripetizione
+  `re-promozione negata`.
+
+---
+
 # Handoff Euri - 2026-07-23 - Incidente UBQ: Loop 2a sessionale e agenda fail-closed
 
 - Prima trace cognitiva naturale verificata: `memory/saved` è arrivato una sola

@@ -334,6 +334,19 @@ class DreamEngine:
         """Chiamato da voice_daemon ad ogni STT/TTS per resettare l'idle timer."""
         with self._lock:
             self._last_activity = time.time()
+
+    def _run_self_observation(self):
+        """Esegue Loop 2h soltanto finché lo snapshot idle resta valido."""
+        if not self._self_observation:
+            return
+        with self._lock:
+            activity_snapshot = self._last_activity
+
+        def _activity_unchanged():
+            with self._lock:
+                return self._last_activity == activity_snapshot
+
+        self._self_observation.run(precommit_guard=_activity_unchanged)
             
     def _is_idle(self) -> bool:
         """Controlla se il sistema è inattivo abbastanza per i cicli offline."""
@@ -456,7 +469,7 @@ class DreamEngine:
             self._plausibility_gate_pass()
         if self._self_observation:
             try:
-                self._self_observation.run()
+                self._run_self_observation()
             except Exception as e:
                 logger.error(f"Loop 2h: errore self-observation pass: {e}")
         self._cleanup_expired_insights()
@@ -496,7 +509,7 @@ class DreamEngine:
             # solo una voce narrativa in prima persona per ogni evoluzione mai raccontata prima.
             if self._self_observation:
                 try:
-                    self._self_observation.run()
+                    self._run_self_observation()
                 except Exception as e:
                     logger.error(f"Loop 2h: errore self-observation pass: {e}")
 
@@ -1637,6 +1650,105 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
         except Exception as e:
             logger.debug(f"trace convergence fallito (non-critico): {e}")
 
+    def _repromotion_block_reason(self, insight_key: str) -> str | None:
+        """Blocca prima dei judge i candidate che non possono essere ri-promossi."""
+        try:
+            demoted_raw = self._r.json().get(insight_key, "$.demoted_once") or []
+            demoted_once = bool(demoted_raw[0]) if demoted_raw else False
+            # La reaction SMENTITA e il cleanup impostano sempre demoted_once:
+            # per i candidate mai promossi basta quindi una sola lettura Redis.
+            if not demoted_once:
+                return None
+            external_raw = self._r.json().get(insight_key, "$.external_reaction") or []
+            external_verdict = (
+                (external_raw[0] or {}).get("verdict") if external_raw else None
+            )
+            epistemic_raw = (
+                self._r.json().get(insight_key, "$.epistemic_status") or []
+            )
+            epistemic_status = epistemic_raw[0] if epistemic_raw else ""
+            refuted_raw = (
+                self._r.json().get(insight_key, "$.refuted_by_user_at") or []
+            )
+
+            # Una smentita del proprietario è un confine esterno: il semplice
+            # richiamo nel RAG non può trasformarsi in validazione.
+            if (
+                external_verdict == "SMENTITA"
+                or epistemic_status == "externally_refuted"
+                or bool(refuted_raw and refuted_raw[0])
+            ):
+                return "external_refutation"
+
+            recalled_raw = self._r.json().get(insight_key, "$.recalled_count") or []
+            recalled = int(recalled_raw[0]) if recalled_raw else 0
+            if recalled == 0:
+                return "demoted_without_use"
+        except Exception as exc:
+            # Fail-open sulla metrica: il percorso legacy continuerà a valutare.
+            logger.debug(f"Dream Engine: gate ri-promozione non leggibile: {exc}")
+        return None
+
+    def _record_repromotion_block(self, doc, reason: str) -> bool:
+        """Annota e segnala una decisione di blocco una sola volta per motivo."""
+        try:
+            stored = (
+                self._r.json().get(doc.id, "$.promotion_blocked_reason") or []
+            )
+            if stored and stored[0] == reason:
+                return False
+            blocked_at = time.time()
+            self._r.json().set(doc.id, "$.promotion_blocked_reason", reason)
+            self._r.json().set(doc.id, "$.promotion_blocked_at", blocked_at)
+            convergences = int(getattr(doc, "convergence_count", 1) or 1)
+            logger.info(
+                "Dream Engine: ri-promozione esclusa prima della valutazione "
+                f"({reason}) — {doc.id[-8:]}"
+            )
+            insight_id = str(doc.id).replace("euri:insight:", "")
+            source_ids_raw = (
+                self._r.json().get(doc.id, "$.source_memory_ids") or []
+            )
+            source_ids = source_ids_raw[0] if source_ids_raw else []
+            cognitive_emit(
+                self._r,
+                "insight",
+                "intero",
+                "promotion_blocked",
+                producer="loop2c",
+                trace_id=f"insight:{insight_id}",
+                logical_event_id=f"insight-promotion-blocked:{insight_id}:{reason}",
+                entity_refs=[{"type": "insight", "id": insight_id}],
+                parent_refs=source_ids,
+                payload={
+                    "id": insight_id,
+                    "reason": reason,
+                    "convergences": convergences,
+                },
+                epistemic_before=(
+                    "externally_refuted"
+                    if reason == "external_refutation"
+                    else "demoted"
+                ),
+                epistemic_after="candidate_promotion_blocked",
+                salience=0.55,
+            )
+            self._trace_convergence(
+                doc,
+                convergences,
+                0,
+                [],
+                "denied_repromotion",
+                n_vector_shortlisted=0,
+                n_judge_confirmed=0,
+                n_judge_deferred=0,
+                judge_trace=[],
+            )
+            return True
+        except Exception as exc:
+            logger.debug(f"Dream Engine: blocco ri-promozione non annotato: {exc}")
+            return False
+
     def _evaluate_insights(self, phase: str = "manual"):
         """Valuta i candidate insights per la promozione (convergenza)."""
         started = time.monotonic()
@@ -1670,6 +1782,14 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
             for doc in res.docs:
                 # Potrebbe essere già stato eliminato come duplicato in un'iterazione precedente
                 if not self._r.exists(doc.id):
+                    continue
+
+                # Questo gate deve precedere fedeltà, bridge e confronti LLM: una
+                # decisione già chiusa dall'uso o da una smentita esterna non deve
+                # consumare ogni venti minuti l'intero budget del judge.
+                block_reason = self._repromotion_block_reason(doc.id)
+                if block_reason:
+                    self._record_repromotion_block(doc, block_reason)
                     continue
 
                 if fidelity_budget > 0:
@@ -1793,33 +1913,6 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
                         )
                         self._trace_convergence(doc, convergences, n_certain, neighbor_trace,
                                                 "denied_format", **trace_meta)
-                        continue
-
-                    # Gate di ri-promozione (V2.19, opzione b): la PRIMA promozione è
-                    # libera (il sogno deve poter affiorare per sola convergenza). Ma un
-                    # insight già demoto da Gate 1 — cioè invecchiato (14–30 giorni dalla
-                    # creazione) e MAI richiamato in conversazione — non torna in vita per
-                    # la sola ri-convergenza (il sogno che si auto-resuscita). Per rinascere
-                    # deve essere stato validato dall'uso reale (recalled_count > 0).
-                    # I candidate non sono nel percorso di richiamo (search_insights filtra
-                    # @status:{promoted}), quindi per un demoto questo è di fatto sempre
-                    # vero: resta candidate e si spegne pulito al giorno 30 (Gate 3).
-                    # Il check su recalled_count è esplicito per documentare il principio
-                    # ed essere a prova di futuro. Niente oscillazione demote↔re-promote.
-                    stored_dem = self._r.json().get(doc.id, "$.demoted_once")
-                    demoted_once = bool(stored_dem[0]) if stored_dem else False
-                    stored_rc = self._r.json().get(doc.id, "$.recalled_count")
-                    recalled = int(stored_rc[0]) if stored_rc else 0
-                    if demoted_once and recalled == 0:
-                        logger.info(
-                            f"Dream Engine: re-promozione negata (demoto, mai validato "
-                            f"dall'uso) — {doc.id[-8:]} con {convergences} convergenze"
-                        )
-                        pulse_emit(self._r, "insight", "intero", "repromotion_denied",
-                                   payload={"id": str(doc.id)[-12:], "convergences": convergences},
-                                   salience=0.45)
-                        self._trace_convergence(doc, convergences, n_certain, neighbor_trace,
-                                                "denied_repromotion", **trace_meta)
                         continue
 
                     # Provenienza cumulativa: prima di cancellare i candidate assorbiti,

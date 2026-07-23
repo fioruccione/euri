@@ -24,6 +24,7 @@ from core.ollama_client import get_dream_client
 from loguru import logger
 
 import config
+from core.pulse import cognitive_emit
 
 
 class SelfObservation:
@@ -42,10 +43,12 @@ class SelfObservation:
     # ENTRY POINT
     # ──────────────────────────────────────────
 
-    def run(self) -> dict:
+    def run(self, *, precommit_guard=None) -> dict:
         """
         Esegue il pass. Ritorna metriche {pairs_found, reflection_id}.
         Idempotente: ogni coppia viene narrata una sola volta (tracked via NARRATED_KEY).
+        Se il mondo cambia durante la generazione, ``precommit_guard`` impedisce
+        che una narrativa ormai stale venga pubblicata.
         """
         pairs = self._collect_unnarrated_pairs(limit=self.MAX_PAIRS_PER_CYCLE)
         if not pairs:
@@ -58,8 +61,49 @@ class SelfObservation:
             logger.warning("Loop 2h: generazione narrativa fallita o vuota")
             return {"pairs_found": len(pairs), "reflection_id": None}
 
-        ref_id = self._save_as_reflection(narrative, pairs)
+        def _can_publish():
+            if not self._pairs_still_valid(pairs):
+                return False
+            return precommit_guard is None or bool(precommit_guard())
+
+        ref_id = self._save_as_reflection(
+            narrative,
+            pairs,
+            precommit_guard=_can_publish,
+        )
+        if not ref_id:
+            logger.info(
+                "Loop 2h: reflection non pubblicata; coppie lasciate da narrare"
+            )
+            return {"pairs_found": len(pairs), "reflection_id": None}
+
         self._mark_narrated(pairs)
+        parent_ids = self._pair_parent_ids(pairs)
+        cognitive_emit(
+            self._r,
+            "reflection",
+            "intero",
+            "created",
+            producer="loop2h",
+            trace_id=f"reflection:{ref_id}",
+            logical_event_id=f"reflection:{ref_id}",
+            entity_refs=[{"type": "memory", "id": ref_id, "role": "child"}],
+            parent_refs=parent_ids,
+            payload={
+                "id": ref_id,
+                "source_memory_ids": parent_ids,
+                "supersession_pairs": [
+                    {
+                        "loser_id": p["loser"].get("id"),
+                        "winner_id": p["winner"].get("id"),
+                    }
+                    for p in pairs
+                ],
+            },
+            epistemic_before="superseded_memory_pairs",
+            epistemic_after="internal_self_observation_requires_verification",
+            salience=0.4,
+        )
 
         logger.success(
             f"Loop 2h: {len(pairs)} evoluzioni raccontate in reflection {ref_id[:8]}…"
@@ -76,6 +120,7 @@ class SelfObservation:
         Carica vincitore + perdente con contenuti completi.
         """
         pairs: list[dict] = []
+        seen_pair_keys: set[str] = set()
         for key in self._r.scan_iter("euri:memory:*"):
             if len(pairs) >= limit:
                 break
@@ -94,6 +139,10 @@ class SelfObservation:
                     continue
 
                 pair_key = "|".join(sorted([loser_id, winner_id]))
+                # Redis SCAN può restituire la stessa chiave più volte durante
+                # un'iterazione. Una coppia è una sola evoluzione, non due.
+                if pair_key in seen_pair_keys:
+                    continue
                 if self._r.sismember(self.NARRATED_KEY, pair_key):
                     continue
 
@@ -107,10 +156,46 @@ class SelfObservation:
                     "winner": winner,
                     "pair_key": pair_key,
                 })
+                seen_pair_keys.add(pair_key)
             except Exception as e:
                 logger.debug(f"Loop 2h: skip {key} — {e}")
                 continue
         return pairs
+
+    def _pairs_still_valid(self, pairs: list[dict]) -> bool:
+        """Verifica al commit che ogni arco loser→winner esista ancora."""
+        try:
+            for pair in pairs:
+                loser_id = str(pair["loser"].get("id") or "")
+                winner_id = str(pair["winner"].get("id") or "")
+                if not loser_id or not winner_id:
+                    return False
+                raw = self._r.json().get(f"euri:memory:{loser_id}", "$")
+                if not raw:
+                    return False
+                current_winner = raw[0].get("superseded_by")
+                if isinstance(current_winner, list):
+                    current_winner = current_winner[0] if current_winner else None
+                if str(current_winner or "") != winner_id:
+                    return False
+                if not self._r.json().get(f"euri:memory:{winner_id}", "$"):
+                    return False
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _pair_parent_ids(pairs: list[dict]) -> list[str]:
+        """Restituisce loser e winner unici, preservando l'ordine narrativo."""
+        parent_ids: list[str] = []
+        seen: set[str] = set()
+        for pair in pairs:
+            for role in ("loser", "winner"):
+                memory_id = str(pair[role].get("id") or "")
+                if memory_id and memory_id not in seen:
+                    seen.add(memory_id)
+                    parent_ids.append(memory_id)
+        return parent_ids
 
     @staticmethod
     def _group_by_domain(pairs: list[dict]) -> dict[str, list[dict]]:
@@ -189,18 +274,40 @@ class SelfObservation:
     # SAVE
     # ──────────────────────────────────────────
 
-    def _save_as_reflection(self, content: str, pairs: list[dict]) -> str:
+    def _save_as_reflection(
+        self,
+        content: str,
+        pairs: list[dict],
+        *,
+        precommit_guard=None,
+    ) -> str | None:
         """Salva la narrativa come reflection con tag self_observation."""
         tags = ["self_observation", "loop2h", "evolution"]
         # Tagga i primi 5 pair_key (audit trail, evita esplosione tag)
         for p in pairs[:5]:
             tags.append(f"pair:{p['pair_key'][:16]}")
 
+        parent_ids = self._pair_parent_ids(pairs)
         mid = self._memory.save_memory(
             content=content,
-            category="meta",
+            category="riflessione",
             source="reflection",
             tags=tags,
+            final_fields={
+                "requires_verification": True,
+                "epistemic_status": "internal_self_observation",
+                "verification_status": "narrative_derived_from_supersession",
+                "source_memory_ids": parent_ids,
+                "self_observation_pairs": [
+                    {
+                        "loser_id": p["loser"].get("id"),
+                        "winner_id": p["winner"].get("id"),
+                        "pair_key": p["pair_key"],
+                    }
+                    for p in pairs
+                ],
+            },
+            precommit_guard=precommit_guard,
         )
         if mid:
             try:
