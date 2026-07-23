@@ -1,3 +1,43 @@
+# Handoff Euri - 2026-07-23 - Incidente UBQ: Loop 2a sessionale e agenda fail-closed
+
+- Prima trace cognitiva naturale verificata: `memory/saved` è arrivato una sola
+  volta, con `pending=0` e `lag=0`. Il Pulse non ha creato l'errore: ha localizzato
+  la catena `Loop 2a -> memory/saved -> RAG`.
+- Caso live 12:05: durante il dialogo UBQ il Loop 2a ha salvato `98bb04db`, una
+  reflection sul vecchio `03ppr102`. Causa: chiamava "sessione" tutte le memorie
+  non-reflection delle ultime quattro ore; al riavvio aveva perso il confine
+  dell'ultima run. Tre reaction delle 08:52 sono quindi diventate il batch corrente.
+- Loop 2a usa ora il checkpoint durevole `euri:loop2a:memory_checkpoint`, seleziona
+  un solo `conversation_id/segment_id` (o una sola coda temporale contigua), ordina
+  le fonti e salva `session_memory_ids`, `related_memory_ids` e tutti i parent.
+  L'idle minimo è 5 minuti. Se arriva attività durante generazione, embedding o
+  classificazione, `precommit_guard` annulla la pubblicazione e lascia invariato
+  il checkpoint.
+- Nello stesso turno descrittivo, “oggi faccio la prova e domani avrò le risposte”
+  era stato interpretato come `agenda.reschedule` sul todo hardware `7bd10b48`.
+  Le mutazioni agenda richiedono ora due prove deterministicamente indipendenti
+  dall'output del modello: gesto esplicito specifico della capability e target
+  nominato/anaforico grounded nel turno precedente. In assenza, `authority=none`
+  o chiarimento; nessun fallback mutante legacy è più raggiungibile.
+- Le azioni producono lineage `action/proposed -> decided -> revalidated ->
+  executed|failed|deferred`, con capability, autorità, target e stato prima/dopo.
+  Una mutazione integrata viene sempre pronunciata esplicitamente, anche se il
+  Brain omette l'esito dalla risposta generata.
+- Repair live applicato e idempotente tramite
+  `scripts/repair_20260723_loop2a_action.py`: `98bb04db` è ritratta e fuori dal
+  retrieval; `ae103970` è nuovamente attiva; il todo hardware resta `pending`
+  senza scadenza e conserva `action_history` con before/after. La copia Obsidian
+  è in `.euri-quarantine/2026-07-23-loop2a`, non cancellata.
+- Euri è ferma. Il repair ha emesso un evento cognitivo sul Pulse; l'audit mostra
+  quindi correttamente projector `pending=0`, `lag=1`. Al prossimo avvio verificare
+  che diventi `lag=0`, che `audit/repaired` compaia una sola volta e che nessuna
+  nuova reflection venga generata dai record precedenti al checkpoint.
+- Verifica: manifest completo 52 file; unit 43/43, compilazione e diff-check puliti.
+  Integrazione VectorSet/Redis 16/16 e cleanup sandbox completo. Le due integrazioni
+  Ollama sono rimaste non eseguibili perché Euri/Ollama sono volutamente fermi.
+
+---
+
 # Handoff Euri - 2026-07-23 - Pulse v2 e roadmap cognitiva persistente
 
 - Decisione: il vecchio Pulse resta bus afferente compatibile, ma viene separato

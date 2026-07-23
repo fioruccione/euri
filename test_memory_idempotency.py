@@ -224,6 +224,23 @@ def test_final_fields_cannot_replace_canonical_identity():
     assert redis.docs == {}
 
 
+def test_precommit_guard_can_cancel_stale_background_publication():
+    redis = FakeRedis()
+    manager = _manager(redis)
+    with (
+        patch("core.memory_manager.assign_domain", return_value="test"),
+        patch("core.memory_manager.process_memory_outbox_event", return_value=True),
+    ):
+        mid = manager.save_memory(
+            "Ipotesi costruita su uno snapshot ormai superato.",
+            source="reflection",
+            precommit_guard=lambda: False,
+        )
+    assert mid is None
+    assert redis.docs == {}
+    assert redis.hashes == {}
+
+
 if __name__ == "__main__":
     test_failed_commit_leaves_no_phantom_winner()
     test_document_build_failure_never_reserves_winner()
@@ -232,4 +249,5 @@ if __name__ == "__main__":
     test_temporal_context_is_canonical_memory_metadata()
     test_final_fields_are_committed_before_outbox_visibility()
     test_final_fields_cannot_replace_canonical_identity()
+    test_precommit_guard_can_cancel_stale_background_publication()
     print("test_memory_idempotency: OK")

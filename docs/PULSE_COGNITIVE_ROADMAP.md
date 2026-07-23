@@ -1,10 +1,10 @@
 # Pulse cognitivo — roadmap persistente
 
-Stato aggiornato: 2026-07-23 12:00
+Stato aggiornato: 2026-07-23 12:35
 
-Fase corrente: **1 — lineage osservazionale**
+Fase corrente: **1 — lineage osservazionale verificata, hardening post-incidente da riavviare**
 
-Prossima azione esatta: **attendere il primo evento cognitivo naturale, verificarne la trace, poi Fase 2**
+Prossima azione esatta: **riavviare Euri; verificare `lag 1 -> 0`, unicità di `audit/repaired` e assenza di reflection pre-checkpoint**
 
 Questo file è il punto di ripresa canonico del cantiere Pulse. Va letto insieme
 alla prima sezione di `CODEX.md` prima di modificare Pulse, Dream, memoria,
@@ -46,7 +46,7 @@ Evidenza 2026-07-23:
 - Initiative leggeva solo eventi nuovi da `$` e tre coppie sense/kind;
 - la quasi totalità del bus era quindi telemetria registrata e mai utilizzata.
 
-### Fase 1 — Envelope v2 e timeline cognitiva: implementata, attende verifica runtime
+### Fase 1 — Envelope v2 e timeline cognitiva: implementata e verificata
 
 Implementato:
 
@@ -69,14 +69,6 @@ Implementato:
   - `insight/demoted`;
   - `reaction/rated`, con verdetto;
   - `consolidation/consolidated`, con figlio e genitori.
-
-Da verificare dopo il riavvio:
-
-1. log `Cognitive Projector: in ascolto durevole su euri:pulse`;
-2. il backlog legacy viene ACKato come telemetria senza effetti;
-3. nuovi eventi cognitivi compaiono una sola volta in `euri:cognitive:events`;
-4. trace e causation sono continue tra seed, candidate e promozione/reaction;
-5. il projector non cambia conteggio o contenuto di memorie e insight.
 
 Audit read-only:
 
@@ -104,6 +96,35 @@ Verifica runtime dopo riavvio, 11:56:
 - boot cognitivo invariato: 117 candidati Loop 2e, 160 insight interni e 4
   confermati esternamente.
 
+Prima trace naturale, 12:05:
+
+- `memory/saved` è comparso una sola volta con trace
+  `memory:98bb04db-e5ca-4f04-a726-76b88487008f`;
+- producer `memory_outbox`, `pending=0`, `lag=0`, nessun campo trace mancante;
+- il contenuto errato non è nato nel projector: l'evento ha reso osservabile la
+  catena `Loop 2a -> memory/saved -> RAG`;
+- questo ha scoperto che Loop 2a usava tre reaction delle 08:52 come “sessione”
+  durante il dialogo UBQ delle 12:00 e che la nuova reflection era stata richiamata
+  subito nel turno seguente.
+
+Hardening conseguente:
+
+- checkpoint durevole `euri:loop2a:memory_checkpoint`;
+- selezione per `conversation_id/segment_id`, ordinata e successiva al checkpoint;
+- parent distinti tra memorie della sessione e memorie correlate;
+- idle cognitivo di cinque minuti e `precommit_guard` contro attività sopraggiunta;
+- reflection pubblicata come `internal_reflection` e sempre da verificare;
+- repair append-only emesso come `audit/repaired`.
+
+Poiché Euri è ferma durante il repair, l'audit finale mostra intenzionalmente
+`pending=0`, `lag=1`: l'unico evento in attesa è il repair e deve essere proiettato
+una sola volta al prossimo avvio.
+
+Verifica pre-riavvio del fix: manifest 52 file, unit 43/43, compilazione e
+diff-check puliti; integrazione VectorSet/Redis 16/16 con cleanup completo.
+Le sonde dipendenti da Ollama restano differite perché il servizio è fermo insieme
+a Euri, non per un fallimento del percorso modificato.
+
 ### Fase 2 — Lineage dell’uso reale: da fare
 
 Strumentare, senza cambiare ranking o risposte:
@@ -114,6 +135,16 @@ Strumentare, senza cambiare ranking o risposte:
 - turno utente/risposta come confine di trace;
 - `correction/proposed` distinto da `correction/applied`;
 - chiamate modello con componente, latenza, coda e outcome, senza prompt sensibili.
+
+Prima fetta già anticipata dall'incidente, senza cambiare ranking:
+
+- `action/proposed`;
+- `action/decided`;
+- `action/revalidated`;
+- `action/executed|failed|deferred`, con target e stato before/after.
+
+Resta da collegare queste trace al turno utente e alla risposta, insieme a recall
+e uso effettivo delle memorie.
 
 Decisione da preservare: “recuperato” non significa “usato”; “usato” non significa
 “vero”; una risposta del modello non è evidenza esterna.
@@ -170,6 +201,7 @@ Ogni policy richiede flag, shadow mode, metrica prima/dopo e rollback.
 | 2026-07-23 | 0 | Audit: Pulse prevalentemente telemetrico, lineage assente | `1126a0f` come base |
 | 2026-07-23 | 1 | 42/42 unit; audit pre-boot 3.924 legacy e 0 cognitivi; runtime da riavviare | commit che introduce questa roadmap |
 | 2026-07-23 | 1 | Boot verificato: group sano, backlog esaurito, presenza rimasta telemetria; attesa prima trace naturale | checkpoint successivo |
+| 2026-07-23 | 1 | Prima trace naturale valida; scoperto e riparato incidente Loop 2a/agenda; repair in attesa di projector fermo | questo commit |
 
 ## Protocollo di ripresa
 

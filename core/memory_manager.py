@@ -148,6 +148,7 @@ class MemoryManager:
         memory_kind: str | None = None,
         temporal_context: dict | None = None,
         final_fields: dict | None = None,
+        precommit_guard=None,
     ) -> str | None:
         """Costruisce e pubblica una memoria canonica già completa.
 
@@ -155,6 +156,8 @@ class MemoryManager:
         dominio forzato, fragilità epistemica, ecc.) che devono essere visibili
         nella STESSA versione letta da outbox, Pulse, Obsidian e indici derivati.
         Non va usato per riscrivere identità, contenuto, fonte o embedding canonici.
+        ``precommit_guard`` consente ai loop lunghi di annullare la pubblicazione
+        se il mondo è cambiato durante embedding/classificazione.
         """
         # Memory Guard: scansione anti-poisoning sull'ingest. Da fonte non fidata
         # (web/mobile_in) un contenuto con injection/esfiltrazione viene rifiutato
@@ -307,6 +310,16 @@ class MemoryManager:
                     + ", ".join(sorted(forbidden))
                 )
             doc.update(dict(final_fields))
+        if precommit_guard is not None:
+            try:
+                if not bool(precommit_guard()):
+                    logger.info(
+                        f"Memory publication annullata dal precommit guard: {mid}"
+                    )
+                    return None
+            except Exception as exc:
+                logger.warning(f"Memory precommit guard fallito: {exc}")
+                return None
         if idem_key:
             winner_id, created = self._commit_idempotent_memory(idem_key, key, mid, doc)
             if not created:

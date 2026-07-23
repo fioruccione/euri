@@ -24,6 +24,7 @@ test_hardware_interoception.py
 test_identifier_extraction.py
 test_insight_epistemic_boundary.py
 test_initiative.py
+test_loop2a_reflection.py
 test_loop2e_attention.py
 test_memory_idempotency.py
 test_memory_outbox.py

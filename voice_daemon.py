@@ -28,7 +28,7 @@ from voice.face_auth import FaceAuth
 from voice.speaker_auth import SpeakerAuth, SpeakerVerdict, ENROLL_UTTERANCES
 from voice.social_perception import SocialSnapshot, build_social_perception
 
-from core.pulse import pulse_emit
+from core.pulse import cognitive_emit, pulse_emit
 from core.intent_router import (
     Intent, classify, extract_content_after_trigger,
     TEACH_END_SIGNALS, TRANSLATE_END_SIGNALS,
@@ -233,6 +233,7 @@ class VoiceDaemon:
                                                # NON aggiornato dal TTS di Euri (niente auto-rinfresco).
         self._passive_last_seq: int = 0        # sequence ID journal già analizzato
         self._consolidation_last_run: float = 0.0  # timestamp ultimo Loop 2a
+        self._consolidation_boot_ts: float = time.time()
         self._brain_lock = threading.Lock()  # protegge brain tra main loop e mobile worker
         self._first_visual_activation = True  # True finché il VisualGate non vede l'utente per la prima volta
         self._tts_lock   = threading.Lock()  # protegge il modello TTS da accessi concorrenti
@@ -976,6 +977,43 @@ class VoiceDaemon:
             self.executor.get_contextual_capabilities(),
         )
 
+    def _emit_action_transition(self, proposal, kind: str, **payload) -> str | None:
+        """Timeline causale dell'azione; osservazionale e sempre fail-open."""
+        if proposal is None:
+            return None
+        trace_id = proposal.trace_id or f"action:{proposal.capability or 'none'}"
+        chain = getattr(self, "_action_pulse_chain", None)
+        if chain is None:
+            chain = {}
+            self._action_pulse_chain = chain
+        event_id = cognitive_emit(
+            self.r,
+            "action",
+            "intero",
+            kind,
+            producer="action_controller" if kind in {"proposed", "decided", "revalidated"} else "voice_adapter",
+            trace_id=trace_id,
+            causation_id=chain.get(trace_id, ""),
+            logical_event_id=trace_id,
+            entity_refs=(
+                [{"type": "todo", "id": proposal.target_id}]
+                if proposal.target_id else []
+            ),
+            payload={
+                "capability": proposal.capability or None,
+                "target_id": proposal.target_id,
+                "authority": proposal.authority.value,
+                "confidence": proposal.confidence,
+                **payload,
+            },
+            epistemic_before=payload.get("epistemic_before", ""),
+            epistemic_after=payload.get("epistemic_after", ""),
+            salience=0.65 if kind == "executed" else 0.35,
+        )
+        if event_id:
+            chain[trace_id] = event_id.decode() if isinstance(event_id, bytes) else str(event_id)
+        return event_id
+
     def _execute_action_proposal(
         self,
         proposal,
@@ -993,6 +1031,12 @@ class VoiceDaemon:
         fresh = self.action_controller.decide(
             proposal, capabilities, allow_euri_read_only=allow_euri_read_only
         )
+        self._emit_action_transition(
+            proposal,
+            "revalidated",
+            disposition=fresh.disposition.value,
+            reason=fresh.reason,
+        )
         allowed = fresh.disposition == ActionDisposition.EXECUTE or (
             confirmed and fresh.disposition == ActionDisposition.CONFIRM
         )
@@ -1009,25 +1053,47 @@ class VoiceDaemon:
         capability = proposal.capability
         todo = todos_by_id.get(proposal.target_id or "")
         integrate_response = force_integrated or proposal.integrate_response
+        before_state = (
+            {
+                "status": todo.get("status", "pending"),
+                "due_at": todo.get("due_at"),
+                "suspended_at": todo.get("suspended_at"),
+            }
+            if todo else {}
+        )
 
         raw_data = {}
+        ok = False
+        deferred = False
+        after_state = dict(before_state)
         if capability == "agenda.complete" and todo:
             ok = self.memory.complete_todo(todo["id"])
+            if ok:
+                after_state["status"] = "done"
             reply = (self.brain.complete_todo_response(todo.get("content", "")) if ok
                      else "Non riesco a chiuderlo: quell'impegno non è più disponibile.")
         elif capability == "agenda.suspend" and todo:
             ok = self.memory.suspend_todo(todo["id"])
+            if ok:
+                after_state.update({"status": "pending", "due_at": None})
             reply = (f"Fatto. Tengo in sospeso senza scadenza: {todo.get('content', '')}"
                      if ok else "Non riesco a sospenderlo: quell'impegno non è più disponibile.")
         elif capability == "agenda.reschedule" and todo:
             new_due = self._extract_reschedule_date(text)
             if new_due is None:
+                deferred = True
                 self._pending_reschedule = _PendingState(
                     {"id": todo["id"], "content": todo.get("content", "")}, timeout=120
                 )
                 reply = f"A quando lo sposto: {todo.get('content', '')[:70]}?"
             else:
                 ok = self.memory.reschedule_todo(todo["id"], new_due)
+                if ok:
+                    after_state.update({
+                        "status": "pending",
+                        "due_at": new_due.isoformat(),
+                        "suspended_at": None,
+                    })
                 reply = (f"Fatto. Spostato a {format_datetime(new_due)}: "
                          f"{todo.get('content', '')[:80]}" if ok
                          else "Non riesco a spostarlo: quell'impegno non è più disponibile.")
@@ -1036,6 +1102,7 @@ class VoiceDaemon:
             call = ToolCall(tool_name=tool_name, parameters=dict(proposal.args))
             self.executor.stop_event.clear()
             result = self.executor.execute(call)
+            ok = bool(result.success)
             reply = result.output
             raw_data = result.raw_data
             try:
@@ -1049,6 +1116,7 @@ class VoiceDaemon:
         else:
             reply = "Non ho un adapter reale per quell'azione; non ho eseguito nulla."
 
+        operation_reply = reply
         if integrate_response:
             reply = self._respond_after_contextual_action(
                 proposal,
@@ -1064,8 +1132,19 @@ class VoiceDaemon:
                     )
                 ),
             )
+            if capability.startswith("agenda."):
+                # Una mutazione non deve sparire dentro la risposta generata: il
+                # proprietario deve poterla osservare senza leggere i log.
+                reply = f"{operation_reply}\n\n{reply}"
         elif proposal.alternative:
             reply = f"L'azione esatta non è disponibile. Come alternativa: {reply}"
+        self._emit_action_transition(
+            proposal,
+            "deferred" if deferred else ("executed" if ok else "failed"),
+            success=ok,
+            before=before_state,
+            after=after_state,
+        )
         self.memory.log_conversation(_ASSISTANT_NAME, reply)
         self._speak(reply)
         logger.info(
@@ -1134,7 +1213,7 @@ class VoiceDaemon:
         del modello: nel primo caso un classificatore piu' largo non puo' scavalcare
         il grounding e far partire comunque un handler mutante.
         """
-        capabilities, state_context, _todos = self._action_snapshot()
+        capabilities, state_context, todos_by_id = self._action_snapshot()
         previous = self.memory.get_last_euri_turn()
         with self._brain_lock:
             proposal = self.action_controller.propose(
@@ -1142,13 +1221,21 @@ class VoiceDaemon:
                 previous_euri_turn=previous,
                 capabilities=capabilities,
                 state_context=state_context,
+                targets_by_id=todos_by_id,
             )
         if proposal is None:
             return False, False
+        self._emit_action_transition(proposal, "proposed", reason=proposal.reason)
         decision = self.action_controller.decide(
             proposal,
             capabilities,
             allow_euri_read_only=bool(proposal.alternative),
+        )
+        self._emit_action_transition(
+            proposal,
+            "decided",
+            disposition=decision.disposition.value,
+            reason=decision.reason,
         )
         logger.info(
             f"ActionController: {decision.disposition.value} cap={proposal.capability or '-'} "
@@ -1242,7 +1329,7 @@ class VoiceDaemon:
             return
         self.memory.log_conversation(_OWNER_NAME, text)
         if pending.data.get("kind") == "clarify":
-            capabilities, state_context, _todos = self._action_snapshot()
+            capabilities, state_context, todos_by_id = self._action_snapshot()
             combined = f"{pending.data['text']}\nChiarimento dell'utente: {text}"
             with self._brain_lock:
                 proposal = self.action_controller.propose(
@@ -1250,12 +1337,22 @@ class VoiceDaemon:
                     previous_euri_turn="Quale bersaglio intendi?",
                     capabilities=capabilities,
                     state_context=state_context,
+                    targets_by_id=todos_by_id,
                 )
+            if proposal is not None:
+                self._emit_action_transition(proposal, "proposed", reason=proposal.reason)
             decision = self.action_controller.decide(
                 proposal,
                 capabilities,
                 allow_euri_read_only=bool(proposal and proposal.alternative),
             )
+            if proposal is not None:
+                self._emit_action_transition(
+                    proposal,
+                    "decided",
+                    disposition=decision.disposition.value,
+                    reason=decision.reason,
+                )
             if decision.disposition == ActionDisposition.EXECUTE and proposal is not None:
                 self._execute_action_proposal(
                     proposal,
@@ -2654,7 +2751,11 @@ class VoiceDaemon:
             )
             if handled:
                 return
-            if action_veto and intent in {Intent.COMPLETE, Intent.RESCHEDULE}:
+            if intent in {Intent.COMPLETE, Intent.RESCHEDULE}:
+                # Una mutazione non ricade mai sugli handler legacy se il
+                # controller non ha prodotto/eseguito una decisione grounded.
+                # Guasto del modello e veto semantico sono entrambi fail-closed.
+                action_veto = True
                 intent = Intent.CHAT
 
         # Fallback LLM per intent critici non catturati dalle regex
@@ -2686,8 +2787,10 @@ class VoiceDaemon:
                         action_checked = True
                         if handled:
                             return
-                        if veto:
-                            fallback_intent = Intent.CHAT
+                        # Nessun fallback mutante fuori dal controller, anche
+                        # quando la proposta manca per errore/timeout del modello.
+                        action_veto = True
+                        fallback_intent = Intent.CHAT
                 intent = fallback_intent
 
         logger.info(f"Intent: {intent.value} — '{text}'")
@@ -2811,19 +2914,23 @@ class VoiceDaemon:
     def _consolidation_loop(self):
         """
         Loop 2a — consolidamento silenzioso in idle.
-        Ogni 60s, se idle >30s e almeno MIN_NEW_MEMORIES nuove memorie dall'ultima run,
-        genera una reflection e la salva in Redis con TTL 7 giorni (source=reflection).
-        Non parla, non interrompe. Solo logger.info se salva.
+        Usa un checkpoint durevole e un solo segmento/sessione coerente. Se un turno
+        comincia durante l'elaborazione, la pubblicazione viene annullata.
         """
         from datetime import timedelta
+        from core.pulse import cognitive_emit
+        from core.reflection_policy import (
+            LOOP2A_CHECKPOINT_KEY,
+            latest_reflection_checkpoint,
+            reflection_parent_ids,
+            select_reflection_session,
+        )
         from utils.date_utils import now as _now
 
-        IDLE_TRIGGER = 30         # secondi di silenzio prima di agire
+        IDLE_TRIGGER = 5 * 60     # una pausa nel dialogo non è ancora idle cognitivo
         CHECK_INTERVAL = 60       # polling
         MIN_RUN_INTERVAL = 1800   # almeno 30 min tra una run e la successiva
-        RECENT_WINDOW = 4 * 3600  # considera memorie delle ultime 4 ore
         MIN_MEMORIES = 3
-        EXCLUDE_SOURCES = {"campus", "web", "reflection"}
 
         while self._running:
             self._workers.heartbeat("consolidation")
@@ -2837,10 +2944,11 @@ class VoiceDaemon:
                     continue
                 if (time.time() - self._consolidation_last_run) < MIN_RUN_INTERVAL:
                     continue
+                if self._voice_input_inflight.is_set() or self.r.exists("euri:audio:lock"):
+                    continue
+                activity_snapshot = self._last_activity_ts
+                snapshot_at = time.time()
 
-                # Raccogli memorie recenti (ultime 4h, escluso campus/web/reflection)
-                import time as _time
-                cutoff = _time.time() - RECENT_WINDOW
                 all_memories = []
                 cursor = 0
                 while True:
@@ -2855,18 +2963,29 @@ class VoiceDaemon:
                     if cursor == 0:
                         break
 
-                session_mems = [
-                    m for m in all_memories
-                    if float(m.get("created_at") or 0) >= cutoff
-                    and m.get("source") not in EXCLUDE_SOURCES
-                ]
+                raw_checkpoint = self.r.get(LOOP2A_CHECKPOINT_KEY)
+                if isinstance(raw_checkpoint, bytes):
+                    raw_checkpoint = raw_checkpoint.decode("utf-8", errors="replace")
+                try:
+                    checkpoint = float(raw_checkpoint)
+                except (TypeError, ValueError):
+                    checkpoint = latest_reflection_checkpoint(
+                        all_memories, self._consolidation_boot_ts
+                    )
+                    self.r.set(LOOP2A_CHECKPOINT_KEY, checkpoint, nx=True)
+
+                session_mems = select_reflection_session(
+                    all_memories,
+                    checkpoint=checkpoint,
+                    snapshot_at=snapshot_at,
+                )
                 if len(session_mems) < MIN_MEMORIES:
                     self._consolidation_last_run = time.time()
                     continue
 
                 # Memorie correlate via ricerca semantica sul testo della sessione
                 session_text = " ".join(
-                    (m.get("content") or "")[:60] for m in session_mems[:4]
+                    (m.get("content") or "")[:120] for m in session_mems
                 )
                 session_ids = {m.get("id") for m in session_mems}
                 related = [
@@ -2874,17 +2993,73 @@ class VoiceDaemon:
                     if m.get("id") not in session_ids and m.get("source") != "web"
                 ][:5]
 
-                reflection = self.brain.generate_reflection(session_mems, related)
+                # Non accodare un altro lavoro Ollama quando il dialogo sta usando
+                # il modello. Il lock resta preso durante la singola generazione.
+                if not self._brain_lock.acquire(blocking=False):
+                    continue
+                try:
+                    if (
+                        self._last_activity_ts != activity_snapshot
+                        or self._voice_input_inflight.is_set()
+                    ):
+                        continue
+                    reflection = self.brain.generate_reflection(session_mems, related)
+                finally:
+                    self._brain_lock.release()
+
+                if (
+                    self._last_activity_ts != activity_snapshot
+                    or self._voice_input_inflight.is_set()
+                ):
+                    logger.info(
+                        "Loop 2a: snapshot invalidato da nuova attività; reflection non pubblicata"
+                    )
+                    continue
+
+                processed_through = max(
+                    float(memory.get("created_at") or 0) for memory in session_mems
+                )
                 if not reflection:
+                    self.r.set(LOOP2A_CHECKPOINT_KEY, processed_through)
                     self._consolidation_last_run = time.time()
                     continue
 
+                parent_ids = reflection_parent_ids(session_mems, related)
+                latest_temporal = session_mems[-1].get("temporal_context") or {}
                 expires = _now() + timedelta(days=7)
+
+                def _snapshot_still_valid():
+                    return (
+                        self._last_activity_ts == activity_snapshot
+                        and not self._voice_input_inflight.is_set()
+                    )
+
                 mid = self.memory.save_memory(
                     reflection,
                     category="riflessione",
                     source="reflection",
                     expires_at=expires,
+                    final_fields={
+                        "requires_verification": True,
+                        "epistemic_status": "internal_reflection",
+                        "source_memory_ids": parent_ids,
+                        "session_memory_ids": [
+                            str(memory.get("id")) for memory in session_mems
+                            if memory.get("id")
+                        ],
+                        "related_memory_ids": [
+                            str(memory.get("id")) for memory in related
+                            if memory.get("id")
+                        ],
+                        "reflection_scope": {
+                            "conversation_id": latest_temporal.get("conversation_id"),
+                            "segment_id": latest_temporal.get("segment_id"),
+                            "checkpoint_before": checkpoint,
+                            "processed_through": processed_through,
+                            "snapshot_at": snapshot_at,
+                        },
+                    },
+                    precommit_guard=_snapshot_still_valid,
                 )
                 if mid:
                     try:
@@ -2893,7 +3068,37 @@ class VoiceDaemon:
                         self.memory.supersede_duplicate_reflections(mid, domain, reflection)
                     except Exception as dedup_err:
                         logger.debug(f"Loop 2a reflection dedup error: {dedup_err}")
-                logger.info("Loop 2a: reflection salvata silenziosamente")
+                    cognitive_emit(
+                        self.r,
+                        "reflection",
+                        "intero",
+                        "created",
+                        producer="loop2a",
+                        trace_id=f"reflection:{mid}",
+                        logical_event_id=f"reflection:{mid}",
+                        entity_refs=[{"type": "memory", "id": mid, "role": "child"}],
+                        parent_refs=parent_ids,
+                        payload={
+                            "id": mid,
+                            "session_parent_ids": [
+                                str(memory.get("id")) for memory in session_mems
+                                if memory.get("id")
+                            ],
+                            "related_parent_ids": [
+                                str(memory.get("id")) for memory in related
+                                if memory.get("id")
+                            ],
+                        },
+                        epistemic_before="source_memories",
+                        epistemic_after="internal_reflection_requires_verification",
+                        salience=0.4,
+                    )
+                    self.r.set(LOOP2A_CHECKPOINT_KEY, processed_through)
+                    logger.info("Loop 2a: reflection salvata silenziosamente")
+                else:
+                    logger.info(
+                        "Loop 2a: reflection non pubblicata; checkpoint invariato"
+                    )
                 self._consolidation_last_run = time.time()
 
                 # Cleanup memorie scadute (safety net per memorie mai richiamate)

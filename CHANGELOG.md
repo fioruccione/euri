@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-07-23 - Reflection sessionali e agenda protetta dal parlato descrittivo
+
+- Il Loop 2a non tratta più una finestra globale di quattro ore come sessione:
+  usa un checkpoint Redis durevole, un singolo segmento conversazionale e parent
+  ID espliciti. Dopo cinque minuti di vero idle genera una reflection interna da
+  verificare; se nel frattempo riparte il dialogo, il commit viene annullato.
+- Le azioni agenda richiedono sia un gesto corrente specifico (`chiudi`, `sospendi`,
+  `rimanda`...) sia un bersaglio grounded nel turno o nel riferimento immediato.
+  Frasi descrittive come “oggi faccio la prova, domani avrò i risultati” non
+  autorizzano più modifiche e un guasto del controller fallisce chiuso.
+- Il Pulse traccia proposta, decisione, rivalidazione ed esito delle azioni, inclusi
+  stato precedente e successivo. Una mutazione non può più restare nascosta dentro
+  una risposta conversazionale generata.
+- Riparato reversibilmente l'incidente UBQ: reflection stale ritratta, precedente
+  riattivata, todo hardware lasciato pending senza scadenza, copia Vault posta in
+  quarantena e before/after conservato nell'audit.
+
 ## 2026-07-23 - Pulse v2 distingue telemetria e lineage cognitiva
 
 - `euri:pulse` resta compatibile, ma ogni nuovo evento porta un envelope v2 che
