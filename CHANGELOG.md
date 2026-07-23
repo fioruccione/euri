@@ -6,9 +6,15 @@
   osservabile come correction signal, ma non apre più una quarantena immediata:
   descriveva il tono del saluto precedente, non ritirava il record `fd66ecb3`.
 - `stavo scherzando` ed `era una provocazione` sono ora segnali di audit non
-  mutanti, anche quando nominano soggetti presenti nel RAG. La quarantena immediata
-  resta soltanto per ritrattazioni fattuali esplicite (`non ho davvero`, `ti
-  correggo`, `hai sbagliato`) con un bersaglio sostanziale identificabile.
+  mutanti, anche quando nominano soggetti presenti nel RAG. Nascono già chiusi come
+  `mutation_policy=audit_only`, non emettono Pulse e non possono quindi essere
+  reinterpretati dal Loop 2g notturno come correzioni o lezioni. La quarantena
+  immediata resta soltanto per ritrattazioni fattuali esplicite (`non ho davvero`,
+  `ti correggo`, `hai sbagliato`) con un bersaglio sostanziale identificabile.
+- Il confine vale per ogni correction signal, non solo per gli scherzi:
+  `proposal_only` consente al Loop 2g di registrare un `proposed_verdict`, ma vieta
+  `audit_flag`, `requires_verification` e nuove lezioni finché manca una correzione
+  esplicita. Anche i signal legacy senza policy falliscono chiusi come proposte.
 - Il falso segnale live `28d74085` è stato chiuso come `not_a_correction`; la
   quarantena reversibile di `fd66ecb3` è stata rimossa e la traccia audit conservata.
 

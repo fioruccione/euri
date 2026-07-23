@@ -2590,6 +2590,10 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
             counts = {"not_a_correction": 0, "bad_memory": 0, "bad_reasoning": 0, "ambiguous": 0}
 
             for key, doc in pending:
+                # Il detector e il giudice possono proporre; solo una correzione
+                # esplicita dell'owner porta autorità mutante. I signal legacy
+                # senza policy sono fail-closed come proposal_only.
+                mutation_allowed = self._correction_mutation_allowed(doc)
                 # Recupera contenuti delle memorie iniettate
                 ctx_memories = []
                 for mid in doc.get("rag_ctx_ids", []):
@@ -2619,7 +2623,7 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
                 effect_ok = True
 
                 # Azioni differenziate (not_a_correction e ambiguous: nessuna azione)
-                if verdict == "bad_memory":
+                if verdict == "bad_memory" and mutation_allowed:
                     target_ids = self._correction_target_ids(doc, ctx_memories)
                     if not target_ids:
                         target_ids = [mid for mid in (doc.get("rag_ctx_ids", []) or []) if mid]
@@ -2652,7 +2656,7 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
                         f"Loop 2g: target subject-memory ids = {', '.join(t[-8:] for t in target_ids[:4])}"
                     )
 
-                elif verdict == "bad_reasoning" and self._memory_manager:
+                elif verdict == "bad_reasoning" and mutation_allowed and self._memory_manager:
                     # COME la reaction-loop: distilla la correzione in una LEZIONE (il principio
                     # da non sbagliare più), non archiviare il testo grezzo dello sfogo ("ti boccio,
                     # secondo me viene 15") che non è richiamabile come regola. Fallback al grezzo
@@ -2676,11 +2680,49 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
                 # Ora marca processato — SOLO se l'effetto è andato (o non c'era). Se fallito, il
                 # signal resta 'pending' → riprovato al prossimo ciclo, niente correzione persa.
                 if effect_ok:
-                    self._settle_correction_quarantine(doc, verdict)
-                    self._r.json().set(key, "$.status", "dismissed" if verdict == "not_a_correction" else "analyzed")
-                    self._r.json().set(key, "$.verdict", verdict)
+                    if mutation_allowed:
+                        self._settle_correction_quarantine(doc, verdict)
+                        status = (
+                            "dismissed"
+                            if verdict == "not_a_correction"
+                            else "analyzed"
+                        )
+                        self._r.json().set(key, "$.status", status)
+                        self._r.json().set(key, "$.verdict", verdict)
+                    else:
+                        # Un verdetto LLM senza autorità esplicita è una proposta,
+                        # non una mutazione. Chiudiamo qualunque quarantena legacy
+                        # come falso positivo prudenziale e conserviamo il risultato
+                        # per audit/una futura conferma dell'owner.
+                        self._settle_correction_quarantine(doc, "not_a_correction")
+                        self._r.json().set(key, "$.proposed_verdict", verdict)
+                        self._r.json().set(
+                            key,
+                            "$.requires_owner_confirmation",
+                            verdict != "not_a_correction",
+                        )
+                        self._r.json().set(
+                            key,
+                            "$.status",
+                            (
+                                "dismissed"
+                                if verdict == "not_a_correction"
+                                else "proposed"
+                            ),
+                        )
+                        self._r.json().set(
+                            key,
+                            "$.verdict",
+                            "not_a_correction"
+                            if verdict == "not_a_correction"
+                            else None,
+                        )
                     self._r.json().set(key, "$.analyzed_at", time.time())
-                logger.info(f"Loop 2g: {key[-8:]} → {verdict}" + ("" if effect_ok else " (effetto fallito → pending, retry)"))
+                authority = "mutating" if mutation_allowed else "proposal-only"
+                logger.info(
+                    f"Loop 2g: {key[-8:]} → {verdict} [{authority}]"
+                    + ("" if effect_ok else " (effetto fallito → pending, retry)")
+                )
 
             logger.info(
                 f"Loop 2g: {len(pending)} signal analizzati "
@@ -2690,6 +2732,11 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
 
         except Exception as e:
             logger.error(f"Errore Loop 2g audit corrections: {e}")
+
+    @staticmethod
+    def _correction_mutation_allowed(doc: dict) -> bool:
+        """Solo una correzione esplicita concede autorità sullo stato canonico."""
+        return (doc or {}).get("mutation_policy") == "explicit_correction"
 
     def _settle_correction_quarantine(self, doc: dict, verdict: str) -> None:
         """Chiude la quarantena immediata aperta al capture del correction signal.

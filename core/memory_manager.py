@@ -1473,6 +1473,13 @@ class MemoryManager:
             r"\bnon\s+(ho|avevo)\s+davvero\b",
         ]
     ]
+    _META_JOKE_RE = [
+        re.compile(p, re.IGNORECASE) for p in [
+            r"\bstavo\s+scherzando\b",
+            r"\bera\s+(?:uno\s+scherzo|una\s+provocazione)\b",
+            r"\bti\s+prendevo\s+in\s+giro\b",
+        ]
+    ]
 
     @classmethod
     def _salient_tokens(cls, text: str) -> set[str]:
@@ -1521,6 +1528,23 @@ class MemoryManager:
         # due token sostanziali con cui identificare il bersaglio. Gli altri
         # marcatori restano segnali non mutanti per il Loop 2g.
         return len(cls.correction_target_tokens(text)) >= 2
+
+    @classmethod
+    def _is_meta_joke_audit_only(cls, text: str) -> bool:
+        """Uno scherzo descritto come tale non autorizza mutazioni differite.
+
+        Se nello stesso turno compare anche una formula fattuale esplicita
+        (`ti correggo`, `non ho davvero`, ...), il normale circuito correttivo
+        resta disponibile. Altrimenti conserviamo soltanto una traccia chiusa:
+        nessun Pulse e nessun giudice notturno può promuoverla a correzione.
+        """
+        if not text or not any(p.search(text) for p in cls._META_JOKE_RE):
+            return False
+        if any(p.search(text) for p in cls._IMMEDIATE_QUARANTINE_EXPLICIT_RE):
+            return False
+        if any(p.search(text) for p in cls._IMMEDIATE_QUARANTINE_PRAGMATIC_RE):
+            return False
+        return True
 
     def detect_correction(self, text: str, last_euri_turn: str | None = None) -> bool:
         """True se il prompt utente assomiglia a una correzione di un turno precedente.
@@ -1658,6 +1682,15 @@ class MemoryManager:
         sid = str(uuid.uuid4())
         key = f"euri:correction:{sid}"
         created_at = to_timestamp(now())
+        audit_only = self._is_meta_joke_audit_only(correzione_user)
+        explicit_correction = self._is_immediate_quarantine_correction(correzione_user)
+        mutation_policy = (
+            "audit_only"
+            if audit_only
+            else "explicit_correction"
+            if explicit_correction
+            else "proposal_only"
+        )
         doc = {
             "id": sid,
             "prompt_original": prompt_originale,
@@ -1665,15 +1698,21 @@ class MemoryManager:
             "correzione_user": correzione_user,
             "rag_ctx_ids": rag_ctx_ids or [],
             "quarantined_memory_ids": [],
-            "status": "pending",
-            "verdict": None,
+            "status": "dismissed" if audit_only else "pending",
+            "verdict": "not_a_correction" if audit_only else None,
+            "mutation_policy": mutation_policy,
+            "dismiss_reason": "pragmatic_meta_signal" if audit_only else None,
             "created_at": created_at,
-            "analyzed_at": None,
+            "analyzed_at": created_at if audit_only else None,
         }
         self.r.json().set(key, "$", doc)
         self.r.expire(key, 30 * 86400)
-        quarantined = self._quarantine_correction_targets(
-            sid, correzione_user, rag_ctx_ids or [], created_at=created_at
+        quarantined = (
+            []
+            if audit_only
+            else self._quarantine_correction_targets(
+                sid, correzione_user, rag_ctx_ids or [], created_at=created_at
+            )
         )
         if quarantined:
             self.r.json().set(key, "$.quarantined_memory_ids", quarantined)
@@ -1682,6 +1721,12 @@ class MemoryManager:
                 + ", ".join(mid[:8] for mid in quarantined)
                 + f" → requires_verification pending ({sid[:8]})"
             )
+        if audit_only:
+            logger.info(
+                f"Correction observation audit-only: {sid[:8]} — "
+                f"'{correzione_user[:60]}'"
+            )
+            return sid
         logger.info(f"Correction signal salvato: {sid[:8]} — '{correzione_user[:60]}'")
         # Pulse afferente (Fase 1): una correzione viene dal mondo (→ extero). Il Loop 2g la
         # consuma di notte; qui la rendiamo percepibile anche al polso. Fail-open.
