@@ -23,10 +23,13 @@
   Obsidian. Il record è ora `internal_self_observation`,
   `requires_verification=true`; l'evento audit è in attesa del projector fermo.
 - Verifica: manifest 53 file, unit 44/44, test mirati Loop 2h 3/3 e convergenza
-  verdi. Audit post-repair: Pulse 3.952, cognitivi proiettati 11, `pending=0`,
-  `lag=1` (il solo repair, con Euri ferma). Prossimo passo: commit/push; poi
-  riavviare e verificare `lag=0` e un light cycle rapido senza la ripetizione
-  `re-promozione negata`.
+  verdi. Runtime post-riavvio: il primo light ha classificato una tantum 34
+  candidate già demoti (`promotion_blocked`, incluso `3dfe567e` come
+  `external_refutation`) e ha impiegato 90,9 s per 3 judge non bloccati; il light
+  seguente è sceso a 3,6 s con `model=0`. Audit finale: 3.988 Pulse, 46 cognitivi,
+  zero trace mancanti, `pending=0`, `lag=0`. I due `audit/repaired` sono i due
+  incidenti distinti Loop 2a e Loop 2h. Fase 1 verificata; prossimo passo
+  architetturale: lineage osservazionale di recall e uso reale (Fase 2).
 
 ---
 

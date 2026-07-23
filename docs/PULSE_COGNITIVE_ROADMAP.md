@@ -1,10 +1,10 @@
 # Pulse cognitivo — roadmap persistente
 
-Stato aggiornato: 2026-07-23 15:20
+Stato aggiornato: 2026-07-23 16:25
 
-Fase corrente: **1 — lineage osservazionale verificata, hardening Loop 2h applicato**
+Fase corrente: **1 completata — lineage e hardening verificati nel runtime**
 
-Prossima azione esatta: **commit/push; riavviare Euri e verificare `lag=0` e un light cycle senza judge sul candidato smentito**
+Prossima azione esatta: **Fase 2, prima fetta osservazionale: tracciare `memory/insight recalled` separandolo da `used_in_response`, senza cambiare ranking**
 
 Questo file è il punto di ripresa canonico del cantiere Pulse. Va letto insieme
 alla prima sezione di `CODEX.md` prima di modificare Pulse, Dream, memoria,
@@ -144,6 +144,20 @@ Verifica idle naturale dopo riavvio, 12:48–14:57:
 - audit post-repair: 3.952 Pulse, 11 cognitivi proiettati, `pending=0`, `lag=1`.
   Il solo evento in coda è il repair appena emesso mentre il projector è fermo.
 
+Verifica runtime conclusiva, 15:31–16:23:
+
+- boot pulito con projector durevole, 118 candidati Loop 2e, 154 insight interni
+  e 4 confermati esternamente;
+- primo light: 34 candidate demoti classificati una sola volta prima del lavoro
+  costoso; `3dfe567e` bloccato esplicitamente come `external_refutation`;
+- il primo pass ha ancora eseguito 3 judge su candidate non bloccati ed è durato
+  90,9 s; il pass successivo è durato 3,6 s con `model=0`, confermando che non
+  esiste più l'hot-loop del candidato smentito;
+- audit: 3.988 Pulse, 46 cognitivi, 34 `insight/promotion_blocked`, nessuna trace
+  incompleta, `pending=0`, `lag=0`;
+- i due eventi `audit/repaired` appartengono a producer distinti (repair Loop 2a
+  e repair Loop 2h), quindi non sono una duplicazione.
+
 ### Fase 2 — Lineage dell’uso reale: da fare
 
 Strumentare, senza cambiare ranking o risposte:
@@ -222,6 +236,7 @@ Ogni policy richiede flag, shadow mode, metrica prima/dopo e rollback.
 | 2026-07-23 | 1 | Boot verificato: group sano, backlog esaurito, presenza rimasta telemetria; attesa prima trace naturale | checkpoint successivo |
 | 2026-07-23 | 1 | Prima trace naturale valida; scoperto e riparato incidente Loop 2a/agenda; repair in attesa di projector fermo | questo commit |
 | 2026-07-23 | 1 | Idle test: Loop 2a sano; chiusi lineage Loop 2h e hot-loop judge su insight smentito | commit corrente |
+| 2026-07-23 | 1 | Riavvio verificato: secondo light 3,6 s/model=0; projector pending=0/lag=0 | `cf6032b` + checkpoint docs |
 
 ## Protocollo di ripresa
 
