@@ -127,6 +127,33 @@ def test_meta_joke_clarification_does_not_quarantine_unrelated_rag_memory():
     assert docs["euri:memory:recycling"]["requires_verification"] is False
 
 
+def test_joke_marker_with_named_rag_subject_is_signal_only():
+    docs = {
+        "euri:memory:poseidon": {
+            "id": "poseidon",
+            "content": "Il progetto Poseidon riguarda il pallet dei sacconi.",
+            "requires_verification": False,
+        },
+    }
+    memory = MemoryManager(FakeRedis(docs), embedder=None)
+    text = (
+        "Stavo scherzando su Poseidon e sul pallet: volevo solo vedere se "
+        "ricordavi il contesto."
+    )
+
+    assert memory.detect_correction(text)
+    sid = memory.save_correction_signal(
+        prompt_originale="Ti ricordi Poseidon?",
+        risposta_euri="Sì, riguarda il pallet dei sacconi.",
+        correzione_user=text,
+        rag_ctx_ids=["poseidon"],
+    )
+
+    assert docs[f"euri:correction:{sid}"]["quarantined_memory_ids"] == []
+    assert docs["euri:memory:poseidon"].get("correction_pending") is None
+    assert docs["euri:memory:poseidon"]["requires_verification"] is False
+
+
 def test_correction_pending_suffix_is_stronger_than_generic_verification():
     suffix = memory_verification_suffix({
         "requires_verification": True,
@@ -193,7 +220,7 @@ def test_tied_max_score_quarantines_all_tied_targets():
     sid = memory.save_correction_signal(
         prompt_originale="x",
         risposta_euri="x",
-        correzione_user="Era una provocazione: fragole e cipolla non mi piacciono davvero.",
+        correzione_user="Ti correggo: fragole e cipolla non mi piacciono davvero.",
         rag_ctx_ids=["a", "b", "c"],
     )
 

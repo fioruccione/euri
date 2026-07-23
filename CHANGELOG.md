@@ -5,10 +5,10 @@
 - Il caso live "stavo scherzando, volevo vedere se avevi capito il termine" resta
   osservabile come correction signal, ma non apre più una quarantena immediata:
   descriveva il tono del saluto precedente, non ritirava il record `fd66ecb3`.
-- I marcatori pragmatici (`scherzo`, `provocazione`, `non ho davvero`) demuovono
-  subito una memoria soltanto quando la frase contiene anche almeno due token
-  sostanziali che identificano il fatto ritirato. Le correzioni esplicite restano
-  invariate.
+- `stavo scherzando` ed `era una provocazione` sono ora segnali di audit non
+  mutanti, anche quando nominano soggetti presenti nel RAG. La quarantena immediata
+  resta soltanto per ritrattazioni fattuali esplicite (`non ho davvero`, `ti
+  correggo`, `hai sbagliato`) con un bersaglio sostanziale identificabile.
 - Il falso segnale live `28d74085` è stato chiuso come `not_a_correction`; la
   quarantena reversibile di `fd66ecb3` è stata rimossa e la traccia audit conservata.
 

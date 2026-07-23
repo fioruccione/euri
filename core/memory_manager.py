@@ -1466,8 +1466,10 @@ class MemoryManager:
     ]
     _IMMEDIATE_QUARANTINE_PRAGMATIC_RE = [
         re.compile(p, re.IGNORECASE) for p in [
-            r"\bera\s+una\s+provocazione\b",
-            r"\bstavo\s+scherzando\b",
+            # Una vera ritrattazione del proprio fatto, non una descrizione del
+            # tono ("stavo scherzando") o dell'intento ("era una provocazione").
+            # Questi ultimi restano correction signal per il Loop 2g, ma non
+            # hanno autorità sufficiente a mutare subito una memoria canonica.
             r"\bnon\s+(ho|avevo)\s+davvero\b",
         ]
     ]
@@ -1514,11 +1516,10 @@ class MemoryManager:
             return True
         if not any(p.search(text) for p in cls._IMMEDIATE_QUARANTINE_PRAGMATIC_RE):
             return False
-        # "Stavo scherzando" può ritirare un fatto ("fragole e cipolla non mi
-        # piacciono"), ma può anche descrivere soltanto il tono del turno appena
-        # pronunciato. La quarantena immediata è giustificata solo nel primo caso:
-        # devono restare almeno due token sostanziali con cui identificare il
-        # bersaglio. Il segnale viene comunque salvato e il Loop 2g può valutarlo.
+        # Una ritrattazione pragmatica ha autorità immediata soltanto quando
+        # contiene una formula fattuale esplicita ("non ho davvero...") e almeno
+        # due token sostanziali con cui identificare il bersaglio. Gli altri
+        # marcatori restano segnali non mutanti per il Loop 2g.
         return len(cls.correction_target_tokens(text)) >= 2
 
     def detect_correction(self, text: str, last_euri_turn: str | None = None) -> bool:
