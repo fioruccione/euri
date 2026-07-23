@@ -1,3 +1,28 @@
+# Handoff Euri - 2026-07-23 - Pulse v2 e roadmap cognitiva persistente
+
+- Decisione: il vecchio Pulse resta bus afferente compatibile, ma viene separato
+  esplicitamente in `telemetry` e `cognitive`. Registrare un evento non lo rende
+  memoria, verità o autorizzazione ad agire.
+- Envelope v2 additivo: producer, trace/causation/logical ID, entity/parent refs,
+  stato epistemico prima/dopo, versione esperimento e durata. I consumer legacy
+  continuano a leggere sense/source/kind/payload.
+- `core/cognitive_projector.py` usa il consumer group durevole
+  `euri:cognitive:projector:v1`, recupera pending dopo crash e proietta soltanto
+  eventi cognitivi in `euri:cognitive:events`, con lo stesso stream ID per
+  idempotenza. È osservazionale e non tocca memoria, insight o azioni.
+- Prima copertura causale: memory saved; Dream seed, candidate creato/scartato,
+  insight promosso/demoto; reaction con verdetto; consolidamento con figlio e
+  genitori.
+- Roadmap canonica: `docs/PULSE_COGNITIVE_ROADMAP.md`. Va letta e aggiornata a ogni
+  passo; contiene fasi, invarianti, comportamenti possibili e prossima azione esatta.
+- Audit read-only: `./venv/bin/python scripts/audit_cognitive_pulse.py`.
+- Verifica pre-riavvio: unit 42/42, manifest 51 file, compilazione pulita; audit
+  Redis read-only = 3.924 Pulse legacy, 0 cognitivi, consumer group assente come
+  previsto. Dopo il riavvio verificare log del projector, backlog ACKato, unicità
+  degli eventi e assenza di mutazioni cognitive dovute alla proiezione.
+
+---
+
 # Handoff Euri - 2026-07-23 - Sincronia delle parti senza riduzione a RAG
 
 - Chiarimento architetturale di Stefano: l'uso nel suo lavoro e' un banco di prova

@@ -23,7 +23,7 @@ import config
 from utils.date_utils import now, to_timestamp
 from redis.commands.search.query import Query
 from utils.obsidian_sync import write_insight
-from core.pulse import pulse_emit
+from core.pulse import cognitive_emit, pulse_emit
 from core.memory_attention import (
     rebuild_loop2e_candidate_index,
     remove_loop2e_candidate,
@@ -720,9 +720,40 @@ class DreamEngine:
         dom_b, mem_b = second
 
         logger.info(f"Dream Engine: sogno tra '{dom_a}' e '{dom_b}'")
+        cognitive_trace_id = f"dream:{uuid.uuid4()}"
+        seed_event_id = cognitive_emit(
+            self._r,
+            "dream",
+            "intero",
+            "seed_selected",
+            producer="loop2b",
+            trace_id=cognitive_trace_id,
+            logical_event_id=f"{cognitive_trace_id}:seed",
+            entity_refs=[
+                {"type": "memory", "id": mem_a["id"]},
+                {"type": "memory", "id": mem_b["id"]},
+            ],
+            parent_refs=[mem_a["id"], mem_b["id"]],
+            payload={
+                "domain_a": dom_a,
+                "domain_b": dom_b,
+                "memory_a_id": mem_a["id"],
+                "memory_b_id": mem_b["id"],
+            },
+            epistemic_before="eligible_sources",
+            epistemic_after="seed_pair_selected",
+            salience=0.3,
+        )
 
         if getattr(config, "DREAM_TRACE_PAIRED_ENABLED", False):
-            return self._generate_dream_paired(dom_a, mem_a, dom_b, mem_b)
+            return self._generate_dream_paired(
+                dom_a,
+                mem_a,
+                dom_b,
+                mem_b,
+                cognitive_trace_id=cognitive_trace_id,
+                seed_event_id=seed_event_id or "",
+            )
 
         # Esperimento continuità 2b (legacy, singolo braccio): residuo di STRATEGIA
         # del ciclo precedente, iniettato come sezione marcata. Serve a non
@@ -742,6 +773,8 @@ class DreamEngine:
             result = self._run_single_dream_generation(
                 dom_a, mem_a, dom_b, mem_b, trace_section,
                 capture_cot=legacy_trace_enabled,
+                cognitive_trace_id=cognitive_trace_id,
+                cognitive_causation_id=seed_event_id or "",
                 extra_insight_fields=(
                     {"trace_injected": trace_injected} if legacy_trace_enabled else None
                 ),
@@ -772,7 +805,10 @@ class DreamEngine:
                                       capture_cot: bool,
                                       persist_as_insight: bool = True,
                                       extra_dream_fields: dict | None = None,
-                                      extra_insight_fields: dict | None = None) -> dict:
+                                      extra_insight_fields: dict | None = None,
+                                      cognitive_trace_id: str = "",
+                                      cognitive_causation_id: str = "",
+                                      emit_cognitive: bool = True) -> dict:
         """Un singolo tentativo di sogno su un seme fisso (dom_a/mem_a, dom_b/mem_b).
 
         Logica di generazione, parsing e persistenza estratta da _generate_dream in
@@ -789,6 +825,7 @@ class DreamEngine:
         numero di candidate che entrano nella cognizione reale di Euri, e un
         meccanismo non ancora validato finirebbe a plasmare la memoria vera prima
         che l'esperimento dica se funziona."""
+        generation_started = time.monotonic()
         age_a = self._memory_age(mem_a.get("created_at"))
         age_b = self._memory_age(mem_b.get("created_at"))
         label_a = f"dominio: {dom_a}" + (f", {age_a}" if age_a else "")
@@ -858,6 +895,8 @@ REGOLE:
         }
         if extra_dream_fields:
             dream_doc.update(extra_dream_fields)
+        if cognitive_trace_id:
+            dream_doc["cognitive_trace_id"] = cognitive_trace_id
         self._r.json().set(f"euri:dream:{dream_id}", "$", dream_doc)
         # TTL di 7 giorni per i sogni grezzi
         self._r.expire(f"euri:dream:{dream_id}", 86400 * 7)
@@ -891,6 +930,8 @@ REGOLE:
                 # convergenza (union dei fratelli assorbiti — vedi promozione).
                 "source_memory_ids": [mem_a["id"], mem_b["id"]],
             }
+            if cognitive_trace_id:
+                insight_doc["cognitive_trace_id"] = cognitive_trace_id
             if getattr(config, "BRIDGE_VALIDITY_ENABLED", False):
                 # Solo i candidate nuovi entrano nella misura: evita un backfill LLM
                 # dell'intero archivio e mantiene leggibile il confine sperimentale.
@@ -902,17 +943,63 @@ REGOLE:
                 insight_doc.update(extra_insight_fields)
             self._r.json().set(f"euri:insight:{insight_id}", "$", insight_doc)
 
+        cognitive_event_id = None
+        if emit_cognitive and (status == "discarded" or persist_as_insight):
+            entity_refs = [{"type": "dream", "id": dream_id}]
+            if insight_id:
+                entity_refs.append({"type": "insight", "id": insight_id})
+            cognitive_event_id = cognitive_emit(
+                self._r,
+                "dream",
+                "intero",
+                "candidate_created" if insight_id else "candidate_discarded",
+                producer="loop2b",
+                trace_id=cognitive_trace_id or f"dream:{dream_id}",
+                causation_id=cognitive_causation_id,
+                logical_event_id=(
+                    f"insight:{insight_id}" if insight_id else f"dream:{dream_id}"
+                ),
+                entity_refs=entity_refs,
+                parent_refs=[mem_a["id"], mem_b["id"]],
+                payload={
+                    "dream_id": dream_id,
+                    "insight_id": insight_id,
+                    "status": status,
+                    "domain_a": dom_a,
+                    "domain_b": dom_b,
+                },
+                epistemic_before="seed_pair_selected",
+                epistemic_after=(
+                    "internally_emergent" if insight_id else "discarded"
+                ),
+                duration_ms=(time.monotonic() - generation_started) * 1000,
+                salience=0.45 if insight_id else 0.2,
+            )
+            if insight_id and cognitive_event_id:
+                try:
+                    self._r.json().set(
+                        f"euri:insight:{insight_id}",
+                        "$.cognitive_created_event_id",
+                        cognitive_event_id,
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        f"Dream lineage: event id candidate non annotato ({exc})"
+                    )
+
         return {
             "status": status,
             "text": text,
             "dream_id": dream_id,
             "insight_id": insight_id,
+            "cognitive_event_id": cognitive_event_id,
             "raw_cot": raw_cot,
             "dream_doc": dream_doc,
         }
 
     def _generate_dream_paired(self, dom_a: str, mem_a: dict, dom_b: str,
-                                mem_b: dict) -> dict | None:
+                                mem_b: dict, *, cognitive_trace_id: str = "",
+                                seed_event_id: str = "") -> dict | None:
         """Disegno appaiato (V2, 21/07): stesso seme generato due volte, con e
         senza residuo. Elimina la variabilità tra coppie di domini diverse del
         disegno a blocchi precedente (mai attivato). Il primo ciclo senza residuo
@@ -928,6 +1015,8 @@ REGOLE:
             try:
                 result = self._run_single_dream_generation(
                     dom_a, mem_a, dom_b, mem_b, "", capture_cot=True,
+                    cognitive_trace_id=cognitive_trace_id,
+                    cognitive_causation_id=seed_event_id,
                 )
             except Exception as e:
                 logger.error(f"Errore generazione sogno (warm-up appaiato): {e}")
@@ -961,6 +1050,9 @@ REGOLE:
                     dom_a, mem_a, dom_b, mem_b, section,
                     capture_cot=(arm == "trattamento"),
                     persist_as_insight=persist,
+                    cognitive_trace_id=cognitive_trace_id,
+                    cognitive_causation_id=seed_event_id,
+                    emit_cognitive=persist,
                     extra_dream_fields={**extra, "trace_arm": arm},
                     extra_insight_fields={**extra, "trace_arm": arm},
                 )
@@ -1770,13 +1862,46 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
                         self._r.delete(sid)
                         
                     logger.success(f"Dream Engine: Insight PROMOSSO! (convergenze: {convergences})")
-                    pulse_emit(self._r, "insight", "intero", "promoted",
-                               payload={
-                                   "id": str(doc.id).replace("euri:insight:", ""),
-                                   "key": str(doc.id),
-                                   "convergences": convergences,
-                               },
-                               salience=0.65)
+                    insight_id = str(doc.id).replace("euri:insight:", "")
+                    trace_raw = self._r.json().get(doc.id, "$.cognitive_trace_id") or []
+                    created_raw = self._r.json().get(
+                        doc.id, "$.cognitive_created_event_id"
+                    ) or []
+                    promotion_event_id = cognitive_emit(
+                        self._r,
+                        "insight",
+                        "intero",
+                        "promoted",
+                        producer="loop2c",
+                        trace_id=(
+                            (trace_raw[0] if trace_raw else "")
+                            or f"insight:{insight_id}"
+                        ),
+                        causation_id=(created_raw[0] if created_raw else ""),
+                        logical_event_id=f"insight-promoted:{insight_id}",
+                        entity_refs=[{"type": "insight", "id": insight_id}],
+                        parent_refs=list(dict.fromkeys(source_memory_ids)),
+                        payload={
+                            "id": insight_id,
+                            "key": str(doc.id),
+                            "convergences": convergences,
+                            "source_memory_ids": list(dict.fromkeys(source_memory_ids)),
+                        },
+                        epistemic_before="internally_emergent",
+                        epistemic_after="internally_convergent",
+                        salience=0.65,
+                    )
+                    if promotion_event_id:
+                        try:
+                            self._r.json().set(
+                                doc.id,
+                                "$.cognitive_promoted_event_id",
+                                promotion_event_id,
+                            )
+                        except Exception as exc:
+                            logger.debug(
+                                f"Dream lineage: event id promozione non annotato ({exc})"
+                            )
                     self._trace_convergence(doc, convergences, n_certain, neighbor_trace,
                                             "promoted", **trace_meta)
                     promoted_count += 1
@@ -2009,9 +2134,35 @@ Rispondi SOLO JSON valido:
             return
 
         logger.success(f"Loop 2i: ipotesi trasversale PROMOSSA → {insight_id[:8]}…")
-        pulse_emit(self._r, "insight", "intero", "promoted",
-                   payload={"id": insight_id, "key": key, "convergences": len(selected)},
-                   salience=0.68)
+        trace_id = f"cross-episode:{insight_id}"
+        promotion_event_id = cognitive_emit(
+            self._r,
+            "insight",
+            "intero",
+            "promoted",
+            producer="loop2i",
+            trace_id=trace_id,
+            logical_event_id=f"insight-promoted:{insight_id}",
+            entity_refs=[{"type": "insight", "id": insight_id}],
+            parent_refs=source_ids,
+            payload={
+                "id": insight_id,
+                "key": key,
+                "convergences": len(selected),
+                "source_memory_ids": source_ids,
+            },
+            epistemic_before="cross_episode_hypothesis",
+            epistemic_after="internally_emergent",
+            salience=0.68,
+        )
+        if promotion_event_id:
+            try:
+                self._r.json().set(key, "$.cognitive_trace_id", trace_id)
+                self._r.json().set(
+                    key, "$.cognitive_promoted_event_id", promotion_event_id
+                )
+            except Exception as exc:
+                logger.debug(f"Loop 2i lineage: metadati non annotati ({exc})")
         try:
             write_insight(insight_doc)
         except Exception as e:
@@ -2970,8 +3121,29 @@ Rispondi SOLO con JSON valido:
                 # convergenza (opzione b) — torna a vivere solo se la realtà ti richiama.
                 self._r.json().set(doc.id, "$.demoted_once", True)
                 logger.info(f"Dream Engine: Insight retrocesso a candidate (ID: {doc.id})")
-                pulse_emit(self._r, "insight", "intero", "demoted",
-                           payload={"id": str(doc.id)[-12:]}, salience=0.5)
+                insight_id = str(doc.id).replace("euri:insight:", "")
+                trace_raw = self._r.json().get(doc.id, "$.cognitive_trace_id") or []
+                promoted_raw = self._r.json().get(
+                    doc.id, "$.cognitive_promoted_event_id"
+                ) or []
+                cognitive_emit(
+                    self._r,
+                    "insight",
+                    "intero",
+                    "demoted",
+                    producer="loop2c-retention",
+                    trace_id=(
+                        (trace_raw[0] if trace_raw else "")
+                        or f"insight:{insight_id}"
+                    ),
+                    causation_id=(promoted_raw[0] if promoted_raw else ""),
+                    logical_event_id=f"insight-demoted:{insight_id}",
+                    entity_refs=[{"type": "insight", "id": insight_id}],
+                    payload={"id": insight_id, "reason": "unused_after_promotion"},
+                    epistemic_before="internally_convergent",
+                    epistemic_after="candidate_unvalidated",
+                    salience=0.5,
+                )
 
             # Gate 2: più vecchio di TTL_DAYS → elimina
             q_delete = Query(
@@ -3432,8 +3604,32 @@ Rispondi SOLO con la sintesi. Niente intestazioni."""
                     f"Loop 2e: consolidate {len(cluster)} memorie → {mid[:8]}… "
                     f"(dominio: {seed_domain})"
                 )
-                pulse_emit(self._r, "consolidation", "intero", "consolidated",
-                           payload={"n": len(cluster), "domain": seed_domain}, salience=0.4)
+                cognitive_emit(
+                    self._r,
+                    "consolidation",
+                    "intero",
+                    "consolidated",
+                    producer="loop2e",
+                    trace_id=f"consolidation:{mid}",
+                    logical_event_id=f"consolidation:{mid}",
+                    entity_refs=[
+                        {"type": "memory", "id": mid, "role": "child"},
+                        *[
+                            {"type": "memory", "id": cid, "role": "parent"}
+                            for cid in cluster_ids
+                        ],
+                    ],
+                    parent_refs=cluster_ids,
+                    payload={
+                        "id": mid,
+                        "parent_ids": cluster_ids,
+                        "n": len(cluster),
+                        "domain": seed_domain,
+                    },
+                    epistemic_before="separate_memories",
+                    epistemic_after="consolidated_interpretation",
+                    salience=0.4,
+                )
 
             if consolidated:
                 logger.info(f"Loop 2e: {consolidated} consolidazioni completate")

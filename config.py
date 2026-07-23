@@ -354,6 +354,14 @@ OBSIDIAN_VAULT_PATH = "/home/fio/EuriVault"
 # insight/promoted), lasciando il Pulse come ground truth osservabile.
 PULSE_ENABLED = True
 
+# Proiezione cognitiva Pulse v2 — consumer durevole e puramente osservazionale.
+# Filtra event_class=cognitive in euri:cognitive:events; non crea memorie, non
+# promuove insight e non autorizza azioni. Il replay include gli eventi non letti
+# durante un arresto e quelli consegnati ma non ACKati prima di un crash.
+COGNITIVE_PROJECTOR_ENABLED = True
+COGNITIVE_PROJECTOR_BLOCK_MS = 2000
+COGNITIVE_PROJECTOR_BATCH_SIZE = 100
+
 # Interocezione hardware — recettore locale osservativo.
 # Campiona lo stato fisico senza LLM; pubblica l'ultimo snapshot e soltanto le
 # transizioni di stato su Redis/Pulse. In questa fase nessun consumer esegue

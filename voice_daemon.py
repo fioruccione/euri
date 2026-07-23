@@ -3303,6 +3303,37 @@ class VoiceDaemon:
             if self._wait_or_stop(5 if failed else 1):
                 break
 
+    def _cognitive_projector_loop(self):
+        """Pulse v2 → timeline causale osservazionale, durevole e replayabile."""
+        from core.cognitive_projector import (
+            consume_projector_batch,
+            ensure_projector_group,
+        )
+
+        ensure_projector_group(self.r)
+        logger.info("Cognitive Projector: in ascolto durevole su euri:pulse")
+        while self._running:
+            self._workers.heartbeat("cognitive-projector")
+
+            # Prima recupera ciò che questo consumer stabile aveva ricevuto ma non
+            # ACKato prima di un crash; normalmente il batch è vuoto.
+            read, projected, ignored = consume_projector_batch(
+                self.r,
+                pending=True,
+                count=getattr(config, "COGNITIVE_PROJECTOR_BATCH_SIZE", 100),
+            )
+            if read:
+                if projected + ignored < read and self._wait_or_stop(1):
+                    break
+                continue
+
+            consume_projector_batch(
+                self.r,
+                pending=False,
+                count=getattr(config, "COGNITIVE_PROJECTOR_BATCH_SIZE", 100),
+                block_ms=getattr(config, "COGNITIVE_PROJECTOR_BLOCK_MS", 2000),
+            )
+
     def _visual_presence_worker(self):
         """Condivide con la UI solo stato visivo effimero, mai dati biometrici."""
         from core.visual_presence import publish_visual_presence
@@ -3377,6 +3408,13 @@ class VoiceDaemon:
 
         # Outbox memoria — TTL, indice attenzione, Pulse e Obsidian replayabili.
         self._workers.start("memory-outbox", self._memory_outbox_loop)
+
+        # Proiezione Pulse v2 — timeline cognitiva osservazionale, nessuna mutazione.
+        self._workers.start(
+            "cognitive-projector",
+            self._cognitive_projector_loop,
+            enabled=getattr(config, "COGNITIVE_PROJECTOR_ENABLED", False),
+        )
 
         # Stato visivo corrente per Silent Chat: snapshot sanitizzato con TTL breve.
         self._workers.start("visual-presence", self._visual_presence_worker)

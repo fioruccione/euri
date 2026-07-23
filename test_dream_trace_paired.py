@@ -23,8 +23,12 @@ class FakeJson:
     def __init__(self, redis):
         self.redis = redis
 
-    def set(self, key, _path, value):
-        self.redis.docs[key] = value
+    def set(self, key, path, value):
+        if path == "$":
+            self.redis.docs[key] = value
+            return
+        field = path.removeprefix("$.")
+        self.redis.docs.setdefault(key, {})[field] = value
 
 
 class FakeRedis:
@@ -65,6 +69,10 @@ class FakeRedis:
 class FakeEmbedder:
     def encode(self, _content, mode=None):
         return np.array([1.0, 0.0])
+
+
+def _paired_streams(redis):
+    return [row for row in redis.streams if row[0] == DREAM_TRACE_PAIRED_STREAM]
 
 
 def _seeds():
@@ -131,7 +139,7 @@ def test_warmup_generates_once_and_seeds_residue_without_logging_a_pair():
     assert len(calls) == 2
     assert calls[0].get("think") is True
     assert calls[1].get("think") is False
-    assert redis.streams == []  # nessuna coppia: niente da confrontare
+    assert _paired_streams(redis) == []  # nessuna coppia: niente da confrontare
     assert redis.values[DREAM_TRACE_PAIRED_RESIDUE_KEY].startswith("ho provato")
 
 
@@ -140,9 +148,9 @@ def test_paired_generation_uses_identical_seed_for_both_arms():
     assert result is not None
     # baseline (think=True) + trattamento (think=True) + distillazione (think=False).
     assert len(calls) == 3
-    assert len(redis.streams) == 2
+    assert len(_paired_streams(redis)) == 2
 
-    by_arm = {fields["arm"]: fields for _key, fields, _kw in redis.streams}
+    by_arm = {fields["arm"]: fields for _key, fields, _kw in _paired_streams(redis)}
     assert set(by_arm) == {"baseline", "trattamento"}
     assert by_arm["baseline"]["pair_id"] == by_arm["trattamento"]["pair_id"]
 
@@ -172,7 +180,7 @@ def test_residue_metadata_is_per_arm_not_shared():
     """Bug segnalato in review: il record baseline non deve mostrare il residuo
     come se fosse stato iniettato, anche se il prompt correttamente non lo riceve."""
     _result, redis, _calls = _run(residue="strategia debole precedente")
-    by_arm = {fields["arm"]: fields for _key, fields, _kw in redis.streams}
+    by_arm = {fields["arm"]: fields for _key, fields, _kw in _paired_streams(redis)}
     assert by_arm["baseline"]["trace_residue"] == ""
     assert by_arm["trattamento"]["trace_residue"] == "strategia debole precedente"
     assert by_arm["baseline"]["trace_available"] == "1"
@@ -188,7 +196,7 @@ def test_residue_evolves_only_from_treatment_side():
 
 def test_valid_side_checks_hash_even_on_discarded():
     _result, redis, _calls = _run(residue="strategia debole precedente")
-    by_arm = {fields["arm"]: fields for _key, fields, _kw in redis.streams}
+    by_arm = {fields["arm"]: fields for _key, fields, _kw in _paired_streams(redis)}
     discarded = dict(by_arm["baseline"])
     discarded["status"] = "discarded"
     discarded["model_output"] = "NESSUN INSIGHT"
@@ -299,7 +307,7 @@ def test_distillation_drops_thematic_echo_keeps_new_lines():
 
 def test_sampler_rejects_tampered_side():
     _result, redis, _calls = _run(residue="strategia debole precedente")
-    _key, fields, _kw = redis.streams[0]
+    _key, fields, _kw = _paired_streams(redis)[0]
     assert _valid_side(fields) is True
     tampered = dict(fields)
     tampered["model_output"] = tampered.get("model_output", "") + " alterato"
@@ -308,7 +316,7 @@ def test_sampler_rejects_tampered_side():
 
 def test_sampler_rejects_tampered_residue():
     _result, redis, _calls = _run(residue="strategia debole precedente")
-    _key, fields, _kw = redis.streams[1]
+    _key, fields, _kw = _paired_streams(redis)[1]
     assert _valid_side(fields) is True
     tampered = dict(fields)
     tampered["trace_residue"] += " alterato"
@@ -320,7 +328,7 @@ def test_legacy_single_arm_path_still_generates_one_candidate_with_trace():
     assert result is not None and result["status"] == "candidate"
     # 1 generazione (think=True) + 1 distillazione del residuo (think=False).
     assert len(calls) == 2
-    assert redis.streams == []  # il percorso legacy non scrive lo stream paired
+    assert _paired_streams(redis) == []  # il percorso legacy non scrive lo stream paired
     assert DREAM_TRACE_PAIRED_RESIDUE_KEY not in redis.values
     prompt = calls[0]["messages"][0]["content"]
     assert "[TRACCIA DEL CICLO PRECEDENTE" in prompt

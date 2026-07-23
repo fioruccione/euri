@@ -29,7 +29,7 @@ from loguru import logger
 
 from core.ollama_client import chat_client, dream_client
 from core.operational_context import load_operational_context
-from core.pulse import pulse_emit
+from core.pulse import cognitive_emit
 import config
 
 
@@ -676,10 +676,39 @@ def capture_reaction(memory, insight: dict, reaction_text: str, *, emit: bool = 
 
     # 5) evento sul polso: extero, è il mondo (Stefano) che risponde all'iniziativa di Euri
     if emit:
-        pulse_emit(
-            r, "reaction", "extero", "rated",
-            payload={"insight": insight_id, "lesson": lesson_id, "domain": domain},
-            salience=0.7,  # ipotesi grezza: la verità esterna spicca più dell'housekeeping interno
+        epistemic_after = {
+            "CONFERMA": "externally_confirmed",
+            "SMENTITA": "externally_refuted",
+            "PARZIALE": "partially_refuted_by_user",
+            "DA_VALUTARE": "hypothesis_to_test",
+        }.get(verdict, "externally_observed")
+        cognitive_emit(
+            r,
+            "reaction",
+            "extero",
+            "rated",
+            producer="loop2g-reaction",
+            trace_id=insight.get("cognitive_trace_id") or f"insight:{insight_id}",
+            causation_id=insight.get("cognitive_promoted_event_id") or "",
+            logical_event_id=f"reaction:{insight_id}:{lesson_id}",
+            entity_refs=[
+                {"type": "insight", "id": insight_id},
+                {"type": "memory", "id": lesson_id},
+            ],
+            parent_refs=[insight_id] if insight_id else [],
+            payload={
+                "insight": insight_id,
+                "lesson": lesson_id,
+                "domain": domain,
+                "verdict": verdict,
+            },
+            epistemic_before=(
+                insight.get("epistemic_status")
+                or insight.get("verification_status")
+                or "internally_emergent"
+            ),
+            epistemic_after=epistemic_after,
+            salience=0.7,  # l'evidenza esterna spicca più dell'housekeeping interno
         )
 
     return out

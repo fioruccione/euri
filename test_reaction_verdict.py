@@ -130,14 +130,14 @@ def test_capture_propagates_uncertainty_to_reaction_memory():
     memory = _CaptureMemory()
     old_classify = reaction.classify_reaction_verdict
     old_synthesize = reaction.synthesize_lesson
-    old_pulse = reaction.pulse_emit
+    old_pulse = reaction.cognitive_emit
     seen = {}
     reaction.classify_reaction_verdict = lambda *_a, **_k: "DA_VALUTARE"
     def _synthesize(_insight, _reply, verdict):
         seen["verdict"] = verdict
         return "lezione"
     reaction.synthesize_lesson = _synthesize
-    reaction.pulse_emit = lambda *_a, **_k: None
+    reaction.cognitive_emit = lambda *_a, **_k: None
     try:
         out = reaction.capture_reaction(
             memory,
@@ -147,7 +147,7 @@ def test_capture_propagates_uncertainty_to_reaction_memory():
     finally:
         reaction.classify_reaction_verdict = old_classify
         reaction.synthesize_lesson = old_synthesize
-        reaction.pulse_emit = old_pulse
+        reaction.cognitive_emit = old_pulse
 
     assert seen["verdict"] == "DA_VALUTARE"
     assert out["verdict"] == "DA_VALUTARE"
@@ -198,10 +198,10 @@ def test_capture_partial_uses_extractively_grounded_patch():
     }
     old_classify = reaction.classify_reaction_verdict
     old_extract = reaction.extract_partial_reaction_patch
-    old_pulse = reaction.pulse_emit
+    old_pulse = reaction.cognitive_emit
     reaction.classify_reaction_verdict = lambda *_a, **_k: "PARZIALE"
     reaction.extract_partial_reaction_patch = lambda *_a, **_k: patch
-    reaction.pulse_emit = lambda *_a, **_k: None
+    reaction.cognitive_emit = lambda *_a, **_k: None
     try:
         out = reaction.capture_reaction(
             memory,
@@ -211,7 +211,7 @@ def test_capture_partial_uses_extractively_grounded_patch():
     finally:
         reaction.classify_reaction_verdict = old_classify
         reaction.extract_partial_reaction_patch = old_extract
-        reaction.pulse_emit = old_pulse
+        reaction.cognitive_emit = old_pulse
 
     assert out["verdict"] == "PARZIALE"
     assert out["reaction_patch"] == patch
@@ -231,14 +231,14 @@ def test_capture_refutation_is_extractive_and_does_not_preserve_insight_claims()
     )
     old_classify = reaction.classify_reaction_verdict
     old_synthesize = reaction.synthesize_lesson
-    old_pulse = reaction.pulse_emit
+    old_pulse = reaction.cognitive_emit
     reaction.classify_reaction_verdict = lambda *_a, **_k: "SMENTITA"
 
     def _must_not_synthesize(*_args, **_kwargs):
         raise AssertionError("una SMENTITA non deve passare dalla sintesi creativa")
 
     reaction.synthesize_lesson = _must_not_synthesize
-    reaction.pulse_emit = lambda *_a, **_k: None
+    reaction.cognitive_emit = lambda *_a, **_k: None
     try:
         out = reaction.capture_reaction(
             memory,
@@ -256,7 +256,7 @@ def test_capture_refutation_is_extractive_and_does_not_preserve_insight_claims()
     finally:
         reaction.classify_reaction_verdict = old_classify
         reaction.synthesize_lesson = old_synthesize
-        reaction.pulse_emit = old_pulse
+        reaction.cognitive_emit = old_pulse
 
     assert out["verdict"] == "SMENTITA"
     assert user_correction in out["lesson"]

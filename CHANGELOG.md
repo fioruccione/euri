@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-07-23 - Pulse v2 distingue telemetria e lineage cognitiva
+
+- `euri:pulse` resta compatibile, ma ogni nuovo evento porta un envelope v2 che
+  distingue telemetria grezza e transizione cognitiva, con produttore, trace,
+  causalità, entità, antenati e confine epistemico.
+- Il nuovo Cognitive Projector usa un consumer group durevole e copia soltanto gli
+  eventi cognitivi in `euri:cognitive:events`. La proiezione è idempotente e
+  osservazionale: non crea memorie, non modifica insight e non esegue azioni.
+- Prima lineage collegata a memoria salvata, semi Dream, candidate creati/scartati,
+  promozioni/demozioni, reaction con verdetto e consolidamenti figlio-genitori.
+- `docs/PULSE_COGNITIVE_ROADMAP.md` è il checkpoint persistente del cantiere;
+  `scripts/audit_cognitive_pulse.py` verifica stream, consumer e copertura senza
+  mutare Redis.
+- Verifica pre-riavvio: 42/42 unit; Redis storico invariato (3.924 eventi legacy,
+  timeline cognitiva e consumer group ancora assenti).
+
 ## 2026-07-23 - Uno scherzo sul turno non ritira una memoria del RAG
 
 - Il caso live "stavo scherzando, volevo vedere se avevi capito il termine" resta
