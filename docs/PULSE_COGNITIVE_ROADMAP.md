@@ -1,10 +1,10 @@
 # Pulse cognitivo — roadmap persistente
 
-Stato aggiornato: 2026-07-23 16:25
+Stato aggiornato: 2026-07-23 16:55
 
-Fase corrente: **1 completata — lineage e hardening verificati nel runtime**
+Fase corrente: **2, prima fetta implementata in shadow mode — runtime da verificare**
 
-Prossima azione esatta: **Fase 2, prima fetta osservazionale: tracciare `memory/insight recalled` separandolo da `used_in_response`, senza cambiare ranking**
+Prossima azione esatta: **riavviare Euri, fare 2–3 turni naturali in Silent Chat e almeno un turno vocale, poi auditare recall, uso supportato e completezza delle trace**
 
 Questo file è il punto di ripresa canonico del cantiere Pulse. Va letto insieme
 alla prima sezione di `CODEX.md` prima di modificare Pulse, Dream, memoria,
@@ -158,14 +158,27 @@ Verifica runtime conclusiva, 15:31–16:23:
 - i due eventi `audit/repaired` appartengono a producer distinti (repair Loop 2a
   e repair Loop 2h), quindi non sono una duplicazione.
 
-### Fase 2 — Lineage dell’uso reale: da fare
+### Fase 2 — Lineage dell’uso reale: prima fetta implementata, runtime da verificare
 
-Strumentare, senza cambiare ranking o risposte:
+Implementato in shadow mode, senza cambiare ranking o risposte:
 
 - `memory/recalled` con query/turno e posizione nel retrieval;
 - `insight/recalled`;
 - `memory/used_in_response` e `insight/used_in_response`, distinti dal semplice recall;
 - turno utente/risposta come confine di trace;
+- copertura dei normali turni RAG `voice_chat`, `voice_search`, `silent_chat` e
+  `mobile`;
+- provenance dei soli nodi realmente iniettati: memoria base, reflection,
+  impegni, insight e retrieval strategico;
+- prompt e risposta rappresentati nel Pulse soltanto da SHA-256 e lunghezza;
+  nessun testo o frammento mnemonico viene copiato;
+- attribuzione d'uso deterministica post-risposta, priva di chiamate LLM e
+  conservativa. Richiede identificatori o sovrapposizione lessicale distintiva
+  non già spiegata dalla domanda e marca il risultato
+  `supported_not_proven`.
+
+Restano da strumentare in una fetta successiva:
+
 - `correction/proposed` distinto da `correction/applied`;
 - chiamate modello con componente, latenza, coda e outcome, senza prompt sensibili.
 
@@ -181,6 +194,18 @@ e uso effettivo delle memorie.
 
 Decisione da preservare: “recuperato” non significa “usato”; “usato” non significa
 “vero”; una risposta del modello non è evidenza esterna.
+
+Verifica pre-runtime 2026-07-23:
+
+- test mirati lineage 3/3;
+- unit 45/45, manifest 54 file;
+- compilazione e diff-check puliti;
+- baseline Redis read-only: 3.989 Pulse, 46 eventi cognitivi, nessun turno della
+  nuova lineage prima del riavvio, projector `pending=0` e `lag=0`.
+
+Il contatore `used_in_response` è intenzionalmente un pavimento: una parafrasi
+forte può produrre un falso negativo. Non deve essere interpretato come una misura
+totale dell'attenzione del modello e non abilita ancora alcuna policy.
 
 ### Fase 3 — Observer e metriche di auto-risonanza: da fare
 
@@ -237,6 +262,7 @@ Ogni policy richiede flag, shadow mode, metrica prima/dopo e rollback.
 | 2026-07-23 | 1 | Prima trace naturale valida; scoperto e riparato incidente Loop 2a/agenda; repair in attesa di projector fermo | questo commit |
 | 2026-07-23 | 1 | Idle test: Loop 2a sano; chiusi lineage Loop 2h e hot-loop judge su insight smentito | commit corrente |
 | 2026-07-23 | 1 | Riavvio verificato: secondo light 3,6 s/model=0; projector pending=0/lag=0 | `cf6032b` + checkpoint docs |
+| 2026-07-23 | 2 | Recall/uso separati in shadow mode; 45/45 unit; baseline runtime pronta | commit corrente |
 
 ## Protocollo di ripresa
 

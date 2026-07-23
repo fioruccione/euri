@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-07-23 - Recall distinto dall'uso osservabile nella risposta
+
+- I turni conversazionali RAG di voce, Silent Chat e mobile producono una trace
+  cognitiva completa: confine del turno, memorie e insight realmente iniettati,
+  risposta generata e uso attribuibile.
+- `recalled` resta distinto da `used_in_response`. L'uso viene emesso soltanto
+  quando la risposta finale conserva evidenza lessicale distintiva non spiegata
+  dalla sola domanda; il risultato è marcato `supported_not_proven` e non cambia
+  memoria, ranking o risposta.
+- Il Pulse conserva soltanto hash, lunghezze e metadati di retrieval/evidenza:
+  nessun prompt, risposta o contenuto mnemonico viene copiato nella timeline.
+- L'audit cognitivo riassume ora turni, recall, uso supportato e canali. Aggiunti
+  test puri per provenance del prompt, causalità, privacy ed esclusione delle
+  semplici eco.
+
 ## 2026-07-23 - Loop 2h con lineage e smentite escluse dal judge
 
 - La prova idle reale ha confermato che Loop 2a non riprocessa più dialoghi

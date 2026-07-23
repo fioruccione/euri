@@ -1007,14 +1007,51 @@ with main_col:
                         # proprio quelli che causano una risposta poi corretta da Stefano.
                         ctx_ids_effective = list(dict.fromkeys([*ctx_ids_now, *augment_ids]))
                         memory_manager.set_last_rag_ctx(ctx_ids_effective)
+                        from core.response_lineage import (
+                            finish_response_turn,
+                            load_augmented_memory_nodes,
+                            start_response_turn,
+                        )
+                        lineage_nodes = list(_rag.nodes)
+                        memory_positions = [
+                            int(node.get("position") or 0)
+                            for node in lineage_nodes if node.get("kind") == "memory"
+                        ]
+                        lineage_nodes.extend(load_augmented_memory_nodes(
+                            memory_manager,
+                            augment_ids,
+                            start_position=max(memory_positions, default=0) + 1,
+                        ))
+                        response_lineage = start_response_turn(
+                            r,
+                            query=prompt,
+                            channel="silent_chat",
+                            mode=_context_mode,
+                            nodes=lineage_nodes,
+                        )
                         from core.honesty import scrub_unbacked_save_claim
                         from core.act_word_check import (
                             emit_unbacked_action_commitment,
                             scrub_unbacked_action_claim,
                         )
-                        response = scrub_unbacked_save_claim(brain.respond(prompt, context=context_full))
+                        try:
+                            response = scrub_unbacked_save_claim(
+                                brain.respond(prompt, context=context_full)
+                            )
+                        except Exception:
+                            finish_response_turn(
+                                r,
+                                response_lineage,
+                                response="",
+                                outcome="failed",
+                                attribute_usage=False,
+                            )
+                            raise
                         emit_unbacked_action_commitment(r, response, set(), channel="silent_chat")
                         response = scrub_unbacked_action_claim(response, set())
+                        finish_response_turn(
+                            r, response_lineage, response=response
+                        )
                     st.markdown(response)
 
             # Salva risposta

@@ -1,3 +1,32 @@
+# Handoff Euri - 2026-07-23 - Lineage shadow tra recall e uso nella risposta
+
+- Fase 2, prima fetta implementata senza cambiare ranking, prompt o risposta. I
+  turni RAG di voce (`CHAT` e `SEARCH`), Silent Chat e mobile aprono ora una trace
+  `turn/started`, registrano separatamente `memory/recalled` e
+  `insight/recalled`, quindi chiudono con `turn/responded`.
+- `RagContext.nodes` descrive i soli documenti realmente iniettati: memorie base,
+  reflection recenti, impegni aperti, insight e augment strategici. Il vecchio
+  `RagContext.ids` e `last_rag_ctx` restano invariati per non alterare il percorso
+  delle correzioni.
+- `used_in_response` non viene dedotto dal solo prompt. Un attribuitore
+  deterministico e conservativo cerca, soltanto dopo la risposta finale, termini,
+  bigrammi o identificatori distintivi non già presenti nella domanda. L'evento
+  dichiara `supported_not_proven`: è evidenza d'uso, non attenzione interna
+  dimostrata, verità o conferma esterna. I falsi negativi sono preferiti alle
+  attribuzioni facili.
+- Pulse non contiene prompt, risposta, contenuto del nodo né frammenti corrisposti:
+  conserva hash, lunghezze, posizione/percorso di retrieval e conteggi
+  dell'evidenza. Il modulo è fail-open e non chiama alcun LLM.
+- L'audit cognitivo espone ora turni iniziati/conclusi, nodi richiamati, uso
+  supportato e rapporto recall/uso per canale. Baseline a Euri ferma: 3.989 Pulse,
+  46 cognitivi, zero turni Phase 2 come previsto, projector `pending=0`, `lag=0`.
+- Verifica pre-runtime: manifest 54 file, unit 45/45, test mirati privacy/eco/uso
+  3/3, compilazione e diff-check puliti. Prossimo passo: riavvio e pochi turni
+  naturali, preferibilmente prima in Silent Chat e poi a voce, quindi audit della
+  trace senza giudicare la qualità della risposta dai soli contatori.
+
+---
+
 # Handoff Euri - 2026-07-23 - Idle test: Loop 2h causale e smentite fuori dal judge
 
 - Test naturale 12:48–14:57 senza interazione: VisualGate è passato correttamente

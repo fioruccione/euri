@@ -950,15 +950,28 @@ class VoiceDaemon:
             "inventare. Se invece il soggetto è presente, riassumi quello che sai.]"
         )
         context = (context + "\n\n" if context else "") + search_hint
-        with self._brain_lock:
-            reply = self.brain.respond(
-                text, context=context, trusted=trusted, observed_at=observed_at
+        lineage = self._start_response_lineage(
+            text, channel="voice_search", mode="search"
+        )
+        try:
+            with self._brain_lock:
+                reply = self.brain.respond(
+                    text, context=context, trusted=trusted, observed_at=observed_at
+                )
+        except Exception:
+            self._finish_response_lineage(
+                lineage, "", outcome="failed", attribute_usage=False
             )
+            raise
         reply = scrub_unbacked_save_claim(reply)  # pavimento di onestà: SEARCH non salva
         if needs_honest_correction(reply, set()) and self._try_euri_readonly_action(reply, text):
+            self._finish_response_lineage(
+                lineage, "", outcome="rerouted", attribute_usage=False
+            )
             return
         emit_unbacked_action_commitment(self.r, reply, set(), channel="voice_search")
         reply = scrub_unbacked_action_claim(reply, set())  # SEARCH non agisce: niente claim d'azione
+        self._finish_response_lineage(lineage, reply)
         self.memory.log_conversation(_ASSISTANT_NAME, reply)
         self._speak(reply)
 
@@ -2019,6 +2032,14 @@ class VoiceDaemon:
         with self.brain.history_lock:
             recent_history = list(self.brain._conversation_history)
         rag = build_rag_context(text, self.memory, mode=mode, recent_history=recent_history)
+        # Thread-local: voce e mobile possono costruire contesti in parallelo.
+        # La struttura serve soltanto alla lineage shadow e non entra nel prompt.
+        local = getattr(self, "_response_rag_local", None)
+        if local is None:
+            local = threading.local()
+            self._response_rag_local = local
+        local.rag = rag
+        local.augment_ids = []
         try:
             self.memory.set_last_rag_ctx(rag.ids)
         except Exception as e:
@@ -2036,6 +2057,9 @@ class VoiceDaemon:
             with self.brain.history_lock:
                 recent = list(self.brain._conversation_history)
             context, note, augment_ids = augment_context_with_ids(text, context, self.memory, self.brain, recent)
+            local = getattr(self, "_response_rag_local", None)
+            if local is not None:
+                local.augment_ids = list(augment_ids)
             if augment_ids:
                 base_ids = self.memory.get_last_rag_ctx()
                 self.memory.set_last_rag_ctx(list(dict.fromkeys([*base_ids, *augment_ids])))
@@ -2044,6 +2068,58 @@ class VoiceDaemon:
         except Exception as e:
             logger.debug(f"strategy augment fallito: {e}")
         return context
+
+    def _start_response_lineage(self, text: str, *, channel: str, mode: str):
+        """Apre la trace shadow del turno senza influire sul percorso conversazionale."""
+        try:
+            from core.response_lineage import (
+                load_augmented_memory_nodes,
+                start_response_turn,
+            )
+            local = getattr(self, "_response_rag_local", None)
+            rag = getattr(local, "rag", None) if local is not None else None
+            nodes = list(getattr(rag, "nodes", []) or [])
+            augment_ids = list(getattr(local, "augment_ids", []) or []) if local else []
+            if augment_ids:
+                memory_positions = [
+                    int(node.get("position") or 0)
+                    for node in nodes if node.get("kind") == "memory"
+                ]
+                nodes.extend(load_augmented_memory_nodes(
+                    self.memory,
+                    augment_ids,
+                    start_position=max(memory_positions, default=0) + 1,
+                ))
+            return start_response_turn(
+                self.r,
+                query=text,
+                channel=channel,
+                mode=mode,
+                nodes=nodes,
+            )
+        except Exception as e:
+            logger.debug(f"Response lineage start ignorata: {e}")
+            return None
+
+    def _finish_response_lineage(
+        self,
+        lineage,
+        response: str,
+        *,
+        outcome: str = "delivered",
+        attribute_usage: bool = True,
+    ) -> None:
+        try:
+            from core.response_lineage import finish_response_turn
+            finish_response_turn(
+                self.r,
+                lineage,
+                response=response,
+                outcome=outcome,
+                attribute_usage=attribute_usage,
+            )
+        except Exception as e:
+            logger.debug(f"Response lineage finish ignorata: {e}")
 
     def _handle_web_search(self, text: str):
         """Cerca sul web, risponde vocalmente, propone di salvare."""
@@ -2249,15 +2325,28 @@ class VoiceDaemon:
         # pre-gate cheap scatta; specific_search → context invariato.
         context = self._augment_context_by_strategy(text, context)
         context = (context + "\n\n" if context else "") + "[Modalità conversazione: sii presente e naturale, non rigido.]"
-        with self._brain_lock:
-            reply = self.brain.respond(
-                text, context=context, trusted=trusted, observed_at=observed_at
+        lineage = self._start_response_lineage(
+            text, channel="voice_chat", mode="chat"
+        )
+        try:
+            with self._brain_lock:
+                reply = self.brain.respond(
+                    text, context=context, trusted=trusted, observed_at=observed_at
+                )
+        except Exception:
+            self._finish_response_lineage(
+                lineage, "", outcome="failed", attribute_usage=False
             )
+            raise
         reply = scrub_unbacked_save_claim(reply)  # pavimento di onestà: CHAT non salva
         if needs_honest_correction(reply, set()) and self._try_euri_readonly_action(reply, text):
+            self._finish_response_lineage(
+                lineage, "", outcome="rerouted", attribute_usage=False
+            )
             return
         emit_unbacked_action_commitment(self.r, reply, set(), channel="voice_chat")
         reply = scrub_unbacked_action_claim(reply, set())  # CHAT non agisce: niente claim d'azione
+        self._finish_response_lineage(lineage, reply)
         self.memory.log_conversation(_ASSISTANT_NAME, reply)
         if len(reply) > 150:
             self._last_speech_content = reply
@@ -3997,11 +4086,21 @@ class VoiceDaemon:
                             "Rispondi in modo conciso e TTS-friendly, niente markdown.]"
 
                         # Brain — lock condiviso con _handle_chat()
-                        with self._brain_lock:
-                            response = self.brain.respond(text, context=context)
+                        lineage = self._start_response_lineage(
+                            text, channel="mobile", mode="chat"
+                        )
+                        try:
+                            with self._brain_lock:
+                                response = self.brain.respond(text, context=context)
+                        except Exception:
+                            self._finish_response_lineage(
+                                lineage, "", outcome="failed", attribute_usage=False
+                            )
+                            raise
                         response = scrub_unbacked_save_claim(response)  # pavimento di onestà: mobile non salva
                         emit_unbacked_action_commitment(self.r, response, set(), channel="mobile")
                         response = scrub_unbacked_action_claim(response, set())  # mobile non agisce: niente claim d'azione
+                        self._finish_response_lineage(lineage, response)
 
                         self.memory.log_conversation(_ASSISTANT_NAME, response)
                         logger.info(f"[Mobile] Euri: {response[:80]}")

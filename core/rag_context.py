@@ -9,7 +9,7 @@ Costruisce il contesto base da Redis senza conoscere domini specifici:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from loguru import logger
 
@@ -54,6 +54,11 @@ class RagContext:
     text: str
     ids: list[str]
     mode: str
+    # Provenance osservazionale dei soli nodi realmente inseriti nel prompt.
+    # `ids` resta invariato per compatibilità con l'Audit di Coerenza legacy:
+    # include soltanto il blocco results, mentre nodes distingue anche reflection,
+    # impegni e insight senza cambiare retrieval o risposta.
+    nodes: list[dict] = field(default_factory=list)
 
 
 def insight_requires_external_validation(insight: dict) -> bool:
@@ -138,10 +143,12 @@ def build_rag_context(
     history_resolves_query = recent_context_query and bool(history_lines)
 
     reflection_lines: list[str] = []
+    reflection_docs: list[dict] = []
     if not history_resolves_query and not config.DEMO_MODE and (not search_mode or recent_context_query):
         for r in memory.get_recent_reflections(limit=2, touch=False):
             assistant_label = config.ASSISTANT_DISPLAY_NAME.upper()
             reflection_lines.append(f"- [INTERPRETAZIONE DI {assistant_label}] {r['content']}")
+            reflection_docs.append(r)
 
     if history_resolves_query:
         results = []
@@ -169,6 +176,7 @@ def build_rag_context(
         results = merged
         seen_ids = merged_seen
         reflection_lines = []
+        reflection_docs = []
 
     words = re.findall(
         r'\b[a-zA-ZàáâãäåèéêëìíîïòóôõöùúûüÀÁÂÃÄÅÈÉÊËÌÍÎÏÒÓÔÕÖÙÚÛÜ]{4,}\b',
@@ -194,6 +202,7 @@ def build_rag_context(
     # a domani). I pending sono pochi per natura → il blocco resta compatto e compare
     # solo quando l'agenda non è vuota; niente diluizione degli slot.
     commitment_lines: list[str] = []
+    commitment_docs: list[dict] = []
     commitment_ids: set = set()
     try:
         for t in memory.get_pending_todos()[:5]:
@@ -201,6 +210,7 @@ def build_rag_context(
             if tid in commitment_ids:
                 continue
             commitment_ids.add(tid)
+            commitment_docs.append(t)
             due = t.get("_due_at")
             state = "senza scadenza"
             if due:
@@ -218,6 +228,7 @@ def build_rag_context(
         logger.debug(f"RAG impegni aperti non disponibili: {e}")
 
     insight_lines: list[str] = []
+    insight_docs: list[dict] = []
     if keywords and not history_resolves_query:
         for ins in memory.search_insights(text, limit=2):
             dom_a = ins.get("domain_a", "?")
@@ -254,6 +265,7 @@ def build_rag_context(
                         f"{correction[:1200]}"
                     )
             insight_lines.append(line)
+            insight_docs.append(ins)
 
     sections: list[str] = []
     if recent_context_query:
@@ -339,6 +351,43 @@ def build_rag_context(
         sections.insert(0, "Regola cronologica interna:\n" + temporal_prompt_contract())
 
     ids = [r.get("id") for r in results[:mem_cap] if r.get("id")]
+    nodes: list[dict] = []
+    seen_nodes: set[tuple[str, str]] = set()
+
+    def _append_node(doc: dict, *, kind: str, path: str, position: int) -> None:
+        node_id = str(doc.get("id") or "").removeprefix("euri:memory:").removeprefix(
+            "euri:insight:"
+        )
+        content = str(doc.get("content") or "").strip()
+        key = (kind, node_id)
+        if not node_id or not content or key in seen_nodes:
+            return
+        seen_nodes.add(key)
+        nodes.append({
+            "kind": kind,
+            "id": node_id,
+            "content": content,
+            "position": position,
+            "retrieval_path": path,
+            "source": str(doc.get("source") or ""),
+            "domain": str(
+                doc.get("domain")
+                or doc.get("domain_a")
+                or ""
+            ),
+        })
+
+    for position, doc in enumerate(reflection_docs, 1):
+        _append_node(doc, kind="memory", path="recent_reflection", position=position)
+    for position, doc in enumerate(commitment_docs, 1):
+        _append_node(doc, kind="memory", path="open_commitment", position=position)
+    visible_results = [
+        doc for doc in results[:mem_cap] if doc.get("id") not in commitment_ids
+    ]
+    for position, doc in enumerate(visible_results, 1):
+        _append_node(doc, kind="memory", path="base_rag", position=position)
+    for position, doc in enumerate(insight_docs, 1):
+        _append_node(doc, kind="insight", path="insight_rag", position=position)
     if results:
         node_tags = [
             f"{r.get('source','?')}:{r.get('domain','?')}({r.get('id','')[:8]})"
@@ -346,4 +395,4 @@ def build_rag_context(
         ]
         logger.info(f"RAG ctx [{len(results)} nodi]: {' | '.join(node_tags)}")
 
-    return RagContext(text="\n\n".join(sections), ids=ids, mode=mode)
+    return RagContext(text="\n\n".join(sections), ids=ids, mode=mode, nodes=nodes)
