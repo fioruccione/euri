@@ -114,6 +114,35 @@ questo cutoff in codice e ha prodotto un audit cieco riproducibile da 60+60 item
 Il risultato resta **non letto**: Stefano deve compilare N/O/? senza aprire la chiave.
 Dopo l'unblinding, riportare qui quote, delta e strati temporali/policy previsti sopra.
 
+### Deviazione scoperta il 21/07 — audit primario non valutabile
+
+La prima lettura cieca ha rivelato un difetto nella strumentazione: `_trace_convergence`
+salvava `seed_content[:600]`. Il taglio cade quasi sempre nella terza riga, cioe' proprio
+nel ponte operativo da giudicare. Nel campione congelato 109/120 item terminano senza
+punteggiatura; il valutatore aveva marcato `?` soltanto gli otto casi in cui mancava
+quasi tutta la connessione, ma anche gli altri giudizi sono esposti a testo mancante.
+
+Il controllo read-only, svolto senza aprire la chiave, ha trovato 67 versioni piu'
+lunghe nei candidate vivi, 10 versioni gia' complete e altre 4 copie univoche nei
+sogni grezzi: 81/120 recuperabili, 39 perdute. Un audit sui soli sopravvissuti sarebbe
+distorto dal ciclo di vita dei candidate. Il batch 60+60 e' quindi **non valutabile**:
+non e' ne' positivo ne' negativo e non puo' testare la soglia pre-registrata.
+
+La chiave resta sigillata per consentire in seguito la sola diagnosi della distribuzione
+del difetto. La trace futura conserva il testo integrale con lunghezza e SHA-256; il
+campionatore rifiuta fail-closed ogni entry legacy o non verificabile. Un nuovo test
+richiede una raccolta prospettica completa per entrambi i bracci e una nuova
+pre-registrazione/versione del protocollo.
+
+La nuova pre-registrazione e' ora separata in `ESPERIMENTO_DREAM_TRACE_V2.md`. Una
+prima stesura usava bracci concorrenti a blocchi di due cicli (mai attivata); su
+indicazione di Stefano (21/07) e' stata sostituita da un disegno APPAIATO — stesso
+seme generato con e senza residuo — per eliminare la variabilita' tra coppie di
+domini diverse invece di mediarla su n grande. Registro immutabile al momento della
+generazione e assi distinti per grounding, novita', chiarezza e utilita' contestuale
+restano invariati. Il flag V2 resta spento finche' Stefano non autorizza
+esplicitamente l'avvio.
+
 ## DEVIAZIONE DOCUMENTATA (15/07/2026) — gate di promozione corretto
 
 Checkpoint prima dell'intervento: **baseline 149 / trattamento 16 / ambiguo 2**.

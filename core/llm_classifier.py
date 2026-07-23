@@ -127,7 +127,10 @@ una proposta fattibile, ma la formulazione e' contestuale oppure non coincide in
 sicuro con gli intenti sopra. Include riferimenti come "fallo", "quello non e' piu'
 da fare", una richiesta impossibile per cui Euri potrebbe offrire un passo alternativo,
 o "proponimi cosa puoi fare" riferito al contesto. Non usarlo per opinioni, racconti,
-ipotesi astratte o semplici domande generali.
+ipotesi astratte o semplici domande generali. "Esamina quello che sai fare e dimmi come
+migliorare il tuo sistema/codice, magari usando i tuoi strumenti" e' CHAT: chiede una
+valutazione ragionata, non autorizza un controllo hardware casuale. E' ACTION_REASONING
+solo se nomina anche un sottopasso operativo concreto che vuole davvero eseguire.
 
 CHAT: tutto il resto — conversazione, domande generali, narrazioni, spiegazioni, saluti.
 

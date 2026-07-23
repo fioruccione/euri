@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Regressioni pure per la policy di convergenza claim_judge_v2."""
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -11,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import config
 import core.dream_engine as de_mod
 from core.dream_engine import DreamEngine
+from scripts.experiments.sample_dream_audit import _complete_trace_content
 
 
 class FakeJson:
@@ -47,6 +49,7 @@ class FakeRedis:
         self.docs = docs or {}
         self.cache = {}
         self.deleted = []
+        self.streams = []
         self._json = FakeJson(self)
 
     def get(self, key):
@@ -67,6 +70,10 @@ class FakeRedis:
     def delete(self, key):
         self.deleted.append(key)
         self.docs.pop(key, None)
+
+    def xadd(self, key, fields, **kwargs):
+        self.streams.append((key, fields, kwargs))
+        return "1-0"
 
 
 def _candidate(key, content, score=None):
@@ -139,6 +146,43 @@ def test_zero_distance_requires_semantic_confirmation():
     assert meta["n_judge_confirmed"] == 0
 
 
+def test_convergence_trace_preserves_full_audit_content():
+    content = (
+        "Nel dominio [alfa] succede: " + "A" * 350 + "\n"
+        "Nel dominio [beta] succede: " + "B" * 350 + "\n"
+        "La connessione operativa non ovvia è: effetto completo e verificabile."
+    )
+    subject = _candidate("seed", content)
+    engine, redis, _traces = _engine_for(subject, [])
+
+    DreamEngine._trace_convergence(
+        engine,
+        subject, 3, 0, [], "promoted", judge_trace=[]
+    )
+
+    assert len(content) > 600
+    assert len(redis.streams) == 1
+    _key, fields, _kwargs = redis.streams[0]
+    assert fields["seed_content"] == content
+    assert fields["seed_content_complete"] == "1"
+    assert fields["seed_content_chars"] == str(len(content))
+    assert len(fields["seed_content_sha256"]) == 64
+
+
+def test_audit_sampler_rejects_legacy_or_corrupt_trace_content():
+    content = "candidate completo con terza riga verificabile"
+    valid = {
+        "seed_content": content,
+        "seed_content_complete": "1",
+        "seed_content_chars": str(len(content)),
+        "seed_content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+    }
+    assert _complete_trace_content(valid) == content
+    assert _complete_trace_content({"seed_content": content}) is None
+    assert _complete_trace_content({**valid, "seed_content_chars": "600"}) is None
+    assert _complete_trace_content({**valid, "seed_content_sha256": "0" * 64}) is None
+
+
 def test_only_judge_confirmed_neighbors_are_absorbed():
     subject = _candidate(
         "seed",
@@ -163,6 +207,9 @@ def test_only_judge_confirmed_neighbors_are_absorbed():
         de_mod.pulse_emit, de_mod.write_insight = old_pulse, old_write
 
     assert redis.docs["seed"]["status"] == "promoted"
+    assert redis.docs["seed"]["requires_verification"] is True
+    assert redis.docs["seed"]["verification_status"] == "internally_convergent"
+    assert redis.docs["seed"]["epistemic_status"] == "internally_convergent"
     assert set(redis.deleted) == {"same1", "same2"}
     assert "different" in redis.docs
     args, meta = traces[-1]
@@ -266,6 +313,8 @@ def test_bridge_parser_rejects_explanatory_free_text():
 
 if __name__ == "__main__":
     test_zero_distance_requires_semantic_confirmation()
+    test_convergence_trace_preserves_full_audit_content()
+    test_audit_sampler_rejects_legacy_or_corrupt_trace_content()
     test_only_judge_confirmed_neighbors_are_absorbed()
     test_pair_cache_is_symmetric_and_avoids_second_model_call()
     test_judge_accepts_only_exact_same_label()

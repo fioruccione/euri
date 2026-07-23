@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from loguru import logger
 
 import config
-from core.memory_risk import memory_verification_suffix
+from core.memory_risk import is_document_summary, memory_verification_suffix
 from core.temporal_context import memory_time_label, temporal_prompt_contract, turn_time_label
 from utils.date_utils import now
 
@@ -56,6 +56,22 @@ class RagContext:
     mode: str
 
 
+def insight_requires_external_validation(insight: dict) -> bool:
+    """La convergenza interna fa emergere un insight, ma non lo valida nel mondo."""
+    external = insight.get("external_reaction") or {}
+    if external.get("verdict") != "CONFERMA":
+        return True
+    return (
+        bool(insight.get("requires_verification"))
+        or insight.get("verification_status") in {
+            "hypothesis_to_test",
+            "partially_refuted_by_user",
+            "internally_emergent",
+            "internally_convergent",
+        }
+    )
+
+
 def infer_context_mode(text: str, default: str = "chat") -> str:
     """Inferenza cheap per canali senza intent router, come Silent Chat."""
     if _RECENT_CONTEXT_RE.search(text or "") or _SEARCH_CUE_RE.search(text or ""):
@@ -87,7 +103,11 @@ def _format_recent_history(
             and observed_at - previous_at > getattr(config, "TEMPORAL_EPISODE_GAP_SECONDS", 1800)
         ):
             rows.append("- [nuovo segmento dopo una pausa]")
-        who = "Stefano" if role == "user" else "Euri" if role == "assistant" else str(role or "?")
+        who = (
+            config.OWNER_DISPLAY_NAME if role == "user"
+            else config.ASSISTANT_DISPLAY_NAME if role == "assistant"
+            else str(role or "?")
+        )
         rows.append(
             f"- [{turn_time_label(observed_at, reference_at)}] {who}: {content[:500]}"
         )
@@ -120,7 +140,8 @@ def build_rag_context(
     reflection_lines: list[str] = []
     if not history_resolves_query and not config.DEMO_MODE and (not search_mode or recent_context_query):
         for r in memory.get_recent_reflections(limit=2, touch=False):
-            reflection_lines.append(f"- [INTERPRETAZIONE DI EURI] {r['content']}")
+            assistant_label = config.ASSISTANT_DISPLAY_NAME.upper()
+            reflection_lines.append(f"- [INTERPRETAZIONE DI {assistant_label}] {r['content']}")
 
     if history_resolves_query:
         results = []
@@ -202,13 +223,37 @@ def build_rag_context(
             dom_a = ins.get("domain_a", "?")
             dom_b = ins.get("domain_b", "?")
             ext = ins.get("external_reaction") or {}
-            tentative = (
-                bool(ins.get("requires_verification"))
-                or ins.get("verification_status") == "hypothesis_to_test"
-                or ext.get("verdict") == "DA_VALUTARE"
+            tentative = insight_requires_external_validation(ins)
+            marker = (
+                "[CONNESSIONE EMERSA INTERNAMENTE — DA VERIFICARE] "
+                if tentative else
+                "[CONNESSIONE CONFERMATA ESTERNAMENTE] "
             )
-            marker = "[IPOTESI DA VERIFICARE] " if tentative else ""
-            insight_lines.append(f"- {marker}[{dom_a} ↔ {dom_b}] {ins['content']}")
+            line = f"- {marker}[{dom_a} ↔ {dom_b}] {ins['content']}"
+            if ext.get("verdict") == "PARZIALE":
+                patch = ext.get("reaction_patch") or ins.get("reaction_patch") or {}
+                patch_parts = []
+                for field, label in (
+                    ("confirmed_claims", "confermato"),
+                    ("refuted_claims", "smentito"),
+                    ("replacement_claims", "sostituzione affermata"),
+                ):
+                    claims = [
+                        str(item.get("claim") or "").strip()
+                        for item in patch.get(field, [])
+                        if isinstance(item, dict) and item.get("claim")
+                    ]
+                    if claims:
+                        patch_parts.append(f"{label}: {'; '.join(claims)}")
+                correction = " | ".join(patch_parts)
+                if not correction:
+                    correction = str(ext.get("reaction") or "").strip()
+                if correction:
+                    line += (
+                        f"\n  [CORREZIONE PARZIALE DI {config.OWNER_DISPLAY_NAME.upper()}] "
+                        f"{correction[:1200]}"
+                    )
+            insight_lines.append(line)
 
     sections: list[str] = []
     if recent_context_query:
@@ -224,8 +269,9 @@ def build_rag_context(
     mem_cap = config.RAG_MEM_CAP_TEMPORAL if time_range else config.RAG_MEM_CAP
     if reflection_lines:
         sections.append(
-            "Interpretazioni recenti di Euri (sintesi o ipotesi interne, non fatti "
-            "attribuiti a Stefano):\n" + "\n".join(reflection_lines)
+            f"Interpretazioni recenti di {config.ASSISTANT_DISPLAY_NAME} "
+            f"(sintesi o ipotesi interne, non fatti attribuiti a "
+            f"{config.OWNER_DISPLAY_NAME}):\n" + "\n".join(reflection_lines)
         )
     if commitment_lines:
         sections.append(
@@ -248,6 +294,8 @@ def build_rag_context(
                 kind_label = "LEZIONE DI EURI DA FEEDBACK | "
             elif r.get("passive_support") == "tacit_acceptance":
                 kind_label = "VECCHIA IPOTESI DI EURI NON CONFERMATA | "
+            elif is_document_summary(r):
+                kind_label = "SINTESI DOCUMENTO | "
             else:
                 kind_label = ""
             label = (
@@ -260,18 +308,19 @@ def build_rag_context(
                 if kind == "conversation_anchor" else ""
             )
             episode_note = (
-                " [sintesi del dialogo: preserva il filo ma non usare le parole di Euri "
-                "come fatti di Stefano]"
+                f" [sintesi del dialogo: preserva il filo ma non usare le parole di "
+                f"{config.ASSISTANT_DISPLAY_NAME} come fatti di {config.OWNER_DISPLAY_NAME}]"
                 if kind == "conversation_episode" else ""
             )
             reaction_note = (
-                " [interpretazione operativa di Euri derivata da un feedback: non attribuire "
-                "questa formulazione a Stefano]"
+                f" [interpretazione operativa di {config.ASSISTANT_DISPLAY_NAME} derivata "
+                f"da un feedback: non attribuire questa formulazione a "
+                f"{config.OWNER_DISPLAY_NAME}]"
                 if kind == "reaction_lesson" or source == "reaction" else ""
             )
             tacit_note = (
                 " [derivata storicamente dalla mancata contestazione: non vale come "
-                "affermazione di Stefano]"
+                f"affermazione di {config.OWNER_DISPLAY_NAME}]"
                 if r.get("passive_support") == "tacit_acceptance" else ""
             )
             mem_lines.append(
@@ -281,7 +330,10 @@ def build_rag_context(
         if mem_lines:
             sections.append("Ricordi/note rilevanti:\n" + "\n".join(mem_lines))
     if insight_lines:
-        sections.append("Principi trasversali:\n" + "\n".join(insight_lines))
+        sections.append(
+            "Connessioni trasversali emerse (la convergenza interna non equivale a verità):\n"
+            + "\n".join(insight_lines)
+        )
 
     if results and not recent_history:
         sections.insert(0, "Regola cronologica interna:\n" + temporal_prompt_contract())

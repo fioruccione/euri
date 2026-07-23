@@ -6,6 +6,8 @@ nota breve da portare nel prompt quando una memoria ha basi fragili.
 """
 from __future__ import annotations
 
+import config
+
 
 _CONSOLIDATION_RISK_RANK = {"ok": 0, "watch": 25, "high": 80}
 
@@ -67,6 +69,29 @@ def memory_epistemic_rank(doc: dict) -> int:
     return memory_risk_rank(doc) + _SOURCE_RISK_RANK.get(source, 15)
 
 
+def is_document_summary(doc: dict) -> bool:
+    """Riconosce sintesi documentali nuove e legacy senza migrare Redis.
+
+    Le vecchie analisi clipboard erano salvate come ``semantic_fact``. Il prefisso
+    e i tag permettono di presentarle con la provenienza corretta in fase di RAG,
+    lasciando intatti contenuto, ID e cronologia.
+    """
+    if not doc:
+        return False
+    if str(doc.get("memory_kind") or "").lower() == "document_summary":
+        return True
+    tags = doc.get("tags") or []
+    if not isinstance(tags, (list, tuple, set)) or "clipboard" not in tags:
+        return False
+    if str(doc.get("source") or "").lower() != "teach":
+        return False
+    content = str(doc.get("content") or "").lstrip().lower()
+    return content.startswith((
+        "testo analizzato dagli appunti:",
+        "immagine analizzata dagli appunti:",
+    ))
+
+
 def rank_memories_epistemically(
     results: list[dict],
     limit: int | None = None,
@@ -101,13 +126,16 @@ def memory_verification_suffix(doc: dict) -> str:
     is_interpretation = (
         doc.get("memory_kind") == "reflection" or doc.get("source") == "reflection"
     )
+    is_document = is_document_summary(doc)
     reasons: list[str] = []
     if doc.get("correction_pending"):
         reasons.append("contestato nel contesto, correzione in sospeso")
     if doc.get("provenance_stale"):
         reasons.append("provenienza fragile")
     if doc.get("passive_support") == "tacit_acceptance":
-        reasons.append("vecchio assenso tacito, non conferma di Stefano")
+        reasons.append(
+            f"vecchio assenso tacito, non conferma di {config.OWNER_DISPLAY_NAME}"
+        )
     cr = doc.get("consolidation_risk") or {}
     if isinstance(cr, dict):
         level = str(cr.get("level") or "ok").lower()
@@ -121,12 +149,24 @@ def memory_verification_suffix(doc: dict) -> str:
     if doc.get("requires_verification") and not reasons:
         reasons.append("da verificare")
     if is_interpretation:
+        assistant_label = config.ASSISTANT_DISPLAY_NAME.upper()
         if reasons:
             return (
-                " [INTERPRETAZIONE DI EURI, non fatto confermato; "
+                f" [INTERPRETAZIONE DI {assistant_label}, non fatto confermato; "
                 f"DA VERIFICARE: {', '.join(dict.fromkeys(reasons))}]"
             )
-        return " [INTERPRETAZIONE DI EURI, non fatto confermato]"
+        return (
+            f" [INTERPRETAZIONE DI {assistant_label}, "
+            "non fatto confermato]"
+        )
+    if is_document:
+        owner = getattr(config, "OWNER_DISPLAY_NAME", "utente")
+        if reasons:
+            return (
+                f" [SINTESI DI DOCUMENTO FORNITO DA {owner}, non verifica interna; "
+                f"DA VERIFICARE: {', '.join(dict.fromkeys(reasons))}]"
+            )
+        return f" [SINTESI DI DOCUMENTO FORNITO DA {owner}, non verifica interna]"
     if not reasons:
         return ""
     return f" [DATO DA VERIFICARE: {', '.join(dict.fromkeys(reasons))}]"

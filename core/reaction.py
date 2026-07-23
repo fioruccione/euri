@@ -21,6 +21,7 @@ Fail-open e additivo: non tocca i loop esistenti. Se la sintesi LLM fallisce, sa
 comunque la reazione grezza come lezione (non si perde mai il segnale).
 """
 
+import json
 import re
 import time
 
@@ -30,6 +31,10 @@ from core.ollama_client import chat_client, dream_client
 from core.operational_context import load_operational_context
 from core.pulse import pulse_emit
 import config
+
+
+_OWNER_NAME = config.OWNER_DISPLAY_NAME
+_ASSISTANT_NAME = config.ASSISTANT_DISPLAY_NAME
 
 
 def _clean(text: str) -> str:
@@ -214,16 +219,16 @@ def judge_topic_grounding(topic: str, evidence: list[str]) -> tuple[str, str | N
     """
     block = "\n".join(f"- {e[:220]}" for e in evidence) or "(niente)"
     prompt = (
-        f"Stefano ti ha chiesto dei tuoi 'sogni' su questo tema: «{topic}».\n\n"
-        f"Ecco SOLO ciò che Stefano ti ha davvero detto o insegnato in passato che potrebbe "
+        f"{_OWNER_NAME} ti ha chiesto dei tuoi 'sogni' su questo tema: «{topic}».\n\n"
+        f"Ecco SOLO ciò che {_OWNER_NAME} ti ha davvero detto o insegnato in passato che potrebbe "
         f"riguardarlo — la tua memoria VISSUTA, non la cultura generale:\n{block}\n\n"
         f"Basandoti ESCLUSIVAMENTE su questa evidenza vissuta, il tema «{topic}» fa parte del "
-        f"mondo reale di Stefano?\n"
+        f"mondo reale di {_OWNER_NAME}?\n"
         f"- L'evidenza lo conferma nello specifico → FAMILIARE\n"
         f"- L'evidenza parla del tema generale ma NON dello specifico nominato (es. parla di "
         f"clienti ma di nessun 'Rossi') → PARZIALE\n"
         f"- L'evidenza non lo riguarda davvero → IGNOTO\n\n"
-        f"Rispondi in UNA riga così:  VERDETTO | una frase naturale e onesta da dire a Stefano. "
+        f"Rispondi in UNA riga così:  VERDETTO | una frase naturale e onesta da dire a {_OWNER_NAME}. "
         f"Per PARZIALE/IGNOTO la frase ammette con onestà cosa NON sai e gli chiede se è cosa nuova."
     )
     try:
@@ -277,23 +282,23 @@ def formulate_curiosity_question(insight: dict, topic: str | None = None,
     if topic:
         ev = "\n".join(f"- {e[:180]}" for e in (evidence or [])[:4]) or "(poco)"
         anchor = (
-            f"\n\nNB: Stefano ti ha chiesto proprio di «{topic}» — i tuoi sogni l'hanno astratto, "
+            f"\n\nNB: {_OWNER_NAME} ti ha chiesto proprio di «{topic}» — i tuoi sogni l'hanno astratto, "
             f"ma la domanda deve restare RICONOSCIBILMENTE su «{topic}» (nominalo), non generica. "
             f"Ecco cosa sai davvero di «{topic}» dai tuoi ricordi:\n{ev}\n"
             f"Àncora la domanda a questo reale, ma chiedi comunque conferma del PRESUPPOSTO "
             f"della connessione che hai sognato."
         )
     prompt = (
-        f"Hai sognato questa connessione sul mondo di Stefano, ma non sai se è davvero vera:\n"
+        f"Hai sognato questa connessione sul mondo di {_OWNER_NAME}, ma non sai se è davvero vera:\n"
         f"\"{_insight_brief(insight)}\"{anchor}\n\n"
-        f"Dentro c'è un PRESUPPOSTO concreto sul mondo reale di Stefano — qualcosa che lui "
+        f"Dentro c'è un PRESUPPOSTO concreto sul mondo reale di {_OWNER_NAME} — qualcosa che l'utente "
         f"potrebbe aver fatto, usato o vissuto — che hai dato per scontato senza confermarlo "
         f"(esempio: che costruisse antenne con stampi di alluminio). Trova QUEL presupposto "
         f"fattuale e chiedigli se è vero — la domanda va al FATTO, non alla teoria che ci hai "
         f"costruito sopra. Curiosa, naturale, un filo esitante, come quando una cosa ti "
-        f"incuriosisce: \"Stefano, una cosa: ma è vero che...?\". Se NON c'è un fatto concreto "
+        f"incuriosisce: \"{_OWNER_NAME}, una cosa: ma è vero che...?\". Se NON c'è un fatto concreto "
         f"da verificare, chiedi invece se è davvero un suo pensiero o se lo stai leggendo tu "
-        f"di tua testa. Una frase, parlando a Stefano."
+        f"di tua testa. Una frase, parlando a {_OWNER_NAME}."
     )
     try:
         response = chat_client.chat(
@@ -323,9 +328,9 @@ def synthesize_lesson(insight: dict, reaction_text: str,
     non eseguito durante la voce. Antepone EURI_CONTEXT. (Prompt = lever da lavorare.)
     """
     prompt = (
-        f"Avevi portato a Stefano questa tua connessione — un insight che hai sognato:\n"
+        f"Avevi portato a {_OWNER_NAME} questa tua connessione — un insight che hai sognato:\n"
         f"\"{_insight_brief(insight)}\"\n\n"
-        f"Stefano ti ha risposto:\n\"{reaction_text.strip()}\"\n\n"
+        f"{_OWNER_NAME} ti ha risposto:\n\"{reaction_text.strip()}\"\n\n"
         f"VERDETTO EPISTEMICO GIÀ CLASSIFICATO: {verdict}. È un vincolo: la lezione "
         f"non può trasformare DA_VALUTARE in conferma, PARZIALE in conferma piena, né "
         f"addolcire una SMENTITA.\n\n"
@@ -338,7 +343,7 @@ def synthesize_lesson(insight: dict, reaction_text: str,
         f"– ne ha confermato una parte e lasciato aperta un'altra? tieni separate le due.\n\n"
         f"POI scrivi in prima persona la LEZIONE che ne ricavi: cosa cambia adesso nella tua "
         f"comprensione e cosa potresti dover riaffrontare. NON un ringraziamento, NON \"ok ho "
-        f"capito\". Tieni il filo (cita la connessione e cosa ti ha detto Stefano). Max 3 frasi."
+        f"capito\". Tieni il filo (cita la connessione e cosa ti ha detto {_OWNER_NAME}). Max 3 frasi."
     )
     messages = [{"role": "user", "content": prompt}]
     op_ctx = load_operational_context()
@@ -360,6 +365,111 @@ def synthesize_lesson(insight: dict, reaction_text: str,
         return None
 
 
+def _normalized_evidence(text: str) -> str:
+    return " ".join((text or "").lower().split()).strip(" .,:;!?«»\"'")
+
+
+def _validated_patch_entries(value, reaction_text: str, *, limit: int = 4) -> list[dict]:
+    """Accetta una proposizione solo se porta una citazione presente nella reazione."""
+    reaction_norm = _normalized_evidence(reaction_text)
+    valid: list[dict] = []
+    if not isinstance(value, list):
+        return valid
+    for item in value[:limit]:
+        if not isinstance(item, dict):
+            continue
+        claim = str(item.get("claim") or "").strip()
+        evidence = str(item.get("evidence") or "").strip()
+        evidence_norm = _normalized_evidence(evidence)
+        if not claim or not evidence_norm or evidence_norm not in reaction_norm:
+            continue
+        valid.append({"claim": claim[:500], "evidence": evidence[:300]})
+    return valid
+
+
+def extract_partial_reaction_patch(insight: dict, reaction_text: str) -> dict:
+    """Scompone una reazione mista senza completare autonomamente i vuoti.
+
+    Ogni claim deve portare un breve frammento copiato letteralmente dalla risposta:
+    la validazione deterministica scarta le voci prive di appoggio testuale.
+    """
+    prompt = (
+        f"Insight proposto da {_ASSISTANT_NAME}:\n{insight.get('content', '')}\n\n"
+        f"Risposta di {_OWNER_NAME}:\n{reaction_text.strip()}\n\n"
+        "La risposta contiene insieme conferme e correzioni. Scomponila senza "
+        "aggiungere conseguenze, procedure o collegamenti non pronunciati. Rispondi "
+        "SOLO con JSON valido:\n"
+        '{"confirmed_claims":[{"claim":"...","evidence":"citazione esatta"}],'
+        '"refuted_claims":[{"claim":"...","evidence":"citazione esatta"}],'
+        '"replacement_claims":[{"claim":"...","evidence":"citazione esatta"}]}\n'
+        "confirmed_claims = parti dell'insight che l'utente conferma; refuted_claims = "
+        "parti che nega; replacement_claims = fatti sostitutivi che afferma esplicitamente. "
+        "evidence deve essere un frammento breve e CONTIGUO copiato letteralmente dalla "
+        "risposta. Se un collegamento non e' detto, non inventarlo e non inserirlo."
+    )
+    try:
+        response = chat_client.chat(
+            model=config.OLLAMA_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0.0, "num_predict": 1200},
+            think=False,
+        )
+        raw = _clean(response.message.content or "")
+        start, end = raw.find("{"), raw.rfind("}")
+        if start < 0 or end <= start:
+            return {}
+        data = json.loads(raw[start:end + 1])
+        if not isinstance(data, dict):
+            return {}
+        patch = {
+            field: _validated_patch_entries(data.get(field), reaction_text)
+            for field in ("confirmed_claims", "refuted_claims", "replacement_claims")
+        }
+        return patch if any(patch.values()) else {}
+    except Exception as exc:
+        logger.error(f"extract_partial_reaction_patch: {exc}")
+        return {}
+
+
+def _partial_lesson(insight: dict, reaction_text: str, patch: dict) -> str:
+    """Lezione estrattiva: nessuna ricostruzione oltre le proposizioni appoggiate."""
+    if not patch:
+        return (
+            f"Su «{_insight_brief(insight)}» {_OWNER_NAME} ha dato una correzione "
+            f"parziale da non appiattire: «{reaction_text.strip()}»."
+        )
+    parts = [f"Su «{_insight_brief(insight)}» la reazione e' parziale."]
+    labels = (
+        ("confirmed_claims", "Ha confermato"),
+        ("refuted_claims", "Ha smentito"),
+        ("replacement_claims", "Ha precisato al posto della parte errata"),
+    )
+    for field, label in labels:
+        claims = [item["claim"] for item in patch.get(field, [])]
+        if claims:
+            parts.append(f"{label}: {'; '.join(claims)}.")
+    parts.append("Ogni collegamento ulteriore resta aperto finche' non viene confermato.")
+    return " ".join(parts)
+
+
+def _refuted_lesson(insight: dict, reaction_text: str) -> str:
+    """Lezione estrattiva per una smentita piena.
+
+    Una volta classificata la risposta come SMENTITA non c'e' alcuna parte
+    confermata da preservare autonomamente. La reazione grezza e' l'unica
+    proposizione esterna ammessa: una nuova conseguenza tecnica richiederebbe
+    un'altra conferma, non una sintesi creativa nello stesso turno.
+    """
+    domain_a = str(insight.get("domain_a") or insight.get("domain") or "generale")
+    domain_b = str(insight.get("domain_b") or "altro dominio")
+    return (
+        f"Su una connessione proposta tra [{domain_a}] e [{domain_b}], "
+        f"{_OWNER_NAME} ha smentito la connessione. "
+        f"La correzione esterna registrata e': «{reaction_text.strip()}». "
+        "Nessuna parte dell'insight precedente resta confermata da questa reazione."
+    )
+
+
 def classify_reaction_verdict(insight: dict, reaction_text: str) -> str:
     """La reazione di Stefano aggiorna lo stato epistemico della connessione.
 
@@ -369,12 +479,12 @@ def classify_reaction_verdict(insight: dict, reaction_text: str) -> str:
     prompt = (
         f"Le avevi chiesto se era vero il presupposto di una tua connessione:\n"
         f"\"{_insight_brief(insight)}\"\n\n"
-        f"Stefano ha risposto:\n\"{reaction_text.strip()}\"\n\n"
+        f"{_OWNER_NAME} ha risposto:\n\"{reaction_text.strip()}\"\n\n"
         f"Classifica lo stato epistemico della risposta:\n"
-        f"- CONFERMA: Stefano dice che il presupposto è vero o già utile operativamente.\n"
-        f"- SMENTITA: Stefano dice che il presupposto è falso o inventato.\n"
+        f"- CONFERMA: {_OWNER_NAME} dice che il presupposto è vero o già utile operativamente.\n"
+        f"- SMENTITA: {_OWNER_NAME} dice che il presupposto è falso o inventato.\n"
         f"- PARZIALE: una parte è vera e una parte è falsa.\n"
-        f"- DA_VALUTARE: Stefano dice che è interessante, possibile, da provare o da valutare, "
+        f"- DA_VALUTARE: {_OWNER_NAME} dice che è interessante, possibile, da provare o da valutare, "
         f"ma NON la conferma come fatto o decisione.\n\n"
         f"Rispondi con UNA sola parola: CONFERMA, SMENTITA, PARZIALE, DA_VALUTARE."
     )
@@ -402,8 +512,9 @@ def _apply_reaction_verdict(memory, insight_id: str, verdict: str) -> None:
 
     # SMENTITA piena → DEMOTA col meccanismo del Dream Engine (status=candidate): esce
     # da search_insights (promoted-only) → non più iniettato in RAG, si spegne al giorno
-    # 30. PARZIALE/CONFERMA restano (hanno un'ancora vera). DA_VALUTARE resta promosso
-    # ma non verificato: ipotesi utile da testare, non fatto operativo.
+    # 30. PARZIALE/CONFERMA restano (hanno un'ancora vera), ma PARZIALE viene marcato:
+    # il contenuto originale contiene anche una proposizione smentita e non puo' tornare
+    # nel RAG come interamente valido. DA_VALUTARE resta promosso ma non verificato.
     if verdict == "SMENTITA":
         for attempt in (1, 2):
             try:
@@ -415,6 +526,9 @@ def _apply_reaction_verdict(memory, insight_id: str, verdict: str) -> None:
                 # è provenienza: distingue "bocciato dall'utente" da "invecchiato".
                 r.json().set(ikey, "$.demoted_once", True)
                 r.json().set(ikey, "$.refuted_by_user_at", time.time())
+                r.json().set(ikey, "$.requires_verification", True)
+                r.json().set(ikey, "$.verification_status", "externally_refuted")
+                r.json().set(ikey, "$.epistemic_status", "externally_refuted")
                 logger.info(f"Reaction: insight {insight_id[:8]} SMENTITO → demoto a candidate (demoted_once)")
                 break
             except Exception as e:
@@ -423,13 +537,37 @@ def _apply_reaction_verdict(memory, insight_id: str, verdict: str) -> None:
                     # demotion è fallita → l'insight resta promosso e il RAG lo usa ancora.
                     # Non più silenzioso (era logger.error): tracciato in integrity:failures.
                     memory._record_integrity_failure("reaction-demote", ikey, e)
-    elif verdict == "DA_VALUTARE":
+    elif verdict in {"DA_VALUTARE", "PARZIALE"}:
         try:
             r.json().set(ikey, "$.requires_verification", True)
-            r.json().set(ikey, "$.verification_status", "hypothesis_to_test")
-            logger.info(f"Reaction: insight {insight_id[:8]} DA_VALUTARE → requires_verification")
+            status = (
+                "partially_refuted_by_user"
+                if verdict == "PARZIALE" else "hypothesis_to_test"
+            )
+            r.json().set(ikey, "$.verification_status", status)
+            r.json().set(
+                ikey,
+                "$.epistemic_status",
+                "partially_refuted" if verdict == "PARZIALE" else "awaiting_external_evidence",
+            )
+            if verdict == "PARZIALE":
+                r.json().set(ikey, "$.partially_refuted_by_user_at", time.time())
+            logger.info(
+                f"Reaction: insight {insight_id[:8]} {verdict} → requires_verification"
+            )
         except Exception as e:
             memory._record_integrity_failure("reaction-mark-hypothesis", ikey, e)
+    elif verdict == "CONFERMA":
+        try:
+            r.json().set(ikey, "$.requires_verification", False)
+            r.json().set(ikey, "$.verification_status", "externally_confirmed_by_owner")
+            r.json().set(ikey, "$.epistemic_status", "externally_confirmed")
+            r.json().set(ikey, "$.confirmed_by_user_at", time.time())
+            logger.info(
+                f"Reaction: insight {insight_id[:8]} CONFERMATO → validazione esterna"
+            )
+        except Exception as e:
+            memory._record_integrity_failure("reaction-confirm", ikey, e)
 
 
 def capture_reaction(memory, insight: dict, reaction_text: str, *, emit: bool = True) -> dict:
@@ -445,10 +583,22 @@ def capture_reaction(memory, insight: dict, reaction_text: str, *, emit: bool = 
     # 1) Il verdetto viene PRIMA della sintesi: la prosa derivata non può risultare
     # epistemicamente più forte della reazione che la fonda.
     verdict = classify_reaction_verdict(insight, reaction_text)
-    lesson = synthesize_lesson(insight, reaction_text, verdict=verdict)
+    reaction_patch = (
+        extract_partial_reaction_patch(insight, reaction_text)
+        if verdict == "PARZIALE" else {}
+    )
+    if verdict == "SMENTITA":
+        lesson = _refuted_lesson(insight, reaction_text)
+    elif verdict == "PARZIALE":
+        lesson = _partial_lesson(insight, reaction_text, reaction_patch)
+    else:
+        lesson = synthesize_lesson(insight, reaction_text, verdict=verdict)
     fallback = lesson is None
     if fallback:
-        lesson = f"Su «{_insight_brief(insight)}» Stefano ha reagito: «{reaction_text.strip()}»."
+        lesson = (
+            f"Su «{_insight_brief(insight)}» {_OWNER_NAME} ha reagito: "
+            f"«{reaction_text.strip()}»."
+        )
 
     out = {
         "insight_id": insight_id,
@@ -456,11 +606,44 @@ def capture_reaction(memory, insight: dict, reaction_text: str, *, emit: bool = 
         "persisted": False,
         "lesson_id": None,
         "verdict": verdict,
+        "reaction_patch": reaction_patch,
     }
 
-    # 2) salva la lezione come nodo NORMALE (riusa save_memory: embedding, indice, TTL, dominio auto)
+    # 2) Il nodo nasce gia' completo: outbox/Pulse/Obsidian non devono osservare
+    # una versione intermedia prima di dominio, provenienza e verdetto.
+    lesson_fields = {
+        "domain": domain,
+        "reacted_to": insight_id,
+        "reaction_raw": reaction_text.strip(),
+        "reaction_verdict": verdict,
+    }
+    if verdict == "SMENTITA":
+        lesson_fields.update({
+            "reaction_lesson_mode": "extractive_refutation",
+            "verification_status": "refutation_grounded_by_user",
+            "requires_verification": False,
+        })
+    elif verdict in {"DA_VALUTARE", "PARZIALE"}:
+        lesson_fields.update({
+            "requires_verification": True,
+            "verification_status": "reaction_not_fully_grounded",
+        })
+    elif verdict == "CONFERMA":
+        lesson_fields.update({
+            "requires_verification": False,
+            "verification_status": "external_confirmation_grounded_by_user",
+        })
+    if reaction_patch:
+        lesson_fields["reaction_patch"] = reaction_patch
+    db = insight.get("domain_b")
     try:
-        lesson_id = memory.save_memory(lesson, category="lezione", source="reaction")
+        lesson_id = memory.save_memory(
+            lesson,
+            category="lezione",
+            source="reaction",
+            tags=[db] if db else [],
+            final_fields=lesson_fields,
+        )
     except Exception as e:
         logger.error(f"capture_reaction: save lezione fallito: {e}")
         return out
@@ -468,28 +651,24 @@ def capture_reaction(memory, insight: dict, reaction_text: str, *, emit: bool = 
         return out  # probabile duplicato — niente di rotto, solo nulla di nuovo
     out["lesson_id"] = lesson_id
 
-    key = f"euri:memory:{lesson_id}"
     try:
-        # 3) forza il dominio = dominio dell'insight → la lezione rientra nel POOL-SOGNO giusto
-        #    (Loop 2b pesca per @domain); + provenienza e reazione grezza per audit.
-        r.json().set(key, "$.domain", domain)
-        r.json().set(key, "$.reacted_to", insight_id)
-        r.json().set(key, "$.reaction_raw", reaction_text.strip())
-        db = insight.get("domain_b")
-        if db:
-            r.json().set(key, "$.tags", [db])  # pescabile anche dall'altro polo
-        r.json().set(key, "$.reaction_verdict", verdict)
-        if verdict in {"DA_VALUTARE", "PARZIALE"}:
-            r.json().set(key, "$.requires_verification", True)
-            r.json().set(key, "$.verification_status", "reaction_not_fully_grounded")
-        # 4) evidence-update sull'insight: la prima verità ESTERNA allo strato insight, col VERDETTO
+        # 3) evidence-update sull'insight: la prima verità ESTERNA allo strato insight,
+        # col VERDETTO. La lezione è già stata pubblicata con metadati finali.
         if insight_id:
-            r.json().set(f"euri:insight:{insight_id}", "$.external_reaction", {
+            external_reaction = {
                 "reaction": reaction_text.strip(),
                 "lesson_id": lesson_id,
                 "verdict": verdict,
                 "ts": time.time(),
-            })
+            }
+            if reaction_patch:
+                external_reaction["reaction_patch"] = reaction_patch
+                r.json().set(
+                    f"euri:insight:{insight_id}", "$.reaction_patch", reaction_patch
+                )
+            r.json().set(
+                f"euri:insight:{insight_id}", "$.external_reaction", external_reaction
+            )
             _apply_reaction_verdict(memory, insight_id, verdict)
         out["persisted"] = True
     except Exception as e:
@@ -548,7 +727,7 @@ def understand_briefing(text: str) -> tuple[bool, str | None]:
         return (False, None)
 
     prompt = (
-        f"Stefano ti ha detto: «{text.strip()}»\n\n"
+        f"{_OWNER_NAME} ti ha detto: «{text.strip()}»\n\n"
         f"Ti sta chiedendo di RACCONTARE un TUO sogno o una TUA intuizione SPECIFICA — vuole che "
         f"tiri fuori un contenuto concreto: cosa hai sognato, quale connessione precisa ti è "
         f"venuta?\n"

@@ -318,6 +318,15 @@ def test_offtopic_reaction_returns_turn_to_dispatch():
     print("OK  reaction OFF_TOPIC: nessuna cattura, turno restituito al dispatch")
 
 
+def test_reaction_ack_does_not_prejudge_async_verdict():
+    ack = vd._REACTION_ACK.lower()
+    assert "confermi" not in ack
+    assert "correggi" not in ack
+    assert "sì o a un no" not in ack
+    assert "registro la tua risposta" in ack
+    print("OK  reaction ack neutro prima del verdetto asincrono")
+
+
 def test_initiative_token_is_cancelled_by_voice_inflight():
     d = make()
     token = d.present.issue_decision_token()
@@ -350,6 +359,7 @@ if __name__ == "__main__":
     test_memory_operations_are_domain_independent()
     test_memory_audit_candidates_are_bounded_and_risk_first()
     test_offtopic_reaction_returns_turn_to_dispatch()
+    test_reaction_ack_does_not_prejudge_async_verdict()
     test_initiative_token_is_cancelled_by_voice_inflight()
     test_implicit_read_log_requires_sentence_level_commitment()
     print("PASS")

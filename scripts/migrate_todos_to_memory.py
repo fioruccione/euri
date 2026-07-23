@@ -55,31 +55,32 @@ def main():
             r.delete(key)
             continue
 
+        historical_fields = {}
+        if old.get("created_at"):
+            historical_fields["created_at"] = old["created_at"]
+        if status != "pending":
+            historical_fields["completed_at"] = old.get("completed_at")
+            if old.get("due_at"):
+                historical_fields["due_at"] = old["due_at"]
+
         if status == "pending":
             # Poseidon: ancora attuale → riprogrammato, reminder riarmato
             due_at = tomorrow_9
             mid = memory.save_memory(content, category="impegno", source="user",
                                      tags=old.get("tags") or [],
-                                     due_at=due_at, status="pending")
+                                     due_at=due_at, status="pending",
+                                     final_fields=historical_fields)
         else:
             mid = memory.save_memory(content, category="impegno", source="user",
                                      tags=old.get("tags") or [],
-                                     status="done")
+                                     status="done",
+                                     final_fields=historical_fields)
         if not mid:
             logger.error(f"Migrazione fallita per {key} — silo NON toccato")
             return 1
 
-        mkey = f"euri:memory:{mid}"
-        # Fedeltà storica: created_at/completed_at originali, non quelli di oggi
-        if old.get("created_at"):
-            r.json().set(mkey, "$.created_at", old["created_at"])
-        if status != "pending":
-            r.json().set(mkey, "$.completed_at", old.get("completed_at"))
-            if old.get("due_at"):
-                r.json().set(mkey, "$.due_at", old["due_at"])
-
         due_str = tomorrow_9.strftime("%d/%m %H:%M") if status == "pending" else "—"
-        print(f"  {key} → {mkey}  [{status}] due={due_str}  {content[:60]}")
+        print(f"  {key} → euri:memory:{mid}  [{status}] due={due_str}  {content[:60]}")
         r.delete(key)
 
     try:

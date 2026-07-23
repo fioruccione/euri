@@ -57,14 +57,29 @@ class VisualGate:
     def __init__(self, camera_index: int | str | None = None, fps: float = 2.0,
                  resolution: tuple = (640, 480),
                  face_auth=None, social_perception=None):
-        self._camera_index = (
+        configured_camera = (
             camera_index if camera_index is not None
             else getattr(config, "VISUAL_GATE_CAMERA_DEVICE", None)
         )
+        # L'override resta stabile; `_camera_index` descrive invece l'ultimo nodo
+        # aperto. Se la discovery era automatica, una riconnessione deve poter
+        # trovare anche un /dev/videoN diverso.
+        self._camera_override = configured_camera
+        self._camera_index = configured_camera
         self._interval = 1.0 / fps
         self._resolution = resolution
         self._face_auth = face_auth
         self._social_perception = social_perception
+        self._read_failures_before_reconnect = max(
+            1, int(getattr(config, "VISUAL_GATE_READ_FAILURES_BEFORE_RECONNECT", 1))
+        )
+        self._reconnect_interval = max(
+            0.0, float(getattr(config, "VISUAL_GATE_RECONNECT_S", 3.0))
+        )
+        self._reconnect_max_interval = max(
+            self._reconnect_interval,
+            float(getattr(config, "VISUAL_GATE_RECONNECT_MAX_S", 30.0)),
+        )
 
         self._gate_active = False          # True = processa voce
         self._last_seen: float = 0.0       # ultimo frame con faccia
@@ -174,13 +189,52 @@ class VisualGate:
         if config.DEMO_MODE:
             return True
         with self._lock:
-            return (self._gate_active and
+            return (not self._blind and self._gate_active and
                     self._identity == getattr(config, "FACE_AUTH_OWNER", "stefano"))
 
     def present_identity(self) -> str | None:
         """Nome della persona riconosciuta davanti allo schermo, o None se ignota."""
         with self._lock:
             return self._identity
+
+    def operational_snapshot(self, *, now: float | None = None) -> dict:
+        """Stato visivo sanitizzato per altri processi locali.
+
+        Non espone frame, embedding o similarity. ``owner_present`` richiede sia
+        un volto visto adesso sia un match positivo recente: e' quindi piu'
+        stretto dell'identita' sticky usata internamente dal gate vocale.
+        """
+        at = time.monotonic() if now is None else float(now)
+        owner = getattr(config, "FACE_AUTH_OWNER", "owner")
+        identity_max_age = getattr(config, "SOCIAL_PERCEPTION_IDENTITY_MAX_AGE_S", 8)
+        face_max_age = max(1.5, self._interval * 3.0)
+        with self._lock:
+            face_detected = bool(
+                self._last_seen > 0 and at - self._last_seen <= face_max_age
+            )
+            identity_fresh = bool(
+                face_detected
+                and self._identity is not None
+                and self._last_identity_positive_ts > 0
+                and at - self._last_identity_positive_ts <= identity_max_age
+            )
+            identity = self._identity if identity_fresh else None
+            recognition_available = bool(
+                not self._blind
+                and self._running
+                and self._detector_kind == "yunet"
+                and self._face_auth is not None
+                and self._face_auth.is_enabled()
+            )
+            return {
+                "camera_available": bool(self._running and not self._blind),
+                "recognition_available": recognition_available,
+                "gate_active": bool(self._gate_active),
+                "face_detected": face_detected,
+                "identity": identity,
+                "owner_present": bool(identity == owner),
+                "demo_mode": bool(config.DEMO_MODE),
+            }
 
     def fresh_owner_identity(self, *, now: float | None = None) -> str | None:
         """Owner only when a positive face match is recent enough for profiling.
@@ -238,8 +292,8 @@ class VisualGate:
         una singola webcam può esporre più nodi (video e metadata): `_open_camera`
         prova quindi un frame reale, non si limita a `isOpened()`.
         """
-        if self._camera_index is not None:
-            return [(self._camera_index, str(self._camera_index))]
+        if self._camera_override is not None:
+            return [(self._camera_override, str(self._camera_override))]
 
         def device_number(path: Path) -> int:
             suffix = path.name.removeprefix("video")
@@ -270,14 +324,34 @@ class VisualGate:
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._resolution[0])
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._resolution[1])
             cap.set(cv2.CAP_PROP_FPS, 2)
-            for _ in range(3):
-                ret, frame = cap.read()
-                if ret and frame is not None:
-                    self._camera_index = source
-                    return cap, frame, label
-                time.sleep(0.05)
+            ret, frame = cap.read()
+            if ret and frame is not None:
+                self._camera_index = source
+                return cap, frame, label
             cap.release()
         return None, None, None
+
+    def _enter_camera_fail_open(self) -> bool:
+        """Marca la camera indisponibile senza trasformare il buio in presenza.
+
+        Ritorna True soltanto alla transizione, utile per non ripetere il warning
+        a ogni tentativo di riconnessione.
+        """
+        with self._lock:
+            transitioned = not self._blind
+            self._blind = True
+            self._gate_active = True
+            self._just_activated = False
+            self._face_count = 0
+            self._last_seen = 0.0
+            # Un'identità sticky appartiene al vecchio stream: dopo un guasto non
+            # può autorizzare iniziativa o profilazione sulla nuova connessione.
+            self._identity = None
+            self._identity_sim = 0.0
+            self._last_identity_positive_ts = 0.0
+            self._owner_arrived = False
+            self._recog_fails = 0
+            return transitioned
 
     def _detect(self, frame):
         """Ritorna (face_detected: bool, best_row) dove best_row è la riga YuNet
@@ -446,21 +520,39 @@ class VisualGate:
                     self._recog_fails = 0
 
     def _loop(self):
-        cv2 = self._cv2
-        cap, first_frame, camera_label = self._open_camera()
-        if cap is None:
-            logger.warning("VisualGate: webcam non accessibile — gate disabilitato (fail-open)")
-            with self._lock:
-                self._gate_active = True
-                self._blind = True
-            self._running = False
-            return
-
-        logger.info(f"VisualGate: webcam aperta ({camera_label})")
-
+        cap = None
+        first_frame = None
         consecutive_no_face = 0
+        consecutive_read_failures = 0
+        reconnect_delay = self._reconnect_interval
 
         while self._running:
+            if cap is None:
+                cap, first_frame, camera_label = self._open_camera()
+                if cap is None:
+                    if self._enter_camera_fail_open():
+                        logger.warning(
+                            "VisualGate: webcam non accessibile — fail-open; "
+                            "nuovo tentativo automatico"
+                        )
+                    time.sleep(reconnect_delay)
+                    reconnect_delay = min(
+                        self._reconnect_max_interval,
+                        max(self._reconnect_interval, reconnect_delay * 2.0),
+                    )
+                    continue
+
+                with self._lock:
+                    recovered = self._blind
+                    self._blind = False
+                consecutive_no_face = 0
+                consecutive_read_failures = 0
+                reconnect_delay = self._reconnect_interval
+                if recovered:
+                    logger.info(f"VisualGate: webcam riconnessa ({camera_label})")
+                else:
+                    logger.info(f"VisualGate: webcam aperta ({camera_label})")
+
             t_start = time.monotonic()
             if first_frame is not None:
                 ret, frame = True, first_frame
@@ -468,10 +560,24 @@ class VisualGate:
             else:
                 ret, frame = cap.read()
 
-            if not ret:
-                time.sleep(self._interval)
+            if not ret or frame is None:
+                consecutive_read_failures += 1
+                if consecutive_read_failures < self._read_failures_before_reconnect:
+                    time.sleep(self._interval)
+                    continue
+
+                logger.warning(
+                    "VisualGate: stream webcam non risponde — rilascio e riconnessione"
+                )
+                cap.release()
+                cap = None
+                first_frame = None
+                consecutive_read_failures = 0
+                consecutive_no_face = 0
+                self._enter_camera_fail_open()
                 continue
 
+            consecutive_read_failures = 0
             face_detected, face_row = self._detect(frame)
 
             # Prima dell'identificazione: l'enrollment deve funzionare anche per
@@ -530,5 +636,6 @@ class VisualGate:
             elapsed = time.monotonic() - t_start
             time.sleep(max(0.0, self._interval - elapsed))
 
-        cap.release()
+        if cap is not None:
+            cap.release()
         logger.debug("VisualGate: webcam chiusa")

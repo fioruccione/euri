@@ -238,6 +238,60 @@ def run():
     ok.append(check("camera discovery valida un frame reale",
                     frame is not None and label == "/dev/video1"))
 
+    # Se una cattura già aperta si pianta (tipico xHCI dopo un cavo mosso), il
+    # gate non deve restare INACTIVE sul vecchio handle. Rilascia, diventa cieco
+    # e fail-open, invalida l'identità sticky e riapre la camera.
+    broken = FakeCapture(True, [(False, None)])
+    recovered = FakeCapture(True, [])
+    open_states = []
+    open_results = [
+        (broken, object(), "/dev/video0"),
+        (recovered, object(), "/dev/video1"),
+    ]
+    gate_reconnect = VisualGate(camera_index=None)
+    gate_reconnect._cv2 = FakeCV2()
+    gate_reconnect._running = True
+    gate_reconnect._interval = 0.0
+    gate_reconnect._reconnect_interval = 0.0
+    gate_reconnect._read_failures_before_reconnect = 1
+    gate_reconnect._gate_active = False
+    gate_reconnect._identity = "stefano"
+
+    def open_camera_sequence():
+        if len(open_results) == 1:
+            open_states.append((
+                gate_reconnect.is_blind(),
+                gate_reconnect.is_user_present(),
+                gate_reconnect.present_identity(),
+                gate_reconnect.is_owner_present(),
+            ))
+        return open_results.pop(0)
+
+    detected_frames = 0
+
+    def detect_until_recovered(_frame):
+        nonlocal detected_frames
+        detected_frames += 1
+        if detected_frames == 2:
+            gate_reconnect._running = False
+        return False, None
+
+    gate_reconnect._open_camera = open_camera_sequence
+    gate_reconnect._detect = detect_until_recovered
+    gate_reconnect._loop()
+    ok.append(check(
+        "read guasto: cattura rilasciata e nuova camera aperta",
+        broken.released and recovered.released and detected_frames == 2,
+    ))
+    ok.append(check(
+        "read guasto: durante il recovery il gate è cieco e fail-open",
+        open_states == [(True, True, None, False)],
+    ))
+    ok.append(check(
+        "read guasto: il recovery ripristina la disponibilità visiva",
+        not gate_reconnect.is_blind(),
+    ))
+
     print()
     passed = sum(ok)
     print(f"{passed}/{len(ok)} test passati")

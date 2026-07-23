@@ -147,7 +147,15 @@ class MemoryManager:
         status: str | None = None,
         memory_kind: str | None = None,
         temporal_context: dict | None = None,
+        final_fields: dict | None = None,
     ) -> str | None:
+        """Costruisce e pubblica una memoria canonica già completa.
+
+        ``final_fields`` contiene metadati conosciuti dal chiamante (provenienza,
+        dominio forzato, fragilità epistemica, ecc.) che devono essere visibili
+        nella STESSA versione letta da outbox, Pulse, Obsidian e indici derivati.
+        Non va usato per riscrivere identità, contenuto, fonte o embedding canonici.
+        """
         # Memory Guard: scansione anti-poisoning sull'ingest. Da fonte non fidata
         # (web/mobile_in) un contenuto con injection/esfiltrazione viene rifiutato
         # (ritorna None); da fonte fidata si salva ma marcato in safety_flag.
@@ -288,6 +296,17 @@ class MemoryManager:
             doc["reminded_count"] = 0
             doc["last_reminded_at"] = None
             doc["completed_at"] = None
+        if final_fields:
+            immutable = {
+                "id", "content", "source", "embedding",
+            }
+            forbidden = immutable.intersection(final_fields)
+            if forbidden:
+                raise ValueError(
+                    "save_memory final_fields non può sovrascrivere campi canonici: "
+                    + ", ".join(sorted(forbidden))
+                )
+            doc.update(dict(final_fields))
         if idem_key:
             winner_id, created = self._commit_idempotent_memory(idem_key, key, mid, doc)
             if not created:
@@ -793,8 +812,18 @@ class MemoryManager:
                  "del", "della", "dei", "degli", "al", "alla", "ai", "agli",
                  # parole che collidono con la sintassi RediSearch
                  "todo", "note", "tag", "and", "or", "not",
-                 # nomi propri universali — compaiono in quasi ogni memoria e non discriminano
-                 "stefano", "euri"}
+                 # i nomi del profilo compaiono in quasi ogni memoria e non discriminano
+                 }
+        _STOP.update(
+            token.lower()
+            for name in (
+                config.OWNER_DISPLAY_NAME,
+                config.OWNER_ACTOR_ID,
+                config.ASSISTANT_DISPLAY_NAME,
+            )
+            for token in name.split()
+            if token
+        )
         import re
         words = re.findall(r"[a-zA-ZàèéìòùÀÈÉÌÒÙ]{4,}", content.lower())
         return [w for w in words if w not in _STOP]
@@ -955,6 +984,7 @@ class MemoryManager:
         for attempt in (1, 2):
             try:
                 self.r.json().set(key, "$.superseded_by", new_id)
+                remove_loop2e_candidate(self.r, old_id)
                 return True
             except Exception as e:
                 if attempt == 2:
@@ -1131,7 +1161,7 @@ class MemoryManager:
 
     def _active_domains(self, days: int = 30) -> set[str]:
         """
-        Domini con almeno una memoria "curata da Stefano" negli ultimi `days` giorni.
+        Domini con almeno una memoria curata dal proprietario negli ultimi `days` giorni.
         Sorgenti operative = config.INSIGHT_ACTIVE_SOURCES (default teach/user/reflection).
         passive e conversation escluse: sono spugne ambient che catturano ogni nome
         di passaggio, neutralizzando il filtro. teach/user = scelta esplicita;
@@ -1288,6 +1318,13 @@ class MemoryManager:
     _CONVERSATION_RING_CAP = 500
 
     def log_conversation(self, role: str, text: str):
+        # Compatibilita' con i chiamanti storici mentre il runtime viene reso
+        # portabile: nel dato persistito finiscono i nomi del profilo, non costanti
+        # dell'installazione originale.
+        role = {
+            "Stefano": config.OWNER_DISPLAY_NAME,
+            "Euri": config.ASSISTANT_DISPLAY_NAME,
+        }.get(role, role)
         date_key = now().strftime("%Y-%m-%d")
         key = f"euri:conversation:{date_key}"
         entry = f"[{now().strftime('%H:%M:%S')}] {role}: {text}"

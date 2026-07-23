@@ -98,7 +98,11 @@ def history_content_for_prompt(message: dict, *, reference_at: Any = None) -> st
 
 
 def history_line_for_prompt(message: dict, *, reference_at: Any = None) -> str:
-    who = "Stefano" if message.get("role") == "user" else "Euri"
+    who = (
+        config.OWNER_DISPLAY_NAME
+        if message.get("role") == "user"
+        else config.ASSISTANT_DISPLAY_NAME
+    )
     return f"[{turn_time_label(message.get('observed_at'), reference_at)}] {who}: {message.get('content', '')}"
 
 

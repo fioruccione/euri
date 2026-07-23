@@ -1,5 +1,195 @@
 # Changelog
 
+## 2026-07-23 - Sincronia canonica e confine interno/esterno degli insight
+
+- `save_memory(final_fields=...)` pubblica ora il documento gia' completo: dominio,
+  provenienza e fragilita' epistemica entrano nello stesso commit RedisJSON+outbox.
+  Reaction, memoria passiva, web, Obsidian, confronti 2f e consolidamenti 2e non
+  post-mutano piu' una bozza gia' osservata da Pulse, indici e Vault.
+- Lo ZSET del Loop 2e viene ricostruito dal JSON canonico al boot. Riconciliazione
+  live: da 133 ID indicizzati contro 117 validi (9 mancanti, 25 stale) a 117/117,
+  zero missing e zero stale.
+- La convergenza Dream conserva il proprio significato nel sistema del paper:
+  `candidate/promoted` descrive una dinamica INTERNA, non una validazione del mondo.
+  Ogni insight nasce `internally_emergent`, diventa `internally_convergent` e resta
+  esplicitamente da verificare finche' una reaction esterna `CONFERMA` non attraversa
+  il confine epistemico.
+- Riconciliati 164 insight promossi storici: 160 interni/da verificare e 4 confermati
+  esternamente. Il contesto li presenta come "connessioni emerse", mai come principi
+  acquisiti per il solo fatto di essere ricorrenti.
+- Obsidian distingue nel titolo/frontmatter emergenza interna e conferma esterna;
+  il filename include anche l'ID, evitando collisioni tra promozioni nello stesso secondo.
+- I timeout Dream/Loop 2h ora sono timeout HTTP reali del client Ollama: eliminato il
+  `ThreadPoolExecutor` che, in uscita dal context manager, poteva attendere comunque
+  una chiamata bloccata. Un watchdog segnala inoltre worker vivi ma senza heartbeat.
+- Verifica: 41/41 unit, 3/3 integration, compilazione completa e drift Redis azzerato.
+
+## 2026-07-23 - Le smentite non conservano parti inventate dell'insight
+
+- L'ack vocale di una reaction e' ora neutro: arriva prima del verdetto asincrono
+  e non presume piu' che la risposta contenga insieme conferme e correzioni.
+- Un verdetto `SMENTITA` esclude per costruzione la sintesi generativa. La lezione
+  conserva domini, verdetto e reazione grezza, senza ripetere la tesi bocciata né
+  inventare una parte dell'insight che "resta valida".
+- Aggiunte provenienza `extractive_refutation` e regressioni contro il caso reale
+  `03ppr102`/setpoint. Il record contaminato e il primo repair intermedio sono
+  soft-superseded; Redis e Obsidian espongono soltanto la lezione estrattiva finale.
+
+## 2026-07-23 - VisualGate recupera gli stalli USB della webcam
+
+- Un `cap.read()` V4L2 fallito non lascia piu' il loop agganciato per sempre allo
+  stream guasto: la cattura viene rilasciata e la webcam riaperta con backoff
+  crescente e limitato.
+- Durante la riconnessione il gate e' esplicitamente cieco e fail-open, quindi la
+  voce non viene ignorata; l'identita' sticky del vecchio stream viene invalidata.
+- La discovery automatica riparte dai nodi `/dev/video*`, così un replug USB che
+  rinumera la webcam viene recuperato senza riavviare Euri. Regressione dedicata
+  sul guasto runtime e sul recupero verso un device differente.
+
+## 2026-07-22 - I tool restano dentro la risposta conversazionale
+
+- Distinte le richieste operative pure dalle domande che usano un tool come
+  sottopasso: `response_mode=tool_result` chiude il turno solo quando l'esito
+  soddisfa tutta la richiesta; `integrated` restituisce invece il risultato al
+  Brain e produce una risposta unica che copre anche spiegazione o valutazione.
+- Le alternative e le azioni read-only proposte da Euri sono sempre integrate:
+  l'output verificato diventa evidenza, non un sostituto della domanda originale.
+  Il percorso non rientra nel dispatch e non puo' innescare una seconda azione.
+- Rafforzati classificatore e ActionController sul caso reale "esamina quello che
+  sai fare e dimmi come migliorare il sistema, magari usando i tuoi strumenti":
+  una richiesta riflessiva senza sottopasso concreto resta `CHAT`, non autorizza
+  un controllo hardware casuale. Prova sul modello locale: abstain con authority
+  `none`; regressione dedicata e suite unitaria 39/39.
+
+## 2026-07-22 - Reaction parziali come patch di proposizioni
+
+- `PARZIALE` non lascia piu' un insight promosso come se fosse interamente valido:
+  imposta `requires_verification` e `verification_status=partially_refuted_by_user`.
+- Le reazioni miste vengono scomposte in claim confermati, smentiti e sostitutivi.
+  Ogni claim deve portare una citazione contigua realmente presente nella risposta;
+  le voci prive di evidenza letterale vengono scartate deterministicamente.
+- Per una reaction parziale la lezione e' costruita in modo estrattivo: non inventa
+  il collegamento operativo mancante. Il RAG presenta sempre insight originale e
+  patch correttiva insieme, marcandoli come ipotesi da verificare.
+- Riparato il caso Giuseppe/back office: la sintesi inferenziale precedente resta
+  come provenienza ma e' `superseded`; la lezione confermata distingue carichi e
+  partenze (back office) dalla valutazione materiale (laboratorio). L'insight resta
+  promosso perche' il principio generale e' stato confermato, ma e' marcato parziale.
+
+## 2026-07-22 - VisualGate disponibile nella Silent Chat senza biometria condivisa
+
+- Il Voice Daemon pubblica su Redis uno snapshot operativo effimero del VisualGate
+  con TTL breve: disponibilita' camera, presenza e identita' dichiarativa. Frame,
+  embedding e punteggio di similarita' non attraversano il ponte.
+- La Silent Chat riceve lo snapshot come contesto operativo, non come memoria: un
+  owner riconosciuto e' forte evidenza locale di presenza, ma non autorizzazione
+  crittografica del dattilografo e non sostituisce conferme per azioni sensibili.
+- Se lo snapshot manca o scade, Euri distingue "stato corrente non disponibile"
+  da "non possiedo VisualGate", evitando la falsa negazione osservata dal vivo.
+
+## 2026-07-22 - Self-model senza autocertificazione e identita' configurabile
+
+- Il prompt distingue ora stato operativo verificato, descrizione progettuale fornita
+  dall'utente, valutazione soggettiva e interpretazione/autobiografia di Euri. Una
+  memoria Redis prova che il contenuto e' stato registrato, non che sia vero o attuale.
+- Le sintesi clipboard persistenti usano `memory_kind=document_summary`; le vecchie
+  `semantic_fact` vengono riconosciute senza migrazione e marcate nel RAG come sintesi
+  documentali, non verifiche interne. Nessuna memoria viva e' stata modificata.
+- Introdotto il profilo installazione `OWNER_ACTOR_ID` / `OWNER_DISPLAY_NAME` /
+  `ASSISTANT_DISPLAY_NAME`, configurabile via ambiente. I principali percorsi cognitivi,
+  cronologici, proattivi e di autenticazione non dipendono piu' dal nome letterale del
+  proprietario; il default dell'istanza corrente resta Stefano/Euri.
+- Regressione portabilita' con profilo fittizio Ada/Nora e verifica del piano documentale
+  nel RAG. Aggiornata anche la descrizione della clipboard nel self-model.
+
+## 2026-07-22 - Clipboard: analisi temporanea separata dalla memoria
+
+- `analizza/riassumi gli appunti` usa ora il contenuto soltanto nella sessione e non
+  crea automaticamente una memoria permanente `source=teach`.
+- `salva/memorizza gli appunti` e `analizza e salva` passano da un tool distinto;
+  la persistenza richiede quindi un'intenzione esplicita dell'utente.
+- Gestite le negazioni mirate (`senza salvare` analizza soltanto; `non analizzare`
+  non esegue nulla) e i fallimenti di salvataggio vengono dichiarati senza falsi
+  successi. Aggiunte regressioni su persistenza, routing ed esposizione contestuale.
+
+## 2026-07-22 - Dream Trace Paired v2: isolamento batch e residuo fail-closed
+
+- Chiuso come pilot diagnostico il batch v1 (1 warm-up + 8 coppie): 5 trattamenti
+  avevano ricevuto la sentinella errata `NESSUN INSIGHT`; nessun trattamento era
+  entrato nella memoria reale.
+- Nuova `experiment_version=dream_trace_paired_v2`; residuo e contatore usano chiavi
+  Redis versionate. Lo stream v1 resta intatto ma non può contaminare o entrare
+  nell'export v2.
+- La distillazione appaiata accetta solo righe strutturate, elimina la chiave se non
+  resta alcuna riga valida e forza quindi un nuovo warm-up. Un filtro deterministico
+  scarta anche righe che riecheggiano fortemente il residuo appena iniettato.
+- Il campionatore verifica anche hash del residuo, durata e stati ammessi; l'allarme
+  sugli errori ora rileva anche gli squilibri `0:N`, prima invisibili.
+- Regressioni aggiunte per sentinella errata, residuo stale, compatibilità legacy,
+  eco vibrazioni/EMI, integrità e squilibrio errori.
+
+## 2026-07-21 - Dream Trace Paired V2: qualita' separata da utilita', confronto sullo stesso seme
+
+- Nuovo protocollo `ESPERIMENTO_DREAM_TRACE_V2.md`: il vecchio N/O/? non mescola
+  piu' grounding, novita', chiarezza e utilita' personale. Pass primario tecnico:
+  `G2 + V2 + C`; utilita' di Stefano separata in `U_NOW/U_LATER/U_NO/U_CONTEXT`.
+- Una prima stesura usava bracci concorrenti a blocchi di due cicli con coppie di
+  domini estratte a caso (mai attivata, nessun dato raccolto). Su indicazione di
+  Stefano, sostituita da un disegno APPAIATO: stesso seme (stesse due memorie)
+  generato due volte, con e senza residuo — elimina la variabilita' tra coppie di
+  domini diverse invece di mediarla su n grande, e non richiede piu' bilanciamento a
+  blocchi (ogni coppia contiene per costruzione un baseline e un trattamento).
+- Il residuo evolve SOLO dal lato trattamento: il baseline resta strutturalmente
+  isolato, prompt bit-identico a oggi a flag spento.
+- Stream dedicato `euri:dream_trace:paired:cycles`: salva al momento della
+  generazione output, due sorgenti, `pair_id`+`arm`, residuo, lunghezze e SHA-256
+  completi, anche per scarti/errori; nessuna dipendenza dalla sopravvivenza del
+  candidate. Uno scarto conta come non-passa per quel lato, non come esclusione
+  della coppia (altrimenti si ripeterebbe la sopravvivenza asimmetrica del batch
+  precedente in una forma diversa).
+- Esportatore cieco fail-closed: richiede 50 coppie complete (entrambi i lati non-
+  error, non duplicati, hash coerenti su QUALUNQUE stato) e include le memorie
+  sorgente per giudicare davvero il grounding. Due valutatori indipendenti (Codex,
+  Claude) giudicano separatamente; un disaccordo su una qualunque dimensione rende
+  quel lato AMBIGUO — nessuna adjudicazione, nessuno dei due corregge l'altro — nota
+  aperta in `ESPERIMENTO_DREAM_TRACE_V2.md` sui limiti di indipendenza tra due
+  modelli linguistici.
+- Analisi primaria: McNemar ESATTO (binomiale), non l'approssimazione χ² — con 50
+  coppie i discordanti saranno quasi certamente troppo pochi per l'approssimazione.
+
+### Correzioni post-review Codex (stesso giorno, prima di qualunque raccolta)
+
+- Solo il lato baseline persiste come `euri:insight:*` vivo (embedding, retrieval,
+  eleggibile a promozione); il trattamento resta strumentazione pura finche' non e'
+  validato — altrimenti ogni coppia raddoppiava i candidate che entrano nella
+  cognizione reale di Euri.
+- Il residuo loggato per lato ora e' quello REALMENTE iniettato in quel prompt
+  (vuoto per il baseline), non il residuo vivo in generale.
+- Validazione hash/lunghezza dell'output estesa a `discarded`, non solo `candidate`.
+- Un lato duplicato (stesso pair_id+arm) invalida l'intera coppia, non viene piu'
+  tenuta silenziosamente la prima occorrenza.
+- Errori di generazione contati per braccio con soglia di allarme (rapporto >=2x),
+  non piu' esclusi in silenzio dal conteggio.
+- Aggiunta la misura di durata per lato (`duration_s`), prevista ma assente.
+
+`DREAM_TRACE_PAIRED_ENABLED=True` (avviato da Stefano, poi corretto): la raccolta
+non aveva ancora generato nulla su Redis reale (chiavi/stream assenti, verificato)
+quando le correzioni sono state applicate — nessuna pulizia necessaria, ma serve un
+nuovo riavvio di Euri per caricare il codice corretto. Regressioni 36/36 (inclusi i
+nuovi casi su duplicati/errori/hash-su-scarti), inventario 45 test.
+
+## 2026-07-21 - Audit Dream Trace fermato per troncamento della misura
+
+- L'audit cieco 60+60 non e' valutabile: la convergence trace salvava soltanto
+  `seed_content[:600]`, tagliando in 109/120 item la terza riga da giudicare.
+- Controllo read-only senza unblinding: 81 testi recuperabili dallo stato Redis vivo
+  o dai sogni grezzi, 39 perduti. Il sottoinsieme recuperato non viene usato perche'
+  introdurrebbe bias di sopravvivenza. La chiave resta sigillata.
+- La trace salva ora l'intero candidate con numero di caratteri, SHA-256 e marcatore
+  esplicito di completezza. Il campionatore rifiuta le entry legacy/incomplete e si
+  arresta se uno dei bracci non raggiunge la numerosita' richiesta.
+- Il report Codex e' conservato come verbale, ma marcato chiaramente non valido.
+
 ## 2026-07-21 - Raccolta Dream Trace congelata e semi epistemicamente puliti
 
 - La raccolta `dream_trace` e' stata chiusa prima di modificare la generazione:

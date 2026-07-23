@@ -16,6 +16,10 @@ import config
 from utils.date_utils import now, format_datetime_full, from_timestamp
 
 
+_OWNER_NAME = config.OWNER_DISPLAY_NAME
+_ASSISTANT_NAME = config.ASSISTANT_DISPLAY_NAME
+
+
 class Brain:
     def __init__(self):
         self._conversation_history: list[dict] = []
@@ -153,7 +157,7 @@ class Brain:
         if history:
             timeline = []
             for index, message in enumerate(history, start=1):
-                role = "Stefano" if message["role"] == "user" else "Euri"
+                role = _OWNER_NAME if message["role"] == "user" else _ASSISTANT_NAME
                 segment = message.get("segment_id")
                 segment_text = f"; segmento {segment}" if segment is not None else ""
                 timeline.append(
@@ -232,11 +236,14 @@ class Brain:
             prompt = (
                 "Comprimi questa conversazione senza fondere le fonti. Produci esattamente "
                 "questi tre blocchi, anche quando uno e' vuoto:\n"
-                "DETTO DA STEFANO: fatti, decisioni, numeri e preferenze affermati da Stefano.\n"
-                "CONTRIBUTI DI EURI: domande, ipotesi, interpretazioni o proposte formulate da Euri.\n"
+                f"DETTO DA {_OWNER_NAME.upper()}: fatti, decisioni, numeri e preferenze "
+                f"affermati da {_OWNER_NAME}.\n"
+                f"CONTRIBUTI DI {_ASSISTANT_NAME.upper()}: domande, ipotesi, interpretazioni "
+                f"o proposte formulate da {_ASSISTANT_NAME}.\n"
                 "FILO APERTO: argomenti incompleti e dettagli ancora mancanti.\n"
                 "Preserva nomi propri, numeri, progetti e ordine temporale. Non spostare mai "
-                "una frase di Euri nel blocco di Stefano, neppure se sembra plausibile o non "
+                f"una frase di {_ASSISTANT_NAME} nel blocco di {_OWNER_NAME}, neppure se "
+                "sembra plausibile o non "
                 "viene contestata. Non trasformare un tema proposto in un fatto avvenuto. "
                 "Scrivi in terza persona. Max 150 parole.\n\n"
                 f"{dialogue}\n\nRiassunto:"
@@ -312,7 +319,7 @@ class Brain:
         # Costruisce un riassunto con Qwen
         items_text = "\n".join(f"- {r['content']}" for r in results[:5])
         prompt = (
-            f"Stefano ha chiesto: '{query}'\n"
+            f"{_OWNER_NAME} ha chiesto: '{query}'\n"
             f"Ho trovato questi ricordi:\n{items_text}\n\n"
             f"Rispondi in modo breve e diretto, come se fossi un collega."
         )
@@ -377,7 +384,7 @@ class Brain:
                 f"- {q}" for q in asked_questions
             ) + "\n"
         prompt = (
-            f"Stefano ti sta spiegando qualcosa su: {topic}\n"
+            f"{_OWNER_NAME} ti sta spiegando qualcosa su: {topic}\n"
             f"Quello che ha detto finora:\n{accumulated}\n"
             f"{asked_str}\n"
             f"Fai UNA sola domanda su un aspetto che NON è ancora stato toccato. "
@@ -406,7 +413,7 @@ class Brain:
 
         lines = []
         for index, msg in enumerate(conversation, 1):
-            role = "Stefano" if msg["role"] == "user" else "Euri"
+            role = _OWNER_NAME if msg["role"] == "user" else _ASSISTANT_NAME
             turn_id = msg.get("seq", index)
             observed_at = msg.get("observed_at")
             if observed_at is not None:
@@ -420,7 +427,7 @@ class Brain:
         dialogue = "\n".join(lines)
 
         prompt = (
-            f"Analizza questa conversazione tra Stefano e il suo assistente.\n\n"
+            f"Analizza questa conversazione tra {_OWNER_NAME} e il suo assistente.\n\n"
             f"{dialogue}\n\n"
             f"Estrai SOLO elementi che vale la pena ricordare per una conversazione futura.\n"
             f"Distingui due tipi:\n"
@@ -431,22 +438,23 @@ class Brain:
             f"Ogni fatto deve nominare esplicitamente il soggetto a cui si riferisce "
             f"(persona, azienda, cliente, prodotto, macchina, progetto, materiale...).\n"
             f"Risolvi il soggetto dal contesto conversazionale solo quando è chiaro; NON "
-            f"defaultare mai a Stefano. Se il soggetto non è risolvibile con certezza, scarta il fatto.\n\n"
+            f"defaultare mai a {_OWNER_NAME}. Se il soggetto non è risolvibile con certezza, scarta il fatto.\n\n"
             f"Fonte epistemica:\n"
-            f"- FORTE: il fatto è affermato, corretto o ripreso operativamente da Stefano.\n"
-            f"- DEBOLE: il fatto viene comunque dalle parole di Stefano, ma e' incerto, "
+            f"- FORTE: il fatto è affermato, corretto o ripreso operativamente da {_OWNER_NAME}.\n"
+            f"- DEBOLE: il fatto viene comunque dalle parole di {_OWNER_NAME}, ma e' incerto, "
             f"provvisorio o espresso come possibilita'.\n"
-            f"- SCARTA SEMPRE: fatti, spiegazioni, inferenze o autocorrezioni formulate da Euri. "
+            f"- SCARTA SEMPRE: fatti, spiegazioni, inferenze o autocorrezioni formulate da {_ASSISTANT_NAME}. "
             f"Il silenzio, il cambio di argomento e la mancata contestazione NON sono conferma. "
             f"Una risposta breve come 'si' o 'esatto' non autorizza a copiare la formulazione di "
-            f"Euri in un FATTO passivo: se il dettaglio non compare nelle parole di Stefano, scartalo.\n\n"
+            f"{_ASSISTANT_NAME} in un FATTO passivo: se il dettaglio non compare nelle parole "
+            f"di {_OWNER_NAME}, scartalo.\n\n"
             f"Memorie aggiuntive: se il fatto aggiunge un nuovo asse a un soggetto già noto, "
             f"formulalo come aggiunta, non come definizione esaustiva. Usa parole come 'anche' "
             f"o 'inoltre' quando servono.\n\n"
             f"Esempi:\n"
             f"- OK: 'Giada è una nuova collaboratrice di laboratorio con basi teoriche di chimica.'\n"
-            f"- OK: 'Stefano si occupa anche di architetture agentiche e analisi DSC.'\n"
-            f"- OK: 'Stefano lavora da casa in modalità remota.'\n"
+            f"- OK: '{_OWNER_NAME} si occupa anche di architetture agentiche e analisi DSC.'\n"
+            f"- OK: '{_OWNER_NAME} lavora da casa in modalità remota.'\n"
             f"- NO: 'Lavora da casa in modalità remota.'\n"
             f"- NO: 'Ha un collega di nome Leonardo.'\n\n"
             f"Categorie utili:\n"
@@ -461,20 +469,22 @@ class Brain:
             f"- Relazioni causali e strategiche: dipendenze tra domini diversi, piani condizionali "
             f"('se X allora Y'), connessioni concrete tra risultati tecnici, vendite, investimenti, "
             f"decisioni hardware/software. Esempio: 'Se la vendita dei neutri va a buon fine, "
-            f"Stefano userà i proventi per aggiornare la GPU della workstation.'\n\n"
+            f"{_OWNER_NAME} userà i proventi per aggiornare la GPU della workstation.'\n\n"
             f"IGNORA: conversazione generica, saluti, test del sistema senza un tema futuro specifico, "
-            f"informazioni già ovvie (es. 'Stefano usa Euri'), frasi acefale senza soggetto esplicito.\n\n"
+            f"informazioni già ovvie (es. '{_OWNER_NAME} usa {_ASSISTANT_NAME}'), frasi "
+            f"acefale senza soggetto esplicito.\n\n"
             f"Se trovi fatti utili: scrivi una lista numerata, un fatto per riga, max 6.\n"
             f"Ogni riga deve avere questo formato esatto:\n"
             f"1. FORTE: [TIPO=FATTO; TURNI=12,13] contenuto\n"
             f"oppure: 1. FORTE: [TIPO=EPISODIO; TURNI=12,13] contenuto\n"
             f"TURNI deve contenere soltanto i turni che sostengono quell'elemento. Non copiare "
             f"nel contenuto l'orario tecnico tra parentesi: preserva invece gli eventuali "
-            f"riferimenti temporali detti da Stefano. Per TIPO=FATTO, TURNI deve contenere "
-            f"ESCLUSIVAMENTE turni di Stefano; i turni di Euri possono comparire solo in un "
+            f"riferimenti temporali detti da {_OWNER_NAME}. Per TIPO=FATTO, TURNI deve contenere "
+            f"ESCLUSIVAMENTE turni di {_OWNER_NAME}; i turni di {_ASSISTANT_NAME} possono "
+            f"comparire solo in un "
             f"TIPO=EPISODIO, che descrive il filo del dialogo e non e' una prova fattuale.\n"
-            f"Esempio FATTO: 1. FORTE: [TIPO=FATTO; TURNI=4] Stefano si occupa anche di architetture agentiche e analisi DSC.\n"
-            f"Esempio EPISODIO: 2. FORTE: [TIPO=EPISODIO; TURNI=7,8] Stefano ha riaperto il tema della prova IZOD riferita a quella mattina; non ha ancora fornito valori o risultati.\n"
+            f"Esempio FATTO: 1. FORTE: [TIPO=FATTO; TURNI=4] {_OWNER_NAME} si occupa anche di architetture agentiche e analisi DSC.\n"
+            f"Esempio EPISODIO: 2. FORTE: [TIPO=EPISODIO; TURNI=7,8] {_OWNER_NAME} ha riaperto il tema della prova IZOD riferita a quella mattina; non ha ancora fornito valori o risultati.\n"
             f"Se non c'è nulla di concreto da salvare: scrivi solo NOTHING."
         )
         try:
@@ -551,7 +561,7 @@ class Brain:
     def _passive_item_has_valid_provenance(item: dict, conversation: list[dict]) -> bool:
         """Fail-closed sulla provenienza dei derivati passivi.
 
-        Un fatto persistente deve puntare a uno o piu' turni di Stefano e a nessun
+        Un fatto persistente deve puntare a uno o piu' turni dell'utente e a nessun
         turno dell'assistente. Gli episodi possono citare entrambi i ruoli per
         conservare il filo, ma restano memorie non fattuali a valle.
         """
@@ -594,18 +604,18 @@ class Brain:
         return bool(cls._ACEPHALOUS_FACT_RE.search(fact or ""))
 
     _REFLECTION_SYSTEM = (
-        "Sei un sistema di consolidamento memoria. Leggi le memorie recenti di Stefano "
+        f"Sei un sistema di consolidamento memoria. Leggi le memorie recenti di {_OWNER_NAME} "
         "e quelle correlate dal suo archivio, e produci una sintesi breve che identifichi:\n"
         "1. Il tema dominante della sessione\n"
-        "2. Eventuali connessioni con attività passate di Stefano\n"
+        f"2. Eventuali connessioni con attività passate di {_OWNER_NAME}\n"
         "3. Un possibile interesse a breve termine che potrebbe emergere\n\n"
         "Regole:\n"
         "- Massimo 3 frasi totali\n"
         "- Tono funzionale, non emotivo\n"
-        "- Terza persona su Stefano\n"
-        "- Non trasformare possibilita' o collegamenti plausibili in piani, decisioni o fatti di Stefano\n"
-        "- La terza frase deve iniziare esattamente con 'Ipotesi di Euri:' e dichiarare "
-        "  una tua interpretazione, non una intenzione attribuita a Stefano\n"
+        f"- Terza persona su {_OWNER_NAME}\n"
+        f"- Non trasformare possibilita' o collegamenti plausibili in piani, decisioni o fatti di {_OWNER_NAME}\n"
+        f"- La terza frase deve iniziare esattamente con 'Ipotesi di {_ASSISTANT_NAME}:' e dichiarare "
+        f"  una tua interpretazione, non una intenzione attribuita a {_OWNER_NAME}\n"
         "- Nessun preambolo ('Ecco la sintesi:', ecc.)\n"
         "- Se le memorie sono troppo scollegate, rispondi esattamente: NO_COHERENT_PATTERN"
     )
@@ -645,7 +655,7 @@ class Brain:
     def summarize_knowledge(self, accumulated: str) -> str:
         """Sintetizza il contenuto di una sessione di insegnamento per salvarlo in memoria."""
         prompt = (
-            f"Stefano ti ha spiegato questo:\n{accumulated}\n\n"
+            f"{_OWNER_NAME} ti ha spiegato questo:\n{accumulated}\n\n"
             f"Riassumi in modo chiaro e completo, mantenendo tutti i dettagli tecnici importanti. "
             f"Scrivi come se dovessi spiegarlo a qualcuno in futuro. Max 5 frasi."
         )
@@ -661,21 +671,22 @@ class Brain:
             logger.error(f"Errore summarize_knowledge: {e}")
             return accumulated
 
-    def extract_fact_from_exchange(self, stefano_turn: str, euri_turn: str = "") -> str:
+    def extract_fact_from_exchange(self, owner_turn: str, assistant_turn: str = "") -> str:
         """
         SAVE anaforico ("memorizza questo / queste informazioni"): estrae il FATTO
         memorizzabile emerso in uno scambio — NON riassume la conversazione.
-        Fonte primaria: ciò che afferma Stefano; la risposta di Euri serve SOLO a
+        Fonte primaria: ciò che afferma l'utente; la risposta dell'assistente serve SOLO a
         disambiguare nomi/soggetti/contesto. Esclude meta-commenti (cosa il sistema
         sa/non sa), inviti a caricare documenti, spiegazioni sul salvataggio, preamboli.
         Ritorna il fatto pulito (max 3 frasi), o '' se non c'è un fatto memorizzabile.
         """
         prompt = (
-            f"In questo scambio Stefano vuole fissare in memoria un FATTO.\n\n"
-            f"Stefano: {stefano_turn}\n"
-            f"Euri: {euri_turn}\n\n"
+            f"In questo scambio {_OWNER_NAME} vuole fissare in memoria un FATTO.\n\n"
+            f"{_OWNER_NAME}: {owner_turn}\n"
+            f"{_ASSISTANT_NAME}: {assistant_turn}\n\n"
             f"Estrai SOLO il fatto memorizzabile emerso, in italiano, conciso (max 3 frasi). "
-            f"Fonte primaria: ciò che afferma Stefano; usa la risposta di Euri solo per "
+            f"Fonte primaria: ciò che afferma {_OWNER_NAME}; usa la risposta di "
+            f"{_ASSISTANT_NAME} solo per "
             f"disambiguare nomi, soggetti o contesto.\n"
             f"NON includere: commenti su cosa il sistema sa o non sa, inviti a caricare "
             f"documenti, spiegazioni sul salvataggio, preamboli (es. 'Ecco un riassunto'). "
@@ -749,18 +760,18 @@ class Brain:
 
     def apply_correction_to_memory(self, existing: str, correction: str) -> str | None:
         """Gemello di merge_memories per la CORREZIONE (canale rilettura→cura, 14/07):
-        riscrive la memoria applicando la correzione di Stefano — user > tutto nella
+        riscrive la memoria applicando la correzione dell'utente — user > tutto nella
         gerarchia di fiducia. Fedele: cambia SOLO ciò che la correzione tocca, tiene
         il resto, non inventa. Ritorna il testo corretto o None su errore (il chiamante
         allora salva la correzione grezza e supseda la vecchia: mai perdere la parola
-        di Stefano)."""
+        dell'utente)."""
         existing = self._strip_memory_header(existing)
         prompt = (
             f"Memoria salvata B:\n{existing}\n\n"
-            f"Correzione di Stefano C:\n{correction}\n\n"
+            f"Correzione di {_OWNER_NAME} C:\n{correction}\n\n"
             f"Riscrivi B applicando C: correggi SOLO ciò che C contraddice o precisa, "
             f"mantieni intatto tutto il resto di B, non aggiungere nulla che non sia "
-            f"in B o in C. La parola di Stefano vince sempre su B. "
+            f"in B o in C. La parola di {_OWNER_NAME} vince sempre su B. "
             f"Rispondi SOLO col testo riscritto, niente premesse né commenti."
         )
         try:
@@ -786,7 +797,7 @@ class Brain:
             content = (m.get("content") or "").strip()
             if not content:
                 continue
-            who = "Stefano" if m.get("role") == "user" else "Euri"
+            who = _OWNER_NAME if m.get("role") == "user" else _ASSISTANT_NAME
             lines.append(f"{who}: {content}")
         return "\n".join(lines)
 
@@ -828,7 +839,7 @@ class Brain:
         if not convo:
             return {}
         prompt = (
-            "Stefano ha dato a Euri un comando di salvataggio in memoria.\n\n"
+            f"{_OWNER_NAME} ha dato a {_ASSISTANT_NAME} un comando di salvataggio in memoria.\n\n"
             f"Comando: \"{command}\"\n\n"
             f"Conversazione recente (dal più vecchio al più recente):\n{convo}\n\n"
             "Decidi cosa salvare e rispondi SOLO con un oggetto JSON, niente altro testo:\n"
@@ -845,7 +856,7 @@ class Brain:
             "'segnati quanto detto'). memory = sintesi del fatto emerso nell'ultimo scambio.\n"
             "- \"ask\": non è chiaro cosa salvare. memory = \"\".\n\n"
             "Per memory: italiano, conciso (max 3-4 frasi), SOLO fatti concreti. Fonte "
-            "primaria: ciò che afferma Stefano; la conversazione serve a recuperare i "
+            f"primaria: ciò che afferma {_OWNER_NAME}; la conversazione serve a recuperare i "
             "dettagli del soggetto. NON includere preamboli, meta-commenti o spiegazioni sul "
             "salvataggio.\n"
             "confidence: da 0 a 1, quanto sei sicuro della scelta di mode e del contenuto."
@@ -886,7 +897,7 @@ class Brain:
         convo = self._format_history_for_save(recent_history)
         convo_block = f"\nConversazione recente:\n{convo}\n" if convo else ""
         prompt = (
-            "Classifica che TIPO di recupero memoria serve per la domanda di Stefano. "
+            f"Classifica che TIPO di recupero memoria serve per la domanda di {_OWNER_NAME}. "
             "NON rispondere alla domanda, scegli solo la strategia.\n\n"
             f"Domanda: \"{query}\"{convo_block}\n"
             "Rispondi SOLO con un oggetto JSON, niente altro testo:\n"
@@ -936,7 +947,8 @@ class Brain:
         Chiamato solo per memorie passive/reflection mai richiamate vicine alla scadenza.
         """
         prompt = (
-            f"Sei il sistema di gestione memoria di Euri, l'assistente personale di Stefano.\n"
+            f"Sei il sistema di gestione memoria di {_ASSISTANT_NAME}, l'assistente "
+            f"personale di {_OWNER_NAME}.\n"
             f"Questa memoria sta per scadere perché non è mai stata richiamata in conversazione:\n\n"
             f"\"{content}\"\n\n"
             f"Vale la pena conservarla? Potrebbe essere stagionale, tecnica, o utile in futuro?\n"
@@ -1049,10 +1061,10 @@ class Brain:
         if is_vague and self._conversation_history:
             # Prendi gli ultimi messaggi dell'utente (non le risposte Euri — evita contaminazione)
             user_turns = [m for m in self._conversation_history if m["role"] == "user"][-4:]
-            history_str = "\n".join(f"Stefano: {m['content'][:200]}" for m in user_turns)
+            history_str = "\n".join(f"{_OWNER_NAME}: {m['content'][:200]}" for m in user_turns)
             prompt = (
                 f"Conversazione recente:\n{history_str}\n\n"
-                f"Stefano vuole cercare sul web: '{text}'\n"
+                f"{_OWNER_NAME} vuole cercare sul web: '{text}'\n"
                 f"La richiesta è vaga. Basandoti sul contesto della conversazione, "
                 f"formula una query di ricerca web specifica ed efficace. "
                 f"Rispondi SOLO con le parole chiave, max 8 parole. Nient'altro."
@@ -1099,7 +1111,7 @@ class Brain:
             return original_query
 
         user_turns = [m for m in self._conversation_history if m["role"] == "user"][-4:]
-        history_str = "\n".join(f"Stefano: {m['content'][:150]}" for m in user_turns)
+        history_str = "\n".join(f"{_OWNER_NAME}: {m['content'][:150]}" for m in user_turns)
         prompt = (
             f"Conversazione recente:\n{history_str}\n\n"
             f"Ho cercato sul web: '{original_query}' ma i risultati erano scarsi o irrilevanti.\n"
@@ -1140,10 +1152,10 @@ class Brain:
                 context += f"- {r['title']}: {r['body'][:200]}\n"
 
         prompt = (
-            f"Stefano ha cercato sul web: '{query}'\n\n"
+            f"{_OWNER_NAME} ha cercato sul web: '{query}'\n\n"
             f"Ecco i contenuti scaricati:\n{context}\n"
             f"REGOLE DI RISPOSTA:\n"
-            f"1. ESTRAI I DATI: Se Stefano chiede un elenco (es. titoli di film, prezzi, nomi), LEGGILI DIRETTAMENTE. Non dire 'Il sito elenca i film', dimmi tu i titoli.\n"
+            f"1. ESTRAI I DATI: Se {_OWNER_NAME} chiede un elenco (es. titoli di film, prezzi, nomi), LEGGILI DIRETTAMENTE. Non dire 'Il sito elenca i film', dimmi tu i titoli.\n"
             f"2. Adatta il tono: se cerca dati tecnici o di lavoro, usa numeri e precisione. Se cerca cronaca o svago, vai ai fatti salienti.\n"
             f"3. Sii discorsivo e diretto. Parla per essere letto a voce (Text-to-Speech).\n"
             f"4. ZERO formattazione (niente markdown o asterischi). Zero premesse ('Ho trovato un sito che...'). Vai dritto alla risposta.\n"

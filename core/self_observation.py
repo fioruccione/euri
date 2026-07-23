@@ -17,10 +17,10 @@ nuove (mai narrate prima). Niente classificazione error/evolution/context
 """
 import re
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+import httpx
 
 import ollama
-from core.ollama_client import dream_client
+from core.ollama_client import get_dream_client
 from loguru import logger
 
 import config
@@ -160,18 +160,15 @@ class SelfObservation:
         )
 
         try:
-            with ThreadPoolExecutor(max_workers=1) as ex:
-                future = ex.submit(
-                    dream_client.chat,
-                    model=config.DREAM_OLLAMA_MODEL,
-                    messages=[{"role": "user", "content": prompt}],
-                    # num_predict 3000: Qwen con think=True consuma reasoning
-                    # prima dell'output (lezione già appresa da generate_reflection
-                    # in V2.16). Cap basso → output troncato dentro <think>.
-                    options={"temperature": 0.6, "num_predict": 3000},
-                    think=True,
-                )
-                response = future.result(timeout=self.OLLAMA_TIMEOUT_S)
+            response = get_dream_client(self.OLLAMA_TIMEOUT_S).chat(
+                model=config.DREAM_OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                # num_predict 3000: Qwen con think=True consuma reasoning
+                # prima dell'output (lezione già appresa da generate_reflection
+                # in V2.16). Cap basso → output troncato dentro <think>.
+                options={"temperature": 0.6, "num_predict": 3000},
+                think=True,
+            )
             raw = (response.message.content or "").strip()
             # Qwen può lasciare <think>...</think>: rimuovo per pulizia output.
             text = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
@@ -181,7 +178,7 @@ class SelfObservation:
                     f"raw_head={raw[:200]!r}"
                 )
             return text
-        except FuturesTimeout:
+        except (httpx.TimeoutException, TimeoutError):
             logger.warning(f"Loop 2h: timeout LLM dopo {self.OLLAMA_TIMEOUT_S}s")
             return ""
         except Exception as e:

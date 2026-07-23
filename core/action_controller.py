@@ -58,6 +58,7 @@ class ActionProposal:
     reason: str = ""
     alternative: bool = False
     unmet_intent: str = ""
+    integrate_response: bool = False
 
 
 @dataclass(frozen=True)
@@ -206,7 +207,10 @@ Regole:
 3. Usa soltanto una capability elencata e soltanto un target_id presente nello stato.
 4. Se l'azione e' chiara ma il bersaglio e' ambiguo, indica la capability e target_id null.
 5. Se e' conversazione, racconto, desiderio non operativo o semplice domanda di opinione,
-   usa capability null e authority none.
+   usa capability null e authority none. Una richiesta di esaminare le capacita' di Euri,
+   riflettere sul suo codice o proporre miglioramenti resta conversazione anche se dice
+   genericamente "usa i tuoi strumenti": non trasformarla in un controllo hardware
+   casuale. Serve un sottopasso operativo specifico e realmente pertinente.
 6. Se origine=user: user_explicit solo quando il turno autorizza davvero il gesto.
    Se origine=euri: usa euri_proposed; una bozza di risposta di Euri non si auto-autorizza.
 7. La dichiarazione esplicita 'chiuso/chiudilo/consideralo chiuso' ha precedenza:
@@ -224,9 +228,13 @@ Regole:
    proponi read_log come alternative per verificare lo stato; non fingere il riavvio.
 9. mode=direct significa che la capability realizza il gesto corrente; mode=alternative
    significa che realizza soltanto il miglior passo fattibile sostitutivo.
+10. response_mode=tool_result soltanto se l'esito del tool esaurisce da solo TUTTA la
+    richiesta corrente (es. "controlla la GPU"). Usa response_mode=integrated se resta
+    da dare una spiegazione, valutazione, raccomandazione o risposta conversazionale.
+    Ogni mode=alternative e ogni azione proposta da Euri richiede integrated.
 
 Rispondi SOLO con JSON:
-{{"mode":"direct|alternative|none","capability":"nome o null","args":{{}},"target_id":"id o null","authority":"user_explicit|euri_proposed|none","confidence":0.0,"unmet_intent":"breve o vuoto","reason":"breve"}}"""
+{{"mode":"direct|alternative|none","response_mode":"tool_result|integrated","capability":"nome o null","args":{{}},"target_id":"id o null","authority":"user_explicit|euri_proposed|none","confidence":0.0,"unmet_intent":"breve o vuoto","reason":"breve"}}"""
 
 
 class ActionController:
@@ -276,6 +284,10 @@ class ActionController:
             capability = ""
         mode = str(data.get("mode", "direct" if capability else "none")).strip().lower()
         alternative = mode == "alternative" and bool(capability)
+        response_mode = str(data.get("response_mode", "")).strip().lower()
+        integrate_response = bool(capability) and (
+            alternative or origin == "euri" or response_mode == "integrated"
+        )
         try:
             authority = ActionAuthority(str(data.get("authority", "none")).lower())
         except ValueError:
@@ -298,6 +310,7 @@ class ActionController:
             reason=str(data.get("reason", ""))[:240],
             alternative=alternative,
             unmet_intent=str(data.get("unmet_intent", ""))[:160],
+            integrate_response=integrate_response,
         )
 
     def decide(

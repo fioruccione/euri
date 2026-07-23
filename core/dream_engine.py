@@ -13,10 +13,10 @@ import json
 import hashlib
 import re
 import numpy as np
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+import httpx
 from loguru import logger
 import ollama
-from core.ollama_client import dream_client
+from core.ollama_client import get_dream_client
 from core.operational_context import load_operational_context
 
 import config
@@ -25,6 +25,7 @@ from redis.commands.search.query import Query
 from utils.obsidian_sync import write_insight
 from core.pulse import pulse_emit
 from core.memory_attention import (
+    rebuild_loop2e_candidate_index,
     remove_loop2e_candidate,
     scan_loop2e_candidates,
     update_loop2e_candidate_index,
@@ -34,6 +35,33 @@ from core.memory_attention import (
 
 CROSS_EPISODE_SEEN_KEY = "euri:cross_episode:seen"
 CROSS_EPISODE_LAST_RUN_KEY = "euri:cross_episode:last_run_ts"
+DREAM_TRACE_PAIRED_VERSION = getattr(
+    config, "DREAM_TRACE_PAIRED_VERSION", "dream_trace_paired_v2"
+)
+# Residuo e contatore sono versionati: un nuovo protocollo non puo' ereditare lo
+# stato effimero di un batch precedente. Lo stream resta condiviso e ogni record
+# porta experiment_version, quindi la storia v1 rimane leggibile ma isolata.
+DREAM_TRACE_PAIRED_RESIDUE_KEY = (
+    f"euri:dream_trace:paired:{DREAM_TRACE_PAIRED_VERSION}:latest"
+)
+DREAM_TRACE_PAIRED_SEQUENCE_KEY = (
+    f"euri:dream_trace:paired:{DREAM_TRACE_PAIRED_VERSION}:sequence"
+)
+DREAM_TRACE_PAIRED_STREAM = "euri:dream_trace:paired:cycles"
+
+_TRACE_LINE_RE = re.compile(
+    r"^(?:[-*]\s*)?ho\s+"
+    r"(?:provato|ipotizzato|cercato|considerato|esplorato|tentato|valutato)\b"
+    r".+:\s*debole\s+perch(?:e|é)\b.+$",
+    re.IGNORECASE,
+)
+_TRACE_ECHO_STOPWORDS = frozenset({
+    "analogia", "basato", "causale", "collegamento", "collegare", "connessione",
+    "considerato", "cercato", "dati", "debole", "diretto", "dominio", "domini",
+    "esplorato", "generico", "ipotizzato", "mancava", "memoria", "operativa",
+    "perche", "ponte", "provato", "ragionamento", "strategia", "tentato",
+    "valutato",
+})
 
 _CAUSAL_EPISODE_RE = re.compile(
     r"\b(?:causa|causato|causata|causare|crea|creare|provoca|provocare|"
@@ -210,6 +238,54 @@ class DreamEngine:
         except Exception as e:
             logger.debug(f"Dream Engine: clock manutenzione non persistito: {e}")
 
+    def _reconcile_insight_epistemic_state(self) -> tuple[int, int]:
+        """Allinea anche gli insight legacy alla separazione interno/esterno."""
+        internal = confirmed = 0
+        for key in self._r.scan_iter("euri:insight:*"):
+            raw = self._r.json().get(key, "$")
+            if not raw:
+                continue
+            doc = raw[0]
+            if doc.get("status") != "promoted":
+                continue
+            verdict = (doc.get("external_reaction") or {}).get("verdict")
+            if verdict == "CONFERMA":
+                self._r.json().set(key, "$.epistemic_status", "externally_confirmed")
+                if not doc.get("provenance_stale"):
+                    self._r.json().set(key, "$.requires_verification", False)
+                    self._r.json().set(
+                        key, "$.verification_status", "externally_confirmed_by_owner"
+                    )
+                confirmed += 1
+                continue
+            self._r.json().set(key, "$.requires_verification", True)
+            if not doc.get("epistemic_status"):
+                self._r.json().set(
+                    key,
+                    "$.epistemic_status",
+                    (
+                        "partially_refuted"
+                        if verdict == "PARZIALE"
+                        else "awaiting_external_evidence"
+                        if verdict == "DA_VALUTARE"
+                        else "internally_convergent"
+                    ),
+                )
+            if not doc.get("verification_status"):
+                self._r.json().set(
+                    key,
+                    "$.verification_status",
+                    (
+                        "partially_refuted_by_user"
+                        if verdict == "PARZIALE"
+                        else "hypothesis_to_test"
+                        if verdict == "DA_VALUTARE"
+                        else "legacy_internally_promoted"
+                    ),
+                )
+            internal += 1
+        return internal, confirmed
+
     def start(self):
         if not config.DREAM_ENGINE_ENABLED:
             logger.info("Dream Engine disabilitato da config")
@@ -218,6 +294,26 @@ class DreamEngine:
         with self._lock:
             if self._running:
                 return
+            # Lo ZSET è una vista derivata, non verità cognitiva. Una riconciliazione
+            # canonica al boot ripara restart/crash/versioni precedenti senza aspettare
+            # che ogni memoria venga richiamata di nuovo.
+            try:
+                indexed = rebuild_loop2e_candidate_index(self._r)
+                logger.info(
+                    f"Loop 2e: indice attenzione riconciliato al boot ({indexed} candidati)"
+                )
+            except Exception as e:
+                logger.warning(f"Loop 2e: riconciliazione indice al boot fallita: {e}")
+            try:
+                internal, confirmed = self._reconcile_insight_epistemic_state()
+                logger.info(
+                    "Insight: confine epistemico riconciliato al boot "
+                    f"({internal} interni, {confirmed} confermati esternamente)"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Insight: riconciliazione epistemica al boot fallita: {e}"
+                )
             self._running = True
             self._stop_event.clear()
             self._thread = threading.Thread(target=self._loop, daemon=True, name="dream-engine")
@@ -258,13 +354,11 @@ class DreamEngine:
         op_ctx = load_operational_context()
         if op_ctx and kwargs.get("messages"):
             kwargs["messages"] = [{"role": "system", "content": op_ctx}, *kwargs["messages"]]
-        with ThreadPoolExecutor(max_workers=1) as ex:
-            future = ex.submit(dream_client.chat, **kwargs)
-            try:
-                return future.result(timeout=timeout)
-            except FuturesTimeout:
-                logger.warning(f"Dream Engine: timeout LLM dopo {timeout}s — ciclo abortito")
-                raise
+        try:
+            return get_dream_client(timeout).chat(**kwargs)
+        except (httpx.TimeoutException, TimeoutError):
+            logger.warning(f"Dream Engine: timeout LLM dopo {timeout}s — ciclo abortito")
+            raise
 
     def _loop(self):
         """Loop principale: controlla l'idle e lancia i sotto-cicli dovuti."""
@@ -624,33 +718,81 @@ class DreamEngine:
         if second is None:
             return None
         dom_b, mem_b = second
-            
-        logger.info(f"Dream Engine: sogno tra '{dom_a}' e '{dom_b}'")
-        
-        # Chiedi a Gemma se esiste un isomorfismo
-        age_a = self._memory_age(mem_a.get("created_at"))
-        age_b = self._memory_age(mem_b.get("created_at"))
-        label_a = f"dominio: {dom_a}" + (f", {age_a}" if age_a else "")
-        label_b = f"dominio: {dom_b}" + (f", {age_b}" if age_b else "")
 
-        # Esperimento dream_trace (continuità 2b): residuo di STRATEGIA del ciclo
-        # precedente, iniettato come sezione marcata. Serve a non ripercorrere i TIPI
-        # di ponte già trovati deboli — mai a continuarli. A flag spento: sezione
-        # vuota, prompt bit-identico all'attuale.
+        logger.info(f"Dream Engine: sogno tra '{dom_a}' e '{dom_b}'")
+
+        if getattr(config, "DREAM_TRACE_PAIRED_ENABLED", False):
+            return self._generate_dream_paired(dom_a, mem_a, dom_b, mem_b)
+
+        # Esperimento continuità 2b (legacy, singolo braccio): residuo di STRATEGIA
+        # del ciclo precedente, iniettato come sezione marcata. Serve a non
+        # ripercorrere i TIPI di ponte già trovati deboli — mai a continuarli. A
+        # flag spento: sezione vuota, prompt bit-identico all'attuale.
+        legacy_trace_enabled = getattr(config, "DREAM_TRACE_ENABLED", False)
         trace_txt = None
-        if getattr(config, "DREAM_TRACE_ENABLED", False):
+        if legacy_trace_enabled:
             try:
                 trace_txt = self._r.get("euri:dream_trace:latest")
             except Exception:
                 trace_txt = None
-        trace_section = ""
-        if trace_txt:
-            trace_section = (
-                "\n[TRACCIA DEL CICLO PRECEDENTE — strategie di connessione già tentate e trovate deboli:\n"
-                f"{trace_txt}\n"
-                "Serve solo a NON ripercorrere: se la connessione che stai per proporre ricade in una di "
-                "queste strategie deboli, cambia tipo di ponte o rispondi NESSUN INSIGHT.]\n"
+        trace_injected = bool(trace_txt)
+        trace_section = self._build_trace_section(trace_txt) if trace_injected else ""
+
+        try:
+            result = self._run_single_dream_generation(
+                dom_a, mem_a, dom_b, mem_b, trace_section,
+                capture_cot=legacy_trace_enabled,
+                extra_insight_fields=(
+                    {"trace_injected": trace_injected} if legacy_trace_enabled else None
+                ),
             )
+        except Exception as e:
+            logger.error(f"Errore generazione sogno: {e}")
+            return None
+
+        # Il residuo si distilla ANCHE dai sogni scartati: "perché era debole" è
+        # proprio l'informazione che il ciclo dopo deve avere. Fail-open, dopo il
+        # salvataggio del sogno: un fallimento qui non tocca il ciclo.
+        if legacy_trace_enabled and result["raw_cot"]:
+            self._update_dream_trace(result["raw_cot"], dom_a, dom_b)
+
+        return result["dream_doc"]
+
+    @staticmethod
+    def _build_trace_section(trace_txt: str) -> str:
+        return (
+            "\n[TRACCIA DEL CICLO PRECEDENTE — strategie di connessione già tentate e trovate deboli:\n"
+            f"{trace_txt}\n"
+            "Serve solo a NON ripercorrere: se la connessione che stai per proporre ricade in una di "
+            "queste strategie deboli, cambia tipo di ponte o rispondi NESSUN INSIGHT.]\n"
+        )
+
+    def _run_single_dream_generation(self, dom_a: str, mem_a: dict, dom_b: str,
+                                      mem_b: dict, trace_section: str, *,
+                                      capture_cot: bool,
+                                      persist_as_insight: bool = True,
+                                      extra_dream_fields: dict | None = None,
+                                      extra_insight_fields: dict | None = None) -> dict:
+        """Un singolo tentativo di sogno su un seme fisso (dom_a/mem_a, dom_b/mem_b).
+
+        Logica di generazione, parsing e persistenza estratta da _generate_dream in
+        modo che il disegno appaiato (stesso seme, con e senza traccia) e il vecchio
+        percorso a singolo braccio la condividano bit per bit — non due copie che
+        possono divergere. Solleva l'eccezione al chiamante: ognuno dei due percorsi
+        decide come loggarla (il legacy si ferma, il disegno appaiato registra
+        l'errore per quel lato e prosegue con l'altro).
+
+        persist_as_insight=False (disegno appaiato, lato trattamento durante la
+        raccolta): il testo resta comunque integrale nello stream sperimentale, ma
+        NON diventa un euri:insight:* vivo — niente embedding, niente ingresso in
+        retrieval/convergenza/promozione. Altrimenti ogni coppia raddoppierebbe il
+        numero di candidate che entrano nella cognizione reale di Euri, e un
+        meccanismo non ancora validato finirebbe a plasmare la memoria vera prima
+        che l'esperimento dica se funziona."""
+        age_a = self._memory_age(mem_a.get("created_at"))
+        age_b = self._memory_age(mem_b.get("created_at"))
+        label_a = f"dominio: {dom_a}" + (f", {age_a}" if age_a else "")
+        label_b = f"dominio: {dom_b}" + (f", {age_b}" if age_b else "")
 
         prompt = f"""\
 Hai due memorie da domini diversi. Il tuo compito è trovare una connessione operativa non ovvia — qualcosa che non emerge guardando un solo dominio.
@@ -672,102 +814,284 @@ REGOLE:
 - Se non riesci a formulare la terza riga con un effetto concreto, rispondi NESSUN INSIGHT.
 - Nessuna frase introduttiva, nessun commento fuori formato."""
 
-        try:
-            response = self._ollama_chat(
-                model=config.DREAM_OLLAMA_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                options={"temperature": 0.6, "num_predict": 4500},
-                think=True,
-            )
-            text = response.message.content or ""
-            import re
-            # Il CoT va colto PRIMA dello strip: è la materia prima del residuo di
-            # esplorazione. A seconda della versione ollama vive in message.thinking
-            # oppure inline nel blocco <think> del content.
-            raw_cot = ""
-            if getattr(config, "DREAM_TRACE_ENABLED", False):
-                raw_cot = getattr(response.message, "thinking", "") or ""
-                if not raw_cot:
-                    m = re.search(r"<think>(.*?)</think>", text, flags=re.DOTALL)
-                    raw_cot = m.group(1) if m else ""
-            if "<channel|>" in text:
-                text = text.split("<channel|>", 1)[-1]
-            text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+        response = self._ollama_chat(
+            model=config.DREAM_OLLAMA_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0.6, "num_predict": 4500},
+            think=True,
+        )
+        text = response.message.content or ""
+        # Il CoT va colto PRIMA dello strip: è la materia prima del residuo di
+        # esplorazione. A seconda della versione ollama vive in message.thinking
+        # oppure inline nel blocco <think> del content.
+        raw_cot = ""
+        if capture_cot:
+            raw_cot = getattr(response.message, "thinking", "") or ""
+            if not raw_cot:
+                m = re.search(r"<think>(.*?)</think>", text, flags=re.DOTALL)
+                raw_cot = m.group(1) if m else ""
+        if "<channel|>" in text:
+            text = text.split("<channel|>", 1)[-1]
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
-            status = "discarded"
-            insight_content = ""
+        status = "discarded"
+        insight_content = ""
 
-            if text and "NESSUN INSIGHT" not in text.upper() and self._has_required_structure(text):
-                status = "candidate"
-                insight_content = text
-                logger.info(f"Dream Engine: generato CANDIDATE Insight → {insight_content[:50]}...")
-            else:
-                logger.debug("Dream Engine: sogno scartato (nessun isomorfismo o formato incompleto)")
-                
-            # Salva il sogno
-            dream_id = str(uuid.uuid4())
-            dream_doc = {
-                "id": dream_id,
-                "content": insight_content if status == "candidate" else "Nessuna analogia trovata",
-                "status": status,
+        if text and "NESSUN INSIGHT" not in text.upper() and self._has_required_structure(text):
+            status = "candidate"
+            insight_content = text
+            logger.info(f"Dream Engine: generato CANDIDATE Insight → {insight_content[:50]}...")
+        else:
+            logger.debug("Dream Engine: sogno scartato (nessun isomorfismo o formato incompleto)")
+
+        # Salva il sogno
+        dream_id = str(uuid.uuid4())
+        dream_doc = {
+            "id": dream_id,
+            "content": insight_content if status == "candidate" else "Nessuna analogia trovata",
+            "status": status,
+            "domain_a": dom_a,
+            "domain_b": dom_b,
+            "memory_a_id": mem_a["id"],
+            "memory_b_id": mem_b["id"],
+            "created_at": to_timestamp(now()),
+        }
+        if extra_dream_fields:
+            dream_doc.update(extra_dream_fields)
+        self._r.json().set(f"euri:dream:{dream_id}", "$", dream_doc)
+        # TTL di 7 giorni per i sogni grezzi
+        self._r.expire(f"euri:dream:{dream_id}", 86400 * 7)
+
+        # Se è un candidato, creiamo anche un entry provvisoria negli insights —
+        # solo se questa generazione deve davvero entrare nella cognizione di Euri.
+        insight_id = None
+        if status == "candidate" and persist_as_insight:
+            vec = self._embedder.encode(insight_content, mode="passage")
+            insight_id = str(uuid.uuid4())
+            insight_doc = {
+                "id": insight_id,
+                "content": insight_content,
+                "status": "candidate",
+                # "candidate/promoted" misura il moto INTERNO del sistema. Non è
+                # una patente di verità: ogni connessione Dream nasce come ipotesi
+                # finché un'evidenza esterna non la conferma.
+                "requires_verification": True,
+                "verification_status": "internally_emergent",
+                "epistemic_status": "internally_emergent",
                 "domain_a": dom_a,
                 "domain_b": dom_b,
-                "memory_a_id": mem_a["id"],
-                "memory_b_id": mem_b["id"],
                 "created_at": to_timestamp(now()),
+                "recalled_count": 0,
+                "embedding": vec.tolist() if vec is not None else None,
+                "convergence_count": 1,
+                # Provenienza: i nodi VISSUTI da cui questo insight è nato (le due memorie
+                # del sogno). Persistere qui rende l'insight groundabile seguendo gli archi,
+                # invece di ri-recuperare per similarità (muro multi-hop, 22/06). Gli ID sono
+                # già in mano e sul dream doc; mancavano solo qui. Lista per estendersi in
+                # convergenza (union dei fratelli assorbiti — vedi promozione).
+                "source_memory_ids": [mem_a["id"], mem_b["id"]],
             }
-            self._r.json().set(f"euri:dream:{dream_id}", "$", dream_doc)
-            # TTL di 7 giorni per i sogni grezzi
-            self._r.expire(f"euri:dream:{dream_id}", 86400 * 7)
-            
-            # Se è un candidato, creiamo anche un entry provvisoria negli insights
-            if status == "candidate":
-                vec = self._embedder.encode(insight_content, mode="passage")
-                insight_id = str(uuid.uuid4())
-                insight_doc = {
-                    "id": insight_id,
-                    "content": insight_content,
-                    "status": "candidate",
-                    "domain_a": dom_a,
-                    "domain_b": dom_b,
-                    "created_at": to_timestamp(now()),
-                    "recalled_count": 0,
-                    "embedding": vec.tolist() if vec is not None else None,
-                    "convergence_count": 1,
-                    # Provenienza: i nodi VISSUTI da cui questo insight è nato (le due memorie
-                    # del sogno). Persistere qui rende l'insight groundabile seguendo gli archi,
-                    # invece di ri-recuperare per similarità (muro multi-hop, 22/06). Gli ID sono
-                    # già in mano e sul dream doc; mancavano solo qui. Lista per estendersi in
-                    # convergenza (union dei fratelli assorbiti — vedi promozione).
-                    "source_memory_ids": [mem_a["id"], mem_b["id"]],
-                }
-                if getattr(config, "BRIDGE_VALIDITY_ENABLED", False):
-                    # Solo i candidate nuovi entrano nella misura: evita un backfill LLM
-                    # dell'intero archivio e mantiene leggibile il confine sperimentale.
-                    insight_doc["bridge_measurement_eligible"] = True
-                    insight_doc["bridge_policy_version"] = getattr(
-                        config, "BRIDGE_VALIDITY_POLICY_VERSION", "bridge_observer_v1"
-                    )
-                if getattr(config, "DREAM_TRACE_ENABLED", False):
-                    # Braccio sperimentale: candidate nato CON residuo iniettato (True)
-                    # o senza (False: primo ciclo, o residuo scaduto). A flag spento il
-                    # campo non esiste → nessuna differenza col comportamento attuale.
-                    insight_doc["trace_injected"] = bool(trace_txt)
-                self._r.json().set(f"euri:insight:{insight_id}", "$", insight_doc)
+            if getattr(config, "BRIDGE_VALIDITY_ENABLED", False):
+                # Solo i candidate nuovi entrano nella misura: evita un backfill LLM
+                # dell'intero archivio e mantiene leggibile il confine sperimentale.
+                insight_doc["bridge_measurement_eligible"] = True
+                insight_doc["bridge_policy_version"] = getattr(
+                    config, "BRIDGE_VALIDITY_POLICY_VERSION", "bridge_observer_v1"
+                )
+            if extra_insight_fields:
+                insight_doc.update(extra_insight_fields)
+            self._r.json().set(f"euri:insight:{insight_id}", "$", insight_doc)
 
-            # Il residuo si distilla ANCHE dai sogni scartati: "perché era debole" è
-            # proprio l'informazione che il ciclo dopo deve avere. Fail-open, dopo il
-            # salvataggio del sogno: un fallimento qui non tocca il ciclo.
-            if getattr(config, "DREAM_TRACE_ENABLED", False) and raw_cot:
-                self._update_dream_trace(raw_cot, dom_a, dom_b)
+        return {
+            "status": status,
+            "text": text,
+            "dream_id": dream_id,
+            "insight_id": insight_id,
+            "raw_cot": raw_cot,
+            "dream_doc": dream_doc,
+        }
 
-            return dream_doc
-            
-        except Exception as e:
-            logger.error(f"Errore generazione sogno: {e}")
-            return None
+    def _generate_dream_paired(self, dom_a: str, mem_a: dict, dom_b: str,
+                                mem_b: dict) -> dict | None:
+        """Disegno appaiato (V2, 21/07): stesso seme generato due volte, con e
+        senza residuo. Elimina la variabilità tra coppie di domini diverse del
+        disegno a blocchi precedente (mai attivato). Il primo ciclo senza residuo
+        disponibile è warm-up: genera una volta sola, semina il primo residuo, non
+        entra nel registro delle coppie — può ripetersi ogni volta che il residuo è
+        scaduto o una distillazione invalida lo ha eliminato, non solo all'avvio."""
+        try:
+            trace_txt = self._r.get(DREAM_TRACE_PAIRED_RESIDUE_KEY)
+        except Exception:
+            trace_txt = None
 
-    def _update_dream_trace(self, cot: str, dom_a: str, dom_b: str) -> None:
+        if not trace_txt:
+            try:
+                result = self._run_single_dream_generation(
+                    dom_a, mem_a, dom_b, mem_b, "", capture_cot=True,
+                )
+            except Exception as e:
+                logger.error(f"Errore generazione sogno (warm-up appaiato): {e}")
+                return None
+            if result["raw_cot"]:
+                self._update_dream_trace(
+                    result["raw_cot"], dom_a, dom_b,
+                    trace_key=DREAM_TRACE_PAIRED_RESIDUE_KEY,
+                    clear_on_invalid=True,
+                )
+            return result["dream_doc"]
+
+        pair_id = int(self._r.incr(DREAM_TRACE_PAIRED_SEQUENCE_KEY))
+        version = getattr(config, "DREAM_TRACE_PAIRED_VERSION", "dream_trace_paired_v2")
+        extra = {"trace_experiment_version": version, "trace_pair_id": pair_id}
+
+        outcomes: dict[str, dict] = {}
+        for arm, section in (
+            ("baseline", ""),
+            ("trattamento", self._build_trace_section(trace_txt)),
+        ):
+            # Solo il baseline persiste come euri:insight:* vivo: e' cio' che
+            # accadrebbe comunque con l'esperimento spento. Il trattamento, finche'
+            # non e' validato, resta strumentazione pura — integrale nello stream,
+            # mai in retrieval/convergenza/promozione.
+            persist = arm == "baseline"
+            injected_residue = trace_txt if arm == "trattamento" else ""
+            started = time.monotonic()
+            try:
+                result = self._run_single_dream_generation(
+                    dom_a, mem_a, dom_b, mem_b, section,
+                    capture_cot=(arm == "trattamento"),
+                    persist_as_insight=persist,
+                    extra_dream_fields={**extra, "trace_arm": arm},
+                    extra_insight_fields={**extra, "trace_arm": arm},
+                )
+                self._trace_dream_pair_cycle(
+                    pair_id=pair_id, arm=arm, injected_residue=injected_residue,
+                    status=result["status"], model_output=result["text"],
+                    dream_id=result["dream_id"], insight_id=result["insight_id"],
+                    insight_persisted=(result["insight_id"] is not None),
+                    duration_s=time.monotonic() - started,
+                    dom_a=dom_a, dom_b=dom_b, mem_a=mem_a, mem_b=mem_b,
+                )
+                outcomes[arm] = result
+            except Exception as e:
+                self._trace_dream_pair_cycle(
+                    pair_id=pair_id, arm=arm, injected_residue=injected_residue,
+                    status="error", model_output=f"[GENERATION_ERROR] {type(e).__name__}",
+                    dream_id="", insight_id=None, insight_persisted=False,
+                    duration_s=time.monotonic() - started,
+                    dom_a=dom_a, dom_b=dom_b, mem_a=mem_a, mem_b=mem_b,
+                )
+                logger.error(f"Dream trace paired: generazione {arm} fallita: {e}")
+
+        # Il residuo evolve SOLO dal lato trattamento: il baseline resta isolato
+        # dall'esperimento, il suo prompt non dipende mai da cosa succede nell'altro
+        # braccio, nemmeno indirettamente tramite il residuo condiviso.
+        treatment = outcomes.get("trattamento")
+        if treatment and treatment["raw_cot"]:
+            self._update_dream_trace(
+                treatment["raw_cot"], dom_a, dom_b,
+                trace_key=DREAM_TRACE_PAIRED_RESIDUE_KEY,
+                clear_on_invalid=True,
+                previous_residue=trace_txt,
+            )
+
+        baseline = outcomes.get("baseline")
+        return baseline["dream_doc"] if baseline else None
+
+    def _trace_dream_pair_cycle(self, *, pair_id: int, arm: str, injected_residue: str,
+                                 status: str, model_output: str, dream_id: str,
+                                 insight_id, insight_persisted: bool, duration_s: float,
+                                 dom_a: str, dom_b: str,
+                                 mem_a: dict, mem_b: dict) -> None:
+        """Registro immutabile V2 (disegno appaiato): stesso seme, due condizioni.
+        Scritto al momento della generazione, indipendente da promozione, TTL o
+        cancellazione della memoria vissuta — nessun recupero post-hoc necessario.
+
+        `injected_residue` e' cio' che QUESTO lato ha davvero ricevuto nel prompt
+        (vuoto per il baseline, il residuo per il trattamento) — non il residuo
+        vivo in generale, che altrimenti apparirebbe anche sul baseline pur non
+        essendo mai entrato nel suo prompt (metadato ingannevole)."""
+        try:
+            source_a = str(mem_a.get("content") or "")
+            source_b = str(mem_b.get("content") or "")
+            output = str(model_output or "")
+            residue = str(injected_residue or "")
+            self._r.xadd(DREAM_TRACE_PAIRED_STREAM, {
+                "ts": repr(time.time()),
+                "experiment_version": getattr(
+                    config, "DREAM_TRACE_PAIRED_VERSION", "dream_trace_paired_v2"
+                ),
+                "pair_id": str(pair_id),
+                "arm": arm,
+                "trace_available": "1",
+                "trace_residue": residue,
+                "trace_residue_sha256": hashlib.sha256(
+                    residue.encode("utf-8")
+                ).hexdigest(),
+                "status": status,
+                "model_output": output,
+                "model_output_chars": str(len(output)),
+                "model_output_sha256": hashlib.sha256(
+                    output.encode("utf-8")
+                ).hexdigest(),
+                "dream_id": dream_id,
+                "insight_id": str(insight_id or ""),
+                "insight_persisted": "1" if insight_persisted else "0",
+                "duration_s": f"{duration_s:.3f}",
+                "domain_a": dom_a,
+                "domain_b": dom_b,
+                "memory_a_id": str(mem_a.get("id") or ""),
+                "memory_b_id": str(mem_b.get("id") or ""),
+                "memory_a_content": source_a,
+                "memory_b_content": source_b,
+                "memory_a_sha256": hashlib.sha256(
+                    source_a.encode("utf-8")
+                ).hexdigest(),
+                "memory_b_sha256": hashlib.sha256(
+                    source_b.encode("utf-8")
+                ).hexdigest(),
+                "record_complete": "1",
+            }, maxlen=10000, approximate=True)
+        except Exception as exc:
+            # La generazione resta fail-open, ma il lato privo di record non potra'
+            # entrare nell'audit: nessun recupero post-hoc dal documento vivo.
+            logger.warning(f"Dream trace paired: record lato fallito ({exc})")
+
+    @staticmethod
+    def _trace_content_terms(text: str) -> set[str]:
+        """Fingerprint lessicale povero per impedire che la traccia iniettata
+        rientri quasi parafrasata nel residuo successivo.
+
+        Non decide la qualita' semantica del ragionamento: elimina solo termini di
+        formato/comuni, riduce le parole ai primi sei caratteri e rende verificabile
+        una sovrapposizione tematica forte. E' intenzionalmente conservativo e viene
+        applicato solo tra residui consecutivi del test appaiato."""
+        import unicodedata
+
+        normalized = unicodedata.normalize("NFKD", text.lower())
+        normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+        words = re.findall(r"[a-z0-9]+", normalized)
+        return {
+            word[:6]
+            for word in words
+            if len(word) >= 5 and word not in _TRACE_ECHO_STOPWORDS
+        }
+
+    @classmethod
+    def _trace_line_echoes_previous(cls, line: str, previous_residue: str) -> bool:
+        if not previous_residue:
+            return False
+        current = cls._trace_content_terms(line)
+        previous = cls._trace_content_terms(previous_residue)
+        if not current or not previous:
+            return False
+        overlap = len(current & previous)
+        return overlap >= 3 and overlap / min(len(current), len(previous)) >= 0.35
+
+    def _update_dream_trace(self, cot: str, dom_a: str, dom_b: str,
+                            *, trace_key: str = "euri:dream_trace:latest",
+                            clear_on_invalid: bool = False,
+                            previous_residue: str = "") -> bool:
         """Esperimento continuità 2b: distilla dal CoT appena scartato un residuo di
         ESPLORAZIONE (max 5 righe) e lo persiste con TTL su euri:dream_trace:latest.
 
@@ -781,8 +1105,14 @@ REGOLE:
         dominio, mai nel retrieval. Fail-open: non rompe mai il sogno."""
         started = time.monotonic()
         try:
+            def reject(reason: str) -> bool:
+                if clear_on_invalid:
+                    self._r.delete(trace_key)
+                logger.info(f"Dream trace scartata ({reason})")
+                return False
+
             if not cot or len(cot.strip()) < 80:
-                return
+                return reject("CoT assente o troppo corto")
             # NB 13/07 sera: la v1 di questo prompt aveva 3 etichette d'esempio → il
             # modello le pappagallava a ogni ciclo, e la traccia iniettata nel sogno
             # rientrava dal CoT nel residuo (eco a punto fisso, quasi-verbatim tra
@@ -816,19 +1146,45 @@ REGOLE:
             import re as _re
             text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL).strip()
             if "NIENTE DA SEGNALARE" in text.upper():
-                return  # nessuna esplorazione vera → non sovrascrivere (il TTL smaltisce)
-            lines = [ln.strip() for ln in text.splitlines() if ln.strip()][:5]
+                return reject("nessuna esplorazione")
+            raw_lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+            # Trovato 22/07 su dati reali: il modello a volte risponde con la
+            # sentinella dell'ALTRO prompt ("NESSUN INSIGHT", quella della
+            # generazione principale) invece di "NIENTE DA SEGNALARE" — confusione
+            # tra i due compiti, non un residuo vero. Il formato richiesto sopra e'
+            # vincolante ("...: debole perché ..."): si tiene solo cio' che lo
+            # rispetta, non una frase qualsiasi che non sia esattamente il blocklist.
+            lines = [ln for ln in raw_lines if _TRACE_LINE_RE.match(ln)][:5]
+            if previous_residue:
+                before_echo_guard = len(lines)
+                lines = [
+                    ln for ln in lines
+                    if not self._trace_line_echoes_previous(ln, previous_residue)
+                ]
+                if len(lines) < before_echo_guard:
+                    logger.info(
+                        "Dream trace: riga/e eco del residuo iniettato escluse "
+                        f"({before_echo_guard - len(lines)})"
+                    )
             residue = "\n".join(lines)
             if residue:
-                self._r.setex("euri:dream_trace:latest",
+                self._r.setex(trace_key,
                               getattr(config, "DREAM_TRACE_TTL_S", 48 * 3600), residue)
                 # contenuto nel log: la chiave si sovrascrive a ogni ciclo, il log è
                 # l'unica storia dei residui — serve al check pre-registrato "leggi
                 # ~10 residui" (ESPERIMENTO_DREAM_TRACE.md, criterio 4)
                 logger.info(f"Dream trace aggiornata ({len(lines)} righe): "
                             f"{residue[:500].replace(chr(10), ' | ')}")
+                return True
+            return reject("nessuna riga conforme o solo eco")
         except Exception as e:
+            if clear_on_invalid:
+                try:
+                    self._r.delete(trace_key)
+                except Exception:
+                    pass
             logger.debug(f"dream_trace non aggiornata (non-critico): {e}")
+            return False
         finally:
             logger.info(f"[TIMING] Dream trace: {time.monotonic() - started:.1f}s")
 
@@ -1135,6 +1491,11 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
                     return
             import json as _json
             g = lambda p, d=None: (self._r.json().get(doc.id, p) or [d])[0]
+            # La trace e' la fonte primaria dell'audit per-candidate: il testo deve
+            # essere autosufficiente anche dopo TTL, assorbimento o cancellazione del
+            # RedisJSON vivo. Il vecchio [:600] tagliava quasi sempre proprio la terza
+            # riga (il ponte da giudicare) e rendeva il campione non valutabile.
+            seed_content = getattr(doc, "content", "") or ""
             self._r.xadd("euri:convergence:trace", {
                 "ts": repr(time.time()),
                 "seed_id": str(doc.id),
@@ -1153,7 +1514,12 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
                 "n_judge_confirmed": str(n_judge_confirmed),
                 "n_judge_deferred": str(n_judge_deferred),
                 "outcome": outcome,
-                "seed_content": (getattr(doc, "content", "") or "")[:600],
+                "seed_content": seed_content,
+                "seed_content_complete": "1",
+                "seed_content_chars": str(len(seed_content)),
+                "seed_content_sha256": hashlib.sha256(
+                    seed_content.encode("utf-8")
+                ).hexdigest(),
                 "neighbors": _json.dumps(neighbor_trace, ensure_ascii=False)[:4000],
                 "judge_trace": _json.dumps(judge_trace or [], ensure_ascii=False)[:4000],
                 # Braccio esperimento dream_trace: "1"/"0" se il candidate è nato
@@ -1381,6 +1747,20 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
                     # Promuovi questo a PROMOTED
                     self._r.json().set(doc.id, "$.status", "promoted")
                     self._r.json().set(doc.id, "$.convergence_count", convergences)
+                    self._r.json().set(
+                        doc.id, "$.epistemic_status", "internally_convergent"
+                    )
+                    # La convergenza appartiene alla dinamica interna del paper:
+                    # fa EMERGERE l'ipotesi, non la valida rispetto al mondo.
+                    external = self._r.json().get(doc.id, "$.external_reaction")
+                    external_verdict = (
+                        (external[0] or {}).get("verdict") if external else None
+                    )
+                    if external_verdict != "CONFERMA":
+                        self._r.json().set(doc.id, "$.requires_verification", True)
+                        self._r.json().set(
+                            doc.id, "$.verification_status", "internally_convergent"
+                        )
                     if source_memory_ids:
                         self._r.json().set(doc.id, "$.source_memory_ids", list(dict.fromkeys(source_memory_ids)))
                     self._r.json().set(doc.id, "$.promoted_at", time.time())
@@ -1616,6 +1996,7 @@ Rispondi SOLO JSON valido:
             "source_memory_ids": source_ids,
             "requires_verification": True,
             "verification_status": "hypothesis_to_test",
+            "epistemic_status": "internally_emergent",
             "hypothesis_kind": "cross_episode_pattern",
         }
         key = f"euri:insight:{insight_id}"
@@ -1777,24 +2158,24 @@ Rispondi solo col confronto."""
                            flags=_re.DOTALL).strip()
             if not text:
                 return
+            comparison_fields = {
+                "requires_verification": bool(requires_verification),
+            }
+            if source_ids:
+                comparison_fields["source_memory_ids"] = list(dict.fromkeys(source_ids))
+            if requires_verification:
+                comparison_fields["consolidation_risk"] = {
+                    "level": "watch",
+                    "reason": "loop2f_comparison_from_unverified_parent",
+                    "source_ids": list(dict.fromkeys(source_ids or [])),
+                }
             mid = self._memory_manager.save_memory(
                 f"[confronto] {text}", category="conoscenza", source="reflection",
                 tags=["confronto", "loop2f", domain],
+                final_fields=comparison_fields,
             )
             if mid:
-                key = f"euri:memory:{mid}"
                 remove_loop2e_candidate(self._r, mid)
-                if source_ids:
-                    self._r.json().set(key, "$.source_memory_ids", list(dict.fromkeys(source_ids)))
-                if requires_verification:
-                    self._r.json().set(key, "$.requires_verification", True)
-                    self._r.json().set(key, "$.consolidation_risk", {
-                        "level": "watch",
-                        "reason": "loop2f_comparison_from_unverified_parent",
-                        "source_ids": list(dict.fromkeys(source_ids or [])),
-                    })
-                else:
-                    self._r.json().set(key, "$.requires_verification", False)
                 logger.info(f"Loop 2f: nota di confronto generata {mid[:8]}… (dominio: {domain})")
         except Exception as e:
             logger.debug(f"Loop 2f: errore _make_comparison_memory — {e}")
@@ -2052,13 +2433,14 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
             return "ambiguous"
 
     def _synthesize_lesson_from_correction(self, prompt_orig: str, risposta_euri: str, correzione: str) -> str | None:
-        """Loop 2g: distilla la correzione di Stefano in una LEZIONE (il principio), come la
+        """Loop 2g: distilla la correzione del proprietario in una LEZIONE (il principio), come la
         reaction-loop — non archivia il testo grezzo. Gira in idle → modello del sogno (Qwen),
         think=False per affidabilità. Ritorna None se vuota (l'audit usa il grezzo come fallback)."""
+        owner = config.OWNER_DISPLAY_NAME
         msg = (
-            f"A una domanda di Stefano — «{(prompt_orig or '')[:300]}» — avevi risposto:\n"
+            f"A una domanda di {owner} — «{(prompt_orig or '')[:300]}» — avevi risposto:\n"
             f"«{(risposta_euri or '')[:500]}»\n\n"
-            f"Stefano ti ha CORRETTO:\n«{(correzione or '')[:500]}»\n\n"
+            f"{owner} ti ha CORRETTO:\n«{(correzione or '')[:500]}»\n\n"
             f"Scrivi in prima persona la LEZIONE che ne ricavi: il principio concreto da non "
             f"sbagliare più, e dove ti eri sbagliata. NON un riassunto della correzione, NON un "
             f"ringraziamento — il punto che porti a casa e che potresti dover riaffrontare. Max 3 frasi."
@@ -2381,7 +2763,7 @@ Memoria: "{content[:700]}"
 
 Regole:
 - Devi segnalare SOLO impossibilità tecniche/chimiche/fisiche chiare o sospetti forti.
-- NON correggere conoscenza pratica di Stefano solo perché è insolita o non scolastica.
+- NON correggere la conoscenza pratica di {config.OWNER_DISPLAY_NAME} solo perché è insolita o non scolastica.
 - Se il dato può essere vero in un contesto industriale, anche se raro, considera PLAUSIBILE.
 - Se manca contesto, usa INCERTO.
 - Esempio di IMPOSSIBILE: "bicarbonato di calcio" usato come filler minerale solido in compound polimerici.
@@ -2950,16 +3332,34 @@ Rispondi SOLO con la sintesi. Niente intestazioni."""
                 if not synthesis or len(synthesis) < 30:
                     continue
 
-                # 7. Salva memoria consolidata (senza TTL — permanente come memorie utili)
+                # 7. La memoria consolidata nasce con provenienza e rischio già finali:
+                # outbox/Pulse/Obsidian non devono vedere una sintesi senza genitori.
+                risk = self._consolidation_source_risk(cluster_ids, qualified_by_id)
+                sources_rv = any(
+                    qualified_by_id.get(cid, {}).get("requires_verification", False)
+                    for cid in cluster_ids
+                )
+                consolidated_fields = {
+                    "consolidated_from": cluster_ids,
+                    "consolidation_risk": risk,
+                }
+                if risk["level"] != "ok":
+                    consolidated_fields["source_audit_flags"] = risk["audit_flagged"]
+                    consolidated_fields["requires_verification"] = True
+                if sources_rv:
+                    consolidated_fields["requires_verification"] = True
+
                 mid = self._memory_manager.save_memory(
                     content=synthesis,
                     category="consolidato",
                     tags=["consolidated"],
                     source="loop2e",
                     expires_at=None,
+                    final_fields=consolidated_fields,
                 )
+                if not mid:
+                    continue
                 key = f"euri:memory:{mid}"
-                self._r.json().set(key, "$.consolidated_from", cluster_ids)
                 # Opzione A: marca i frammenti come "spesi" — restano richiamabili ma non
                 # rientrano in future consolidazioni (no riuso, no duplicazione nodo-per-nodo).
                 # Reversibile: togliere consolidated_into li ri-ammette.
@@ -2972,19 +3372,6 @@ Rispondi SOLO con la sintesi. Niente intestazioni."""
                         # rientra in future consolidazioni → duplicato (il meccanismo che teneva
                         # vivo il Leonardo). Non più silenzioso: tracciato.
                         self._integrity_failure("loop2e-consolidated_into", f"euri:memory:{cid}", e)
-                risk = self._consolidation_source_risk(cluster_ids, qualified_by_id)
-                self._r.json().set(key, "$.consolidation_risk", risk)
-                if risk["level"] != "ok":
-                    self._r.json().set(key, "$.source_audit_flags", risk["audit_flagged"])
-                    self._r.json().set(key, "$.requires_verification", True)
-
-                # Eredita requires_verification se almeno una memoria sorgente ce l'ha
-                sources_rv = any(
-                    qualified_by_id.get(cid, {}).get("requires_verification", False)
-                    for cid in cluster_ids
-                )
-                if sources_rv:
-                    self._r.json().set(key, "$.requires_verification", True)
 
                 # 8. Marca cluster come processato (TTL 180 giorni sliding)
                 self._r.sadd(PROCESSED_KEY, fingerprint)

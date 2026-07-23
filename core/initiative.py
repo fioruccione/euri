@@ -388,7 +388,7 @@ def classify_focus_relevance(
     if chat is None:
         chat = chat_client
     material = _candidate_focus_material(candidate)
-    prompt = f"""Sei il gate conservativo che decide se un pensiero proattivo di Euri può inserirsi nella conversazione in corso.
+    prompt = f"""Sei il gate conservativo che decide se un pensiero proattivo di {config.ASSISTANT_DISPLAY_NAME} può inserirsi nella conversazione in corso.
 
 CONVERSAZIONE ATTUALE, composta solo dalle parole recenti dell'utente:
 "{focus_text[-1800:]}"
@@ -445,7 +445,8 @@ def generate_question(candidate: InitiativeCandidate, *, focus_text: str = "") -
         specific_contract = (
             "- Per una memoria passiva incerta, chiedi conferma/correzione del fatto specifico.\n"
             "- La domanda deve aiutare a fissare o correggere la memoria, non commentarla.\n"
-            "- Se il fatto è banale, troppo generico o non vale interrompere Stefano, should_ask=false."
+            f"- Se il fatto è banale, troppo generico o non vale interrompere "
+            f"{config.OWNER_DISPLAY_NAME}, should_ask=false."
         )
     elif str(event.get("sense") or "") == "thought_map":
         subj = related.get("subject") or "una cosa"
@@ -454,14 +455,18 @@ def generate_question(candidate: InitiativeCandidate, *, focus_text: str = "") -
         event_label = "contraddizione tra memorie (trovata dal riorganizzatore)"
         specific_contract = (
             "- È una contraddizione REALE tra note di memoria sullo stesso soggetto.\n"
-            "- Chiedi a Stefano QUALE versione è corretta, o di confermare il dato, nominando il soggetto in modo naturale.\n"
+            f"- Chiedi a {config.OWNER_DISPLAY_NAME} QUALE versione è corretta, o di "
+            f"confermare il dato, nominando il soggetto in modo naturale.\n"
             "- NON dire tu quale è giusta; NON elencare id o citare 'note': parla come a voce.\n"
             "- should_ask=false se la contraddizione è banale o non risolvibile con una frase."
         )
     else:
         event_text = str(related.get("content") or candidate.payload)[:1200]
         event_label = kind
-        specific_contract = "- Chiedi solo se la risposta di Stefano cambierebbe davvero la memoria."
+        specific_contract = (
+            f"- Chiedi solo se la risposta di {config.OWNER_DISPLAY_NAME} "
+            "cambierebbe davvero la memoria."
+        )
 
     focus_contract = ""
     if focus_text.strip():
@@ -471,10 +476,10 @@ def generate_question(candidate: InitiativeCandidate, *, focus_text: str = "") -
             f"FILO CORRENTE (parole dell'utente): {focus_text[-1200:]}\n"
         )
 
-    prompt = f"""Sei il controllore proattivo di Euri. Non stai rispondendo a Stefano: devi decidere se Euri deve fare UNA domanda breve adesso.
+    prompt = f"""Sei il controllore proattivo di {config.ASSISTANT_DISPLAY_NAME}. Non stai rispondendo a {config.OWNER_DISPLAY_NAME}: devi decidere se {config.ASSISTANT_DISPLAY_NAME} deve fare UNA domanda breve adesso.
 
 Contratto:
-- Parla solo se la domanda serve a trasformare un evento interno in apprendimento da Stefano.
+- Parla solo se la domanda serve a trasformare un evento interno in apprendimento da {config.OWNER_DISPLAY_NAME}.
 - La domanda deve essere in italiano naturale, adatta alla voce, massimo 2 frasi.
 - Se la domanda sarebbe ridondante, troppo astratta o non ancorata all'evento, should_ask=false.
 - Niente markdown, niente elenco, niente formule burocratiche.

@@ -5,6 +5,7 @@ Sync Out: Scrive Memory e Insight come file Markdown.
 Sync In: Watchdog osserva il vault e aggiorna Redis se tu modifichi/crei file.
 """
 import os
+import re
 import time
 import threading
 from pathlib import Path
@@ -117,22 +118,37 @@ def write_insight(doc: dict):
     date_str = dt.strftime("%Y-%m-%d %H:%M:%S")
     safe_date = dt.strftime("%Y%m%d_%H%M%S")
 
-    filepath = dir_path / f"Insight_{safe_date}.md"
+    # Più insight possono emergere nello stesso secondo durante la valutazione:
+    # il solo timestamp li faceva sovrascrivere nel Vault.
+    filepath = dir_path / f"Insight_{safe_date}_{ins_id[:8]}.md"
     
     frontmatter = {
         "id": ins_id,
         "type": "insight",
         "status": doc.get("status", "promoted"),
-        "created_at": date_str
+        "created_at": date_str,
+        "epistemic_status": doc.get("epistemic_status", "internally_convergent"),
+        "requires_verification": bool(doc.get("requires_verification", True)),
+        "verification_status": doc.get("verification_status"),
+        "external_verdict": (doc.get("external_reaction") or {}).get("verdict"),
     }
     
     # Crea i Wiki-Link
     dom_a = doc.get("domain_a", "sconosciuto")
     dom_b = doc.get("domain_b", "sconosciuto")
     
+    externally_confirmed = (
+        frontmatter["external_verdict"] == "CONFERMA"
+        and not frontmatter["requires_verification"]
+    )
+    title = (
+        "Connessione Trasversale Confermata Esternamente"
+        if externally_confirmed
+        else "Connessione Trasversale Emersa Internamente — Da Verificare"
+    )
     content = f"""---
 {yaml.dump(frontmatter, default_flow_style=False, sort_keys=False)}---
-# Insight Promosso
+# {title}
 Collegamento scoperto tra: [[{dom_a}]] e [[{dom_b}]]
 
 {doc["content"]}
@@ -141,6 +157,17 @@ Collegamento scoperto tra: [[{dom_a}]] e [[{dom_b}]]
 *Generato dal Dream Engine di Euri il {date_str}*
 """
     try:
+        # Migrazione non distruttiva del nome legacy: lo rimuove solo se appartiene
+        # allo stesso insight, evitando duplicati senza toccare file omonimi/manuali.
+        legacy = dir_path / f"Insight_{safe_date}.md"
+        if legacy.exists():
+            try:
+                legacy_text = legacy.read_text(encoding="utf-8")
+                if re.search(rf"(?m)^id:\s*['\"]?{re.escape(ins_id)}['\"]?\s*$", legacy_text):
+                    _mark_ignored(str(legacy.absolute()))
+                    legacy.unlink()
+            except Exception as e:
+                logger.debug(f"Obsidian Sync: migrazione nome insight ignorata: {e}")
         _mark_ignored(str(filepath.absolute()))
         filepath.write_text(content, encoding="utf-8")
         logger.info(f"Obsidian Sync: Scritto insight {filepath.name} nel Vault")
@@ -282,13 +309,17 @@ class ObsidianSyncManager:
                 mid = mm.save_memory(
                     content=body, 
                     category="obsidian", 
-                    source="obsidian_vault"
+                    source="obsidian_vault",
+                    final_fields=(
+                        {"domain": domain}
+                        if parent_dir not in ("Dropzone", "Memories", "Insights", "EuriVault")
+                        else None
+                    ),
                 )
                 
-                # Sovrascriviamo il dominio in Redis (il memory_manager farà assign_domain, noi lo forziamo se è dalla directory)
-                if parent_dir not in ("Dropzone", "Memories", "Insights", "EuriVault"):
-                    self.r.json().set(f"euri:memory:{mid}", "$.domain", domain)
-                else:
+                # Se non proviene da una directory di dominio, usa l'assegnazione
+                # canonica già pubblicata dal MemoryManager.
+                if parent_dir in ("Dropzone", "Memories", "Insights", "EuriVault"):
                     # Usiamo quello calcolato dal memory_manager
                     doc = self.r.json().get(f"euri:memory:{mid}", "$")
                     if doc:

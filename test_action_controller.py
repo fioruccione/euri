@@ -113,12 +113,23 @@ class _Memory:
 
 
 class _Brain:
+    def __init__(self):
+        self.responses = []
+        self.injections = []
+
     @staticmethod
     def complete_todo_response(content):
         return f"Fatto. '{content}' segnato come completato."
 
-    def inject_tool_result(self, *_args):
-        pass
+    def inject_tool_result(self, *args):
+        self.injections.append(args)
+
+    def respond(self, text, *, context="", **_kwargs):
+        self.responses.append((text, context))
+        return (
+            "Il controllo mostra 7.8 GiB liberi. Questo dato è solo un sottopasso: "
+            "per rispondere alla domanda originale bisogna valutare anche il flusso del codice."
+        )
 
 
 class _Executor:
@@ -142,8 +153,11 @@ def _daemon(payload, *, contextual=None):
     daemon.executor = _Executor(contextual)
     daemon.action_controller = ActionController(chat=_Chat(payload), model="fake")
     daemon._brain_lock = threading.Lock()
+    daemon.r = object()
     daemon._pending_action = None
     daemon._pending_reschedule = None
+    daemon._build_context = lambda _text: "[contesto conversazionale]"
+    daemon._augment_context_by_strategy = lambda _text, context: context
     daemon.spoken = []
     daemon._speak = daemon.spoken.append
     return daemon
@@ -280,6 +294,8 @@ def test_euri_can_fulfil_only_read_only_intention():
         "Ora controllo la GPU e ti dico.", "Come siamo messi con le risorse?"
     ) is True
     assert [call.tool_name for call in daemon.executor.calls] == ["gpu_usage"]
+    assert "sottopasso" in daemon.spoken[-1]
+    assert "Esito: GPU libera: 7.8 GiB" in daemon.brain.responses[-1][1]
 
 
 def test_unavailable_action_can_use_grounded_read_only_alternative():
@@ -305,7 +321,69 @@ def test_unavailable_action_can_use_grounded_read_only_alternative():
     )
     assert handled is True and veto is False
     assert [call.tool_name for call in daemon.executor.calls] == ["read_log"]
-    assert "come alternativa" in daemon.spoken[-1].lower()
+    assert "sottopasso" in daemon.spoken[-1].lower()
+    assert "riavviare il servizio" in daemon.brain.responses[-1][1]
+
+
+def test_reflective_request_keeps_tool_result_inside_final_answer():
+    contextual = [{
+        "name": "top_processes",
+        "description": "Mostra i processi che usano più CPU",
+        "parameters_schema": {"n": "integer", "sort_by": "string"},
+        "effect": "read_only",
+        "requires_confirm": False,
+    }]
+    daemon = _daemon({
+        "mode": "alternative",
+        # response_mode omesso apposta: ogni alternativa deve integrare comunque.
+        "capability": "executor.top_processes",
+        "args": {"n": 5, "sort_by": "cpu"},
+        "target_id": None,
+        "authority": "user_explicit",
+        "confidence": 0.90,
+        "unmet_intent": "valutare cosa migliorare nel sistema di Euri",
+        "reason": "controllo parziale delle risorse",
+    }, contextual=contextual)
+    text = (
+        "Fai un esame di quello che sai fare, magari usando i tuoi strumenti, "
+        "e dimmi dove sarebbe necessario migliorare il tuo sistema."
+    )
+    handled, veto = daemon._try_contextual_action(text)
+    assert handled is True and veto is False
+    assert [call.tool_name for call in daemon.executor.calls] == ["top_processes"]
+    assert daemon.spoken[-1] != "GPU libera: 7.8 GiB"
+    assert "domanda originale" in daemon.spoken[-1]
+    prompt_text, context = daemon.brain.responses[-1]
+    assert prompt_text == text
+    assert "executor.top_processes" in context
+    assert "valutare cosa migliorare" in context
+    assert daemon.brain.injections == []
+
+
+def test_integrated_document_result_is_not_injected_twice():
+    contextual = [{
+        "name": "read_document",
+        "description": "Legge un documento e ne espone i dati",
+        "parameters_schema": {"question": "string"},
+        "effect": "read_only",
+        "requires_confirm": False,
+    }]
+    daemon = _daemon({
+        "mode": "direct",
+        "response_mode": "integrated",
+        "capability": "executor.read_document",
+        "args": {"question": "valuta il documento"},
+        "target_id": None,
+        "authority": "user_explicit",
+        "confidence": 0.97,
+        "reason": "la lettura e la valutazione fanno parte dello stesso turno",
+    }, contextual=contextual)
+    handled, veto = daemon._try_contextual_action(
+        "Leggi il documento e spiegami quali problemi vedi."
+    )
+    assert handled is True and veto is False
+    assert daemon.brain.injections == []
+    assert len(daemon.brain.responses) == 1
 
 
 def test_mutating_alternative_is_proposed_then_confirmed():
@@ -418,10 +496,12 @@ if __name__ == "__main__":
     test_contextual_read_only_uses_executor()
     test_euri_can_fulfil_only_read_only_intention()
     test_unavailable_action_can_use_grounded_read_only_alternative()
+    test_reflective_request_keeps_tool_result_inside_final_answer()
+    test_integrated_document_result_is_not_injected_twice()
     test_mutating_alternative_is_proposed_then_confirmed()
     test_executor_rejects_invented_parameters()
     test_action_hint_is_recall_only()
     test_suspend_todo_keeps_it_pending_without_due_date()
     test_overdue_wording_uses_calendar_days()
     test_semantic_gate_can_request_reasoning_without_regex()
-    print("test_action_controller: 13/13 OK")
+    print("test_action_controller: 15/15 OK")

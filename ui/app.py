@@ -826,8 +826,24 @@ with main_col:
                 with st.chat_message("assistant"):
                     with st.spinner("Euri assorbe…"):
                         try:
-                            _rx.capture_reaction(memory_manager, _pending["insight"], prompt)
-                            ack = "Capito, me lo segno — lo lascio sedimentare e ci ri-sogno su."
+                            outcome = _rx.capture_reaction(
+                                memory_manager, _pending["insight"], prompt
+                            )
+                            if not outcome.get("persisted"):
+                                ack = (
+                                    "Ho capito la risposta, ma non sono riuscita a fissarla "
+                                    "in memoria: non la considero salvata."
+                                )
+                            elif outcome.get("verdict") == "PARZIALE":
+                                ack = (
+                                    "Ricevuto. Ho tenuto separate la parte che confermi, "
+                                    "quella che smentisci e i fatti che metti al suo posto."
+                                )
+                            else:
+                                ack = (
+                                    "Capito, me lo segno — lo lascio sedimentare e ci "
+                                    "ri-sogno su."
+                                )
                         except Exception as e:
                             ack = f"(Non sono riuscito a fissare la lezione: {e})"
                     st.markdown(ack)
@@ -967,7 +983,11 @@ with main_col:
                         response = save_res["reply"]
                     else:
                         chat_hint = "[Modalità chat testuale — nessun vincolo TTS. Puoi rispondere con più profondità, sviluppare i concetti, fare domande di ritorno. Sii presente e partecipe come in una conversazione reale.]"
-                        context_full = (context + "\n\n" + chat_hint) if context else chat_hint
+                        from core.visual_presence import visual_presence_context
+                        visual_context = visual_presence_context(r)
+                        context_full = "\n\n".join(
+                            part for part in (context, visual_context, chat_hint) if part
+                        )
                         # Gradino 2 — strategia di retrieval (wide/subject) sul modello caldo,
                         # solo quando la pre-gate cheap scatta; specific_search → invariato.
                         from core.retrieval_strategy import augment_context_with_ids
@@ -1037,13 +1057,16 @@ with main_col:
                                 idempotent=True,
                                 memory_kind=metadata["memory_kind"],
                                 temporal_context=metadata["temporal_context"],
+                                final_fields=(
+                                    {
+                                        "requires_verification": True,
+                                        "passive_support": "tacit_acceptance",
+                                    }
+                                    if weak_support else None
+                                ),
                             )
                             if mid and (weak_support or metadata["memory_kind"] == "conversation_anchor"):
                                 from core.memory_attention import remove_loop2e_candidate
-                                key = f"euri:memory:{mid}"
-                                if weak_support:
-                                    memory_manager.r.json().set(key, "$.requires_verification", True)
-                                    memory_manager.r.json().set(key, "$.passive_support", "tacit_acceptance")
                                 remove_loop2e_candidate(memory_manager.r, mid)
                             saved += 1
                         if saved:

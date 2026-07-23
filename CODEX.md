@@ -1,3 +1,221 @@
+# Handoff Euri - 2026-07-23 - Sincronia delle parti senza riduzione a RAG
+
+- Chiarimento architetturale di Stefano: l'uso nel suo lavoro e' un banco di prova
+  ad alta osservabilita' degli errori, non la funzione costitutiva di Euri. Euri e'
+  espressione del paper; Dream, convergenza, memoria e iniziativa mantengono quindi
+  la propria dinamica, mentre il requisito trasversale e' la loro sincronia logica.
+- Invariante di pubblicazione: outbox, Pulse, indice e Obsidian devono leggere la
+  prima volta lo stesso documento canonico finale. `MemoryManager.save_memory`
+  accetta `final_fields`, li applica prima del commit atomico e vieta la riscrittura
+  di `id/content/source/embedding`. Migrati i caller runtime che post-mutavano dominio,
+  provenienza o `requires_verification`.
+- L'indice Loop 2e e' esplicitamente una proiezione ricostruibile. Audit live prima:
+  117 candidati canonici, ZSET 133, 9 missing, 25 stale. Rebuild applicato: 117/117,
+  zero drift; il Dream ripete la riconciliazione a ogni boot.
+- Confine epistemico: `promoted` significa "emerso per convergenza interna", non
+  "vero". I nuovi insight nascono `requires_verification=true` con
+  `epistemic_status=internally_emergent`; alla convergenza diventano
+  `internally_convergent`. Solo `external_reaction.verdict=CONFERMA` porta a
+  `externally_confirmed`. Smentita e parzialita' restano stati esterni distinti.
+- Migrazione live dei promossi legacy: 160 connessioni interne marcate da verificare,
+  4 confermate esternamente. Il contesto condiviso le introduce come connessioni
+  emerse, non come "principi trasversali".
+- `write_insight` riflette lo stesso confine nel Vault e usa
+  `Insight_<timestamp>_<id8>.md`, chiudendo la collisione same-second.
+- Timeout: `_ollama_chat` e Loop 2h usano client Ollama cacheati con timeout HTTP
+  reale; rimosso il timeout su future che restava bloccato nello shutdown
+  dell'executor. `WorkerSupervisor.health()` espone `responsive/heartbeat_age_s`
+  e il nuovo worker-watchdog logga stall e recupero senza duplicare thread vivi.
+- Verifiche finali prima del riavvio: 41/41 unit, 3/3 integration; Euri mantenuto
+  fermo durante migrazione e test.
+
+---
+
+# Handoff Euri - 2026-07-23 - Reaction SMENTITA estrattiva e record 03ppr102 riparato
+
+- Caso live 08:52: Stefano ha definito una forzatura l'insight
+  `cb4d3541-e238-4f05-bcf8-08e13dfe567e` e ha spiegato che `03ppr102` identifica
+  il non conforme proveniente dai vari impianti, poi rilavorato/riestruso.
+- Il verdetto e la demozione erano corretti (`SMENTITA`, `candidate`,
+  `demoted_once=true`), ma l'ack vocale anticipava erroneamente una reaction
+  parziale e la sintesi salvava senza evidenza che il controllo del setpoint
+  "rimane valido".
+- `_REACTION_ACK` e' ora neutro. Per `SMENTITA`, `capture_reaction` non chiama
+  piu' `synthesize_lesson`: `_refuted_lesson` conserva soltanto domini, verdetto
+  e reazione letterale, senza ripetere la tesi bocciata. Metadati:
+  `reaction_lesson_mode=extractive_refutation` e
+  `verification_status=refutation_grounded_by_user`.
+- Bonifica live completata con embedding rigenerato: le memorie
+  `a009dce2-...` e `10b6d176-...` restano solo come audit soft-superseded.
+  L'unico nodo attivo e' `fd66ecb3-3057-4f1b-a93c-95029126c48a`; l'insight punta
+  al nuovo `lesson_id`. Il retrieval globale esclude entrambi i record vecchi.
+- Ripulite anche le copie Obsidian intermedie: nel Vault resta soltanto
+  `Memories/riciclo materiali/Memory_20260723_090004_fd66ecb3.md`.
+- Regressioni in `test_reaction_verdict.py` e `test_wake_guard.py`; manifest
+  unitario completo verde.
+
+---
+
+# Handoff Euri - 2026-07-23 - Recovery automatico webcam/VisualGate
+
+- Caso live 08:18: OpenCV ripeteva `VIDEOIO(V4L2:/dev/video0): select() timeout`
+  ogni circa 10,5 secondi. Il kernel registrava errori xHCI e il Voice Daemon
+  ignorava la voce perché il VisualGate era rimasto `INACTIVE`.
+- Causa nel loop: dopo un `cap.read()` fallito veniva riusato all'infinito lo
+  stesso handle. Ora il gate rilascia la cattura, entra in modalità cieca/fail-open
+  e tenta la riapertura con backoff esponenziale configurabile (3-30 secondi).
+- L'outage invalida identità e one-shot appartenenti al vecchio stream. In modalità
+  cieca `is_owner_present()` resta sempre falso, mentre `is_user_present()` resta
+  vero per non bloccare la voce.
+- Con discovery automatica, il retry riesamina tutti i `/dev/video*` invece di
+  fissarsi sull'ultimo indice: il replug può quindi rinumerare la camera. Al
+  recupero compare `VisualGate: webcam riconnessa (...)`.
+- Test `test_face_gate.py`: simulazione di stream guasto, rilascio, stato fail-open
+  intermedio e recupero su `/dev/video1`.
+
+---
+
+# Handoff Euri - 2026-07-22 - Continuita' conversazionale dopo i tool
+
+- Caso live 16:11: la richiesta di Stefano di esaminare capacita' e possibili
+  miglioramenti era stata classificata `ACTION_REASONING`; il controller aveva
+  eseguito `top_processes` come alternativa e `_execute_action_proposal` aveva
+  chiuso il turno pronunciando soltanto l'output, perdendo la domanda originale.
+- `ActionProposal` distingue ora `tool_result` da `integrated`. Le alternative e
+  le azioni read-only nate da una bozza di Euri forzano sempre l'integrazione:
+  il risultato verificato viene passato al Brain insieme alla richiesta originale,
+  senza rientrare nel dispatch e senza consentire una seconda azione ricorsiva.
+- I comandi puri restano invariati: "controlla la GPU" continua a rispondere con
+  il solo esito. Classificatore e controller hanno inoltre un hard-negative
+  esplicito per l'autovalutazione astratta con strumenti genericamente menzionati.
+- Verifica reale sul modello locale con la frase del caso: proposta vuota,
+  `authority=none`, motivazione conversazionale. `test_action_controller.py`
+  15/15 (inclusa la non-duplicazione dei documenti integrati); manifest unitario
+  completo 39/39; compilazione pulita.
+- Serve riavviare il Voice Daemon per caricare la modifica.
+
+---
+
+# Handoff Euri - 2026-07-22 - Dream Trace Paired v2 pronto al riavvio pulito
+
+- Il pilot `dream_trace_paired_v1` della prima notte resta nello stream come prova
+  diagnostica ma non entra nell'analisi: 5/8 trattamenti avevano ricevuto il residuo
+  sentinella `NESSUN INSIGHT` (pair 1, 2, 5, 6, 7).
+- Il batch definitivo usa `dream_trace_paired_v2`. Residuo e sequence sono chiavi
+  versionate: il vecchio residuo vibrazioni/EMI resta in v1 e non può essere letto da
+  v2; il primo ciclo del nuovo processo sarà un warm-up.
+- Nel percorso appaiato una distillazione invalida elimina il residuo v2, evitando il
+  riuso stale. Le righe non conformi e le eco tematiche forti del residuo appena
+  iniettato vengono filtrate deterministicamente; il legacy conserva la vecchia
+  semantica.
+- L'export filtra per versione e non richiede più un timestamp manuale. Verifica anche
+  hash del residuo, durata e stato; l'allarme errori copre `0:N` oltre ai rapporti 2x.
+- Prima del riavvio: suite completa e verifica Redis che le chiavi v2 siano assenti.
+
+---
+
+# Handoff Euri - 2026-07-21 - Dream Trace Paired V2, corretto dopo review Codex
+
+## Correzioni applicate dopo la review di Codex (stesso giorno, prima di qualunque raccolta)
+
+Tutti e sette i punti sollevati erano fondati, verificati uno per uno sul codice:
+
+1. **Entrambi i lati diventavano insight vivi** (il punto piu' delicato, isolato da
+   Codex prima della review completa): ora solo il baseline persiste come
+   `euri:insight:*` (embedding, retrieval, eleggibile a convergenza/promozione); il
+   trattamento resta strumentazione pura durante la raccolta — vedi nuova sezione
+   "Cosa entra nella memoria reale di Euri" in `ESPERIMENTO_DREAM_TRACE_V2.md`.
+2. Il residuo loggato sul record baseline era quello vivo, non quello davvero
+   iniettato (sempre vuoto per il baseline) — metadato ingannevole, corretto: ogni
+   lato logga solo cio' che il SUO prompt ha ricevuto.
+3. L'export validava hash/lunghezza dell'output solo per `candidate`, non per
+   `discarded` — corretto: la verifica vale per qualunque stato.
+4. Un lato duplicato (stesso pair_id+arm) veniva tenuto silenziosamente (prima
+   occorrenza) — corretto: fail-closed, l'intera coppia viene esclusa e contata.
+5. Gli errori di generazione sparivano dal conteggio — corretto: contati per
+   braccio, con soglia di allarme se il rapporto tra bracci e' >=2x o <=0.5x.
+6. Il protocollo diceva di "adjudicare" i disaccordi tra i due giudici, in
+   contraddizione con quanto gia' stabilito (disaccordo = ambiguo, nessuna
+   adjudicazione) — corretto nel testo.
+7. Test statistico: sostituita l'approssimazione χ² con McNemar esatto
+   (binomiale) come primario, dato che con 50 coppie i discordanti saranno
+   quasi certamente pochi.
+8. Aggiunta la misura di durata per lato (`duration_s`), prevista nel protocollo ma
+   assente dal registro.
+
+**Verificato prima di chiudere:** su Redis reale, le chiavi/stream del disegno
+appaiato non esistono ancora (`EXISTS`/`XLEN` = 0) — il codice con i bug non ha mai
+generato una coppia reale, nessuna pulizia necessaria. 36/36 test (inclusi i nuovi
+casi su duplicati/errori/hash-su-scarti), compilazione e `git diff --check` puliti.
+
+**Serve un nuovo riavvio di Euri** per caricare il codice corretto — il precedente
+girava ancora con i bug sopra, anche se non ha fatto in tempo a generare nulla.
+
+## Protocollo V2 (disegno appaiato)
+
+- Stefano ha rilevato correttamente che "utile/non utile" dipende dal momento e non
+  e' una misura oggettiva unica. `ESPERIMENTO_DREAM_TRACE_V2.md` separa grounding
+  (`G2/G1/G0`), novita' (`V2/V1/V0`), chiarezza (`C/A`) e utilita' contestuale
+  (`U_NOW/U_LATER/U_NO/U_CONTEXT`). Pass primario: `G2+V2+C`.
+- Una prima stesura V2 usava bracci concorrenti a blocchi di due cicli con coppie di
+  domini estratte a caso (mai attivata, zero dati). Stefano ha chiesto di confrontare
+  invece lo STESSO seme con e senza residuo: elimina la variabilita' tra coppie di
+  domini diverse (dominante secondo l'analisi di anisotropia, μ~0.82) invece di
+  mediarla su n grande. Sostituzione completa, non un'aggiunta: il codice/flag/test a
+  blocchi sono stati rimossi (mai committati).
+- `DREAM_TRACE_PAIRED_ENABLED=False`: per ogni ciclo eleggibile, un solo seme
+  (`_pick_dream_seed` invariato) generato DUE volte — baseline senza traccia,
+  trattamento con la stessa sezione di oggi. Il residuo evolve solo dal lato
+  trattamento: il baseline resta isolato, prompt bit-identico a flag spento. Primo
+  ciclo senza residuo = warm-up (una generazione, semina il residuo, non entra nel
+  registro delle coppie; puo' ripetersi dopo un TTL scaduto, non solo all'avvio).
+- Registro primario immediato `euri:dream_trace:paired:cycles`, indipendente da TTL,
+  promozione e cancellazione: output e due memorie sorgente completi, hash, lunghezze,
+  `pair_id`+`arm`, candidate/discarded/error.
+- Punto metodologico distinto dal batch precedente: uno scarto (`discarded`) conta
+  come non-passa per quel lato, NON esclude la coppia dal conteggio — altrimenti la
+  differenza nel tasso di scarto tra bracci (parte dell'effetto misurato) sparirebbe
+  come nuova forma della sopravvivenza asimmetrica gia' vista.
+- `sample_dream_trace_paired.py` raggruppa per `pair_id`, verifica ricorsivamente
+  integrita' (hash) e rifiuta l'export sotto 50 coppie complete. Prova reale su Redis
+  vuoto: stop corretto a 0/50, nessun file scritto.
+- Verifiche: `test_dream_trace_paired.py` (warm-up, seme identico nei due lati,
+  residuo aggiornato solo dal trattamento, percorso legacy invariato), py_compile,
+  manifest completo; unit 36/36, inventario 45 file.
+- Nota aperta non risolta qui: i due giudici ciechi (Codex, Claude) restano modelli
+  linguistici con possibili punti ciechi condivisi; Codex e' anche l'architetto del
+  meccanismo testato. Il doppio consenso filtra il rumore, non un bias sistematico
+  condiviso — vedi `ESPERIMENTO_DREAM_TRACE_V2.md`.
+
+## Prima di avviare
+
+Serve solo una decisione esplicita di Stefano: portare `DREAM_TRACE_PAIRED_ENABLED`
+a `True`, riavviare Euri e congelare modello/prompt/seed gate fino a 50 coppie
+complete. Non riusare le etichette dell'audit recuperato del batch precedente come
+risultato primario e non aprire la chiave di questa raccolta prima della revisione
+cieca.
+
+---
+
+# Handoff Euri - 2026-07-21 - Dream audit non valutabile, trace corretta
+
+## Blocco metodologico scoperto dopo il congelamento
+
+- `core/dream_engine.py` salvava nella convergence trace `seed_content[:600]`.
+  Nel campione cieco 109/120 item terminano senza punteggiatura, quasi sempre dentro
+  la terza riga. Il primo report Codex (40 N / 72 O / 8 ?) e' marcato **NON VALIDO**:
+  non aprire la chiave e non calcolare differenze tra bracci da quelle etichette.
+- Verifica Redis read-only e ancora cieca: 67 candidate vivi contengono una versione
+  piu' lunga, 10 coincidono con il testo completo e 4 ulteriori copie sono nei dream
+  grezzi; 39/120 non sono recuperabili. Il subset 81/120 avrebbe bias di sopravvivenza.
+- La trace futura conserva il testo integrale e registra `seed_content_complete`,
+  `seed_content_chars`, `seed_content_sha256`. Il campionatore accetta soltanto entry
+  esplicitamente complete e verificate, e fallisce se mancano n item in un braccio.
+- Il batch attuale e' non valutabile, non negativo. Serve una nuova raccolta prospettica
+  completa dei due bracci e una versione aggiornata della pre-registrazione.
+
+---
+
 # Handoff Euri - 2026-07-21 - Dream seed gate e raccolta congelata
 
 ## Intervento concluso
@@ -44,32 +262,57 @@
 
 # Handoff Euri — 2026-07-14
 
-## Punto aperto: analisi clipboard e persistenza — 2026-07-20
+## Chiuso: analisi clipboard e persistenza — 2026-07-22
 
-- Oggi `clipboard_analyze` significa per contratto "analizza e salva": la sintesi
-  prodotta dal modello entra subito in Redis come `source=teach`, anche quando
-  Stefano ha chiesto soltanto di analizzare gli appunti.
-- Non cambiare il comportamento durante la calibrazione della percezione sociale.
-  Riesaminarlo in seguito separando attenzione temporanea e apprendimento permanente:
-  `analizza` usa il contenuto solo nella sessione; `analizza e salva` crea la memoria;
-  in alternativa Euri chiede conferma esplicita al termine dell'analisi.
-- Rischio da evitare: documenti temporanei, testi di terzi o descrizioni di Euri
-  possono diventare `teach` e rientrare nel RAG come conferma autorevole, creando
-  contaminazione o circuiti autoreferenziali. Il punto e' di policy epistemica,
-  non un guasto osservato del tool.
+- `clipboard_analyze` ora analizza testo o immagini soltanto per la sessione: il
+  risultato entra nella history conversazionale, ma non crea memorie Redis.
+- La persistenza richiede una formulazione esplicita (`salva`, `memorizza`, `ricorda`)
+  e usa il tool separato `clipboard_analyze_save`; se Redis rifiuta il salvataggio,
+  Euri lo dichiara e non sostiene falsamente di aver memorizzato.
+- Frasi come "analizza gli appunti senza salvare" mantengono l'analisi temporanea;
+  "non analizzare gli appunti" continua invece a non avviare alcuna azione.
+- Il tool temporaneo e' proponibile dal controller come `read_only`; quello persistente
+  non e' proponibile autonomamente, per evitare che testi temporanei o di terzi
+  diventino conoscenza `teach` senza intenzione esplicita di Stefano.
 
-## Punto aperto: self-model e autoreferenza — 2026-07-20
+## Chiuso: self-model, autoreferenza e profilo installazione — 2026-07-22
 
-- Non sterilizzare la capacita' di Euri di parlare e ragionare su se stessa: un
-  self-model e' necessario per continuita', limiti operativi e personalita'.
-- Separare in futuro quattro piani con provenienza esplicita: stato operativo
-  verificabile, descrizione progettuale fornita da Stefano, valutazione soggettiva
-  dell'utente e interpretazione di Euri. Una descrizione recuperata dal RAG non e'
-  prova che Euri abbia verificato internamente il proprio funzionamento.
-- Rischio da controllare: documento su Euri -> memoria autorevole -> recupero RAG ->
-  nuova affermazione su Euri. Preservare le interpretazioni, ma impedire che questo
-  ciclo diventi auto-certificazione. Nessuna modifica finche' la policy non sara'
-  ragionata esplicitamente.
+- Audit read-only: 200 memorie contengono il nome Euri; 11 sono `source=teach` e 9
+  provengono dalla vecchia clipboard automatica. Una sintesi autoreferenziale
+  `fbbc3224` e' entrata davvero nei sei risultati per "Che cosa sei diventata rispetto
+  a un normale assistente?": il rischio documento -> RAG -> autocertificazione era reale.
+- Il self-model preserva la capacita' di Euri di parlare e ragionare su se stessa, ma
+  separa quattro piani: stato operativo verificato; descrizione progettuale fornita
+  dall'utente; valutazione soggettiva dell'utente; interpretazione/autobiografia di Euri.
+  Essere registrato in Redis prova registrazione e provenienza, non verita' o attualita'.
+- Nuove analisi clipboard salvate esplicitamente usano `memory_kind=document_summary`.
+  Le vecchie vengono riconosciute tramite tag+prefisso e iniettate come `SINTESI
+  DOCUMENTO ... non verifica interna`, senza modificare, cancellare o migrare Redis.
+- Identita' dell'installazione spostata nel profilo: `OWNER_ACTOR_ID`,
+  `OWNER_DISPLAY_NAME`, `ASSISTANT_DISPLAY_NAME` (override via ambiente). Brain, RAG,
+  cronologia, autenticazione, Initiative e reaction usano il profilo invece di assumere
+  il nome letterale Stefano. Il default resta personale su questa workstation.
+- Non sostituire ciecamente le occorrenze storiche: commenti e fixture possono documentare
+  decisioni realmente prese da Stefano. Invariante: logica cognitiva, provenienza e
+  sicurezza non devono dipendere da quel nome. Regressione `test_self_model_provenance.py`
+  con installazione fittizia Ada/Nora.
+- Silent Chat riceve ora da `euri:visual_gate:state` uno snapshot effimero (TTL 8s)
+  pubblicato dal worker `visual-presence`: camera, volto corrente e actor_id riconosciuto,
+  mai frame/embedding/similarity. Serve a non far negare a Euri una capacita' reale e,
+  nell'installazione mono-utente, costituisce forte evidenza locale che Stefano sia davanti
+  allo schermo. Non autentica crittograficamente il dattilografo e non amplia l'autorita'
+  per azioni sensibili. Nessun prompt stilistico e' stato aggiunto: personalita' e
+  interpretazione autobiografica restano libere; il ponte aggiunge solo evidenza operativa.
+- Le reaction `PARZIALE` non sono piu' un voto unico applicato a una frase composta:
+  `core/reaction.py` estrae `confirmed_claims`, `refuted_claims` e
+  `replacement_claims`, accettando ciascuna voce solo se include un frammento contiguo
+  della risposta dell'owner. L'insight originale resta promosso se conserva un'ancora
+  vera, ma diventa `partially_refuted_by_user`/`requires_verification`; il RAG gli
+  affianca sempre la patch, per non recuperare da sola la proposizione smentita.
+- Caso reale 22/07: insight dosaggio/log/qualita' valido nel principio, errato nel
+  ruolo di Giuseppe. La lesson `8f95c747` e' stata soppiantata reversibilmente da
+  `03948410`; back office = carichi/partenze, laboratorio (Stefano incluso) = giudizio
+  sul materiale. Nessun flusso documentale tra i due viene dedotto senza evidenza.
 
 ## Percezione sociale visiva Fase 0 — 2026-07-20
 

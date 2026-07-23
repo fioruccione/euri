@@ -72,13 +72,27 @@ class WorkerSupervisor:
             self._threads[name] = thread
         thread.start()
 
-    def health(self) -> dict[str, dict]:
+    def health(self, *, stale_after_s: float | None = None) -> dict[str, dict]:
+        """Snapshot di liveness; opzionalmente distingue ``alive`` da ``responsive``."""
         with self._lock:
             snapshot = {name: dict(value) for name, value in self._health.items()}
             threads = dict(self._threads)
+        now_ts = time.time()
         for name, value in snapshot.items():
             thread = threads.get(name)
             value["alive"] = bool(thread and thread.is_alive())
+            heartbeat = value.get("last_heartbeat")
+            if heartbeat is not None:
+                value["heartbeat_age_s"] = max(0.0, now_ts - float(heartbeat))
+            stale = bool(
+                value["alive"]
+                and stale_after_s is not None
+                and heartbeat is not None
+                and value["heartbeat_age_s"] > max(1.0, float(stale_after_s))
+            )
+            value["responsive"] = bool(value["alive"] and not stale)
+            if stale:
+                value["state"] = "stalled"
         return snapshot
 
     def shutdown(self, timeout: float = 8.0) -> list[str]:
