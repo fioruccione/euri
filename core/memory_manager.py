@@ -1444,12 +1444,17 @@ class MemoryManager:
         "fatti", "fatte", "tue", "tuoi", "tua", "tuo", "questa", "questo",
         "questa", "questioni", "invece", "anche", "non", "che", "come", "cosa",
         "oppure", "ovvero", "team",
+        # Meta-lessico pragmatico: descrive il fatto che l'utente stava testando
+        # o scherzando, non identifica il fatto eventualmente ritirato. Senza
+        # questo filtro una frase come "stavo scherzando, volevo vedere se avevi
+        # capito il termine" può sovrapporsi accidentalmente a una memoria RAG.
+        "stavo", "scherzando", "scherzo", "provocazione", "prendevo", "giro",
+        "davvero", "volevo", "vedere", "capito", "capire", "ancora",
+        "significava", "significa", "termine", "concetto", "metodologia",
+        "test", "provare", "prova",
     }
-    _IMMEDIATE_QUARANTINE_RE = [
+    _IMMEDIATE_QUARANTINE_EXPLICIT_RE = [
         re.compile(p, re.IGNORECASE) for p in [
-            r"\bera\s+una\s+provocazione\b",
-            r"\bstavo\s+scherzando\b",
-            r"\bnon\s+(ho|avevo)\s+davvero\b",
             r"\bnon\s+[èe]\s+vero\b",
             r"\bti\s+correggo\b",
             r"\bno\s*,?\s+ti\s+correggo\b",
@@ -1457,6 +1462,13 @@ class MemoryManager:
             r"\bti\s+sbagli\b",
             r"\bhai\s+sbagliato\b",
             r"\bhai\s+inventato\b",
+        ]
+    ]
+    _IMMEDIATE_QUARANTINE_PRAGMATIC_RE = [
+        re.compile(p, re.IGNORECASE) for p in [
+            r"\bera\s+una\s+provocazione\b",
+            r"\bstavo\s+scherzando\b",
+            r"\bnon\s+(ho|avevo)\s+davvero\b",
         ]
     ]
 
@@ -1496,7 +1508,18 @@ class MemoryManager:
     @classmethod
     def _is_immediate_quarantine_correction(cls, text: str) -> bool:
         """True solo per correzioni esplicite abbastanza forti da demuovere subito."""
-        return bool(text and any(p.search(text) for p in cls._IMMEDIATE_QUARANTINE_RE))
+        if not text:
+            return False
+        if any(p.search(text) for p in cls._IMMEDIATE_QUARANTINE_EXPLICIT_RE):
+            return True
+        if not any(p.search(text) for p in cls._IMMEDIATE_QUARANTINE_PRAGMATIC_RE):
+            return False
+        # "Stavo scherzando" può ritirare un fatto ("fragole e cipolla non mi
+        # piacciono"), ma può anche descrivere soltanto il tono del turno appena
+        # pronunciato. La quarantena immediata è giustificata solo nel primo caso:
+        # devono restare almeno due token sostanziali con cui identificare il
+        # bersaglio. Il segnale viene comunque salvato e il Loop 2g può valutarlo.
+        return len(cls.correction_target_tokens(text)) >= 2
 
     def detect_correction(self, text: str, last_euri_turn: str | None = None) -> bool:
         """True se il prompt utente assomiglia a una correzione di un turno precedente.

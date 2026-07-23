@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-07-23 - Uno scherzo sul turno non ritira una memoria del RAG
+
+- Il caso live "stavo scherzando, volevo vedere se avevi capito il termine" resta
+  osservabile come correction signal, ma non apre più una quarantena immediata:
+  descriveva il tono del saluto precedente, non ritirava il record `fd66ecb3`.
+- I marcatori pragmatici (`scherzo`, `provocazione`, `non ho davvero`) demuovono
+  subito una memoria soltanto quando la frase contiene anche almeno due token
+  sostanziali che identificano il fatto ritirato. Le correzioni esplicite restano
+  invariate.
+- Il falso segnale live `28d74085` è stato chiuso come `not_a_correction`; la
+  quarantena reversibile di `fd66ecb3` è stata rimossa e la traccia audit conservata.
+
 ## 2026-07-23 - Sincronia canonica e confine interno/esterno degli insight
 
 - `save_memory(final_fields=...)` pubblica ora il documento gia' completo: dominio,

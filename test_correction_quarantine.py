@@ -97,6 +97,36 @@ def test_joke_clarification_is_detected_as_correction_signal():
     )
 
 
+def test_meta_joke_clarification_does_not_quarantine_unrelated_rag_memory():
+    docs = {
+        "euri:memory:recycling": {
+            "id": "recycling",
+            "content": (
+                "Su una connessione proposta tra riciclo materiali e misurazione "
+                "temperatura, Stefano ha smentito la connessione."
+            ),
+            "requires_verification": False,
+        },
+    }
+    memory = MemoryManager(FakeRedis(docs), embedder=None)
+    text = (
+        "Niente, solo stavo scherzando e volevo vedere se avevi capito ancora "
+        "cosa significava quel termine."
+    )
+
+    assert memory.detect_correction(text)
+    sid = memory.save_correction_signal(
+        prompt_originale="Buongiorno Euri, sei proprio una fraida!",
+        risposta_euri="Cosa ho combinato di così fraido?",
+        correzione_user=text,
+        rag_ctx_ids=["recycling"],
+    )
+
+    assert docs[f"euri:correction:{sid}"]["quarantined_memory_ids"] == []
+    assert docs["euri:memory:recycling"].get("correction_pending") is None
+    assert docs["euri:memory:recycling"]["requires_verification"] is False
+
+
 def test_correction_pending_suffix_is_stronger_than_generic_verification():
     suffix = memory_verification_suffix({
         "requires_verification": True,
