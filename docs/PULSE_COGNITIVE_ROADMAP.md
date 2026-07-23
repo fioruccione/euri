@@ -1,10 +1,10 @@
 # Pulse cognitivo — roadmap persistente
 
-Stato aggiornato: 2026-07-23
+Stato aggiornato: 2026-07-23 12:00
 
 Fase corrente: **1 — lineage osservazionale**
 
-Prossima azione esatta: **riavvio controllato, verifica runtime del projector, poi Fase 2**
+Prossima azione esatta: **attendere il primo evento cognitivo naturale, verificarne la trace, poi Fase 2**
 
 Questo file è il punto di ripresa canonico del cantiere Pulse. Va letto insieme
 alla prima sezione di `CODEX.md` prima di modificare Pulse, Dream, memoria,
@@ -92,6 +92,18 @@ Verifica pre-riavvio 2026-07-23:
   ancora assente come previsto;
 - compilazione dei moduli modificati pulita.
 
+Verifica runtime dopo riavvio, 11:56:
+
+- log presente: `Cognitive Projector: in ascolto durevole su euri:pulse`;
+- consumer group creato e allineato: `pending=0`, `lag=0`;
+- tutti i 3.924 eventi legacy sono stati letti e ignorati senza reinterpretazione;
+- i due eventi nuovi `presence/arrival` e `presence/owner_arrival` hanno envelope v2
+  ma restano `event_class=telemetry`;
+- `euri:cognitive:events` resta correttamente a zero: non è ancora avvenuto un
+  salvataggio, sogno, verdetto o consolidamento nuovo;
+- boot cognitivo invariato: 117 candidati Loop 2e, 160 insight interni e 4
+  confermati esternamente.
+
 ### Fase 2 — Lineage dell’uso reale: da fare
 
 Strumentare, senza cambiare ranking o risposte:
@@ -157,6 +169,7 @@ Ogni policy richiede flag, shadow mode, metrica prima/dopo e rollback.
 |---|---|---|---|
 | 2026-07-23 | 0 | Audit: Pulse prevalentemente telemetrico, lineage assente | `1126a0f` come base |
 | 2026-07-23 | 1 | 42/42 unit; audit pre-boot 3.924 legacy e 0 cognitivi; runtime da riavviare | commit che introduce questa roadmap |
+| 2026-07-23 | 1 | Boot verificato: group sano, backlog esaurito, presenza rimasta telemetria; attesa prima trace naturale | checkpoint successivo |
 
 ## Protocollo di ripresa
 

@@ -20,6 +20,11 @@
   Redis read-only = 3.924 Pulse legacy, 0 cognitivi, consumer group assente come
   previsto. Dopo il riavvio verificare log del projector, backlog ACKato, unicità
   degli eventi e assenza di mutazioni cognitive dovute alla proiezione.
+- Riavvio 11:56 verificato: worker attivo, consumer `pending=0`/`lag=0`, backlog
+  legacy completamente ignorato. I due nuovi eventi di presenza sono envelope v2
+  ma `event_class=telemetry`; timeline cognitiva ancora a zero correttamente.
+  Prossimo passo: non iniettare test sintetici, attendere il primo memory/Dream/
+  reaction/consolidation naturale e verificarne trace e causation.
 
 ---
 
