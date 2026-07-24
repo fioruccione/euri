@@ -28,6 +28,7 @@ test_loop2a_reflection.py
 test_loop2e_attention.py
 test_memory_idempotency.py
 test_memory_outbox.py
+test_named_save.py
 test_reaction_briefing.py
 test_reaction_verdict.py
 test_response_lineage.py

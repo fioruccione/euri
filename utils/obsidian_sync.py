@@ -66,6 +66,8 @@ def write_memory(doc: dict):
         "source": doc.get("source", "user"),
         "created_at": date_str
     }
+    if doc.get("memory_title"):
+        frontmatter["memory_title"] = doc["memory_title"]
     asserted_dt = from_timestamp(doc.get("asserted_at"))
     event_start_dt = from_timestamp(doc.get("event_start"))
     event_end_dt = from_timestamp(doc.get("event_end"))
@@ -78,9 +80,10 @@ def write_memory(doc: dict):
     if doc.get("tags"):
         frontmatter["tags"] = doc["tags"]
         
+    heading = doc.get("memory_title") or f"Memoria ({date_str})"
     content = f"""---
 {yaml.dump(frontmatter, default_flow_style=False, sort_keys=False)}---
-# Memoria ({date_str})
+# {heading}
 
 {doc["content"]}
 """

@@ -1,3 +1,27 @@
+# Handoff Euri - 2026-07-24 - Salvataggio nominato UBQ corretto e riparato
+
+- La prova Silent Chat del 23/07 ha scoperto un errore reale: “queste informazioni
+  con il nome Compuand UBQ 2026” non entrava in `SAVE_MEMORY`, veniva instradata
+  verso TEACH e salvava soltanto l'etichetta con `source=teach` e dominio
+  `tecnologia`. La conferma era quindi troppo forte.
+- Il router riconosce ora anche “questi/queste informazioni con (il) nome …”; il
+  coordinatore tratta il nome come metadato, risolve il contenuto dal turno
+  precedente e salva `memory_title` nello stesso documento canonico. Obsidian
+  mostra il titolo nel frontmatter e nell'intestazione.
+- Repair idempotente `scripts/repair_20260724_ubq_named_memory.py`: ha creato la
+  memoria user `15432251-1a5f-4366-8333-44954dd4762d`, ritirato l'orphan
+  `2e88eb30-3741-4ace-8529-ad6fc69f6026` via `superseded_by`, marcato l'errore di
+  routing e spostato la copia Markdown in `.euri-quarantine/2026-07-24-ubq-named`.
+- Il record corretto contiene la variante UBQ meno costosa e più facile da
+  additivare, la prova in trafila da 10 kg, i provini con UBQ/ritrafilato e il
+  fatto che le prove meccaniche sono ancora pendenti (`requires_verification=true`).
+- Verifica: unit 46/46, manifest 55 file, test named-save 2/2, compilazione e
+  diff-check puliti. Euri è rimasta ferma; l'audit Pulse dopo il repair mostra
+  `pending=0`, `lag=2` perché due eventi sono in coda e verranno recuperati al
+  prossimo boot.
+
+---
+
 # Handoff Euri - 2026-07-23 - Lineage shadow tra recall e uso nella risposta
 
 - Fase 2, prima fetta implementata senza cambiare ranking, prompt o risposta. I

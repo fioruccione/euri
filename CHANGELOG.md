@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-07-24 - Corretto il salvataggio nominato delle informazioni UBQ
+
+- “Queste informazioni con il nome …” viene ora riconosciuto come SAVE_MEMORY,
+  anche nella forma STT “questi informazioni”, invece di entrare accidentalmente
+  nella sessione TEACH.
+- Il contenuto viene risolto dallo scambio precedente e il nome viene conservato
+  come `memory_title`; la conferma non può più dichiarare salvata una semplice
+  etichetta.
+- Riparato in modo reversibile il record UBQ live: il frammento errato è
+  soft-superseded e quarantinato, mentre la memoria corretta resta da verificare
+  sulle prove meccaniche. Aggiunti test deterministici e repair idempotente.
+
 ## 2026-07-23 - Recall distinto dall'uso osservabile nella risposta
 
 - I turni conversazionali RAG di voce, Silent Chat e mobile producono una trace

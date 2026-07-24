@@ -228,6 +228,7 @@ _PATTERNS: list[tuple[Intent, list[str]]] = [
         r"\bsetup\s+vocale\b",
     ]),
     (Intent.SAVE_MEMORY, [
+        r"(?:(?:salva|memorizza|segna|ricorda)\s+)?quest[aei]\s+informazion[ei]\s+(?:con|col)\s+(?:il\s+)?nome\b",
         r"ricordami\s+che\b",
         r"segna\s+che\b",
         r"ricorda\s+che\b",

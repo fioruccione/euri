@@ -1,6 +1,6 @@
 # Pulse cognitivo — roadmap persistente
 
-Stato aggiornato: 2026-07-23 16:55
+Stato aggiornato: 2026-07-24 09:32
 
 Fase corrente: **2, prima fetta implementata in shadow mode — runtime da verificare**
 
@@ -206,6 +206,14 @@ Verifica pre-runtime 2026-07-23:
 Il contatore `used_in_response` è intenzionalmente un pavimento: una parafrasi
 forte può produrre un falso negativo. Non deve essere interpretato come una misura
 totale dell'attenzione del modello e non abilita ancora alcuna policy.
+
+Incidente emerso dalla prima prova e riparato il 2026-07-24:
+
+- Il comando nominato del Silent Chat è stato classificato come TEACH e ha salvato
+  soltanto la label `Compuand UBQ 2026`; non era un errore della response lineage.
+- Il routing è stato corretto in modo deterministico e il record live è stato
+  riparato append-only con `superseded_by`, titolo, provenienza user e stato di
+  verifica pendente. La copia precedente è recuperabile in quarantena.
 
 ### Fase 3 — Observer e metriche di auto-risonanza: da fare
 
