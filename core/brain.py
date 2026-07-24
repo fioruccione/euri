@@ -508,21 +508,39 @@ class Brain:
                 think=False,
             )
             result = self._clean(response.message.content or "")
-            if not result or "NOTHING" in result.upper():
+            has_nothing = "NOTHING" in result.upper()
+            if not result or has_nothing:
+                logger.info(
+                    "Passive extractor: "
+                    f"raw_chars={len(result)} nothing={has_nothing} "
+                    "numbered=0 parsed=0 acephalous=0 provenance_rejected=0 accepted=0"
+                )
                 return []
             # Parsa la lista numerata — estrae il testo dopo "1. ", "2. " ecc.
             import re
             facts = re.findall(r"^\d+\.\s*(.+)$", result, re.MULTILINE)
             parsed = []
+            parse_rejected = 0
+            acephalous = 0
+            provenance_rejected = 0
             for fact in facts:
                 item = self._parse_passive_fact_line(fact)
                 if not item:
+                    parse_rejected += 1
                     continue
                 if len(item["content"]) <= 10 or self._looks_acephalous_fact(item["content"]):
+                    acephalous += 1
                     continue
                 if not self._passive_item_has_valid_provenance(item, conversation):
+                    provenance_rejected += 1
                     continue
                 parsed.append(item)
+            logger.info(
+                "Passive extractor: "
+                f"raw_chars={len(result)} nothing={has_nothing} numbered={len(facts)} "
+                f"parsed_rejected={parse_rejected} acephalous={acephalous} "
+                f"provenance_rejected={provenance_rejected} accepted={len(parsed)}"
+            )
             return parsed
         except Exception as e:
             logger.error(f"Errore extract_passive_memories: {e}")
