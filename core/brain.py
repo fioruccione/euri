@@ -408,7 +408,11 @@ class Brain:
         Estrae fatti autosufficienti e fili conversazionali specifici ancora aperti.
         Ogni risultato conserva supporto, tipo e turni sorgente per la cronologia.
         """
-        if len(conversation) < 4:
+        # Un singolo scambio user/assistant può già contenere un fatto tecnico
+        # utile. I filtri di provenienza, soggetto e validazione restano applicati
+        # dopo l'estrazione; non richiediamo quindi due scambi per entrare nel
+        # percorso passivo.
+        if len(conversation) < 2:
             return []
 
         lines = []
