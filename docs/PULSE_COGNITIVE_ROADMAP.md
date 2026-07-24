@@ -1,10 +1,10 @@
 # Pulse cognitivo — roadmap persistente
 
-Stato aggiornato: 2026-07-24 09:32
+Stato aggiornato: 2026-07-24 16:30
 
-Fase corrente: **2, prima fetta implementata in shadow mode — runtime da verificare**
+Fase corrente: **2, lineage e verifica delle memorie passive collegati — conferma live finale da verificare**
 
-Prossima azione esatta: **riavviare Euri, fare 2–3 turni naturali in Silent Chat e almeno un turno vocale, poi auditare recall, uso supportato e completezza delle trace**
+Prossima azione esatta: **dopo il passaggio a Linux X11, creare una nuova memoria passiva, rispondere alla domanda Pulse e verificare log `CONFIRM → stato aggiornato` più i campi Redis di conferma esterna**
 
 Questo file è il punto di ripresa canonico del cantiere Pulse. Va letto insieme
 alla prima sezione di `CODEX.md` prima di modificare Pulse, Dream, memoria,

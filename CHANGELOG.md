@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-07-24 - Passive learner osservabile e conferme Pulse fondate
+
+- Il Passive learner analizza anche un singolo scambio completo e rende visibili
+  estrazione, validazione, scarti, duplicati e salvataggi.
+- L'estrazione strutturata con Gemma 4 26B usa `think=False`: il reasoning esteso
+  impediva spesso di produrre la lista finale parsabile.
+- La diagnostica dell'estrattore registra solo contatori e forma dell'output,
+  senza contenuti grezzi.
+- Le domande Pulse sulle memorie passive aprono ora una verifica associata all'ID
+  esatto. La risposta dell'utente viene classificata semanticamente e aggiorna
+  realmente lo stato epistemico del nodo confermato o smentito.
+- Verifica live dell'estrazione: 5 candidati accettati, 3 memorie salvate e 2
+  duplicati esclusi. Test Initiative estesi a 12/12.
+
 ## 2026-07-24 - Corretto il salvataggio nominato delle informazioni UBQ
 
 - “Queste informazioni con il nome …” viene ora riconosciuto come SAVE_MEMORY,

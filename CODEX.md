@@ -1,3 +1,32 @@
+# Handoff Euri - 2026-07-24 - Passive learner e conferma Pulse completati
+
+- Diagnosi live: il Passive learner riceveva i turni ma `extract_passive_memories`
+  restituiva zero elementi. La soglia minima era inizialmente di quattro messaggi
+  e Gemma 4 26B usava `think=True` per un compito strutturato.
+- La soglia è ora un singolo scambio completo; la telemetria espone messaggi,
+  estratti, validati, scartati, duplicati e salvati, oltre alla forma dell'output
+  dell'estrattore senza registrarne il contenuto grezzo.
+- Test reale isolato: con `think=False` Gemma ha estratto correttamente il piano
+  dei 100 kg UBQ. Verifica live successiva: 5 candidati, 5 validati dal
+  Buttafuori, 2 duplicati e 3 memorie passive salvate.
+- Il Pulse ha formulato domande contestuali corrette sulle memorie passive. È
+  emerso che le risposte dell'utente rientravano come CHAT senza aggiornare il
+  nodo interrogato.
+- Commit `e474752`: quando Initiative chiede una verifica passiva conserva l'ID
+  preciso della memoria; Gemma classifica semanticamente la replica come
+  conferma, smentita, correzione, chiarimento o fuori tema. Conferma e smentita
+  aggiornano stato epistemico, provenienza temporale ed emettono un evento
+  cognitivo. Nessuna regex di dominio.
+- Test Initiative 12/12. Branch pubblicato e pulito. Euri fermata per il passaggio
+  della workstation a Linux X11.
+- Prossima verifica live: dopo il riavvio generare una nuova memoria passiva,
+  rispondere naturalmente alla domanda Pulse e cercare
+  `Verifica memoria passiva XXXXXXXX: CONFIRM → stato aggiornato`; poi verificare
+  in Redis `requires_verification=false`, `passive_support=owner_confirmed` e
+  `verification_status=externally_confirmed_by_owner`.
+
+---
+
 # Handoff Euri - 2026-07-24 - Salvataggio nominato UBQ corretto e riparato
 
 - La prova Silent Chat del 23/07 ha scoperto un errore reale: “queste informazioni
