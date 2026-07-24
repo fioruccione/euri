@@ -24,6 +24,11 @@
   `Verifica memoria passiva XXXXXXXX: CONFIRM → stato aggiornato`; poi verificare
   in Redis `requires_verification=false`, `passive_support=owner_confirmed` e
   `verification_status=externally_confirmed_by_owner`.
+- Nuova intenzione approvata: costruire un banco prova scientifico isolato per
+  confrontare RAG, Passive learner, consolidamento e sistema cognitivo completo
+  su LoCoMo, LongMemEval, MemBench e LoCoMo-Plus. Il piano canonico dettagliato è
+  `docs/EURI_MEMORY_BENCHMARK_PLAN.md`; la prima azione è costruire isolamento e
+  adapter su fixture sintetiche, senza scaricare subito i dataset.
 
 ---
 

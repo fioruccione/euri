@@ -6,6 +6,11 @@ Fase corrente: **2, lineage e verifica delle memorie passive collegati — confe
 
 Prossima azione esatta: **dopo il passaggio a Linux X11, creare una nuova memoria passiva, rispondere alla domanda Pulse e verificare log `CONFIRM → stato aggiornato` più i campi Redis di conferma esterna**
 
+Filone successivo approvato: **banco prova isolato della memoria cognitiva**.
+Piano completo in `docs/EURI_MEMORY_BENCHMARK_PLAN.md`. Dopo la conferma live
+Pulse, iniziare da `IsolatedRuntime`, fixture sintetiche e test di non
+contaminazione; LoCoMo è la prima suite esterna da collegare.
+
 Questo file è il punto di ripresa canonico del cantiere Pulse. Va letto insieme
 alla prima sezione di `CODEX.md` prima di modificare Pulse, Dream, memoria,
 Initiative o reaction. A ogni avanzamento si aggiornano: stato, evidenze, commit
