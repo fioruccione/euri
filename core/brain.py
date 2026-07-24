@@ -502,7 +502,10 @@ class Brain:
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": 0.1, "num_predict": 2000},
-                think=True,
+                # Estrazione strutturata: il reasoning esteso di Gemma può
+                # consumare il budget senza emettere la lista parsabile.
+                # I fatti restano comunque sottoposti a provenienza e verifica.
+                think=False,
             )
             result = self._clean(response.message.content or "")
             if not result or "NOTHING" in result.upper():
