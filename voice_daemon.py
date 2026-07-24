@@ -215,6 +215,7 @@ class VoiceDaemon:
         self._pending_readback: _PendingState | None = None   # memoria riletta, attesa correzione/aggiunta (180s)
         self._pending_write: _PendingState | None = None  # richiesta scrittura file in attesa (timeout 120s)
         self._awaiting_reaction: _PendingState | None = None  # insight su cui Euri ha chiesto conferma, in attesa della reazione di Stefano (timeout 300s)
+        self._awaiting_memory_verification: _PendingState | None = None
         self._pending_guest_review: _PendingState | None = None  # claim ospite chiesto esplicitamente a Stefano
         self._guest_review_cooldown_until: float = 0.0
         self._last_created_file: str | None = None  # ultimo file creato da Euri (per "aprilo")
@@ -894,6 +895,80 @@ class VoiceDaemon:
 
         threading.Thread(target=_bg, daemon=True).start()
         self._speak(_REACTION_ACK)
+        return True
+
+    def _handle_memory_verification(self, text: str) -> bool:
+        """Collega la risposta dell'utente alla memoria passiva chiesta dal Pulse."""
+        pending = self._awaiting_memory_verification
+        if not pending:
+            return False
+        from core.utterance_pragmatics import classify_memory_verification_reply
+
+        data = pending.data
+        verdict = classify_memory_verification_reply(
+            data.get("question", ""), data.get("claim", ""), text
+        )
+        if verdict == "CLARIFICATION":
+            self.memory.log_conversation(_OWNER_NAME, text)
+            reply = f"Mi riferivo a questa informazione: {data.get('claim', '')}. È corretta?"
+            self.memory.log_conversation(_ASSISTANT_NAME, reply)
+            self._speak(reply)
+            return True
+        if verdict == "OFF_TOPIC":
+            self._awaiting_memory_verification = None
+            self.present.clear_pending_question(data.get("question_id"))
+            logger.info("Verifica memoria passiva chiusa: replica OFF_TOPIC")
+            return False
+
+        memory_id = str(data.get("memory_id") or "")
+        key = f"euri:memory:{memory_id}"
+        now_ts = time.time()
+        try:
+            if verdict == "CONFIRM":
+                self.r.json().set(key, "$.requires_verification", False)
+                self.r.json().set(key, "$.passive_support", "owner_confirmed")
+                self.r.json().set(key, "$.verification_status", "externally_confirmed_by_owner")
+                self.r.json().set(key, "$.epistemic_status", "externally_confirmed")
+                self.r.json().set(key, "$.confirmed_by_user_at", now_ts)
+                reply = "Confermato. Ora questa informazione è fondata sulla tua verifica."
+            else:
+                self.r.json().set(key, "$.requires_verification", True)
+                self.r.json().set(key, "$.passive_support", "owner_refuted")
+                self.r.json().set(key, "$.verification_status", "externally_refuted")
+                self.r.json().set(key, "$.epistemic_status", "externally_refuted")
+                self.r.json().set(key, "$.refuted_by_user_at", now_ts)
+                reply = (
+                    "Ricevuto. La memoria resta contestata; terrò la tua correzione "
+                    "separata dal dato precedente."
+                )
+            cognitive_emit(
+                self.r,
+                "memory",
+                "extero",
+                "verified" if verdict == "CONFIRM" else "refuted",
+                producer="initiative_memory_verification",
+                trace_id=data.get("question_id") or f"memory-verification:{memory_id}",
+                logical_event_id=f"memory-verification:{memory_id}:{int(now_ts)}",
+                entity_refs=[{"type": "memory", "id": memory_id, "role": "target"}],
+                payload={"id": memory_id, "verdict": verdict},
+                epistemic_before="passive_requires_verification",
+                epistemic_after=(
+                    "externally_confirmed" if verdict == "CONFIRM" else "externally_refuted"
+                ),
+                salience=0.75,
+            )
+            logger.info(
+                f"Verifica memoria passiva {memory_id[:8]}: {verdict} → stato aggiornato"
+            )
+        except Exception as e:
+            logger.error(f"Verifica memoria passiva fallita {memory_id[:8]}: {e}")
+            return True
+
+        self._awaiting_memory_verification = None
+        self.present.clear_pending_question(data.get("question_id"))
+        self.memory.log_conversation(_OWNER_NAME, text)
+        self.memory.log_conversation(_ASSISTANT_NAME, reply)
+        self._speak(reply)
         return True
 
     def _handle_save_note(self, text: str):
@@ -2562,6 +2637,7 @@ class VoiceDaemon:
             self._pending_readback is not None,
             self._pending_write is not None,
             self._awaiting_reaction is not None,
+            self._awaiting_memory_verification is not None,
         ))
 
     def _offer_next_guest_claim(self) -> bool:
@@ -2746,6 +2822,16 @@ class VoiceDaemon:
             else:
                 if self._handle_reaction(text):
                     return
+
+        if self._awaiting_memory_verification:
+            if self._awaiting_memory_verification.expired():
+                self.present.clear_pending_question(
+                    self._awaiting_memory_verification.data.get("question_id")
+                )
+                self._awaiting_memory_verification = None
+                logger.debug("Verifica memoria passiva scaduta")
+            elif self._handle_memory_verification(text):
+                return
 
         # Audit memory: attende sì/no per cancellare le memorie rumore
         if self._audit_confirm_mode:
@@ -3348,6 +3434,8 @@ class VoiceDaemon:
             pass
         if self._awaiting_reaction:
             return "awaiting_reaction"
+        if self._awaiting_memory_verification:
+            return "awaiting_memory_verification"
         if any([
             self._pending_todo,
             self._pending_reschedule,
@@ -3551,6 +3639,20 @@ class VoiceDaemon:
             self._awaiting_reaction = _PendingState(
                 {
                     "insight": candidate.related,
+                    "question": question,
+                    "question_id": event_id,
+                },
+                timeout=300,
+            )
+            self.present.set_pending_question(event_id, question)
+        elif (
+            str(candidate.event.get("sense") or "") == "memory"
+            and str(candidate.related.get("source") or "") == "passive"
+        ):
+            self._awaiting_memory_verification = _PendingState(
+                {
+                    "memory_id": candidate.related.get("id"),
+                    "claim": candidate.related.get("content", ""),
                     "question": question,
                     "question_id": event_id,
                 },

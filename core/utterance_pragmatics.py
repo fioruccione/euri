@@ -131,6 +131,63 @@ def classify_reply_type(question: str, reply: str, *, chat=None, model: str = No
     return "OFF_TOPIC"
 
 
+def classify_memory_verification_reply(
+    question: str,
+    claim: str,
+    reply: str,
+    *,
+    chat=None,
+    model: str = None,
+) -> str:
+    """Classifica una risposta alla verifica di una memoria passiva.
+
+    Ritorna CONFIRM, REFUTE, CORRECT, CLARIFICATION oppure OFF_TOPIC. La decisione
+    resta semantica: nessun vocabolario di settore o formula obbligatoria.
+    """
+    if is_clarification_request(reply):
+        return "CLARIFICATION"
+    try:
+        if chat is None:
+            from core.ollama_client import chat_client
+            chat = chat_client
+        import config
+        prompt = (
+            "Euri ha chiesto all'utente di verificare una memoria passiva.\n"
+            f'MEMORIA: "{claim}"\n'
+            f'DOMANDA: "{question}"\n'
+            f'RISPOSTA UTENTE: "{reply}"\n\n'
+            "Classifica il significato della risposta:\n"
+            "- CONFERMA: conferma la memoria, anche aggiungendo dettagli coerenti\n"
+            "- SMENTITA: dice che la memoria è falsa o non applicabile\n"
+            "- CORREZIONE: conferma solo in parte e modifica un dettaglio sostanziale\n"
+            "- CHIARIMENTO: chiede di rispiegare la domanda\n"
+            "- FUORI_TEMA: non risponde alla verifica\n"
+            "Rispondi con UNA sola parola: CONFERMA, SMENTITA, CORREZIONE, "
+            "CHIARIMENTO oppure FUORI_TEMA."
+        )
+        result = chat.chat(
+            model=model or config.OLLAMA_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0.0, "num_predict": 8},
+            think=False,
+        )
+        out = (result.message.content or "").strip().upper()
+        if "CHIARIMENT" in out:
+            return "CLARIFICATION"
+        if "FUORI" in out or "OFF_TOPIC" in out:
+            return "OFF_TOPIC"
+        if "CORREZ" in out:
+            return "CORRECT"
+        if "SMENT" in out or "REFUT" in out:
+            return "REFUTE"
+        if "CONFER" in out:
+            return "CONFIRM"
+        logger.debug(f"classify_memory_verification_reply: output ambiguo '{out}'")
+    except Exception as e:
+        logger.warning(f"classify_memory_verification_reply: Gemma fallito ({e})")
+    return "OFF_TOPIC"
+
+
 # ── Rilettura → cura (READ_BACK pending) ──────────────────────────────────────
 # Cosa vuole l'utente dopo che Euri gli ha riletto una memoria? I prefissi-ack a
 # regex non reggono la varietà del parlato (caso live 14/07: "Tutto perfetto, hai
