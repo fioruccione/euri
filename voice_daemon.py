@@ -2953,12 +2953,17 @@ class VoiceDaemon:
                 through_seq = new_history[-1]["seq"]
 
                 saved = 0
+                extracted = 0
+                validated = 0
+                rejected = 0
+                duplicates = 0
                 # Non mischiare nel medesimo prompt scambi rivolti esplicitamente a
                 # Euri e parlato ambient: un solo messaggio trusted non deve rendere
                 # FORTE un fatto estratto dalla parte ambient del batch.
                 for segment_addressed, segment_history in self._passive_extraction_batches(new_history):
                     facts = self.brain.extract_passive_memories(segment_history) or []
                     for fact_item in facts:
+                        extracted += 1
                         from core.temporal_context import derive_passive_memory_metadata
                         support = fact_item.get("support") if isinstance(fact_item, dict) else None
                         weak_support = self._passive_weak_support(support, segment_addressed)
@@ -2969,8 +2974,11 @@ class VoiceDaemon:
                         )
                         clean = validate_payload(fact, "memory")
                         if not clean:
+                            rejected += 1
                             continue
+                        validated += 1
                         if self.memory.is_duplicate_memory(clean, llm_probe_fn=self.brain.probe_same_meaning):
+                            duplicates += 1
                             continue
                         mid = self.memory.save_memory(
                             clean,
@@ -2994,6 +3002,12 @@ class VoiceDaemon:
 
                 if saved:
                     logger.info(f"Passive learner: {saved} fatto/i salvato/i silenziosamente")
+                logger.info(
+                    "Passive learner: pass completato "
+                    f"messaggi={new_exchanges} estratti={extracted} "
+                    f"validati={validated} scartati={rejected} "
+                    f"duplicati={duplicates} salvati={saved}"
+                )
                 self._passive_last_seq = through_seq
                 self.brain.ack_passive_messages(through_seq)
 
