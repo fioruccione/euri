@@ -35,6 +35,9 @@ def test_named_command_is_save_memory_and_extracts_title():
     assert extract_named_save(text) == (
         "questi informazioni", "Compuand UBQ 2026"
     )
+    assert extract_named_save(
+        "Memorizza questo con il nome Compound UBQ 2026 Risultati Finali."
+    ) == ("Memorizza questo", "Compound UBQ 2026 Risultati Finali")
 
 
 def test_named_command_saves_previous_fact_and_title_metadata():

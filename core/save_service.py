@@ -47,7 +47,7 @@ _TRUSTED_MERGE_SOURCES = {"user", "teach"}
 # Include "questi informazioni" perché è la forma realmente arrivata da STT/chat.
 _NAMED_SAVE_RE = re.compile(
     r"^(?P<prefix>(?:(?:salva|memorizza|segna|ricorda)\s+)?"
-    r"quest[aei]\s+informazion[ei])\s+(?:con|col)\s+(?:il\s+)?nome\s*[:\-]?\s*"
+    r"(?:quest[aei]\s+informazion[ei]|questo))\s+(?:con|col)\s+(?:il\s+)?nome\s*[:\-]?\s*"
     r"(?P<title>[^.!?\n]+?)\s*[.!?]*$",
     re.IGNORECASE,
 )
