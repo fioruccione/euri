@@ -220,7 +220,7 @@ cd /home/fio/Euri
 - **Memoria su un soggetto discusso (V2.19):** *"ricordati il macinato di Seari"* — il modello caldo capisce che rimandi a un tema appena affrontato e cattura la **sostanza** della conversazione su quel soggetto, invece di salvare la sola etichetta presente nel comando.
 - **Arricchimento (merge):** se aggiungi un dettaglio nuovo a qualcosa di già salvato, Euri **arricchisce** la memoria esistente e te lo annuncia ("Ho aggiornato la memoria: …") invece di scartarlo come duplicato o crearne uno doppio. Se invece è un soggetto diverso, salva separato.
 - **Impegni con scadenza:** *"Devo fare X fra 5 minuti"* — un impegno è una **memoria di prima classe** con `due_at` e stato pending/done (niente più silo separato): passa dallo stesso path hardened delle memorie, il piano conversazionale lo vede sempre (*"che impegni ho?"*, *"cosa è scaduto?"* rispondono col contenuto reale, anche per scadenze future), e il promemoria viene consegnato **una volta sola, quando sei presente**, formulato naturalmente. Gli scaduti vengono nominati, non contati.
-- **Passive Learner:** Euri ascolta passivamente e dopo 45 secondi di silenzio salva informazioni utili in background.
+- **Passive Learner:** Euri ascolta passivamente e dopo 45 secondi di silenzio salva informazioni utili in background. La deduplicazione è conservativa: la similarità semantica propone soltanto candidati e un fatto viene eliminato solo se il contenuto è già coperto e il giudice restituisce un verdetto esplicito. In caso di dubbio Euri conserva il fatto, perché un doppione è correggibile mentre un'informazione persa no. Prima del salvataggio, un audit separato verifica inoltre che ogni affermazione sia sostenuta dai turni dichiarati e ripara gli ID sorgente incompleti; il gate di utilità passivo decide solo `KEEP/JUNK` e non riscrive più il testo.
 - **Stessa cosa in Silent Chat:** i comandi di salvataggio funzionano identici nella chat testuale (stesso coordinatore), senza più fingere il salvataggio.
 
 ### Salvataggio via Dropzone (Obsidian)
@@ -242,6 +242,17 @@ Chi vuole riusare Euri deve prima personalizzare almeno questi punti:
 Euri parla italiano per default. La **lingua** delle risposte vive nei prompt (`config.SYSTEM_PROMPT`, l'hint della Silent Chat, `EURI_CONTEXT.md`) e nelle euristiche di recall/conversazione: tradurli sposta la conversazione solo se vengono tradotti insieme anche cue, esempi e aspettative del modello.
 
 Un punto merita attenzione a parte: l'**àncora temporale** iniettata nel contesto del modello a ogni turno (`core/brain.py`, "Data e ora corrente: …"). È resa **esplicitamente in italiano** dagli array `_GIORNI` e `_MESI` in `utils/date_utils.py` — *non* via `strftime('%A'/'%B')`. È una scelta deliberata: `strftime` segue il locale di sistema (spesso `C/POSIX` → giorno in inglese, es. "Saturday"), e un modello che risponde in italiano tende a ignorare un'àncora in lingua straniera, confabulando un cliché ("è venerdì sera") invece di leggere il dato. Scrivere la data nella lingua della conversazione la rende un'àncora forte. **Per un'altra lingua:** tradurre `_GIORNI`/`_MESI` (e l'etichetta "Data e ora corrente" in `brain.py`). `dt.weekday()` è 0=lunedì, quindi l'ordine degli array parte dal lunedì.
+
+La stessa convenzione vale ora anche per il **Passive learner**. Ogni turno nel
+prompt di estrazione usa l'àncora completa italiana, per esempio “domenica 23
+gennaio 2022”, e il modello deve conservare espressioni come “venerdì scorso”
+senza convertirle. La data canonica viene calcolata dal resolver deterministico
+rispetto a `asserted_at`. Le sessioni lunghe sono analizzate in finestre
+sovrapposte e i dettagli vengono salvati come fatti atomici; gli ID locali del
+modello sono ricondotti ai turni reali e un audit semantico fail-closed risolve
+o scarta le fonti prima del calcolo temporale. Se il modello produce comunque
+una data numerica in conflitto, il guard corregge il contenuto prima di dedup e
+salvataggio, registrando l'intervento nel `temporal_context`.
 
 ---
 

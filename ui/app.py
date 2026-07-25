@@ -1066,7 +1066,7 @@ with main_col:
             # Ogni 6 turni (3 scambi) lancia l'estrazione passiva inline
             if len(st.session_state.messages) % 6 == 0:
                 try:
-                    from core.validator import validate_payload
+                    from core.validator import validate_passive_payload
                     full_log = memory_manager.get_today_conversation()
                     st.session_state.chat_log_offset = len(full_log)
                     # extract_passive_memories vuole list[dict] con role/content
@@ -1078,15 +1078,45 @@ with main_col:
                             from core.temporal_context import derive_passive_memory_metadata
                             weak_support = isinstance(fact_item, dict) and fact_item.get("support") == "weak"
                             fact = fact_item.get("content", "") if isinstance(fact_item, dict) else str(fact_item)
-                            metadata = derive_passive_memory_metadata(
-                                fact_item if isinstance(fact_item, dict) else {"content": fact},
-                                recent_msgs,
-                            )
-                            clean = validate_payload(fact, "memory")
+                            clean = validate_passive_payload(fact)
                             if not clean:
                                 continue
+                            audit_candidate = (
+                                dict(fact_item)
+                                if isinstance(fact_item, dict)
+                                else {
+                                    "content": clean,
+                                    "memory_kind": "semantic_fact",
+                                    "source_turn_ids": [],
+                                }
+                            )
+                            audit_candidate["content"] = clean
+                            audited_item = brain.audit_passive_memory_provenance(
+                                audit_candidate,
+                                recent_msgs,
+                            )
+                            if not audited_item:
+                                continue
+                            provenance_audit = dict(
+                                audited_item.get("provenance_audit") or {}
+                            )
+                            metadata = derive_passive_memory_metadata(
+                                audited_item,
+                                recent_msgs,
+                            )
+                            clean = metadata["canonical_content"]
                             if memory_manager.is_duplicate_memory(clean, llm_probe_fn=brain.probe_same_meaning):
                                 continue
+                            final_fields = {
+                                "passive_provenance": provenance_audit,
+                            }
+                            if weak_support:
+                                final_fields.update(
+                                    {
+                                        "requires_verification": True,
+                                        "passive_support": "tacit_acceptance",
+                                    }
+                                )
                             mid = memory_manager.save_memory(
                                 clean,
                                 category="passivo",
@@ -1094,13 +1124,7 @@ with main_col:
                                 idempotent=True,
                                 memory_kind=metadata["memory_kind"],
                                 temporal_context=metadata["temporal_context"],
-                                final_fields=(
-                                    {
-                                        "requires_verification": True,
-                                        "passive_support": "tacit_acceptance",
-                                    }
-                                    if weak_support else None
-                                ),
+                                final_fields=final_fields,
                             )
                             if mid and (weak_support or metadata["memory_kind"] == "conversation_anchor"):
                                 from core.memory_attention import remove_loop2e_candidate

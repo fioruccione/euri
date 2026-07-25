@@ -62,3 +62,8 @@ backups/
 thought_maps/
 # Output locali degli audit ciechi (la chiave non va versionata prima dell'unblinding)
 audit_output/
+
+# Dataset benchmark scaricati localmente. Adapter, fixture e metadati restano
+# versionati; i corpus originali vengono acquisiti dalla fonte ufficiale.
+benchmarks/euri_memory/data/*
+!benchmarks/euri_memory/data/README.md

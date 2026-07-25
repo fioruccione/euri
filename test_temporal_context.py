@@ -15,7 +15,18 @@ from core.temporal_context import (
 
 
 def _ts(hour: int, minute: int = 0) -> float:
-    naive = datetime(2026, 7, 15, hour, minute)
+    return _date_ts(2026, 7, 15, hour, minute)
+
+
+def _date_ts(
+    year: int,
+    month: int,
+    day: int,
+    hour: int = 0,
+    minute: int = 0,
+    second: int = 0,
+) -> float:
+    naive = datetime(year, month, day, hour, minute, second)
     if hasattr(config.TIMEZONE, "localize"):
         return config.TIMEZONE.localize(naive).timestamp()
     return naive.replace(tzinfo=config.TIMEZONE).timestamp()
@@ -156,6 +167,77 @@ def test_generic_memories_resolve_numeric_and_relative_time():
     assert relative["event_start"] < _ts(15, 19) < relative["event_end"]
 
 
+def test_passive_relative_date_overrides_wrong_llm_absolute_date():
+    asserted_at = _date_ts(2022, 1, 23, 14, 1, 2)
+    conversation = [
+        {
+            "seq": 25,
+            "role": "user",
+            "content": (
+                "Ho finalmente finito la mia prima sceneggiatura completa "
+                "e l'ho stampata venerdì scorso."
+            ),
+            "observed_at": asserted_at,
+            "conversation_id": "session-2",
+            "segment_id": 2,
+        }
+    ]
+    item = {
+        "content": (
+            "Joanna ha terminato e stampato la sua prima sceneggiatura "
+            "completa il 20/01/2022."
+        ),
+        "memory_kind": "semantic_fact",
+        "source_turn_ids": [25],
+    }
+
+    metadata = derive_passive_memory_metadata(item, conversation)
+    temporal = metadata["temporal_context"]
+    event_date = datetime.fromtimestamp(
+        temporal["event_start"], tz=config.TIMEZONE
+    ).date()
+
+    assert event_date.isoformat() == "2022-01-21"
+    assert "21/01/2022" in metadata["canonical_content"]
+    assert "20/01/2022" not in metadata["canonical_content"]
+    assert temporal["source_temporal_expression"].lower() == "venerdì scorso"
+    assert temporal["content_temporal_expression"] == "20/01/2022"
+    assert temporal["content_date_corrected"] is True
+    assert temporal["content_original_date"] == "20/01/2022"
+
+
+def test_passive_extractor_uses_full_italian_anchor_and_forbids_date_math():
+    conversation = [
+        {
+            "seq": 25,
+            "role": "user",
+            "content": "Ho stampato la sceneggiatura venerdì scorso.",
+            "observed_at": _date_ts(2022, 1, 23, 14, 1, 2),
+        },
+        {
+            "seq": 26,
+            "role": "assistant",
+            "content": "Congratulazioni!",
+            "observed_at": _date_ts(2022, 1, 23, 14, 2),
+        },
+    ]
+
+    class _Message:
+        content = "NOTHING"
+
+    class _Response:
+        message = _Message()
+
+    with patch("core.brain.chat_client.chat", return_value=_Response()) as chat:
+        assert Brain().extract_passive_memories(conversation) == []
+
+    prompt = chat.call_args.kwargs["messages"][0]["content"]
+    assert "domenica 23 gennaio 2022, ore 14:01" in prompt
+    assert "venerdì scorso" in prompt
+    assert "NON calcolare né inventare una data assoluta" in prompt
+    assert "l'unione di TUTTI i turni necessari" in prompt
+
+
 def test_brain_prompt_exposes_time_but_marks_it_internal():
     brain = Brain()
     with brain.history_lock:
@@ -208,6 +290,8 @@ if __name__ == "__main__":
     test_passive_fact_requires_user_only_source_turns()
     test_passive_anchor_resolves_this_morning_against_assertion_time()
     test_generic_memories_resolve_numeric_and_relative_time()
+    test_passive_relative_date_overrides_wrong_llm_absolute_date()
+    test_passive_extractor_uses_full_italian_anchor_and_forbids_date_math()
     test_brain_prompt_exposes_time_but_marks_it_internal()
     test_internal_time_label_never_reaches_output()
     print("test_temporal_context: OK")

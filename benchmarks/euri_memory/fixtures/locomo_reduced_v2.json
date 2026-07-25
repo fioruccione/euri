@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "selection_id": "locomo-conv42-s1-s2-q8-v1",
+  "dataset": "locomo",
+  "sample_id": "conv-42",
+  "session_ids": ["session_1", "session_2"],
+  "question_ids": [
+    "conv-42:q1",
+    "conv-42:q3",
+    "conv-42:q6",
+    "conv-42:q8",
+    "conv-42:q97",
+    "conv-42:q99",
+    "conv-42:q206",
+    "conv-42:q207"
+  ],
+  "speaker_mapping": {
+    "speaker_a": "owner_user",
+    "speaker_b": "assistant"
+  },
+  "notes": [
+    "Selezione indipendente dalla v1, dichiarata prima della run.",
+    "Le prime due sessioni contengono 51 turni.",
+    "Le domande coprono multi-hop, temporal, single-hop, open-domain e adversarial."
+  ]
+}

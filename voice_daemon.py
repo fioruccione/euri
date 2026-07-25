@@ -3011,7 +3011,7 @@ class VoiceDaemon:
         Versione aggressiva: analizza TUTTA la history recente (non solo trusted/wake-word).
         Il validator LLM e il dedup semantico filtrano la spazzatura.
         """
-        from core.validator import validate_payload
+        from core.validator import validate_passive_payload
         IDLE_TRIGGER = 45       # secondi di silenzio prima di analizzare (era 60)
         MIN_NEW_EXCHANGES = 1   # scambi minimi dall'ultima analisi (era 2)
 
@@ -3054,18 +3054,49 @@ class VoiceDaemon:
                         support = fact_item.get("support") if isinstance(fact_item, dict) else None
                         weak_support = self._passive_weak_support(support, segment_addressed)
                         fact = fact_item.get("content", "") if isinstance(fact_item, dict) else str(fact_item)
-                        metadata = derive_passive_memory_metadata(
-                            fact_item if isinstance(fact_item, dict) else {"content": fact},
-                            segment_history,
-                        )
-                        clean = validate_payload(fact, "memory")
+                        clean = validate_passive_payload(fact)
                         if not clean:
                             rejected += 1
                             continue
+                        audit_candidate = (
+                            dict(fact_item)
+                            if isinstance(fact_item, dict)
+                            else {
+                                "content": clean,
+                                "memory_kind": "semantic_fact",
+                                "source_turn_ids": [],
+                            }
+                        )
+                        audit_candidate["content"] = clean
+                        audited_item = self.brain.audit_passive_memory_provenance(
+                            audit_candidate,
+                            segment_history,
+                        )
+                        if not audited_item:
+                            rejected += 1
+                            continue
+                        provenance_audit = dict(
+                            audited_item.get("provenance_audit") or {}
+                        )
+                        metadata = derive_passive_memory_metadata(
+                            audited_item,
+                            segment_history,
+                        )
+                        clean = metadata["canonical_content"]
                         validated += 1
                         if self.memory.is_duplicate_memory(clean, llm_probe_fn=self.brain.probe_same_meaning):
                             duplicates += 1
                             continue
+                        final_fields = {
+                            "passive_provenance": provenance_audit,
+                        }
+                        if weak_support:
+                            final_fields.update(
+                                {
+                                    "requires_verification": True,
+                                    "passive_support": "tacit_acceptance",
+                                }
+                            )
                         mid = self.memory.save_memory(
                             clean,
                             category="passivo",
@@ -3073,13 +3104,7 @@ class VoiceDaemon:
                             idempotent=True,
                             memory_kind=metadata["memory_kind"],
                             temporal_context=metadata["temporal_context"],
-                            final_fields=(
-                                {
-                                    "requires_verification": True,
-                                    "passive_support": "tacit_acceptance",
-                                }
-                                if weak_support else None
-                            ),
+                            final_fields=final_fields,
                         )
                         if mid and (weak_support or metadata["memory_kind"] == "conversation_anchor"):
                             from core.memory_attention import remove_loop2e_candidate

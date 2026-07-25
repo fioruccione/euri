@@ -1,5 +1,128 @@
 # Changelog
 
+## 2026-07-25 — Estrazione passiva atomica a finestre
+
+- Le sessioni lunghe vengono analizzate in finestre da 12 messaggi con overlap
+  di 4: un dettaglio locale non compete più con l'intera conversazione né con un
+  limite globale di sei fatti.
+- Il contratto richiede memorie atomiche e proprietà autonome. Identità dei
+  parlanti e ID locali `T1...T12` vengono risolti negli ID reali della sessione
+  prima del salvataggio.
+- Il parser accetta in modo controllato `TURNI` e la variante Gemma `TURNOS`,
+  con o senza prefisso `T`; altre intestazioni `[TIPO=...]` malformate vengono
+  scartate e non possono finire nel contenuto.
+- Gli ID formalmente dubbi non eliminano più subito un fatto: vengono differiti
+  all'audit semantico fail-closed. Validazione e risoluzione temporale avvengono
+  nell'ordine contenuto → audit fonti → data canonica.
+- Una chiusura deterministica conserva il precedente turno dell'utente quando
+  serve a risolvere un'anafora come “È un misto...”.
+- Replica LoCoMo-IT: q99 passa da astensione a “La sceneggiatura di Joanna è un
+  misto di dramma e romanticismo”, con fonti `[25,27]` (`D2:3` + `D2:5`);
+  evidence recall `0,625 → 0,875`, F1 `0,318 → 0,396` e accuracy avversariale
+  invariata a `1,000`. Il costo sale a 92 chiamate locali e 22 memorie salvate:
+  la prossima ablation deve ridurre frammentazione e costo senza perdere
+  copertura.
+
+## 2026-07-25 — Provenienza semantica delle memorie passive
+
+- `TURNI` deve ora contenere l'unione di tutte le fonti necessarie a sostenere
+  ogni affermazione della memoria, non soltanto turni esistenti del ruolo giusto.
+- Un audit finale, eseguito dopo il gate di utilità e prima di dedup/salvataggio,
+  confronta il contenuto con i turni originali, aggiunge le fonti dimenticate e
+  scarta output non supportati o non verificabili.
+- Il benchmark conserva il nome originale del parlante: un “io” di Joanna non
+  viene più attribuito genericamente al ruolo `UTENTE`; nell'uso reale il
+  fallback resta il profilo locale di Stefano/Euri.
+- Il Buttafuori passivo non riscrive più il contenuto. Risponde soltanto
+  `KEEP/JUNK`, evitando che una parafrasi aggiunga qualificazioni senza fonte.
+- Il parser dell'audit accetta in modo controllato ID numerici, `T25` e liste
+  `T25,T27`, poi verifica comunque esistenza e ruolo nel dialogo.
+- Replica LoCoMo-IT finale: 7 candidati estratti, 7 validati e 7 salvati, zero
+  scarti di provenienza e 4 liste di fonti riparate. Sonda reale sul difetto
+  originario: la memoria combinata della sceneggiatura corregge `[25]` in
+  `[25,27]`, cioè evidence `D2:3` + `D2:5`.
+
+## 2026-07-25 — Deduplicazione passiva conservativa
+
+- La similarità vettoriale individua ora soltanto candidati: non può più
+  eliminare automaticamente una memoria. L'identità testuale resta un fast path.
+- Prima del giudice LLM, il candidato deve coprire tutti i marker informativi
+  della nuova frase; soggetti espliciti diversi, numeri/date diversi e negazioni
+  fanno conservare il fatto.
+- Il giudice elimina soltanto su risposta esatta `DUPLICATO`; output ambigui,
+  errori e dubbi sono fail-open. Il prompt chiarisce che stesso tema o soggetto
+  non equivalgono allo stesso contenuto.
+- Regressioni aggiunte per i tre falsi positivi LoCoMo-IT, quantità `100/120 kg`,
+  soggetti distinti, negazione, identità normalizzata e risposta LLM ambigua.
+- Replica isolata dopo i fix data+dedup: 9 memorie estratte e 9 salvate, zero
+  falsi duplicati e 36 chiamate LLM contro 48 nella run storica. Nella stessa
+  replica F1 `0,331 → 0,405` (+0,074), con evidence hit invariato a 0,625.
+  Il campione resta diagnostico e non statistico.
+
+## 2026-07-25 — Data locale canonica nel Passive learner
+
+- Il prompt di estrazione passiva usa ora `format_datetime_full`: giorno della
+  settimana, mese e ora sono esplicitamente italiani e indipendenti dal locale
+  `C/POSIX`, come nel percorso conversazionale principale.
+- Gemma deve conservare i riferimenti relativi pronunciati dall'utente
+  (`ieri`, `venerdì scorso`, `questa mattina`) senza convertirli autonomamente.
+- La fonte conversazionale e `asserted_at` sono canonici: il resolver
+  deterministico produce `event_start/event_end` prima del salvataggio.
+- Aggiunto un guard condiviso da voce, Silent Chat e benchmark: se il testo LLM
+  contiene una data numerica in conflitto con la fonte, viene corretto prima di
+  validazione e deduplica. Il `temporal_context` conserva espressione sorgente,
+  espressione generata, data originale e flag di correzione.
+- Regressione LoCoMo-IT: domenica 23 gennaio 2022 + “venerdì scorso” risolve al
+  21 gennaio e corregge deterministicamente l'uscita errata `20/01/2022`.
+
+## 2026-07-25 — LoCoMo italiano e confronto EN/IT
+
+- Aggiunta una localizzazione italiana completa e versionata della selezione
+  `conv-42` v2, preservando sessioni, turn ID, categorie ed evidence.
+- Il comando A/B accetta `--localization`; prompt di risposta, gold e astensione
+  possono ora essere eseguiti interamente in italiano.
+- Lo scorer ridotto riconosce anche le principali astensioni italiane.
+- Run IT pulita: F1 `0,318 → 0,368`, evidence hit `0,625 → 0,625`,
+  avversariale `1,000 → 1,000`; 9 memorie estratte e 6 salvate.
+- Evidenziati falsi duplicati e una data passiva errata (`20/01/2022`); la data
+  è ora coperta dalla correzione deterministica descritta sopra e i falsi
+  duplicati dalla deduplicazione conservativa descritta nella prima sezione.
+
+## 2026-07-24 - Prima A/B reale LoCoMo: RAG contro memoria passiva
+
+- Aggiunto il comando `benchmarks.euri_memory.cli ab`: avvia il codice Euri in un
+  processo figlio soltanto dopo aver fissato Redis e Vault temporanei, carica
+  l'embedder locale una volta e resetta lo stesso runtime fra i due profili.
+- La baseline indicizza 35 turni LoCoMo grezzi; il trattamento aggiunge il
+  percorso reale Passive learner, Buttafuori, deduplica, dominio e salvataggio.
+  Answer gold ed evidence entrano soltanto nello scorer dopo la generazione.
+- Il report registra dataset e selezione con SHA-256, stato Git, modello, prompt,
+  seed, chiamate e token Ollama, tempi, crescita Redis, memorie passive e trace di
+  retrieval per domanda.
+- Prima run con `gemma4:26b`: F1 0,370→0,356, exact match invariato a 0,333,
+  evidence recall invariato a 0,750 e accuracy avversariale 1,000→0,500. Le tre
+  memorie passive non migliorano questo piccolo campione e rivelano un caso di
+  over-answer da conservare come regressione.
+- Replica v1: baseline identico, Passive F1 0,364 e accuracy avversariale 1,000;
+  la variazione conferma instabilità del trattamento. Seconda selezione `conv-42`
+  su 51 turni/8 domande: F1 0,187→0,162, evidence recall 0,625 invariato,
+  8 memorie passive salvate su 10 candidati. Il passo successivo è ampliare il
+  campione, non promuovere questa sonda a risultato ufficiale.
+
+## 2026-07-24 - Banco prova memoria isolato e adapter LoCoMo
+
+- Creato `benchmarks/euri_memory` con contratti separati per corpus, prompt e
+  gold, profili A/B dichiarativi, trace e scoring deterministico di cablaggio.
+- Ogni run usa un processo Redis effimero con RedisJSON/RediSearch e un Vault
+  temporaneo; porta personale, percorsi esterni, PID e marker sono verificati
+  prima di reset o scritture.
+- L'adapter LoCoMo gestisce sessioni, timestamp, immagini annotate, categorie,
+  evidence multiple e riferimenti mancanti senza nascondere difetti del gold.
+- Il downloader acquisisce corpus e licenza CC BY-NC 4.0 dalla fonte ufficiale,
+  registra gli SHA-256 e lascia i dati fuori da Git.
+- Smoke reale completato su 419 turni e 199 domande della prima conversazione,
+  con 618 eventi trace e nessun accesso a Redis o Vault personali.
+
 ## 2026-07-24 - Passive learner osservabile e conferme Pulse fondate
 
 - Il Passive learner analizza anche un singolo scambio completo e rende visibili

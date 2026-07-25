@@ -1,0 +1,55 @@
+[
+  {
+    "sample_id": "synthetic-isolation-1",
+    "qa": [
+      {
+        "question": "What dish did Nora learn to cook?",
+        "answer": "ramen",
+        "evidence": ["D1:2"],
+        "category": 1
+      },
+      {
+        "question": "When did Nora finish the robotics prototype?",
+        "answer": "12 January 2026",
+        "evidence": ["D2:1"],
+        "category": 2
+      },
+      {
+        "question": "Which city did Nora move to?",
+        "evidence": ["D2:2"],
+        "category": 5,
+        "adversarial_answer": "Rome"
+      }
+    ],
+    "conversation": {
+      "speaker_a": "Nora",
+      "speaker_b": "Leo",
+      "session_1_date_time": "10:00 am on 5 January, 2026",
+      "session_1": [
+        {
+          "speaker": "Leo",
+          "dia_id": "D1:1",
+          "text": "What did you do over the weekend?"
+        },
+        {
+          "speaker": "Nora",
+          "dia_id": "D1:2",
+          "text": "I learned to cook ramen with my sister."
+        }
+      ],
+      "session_2_date_time": "6:30 pm on 12 January, 2026",
+      "session_2": [
+        {
+          "speaker": "Nora",
+          "dia_id": "D2:1",
+          "text": "I finished the robotics prototype today."
+        },
+        {
+          "speaker": "Leo",
+          "dia_id": "D2:2",
+          "text": "That is good news. I hope the demonstration goes well."
+        }
+      ]
+    }
+  }
+]

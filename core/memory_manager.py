@@ -39,6 +39,10 @@ _TTL_BY_SOURCE: dict[str, int] = {
 
 # Reflection dedup latest-wins: distanza cosine <= 0.10 equivale a similarita' >= 0.90.
 REFLECTION_DEDUP_MAX_DIST = 0.10
+# Il passive learner può tollerare un doppione, non la perdita di un fatto.
+# Prima del giudice LLM, tutti i marker informativi della nuova frase
+# devono essere già presenti nel candidato.
+PASSIVE_DEDUP_MIN_CLAIM_COVERAGE = 1.0
 
 
 # Mapping idempotente e documento diventano visibili nella stessa operazione.
@@ -863,41 +867,55 @@ class MemoryManager:
         """
         True se esiste già una memoria semanticamente equivalente.
 
-        Logica a 3 livelli (con embedding se disponibile, altrimenti Jaccard):
-          Cosine ≥ 0.92  → duplicato certo (skip LLM probe)
-          Cosine 0.70-0.92 → zona grigia → Jaccard + LLM probe
-          Cosine < 0.70  → contenuto diverso
-
-        Fallback senza embedder: Jaccard keyword a 3 livelli.
+        La cosine individua soltanto candidati, non decide mai da sola. Una
+        memoria viene eliminata soltanto per identità testuale normalizzata,
+        oppure quando il candidato copre tutti i marker informativi di A
+        e il giudice restituisce esattamente ``DUPLICATO``. Ambiguità ed errori
+        conservano A: un doppione è recuperabile, un fatto perso no.
         """
         # ── Fast path: cosine similarity con embedding ──
         if self._embedder and self._embedder.available:
-            import numpy as np
             vec_new = self._embedder.encode(content)
             if vec_new is not None:
                 candidates = self._search_semantic(content, limit=3)
                 for cand in candidates:
                     score = cand.get("_vec_score", 1.0)  # COSINE distance (0=identico, 1=opposto)
                     similarity = 1.0 - score
-                    if similarity >= 0.92:
-                        logger.info(f"Duplicato memory (cosine={similarity:.2f}): '{content[:50]}' ~ '{cand['content'][:50]}'")
+                    candidate_content = str(cand.get("content") or "")
+                    normalized_content = self._normalized_claim_text(content)
+                    if normalized_content and normalized_content == (
+                        self._normalized_claim_text(candidate_content)
+                    ):
+                        logger.info(
+                            "Duplicato memory (identità testuale): "
+                            f"'{content[:50]}' ~ '{candidate_content[:50]}'"
+                        )
                         return True
-                    elif similarity >= 0.70:
-                        # Zona grigia: chiedi se A aggiunge fatti nuovi rispetto a B
-                        if llm_probe_fn is not None:
-                            question = (
-                                f"La frase A contiene informazioni concrete non già presenti in B? "
-                                f"(numeri diversi, componenti diversi, processi diversi, date, misure specifiche)\n"
-                                f"A: {content}\nB: {cand['content']}\n"
-                                f"Rispondi SÌ se A aggiunge qualcosa di nuovo, NO se A non aggiunge nulla di nuovo rispetto a B."
-                            )
-                            answer = llm_probe_fn(question)
-                            adds_new = answer.strip().upper().startswith(("SÌ", "SI", "YES"))
-                        else:
-                            adds_new = not self._llm_is_same_content(content, cand["content"])
-                        if not adds_new:
-                            logger.info(f"Duplicato memory (cosine={similarity:.2f}+LLM): '{content[:50]}' ~ '{cand['content'][:50]}'")
-                            return True
+                    if similarity < 0.70:
+                        continue
+                    if not self._dedup_subjects_compatible(content, candidate_content):
+                        logger.debug(
+                            "Dedup memory: soggetti espliciti diversi, candidato escluso"
+                        )
+                        continue
+                    coverage = self._dedup_claim_coverage(content, candidate_content)
+                    if coverage < PASSIVE_DEDUP_MIN_CLAIM_COVERAGE:
+                        logger.debug(
+                            "Dedup memory: candidato semanticamente vicino ma "
+                            f"incompleto (cosine={similarity:.2f}, coverage={coverage:.2f})"
+                        )
+                        continue
+                    if self._probe_duplicate_verdict(
+                        content,
+                        candidate_content,
+                        llm_probe_fn=llm_probe_fn,
+                    ):
+                        logger.info(
+                            "Duplicato memory "
+                            f"(cosine={similarity:.2f}, coverage={coverage:.2f}+LLM): "
+                            f"'{content[:50]}' ~ '{candidate_content[:50]}'"
+                        )
+                        return True
                 return False  # nessun duplicato trovato via embedding
 
         # ── Fallback: Jaccard keyword ──
@@ -910,7 +928,17 @@ class MemoryManager:
             return False
         content_kws = set(words)
         for r in results:
-            candidate_kws = set(self._safe_keywords(r["content"]))
+            candidate_content = str(r.get("content") or "")
+            normalized_content = self._normalized_claim_text(content)
+            if normalized_content and normalized_content == (
+                self._normalized_claim_text(candidate_content)
+            ):
+                logger.info(
+                    "Duplicato memory (identità testuale fallback): "
+                    f"'{content[:50]}' ~ '{candidate_content[:50]}'"
+                )
+                return True
+            candidate_kws = set(self._safe_keywords(candidate_content))
             if not candidate_kws:
                 continue
             overlap = content_kws & candidate_kws
@@ -918,25 +946,122 @@ class MemoryManager:
             if min_kws == 0:
                 continue
             ratio = len(overlap) / min_kws
-            if ratio >= 0.5:
-                logger.info(f"Duplicato memory (Jaccard≥50%): '{content[:50]}' ~ '{r['content'][:50]}'")
+            if ratio < 0.2:
+                continue
+            if not self._dedup_subjects_compatible(content, candidate_content):
+                continue
+            coverage = self._dedup_claim_coverage(content, candidate_content)
+            if coverage < PASSIVE_DEDUP_MIN_CLAIM_COVERAGE:
+                continue
+            if self._probe_duplicate_verdict(
+                content,
+                candidate_content,
+                llm_probe_fn=llm_probe_fn,
+            ):
+                logger.info(
+                    "Duplicato memory "
+                    f"(Jaccard={ratio:.2f}, coverage={coverage:.2f}+LLM): "
+                    f"'{content[:50]}' ~ '{candidate_content[:50]}'"
+                )
                 return True
-            elif ratio >= 0.2:
-                if llm_probe_fn is not None:
-                    question = (
-                        f"La frase A contiene informazioni concrete non già presenti in B? "
-                        f"(numeri diversi, componenti diversi, processi diversi, date, misure specifiche)\n"
-                        f"A: {content}\nB: {r['content']}\n"
-                        f"Rispondi SÌ se A aggiunge qualcosa di nuovo, NO se A non aggiunge nulla di nuovo rispetto a B."
-                    )
-                    answer = llm_probe_fn(question)
-                    adds_new = answer.strip().upper().startswith(("SÌ", "SI", "YES"))
-                else:
-                    adds_new = not self._llm_is_same_content(content, r["content"])
-                if not adds_new:
-                    logger.info(f"Duplicato memory (Jaccard+LLM): '{content[:50]}' ~ '{r['content'][:50]}'")
-                    return True
         return False
+
+    @staticmethod
+    def _normalized_claim_text(content: str) -> str:
+        """Identità testuale robusta a maiuscole, punteggiatura e spazi."""
+        return " ".join(re.findall(r"\w+", (content or "").casefold(), re.UNICODE))
+
+    @classmethod
+    def _dedup_claim_tokens(cls, content: str) -> set[str]:
+        """Marker conservativi della proposizione, non una semantica completa."""
+        filler = {
+            "anche",
+            "inoltre",
+            "davvero",
+            "proprio",
+            "sempre",
+            "molto",
+            "circa",
+        }
+        tokens = set(cls._safe_keywords(content)) - filler
+        tokens.update(
+            re.findall(
+                r"\b(?:\d{4}-\d{1,2}-\d{1,2}|"
+                r"\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?|"
+                r"\d+(?:[.,]\d+)?)\b",
+                (content or "").casefold(),
+            )
+        )
+        tokens.update(
+            re.findall(
+                r"\b(?:non|mai|senza|nessun[oa]?|né|ne)\b",
+                (content or "").casefold(),
+            )
+        )
+        return tokens
+
+    @staticmethod
+    def _dedup_subjects_compatible(a: str, b: str) -> bool:
+        """Soggetti espliciti e disgiunti non possono essere duplicati."""
+        axes_a = analyze_memory_axes(a, source="passive")
+        axes_b = analyze_memory_axes(b, source="passive")
+        entities_a = {
+            str(item).casefold() for item in axes_a.get("entity_mentions") or []
+        }
+        entities_b = {
+            str(item).casefold() for item in axes_b.get("entity_mentions") or []
+        }
+        return not entities_a or not entities_b or bool(entities_a & entities_b)
+
+    @classmethod
+    def _dedup_claim_coverage(cls, new_content: str, candidate_content: str) -> float:
+        """Quota dei marker di A già presenti in B; A è il fatto da salvare."""
+        new_tokens = cls._dedup_claim_tokens(new_content)
+        if not new_tokens:
+            return 0.0
+        candidate_tokens = cls._dedup_claim_tokens(candidate_content)
+        return len(new_tokens & candidate_tokens) / len(new_tokens)
+
+    @staticmethod
+    def _duplicate_probe_prompt(a: str, b: str) -> str:
+        return (
+            "Classifica la frase A rispetto alla memoria B.\n"
+            "Rispondi DUPLICATO soltanto se B contiene già TUTTE le affermazioni "
+            "riutilizzabili presenti in A.\n"
+            "Rispondi AGGIUNGE se A introduce anche un solo fatto, preferenza, "
+            "relazione, proprietà, elemento di una lista, stato, evento, oggetto, "
+            "data, numero o qualificazione non presente in B. Stesso soggetto o "
+            "stesso argomento NON significa duplicato. Nel dubbio rispondi AGGIUNGE.\n"
+            "Esempio: 'Giulia ama scrivere' e 'Giulia ama scrivere e stare con gli "
+            "amici' → AGGIUNGE.\n"
+            "Esempio: 'Marco ama i film' e 'Marco preferisce drammi e commedie "
+            "romantiche' → AGGIUNGE.\n"
+            f"A: {a}\n"
+            f"B: {b}\n"
+            "Rispondi con una sola parola: DUPLICATO oppure AGGIUNGE."
+        )
+
+    @staticmethod
+    def _answer_means_duplicate(answer: str) -> bool:
+        """Fail-open: soltanto un verdetto esplicito e inequivoco elimina A."""
+        normalized = (answer or "").strip().upper().strip(" .,:;!?")
+        return normalized == "DUPLICATO"
+
+    @classmethod
+    def _probe_duplicate_verdict(
+        cls,
+        a: str,
+        b: str,
+        *,
+        llm_probe_fn=None,
+    ) -> bool:
+        if llm_probe_fn is None:
+            return cls._llm_is_same_content(a, b)
+        try:
+            answer = llm_probe_fn(cls._duplicate_probe_prompt(a, b))
+        except Exception:
+            return False
+        return cls._answer_means_duplicate(answer)
 
     def find_similar_memory(self, content: str) -> dict | None:
         """
@@ -1096,28 +1221,19 @@ class MemoryManager:
             logger.debug(f"Reflection dedup latest-wins fallito: {e}")
             return 0
 
-    @staticmethod
-    def _llm_is_same_content(a: str, b: str) -> bool:
-        """True se A non aggiunge informazioni concrete rispetto a B (= è un duplicato)."""
+    @classmethod
+    def _llm_is_same_content(cls, a: str, b: str) -> bool:
+        """True soltanto su verdetto DUPLICATO esplicito; errore = conserva A."""
         try:
             from core.ollama_client import chat_client
             import config
-            prompt = (
-                f"La frase A contiene informazioni concrete non già presenti in B? "
-                f"(numeri diversi, componenti diversi, processi diversi, date, misure specifiche)\n"
-                f"A: {a}\n"
-                f"B: {b}\n"
-                f"Rispondi solo SÌ o NO."
-            )
             response = chat_client.chat(
                 model=config.OLLAMA_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                options={"temperature": 0, "num_predict": 5},
+                messages=[{"role": "user", "content": cls._duplicate_probe_prompt(a, b)}],
+                options={"temperature": 0, "num_predict": 12},
                 think=False,
             )
-            result = (response.message.content or "").strip().upper()
-            adds_new = result.startswith("SÌ") or result.startswith("SI") or result.startswith("YES")
-            return not adds_new  # True = duplicato (non aggiunge nulla)
+            return cls._answer_means_duplicate(response.message.content or "")
         except Exception:
             return False  # In caso di errore, lascia passare
 

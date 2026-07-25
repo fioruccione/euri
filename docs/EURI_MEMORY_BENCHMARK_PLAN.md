@@ -1,6 +1,6 @@
 # Piano benchmark della memoria cognitiva di Euri
 
-Stato: intenzione approvata da Stefano il 24 luglio 2026.
+Stato: Fase 0 e prima A/B ridotta della Fase 1 completate il 24 luglio 2026.
 
 ## Scopo
 
@@ -193,18 +193,98 @@ gold non previste dal benchmark o alla configurazione del profilo.
 
 ### Fase 0 — Contratto e isolamento
 
-- definire interfacce adapter/runner;
-- creare Redis e Vault temporanei;
-- aggiungere guard che rifiutano endpoint personali;
-- produrre un test smoke senza LLM.
+- [x] definire interfacce adapter/runner;
+- [x] creare Redis e Vault temporanei;
+- [x] aggiungere guard che rifiutano endpoint personali;
+- [x] produrre un test smoke senza LLM.
+
+Implementazione: `benchmarks/euri_memory/`. Il runtime crea un processo Redis
+separato con porta casuale, verifica PID e marker prima di scrivere e distrugge
+l'intero ambiente alla fine. Corpus, prompt e gold sono tipi distinti: answer,
+evidence, osservazioni e summary annotate non raggiungono il runner.
 
 ### Fase 1 — LoCoMo ridotto
 
-- importare legalmente dataset e licenza;
-- ingerire una conversazione;
-- eseguire poche domande rappresentative;
-- verificare trace, scoring e reset;
-- produrre il primo report A/B `rag_only` contro `passive_memory`.
+- [x] importare legalmente dataset e licenza;
+- [x] validare adapter sull'intero corpus;
+- [x] ingerire una conversazione nel runner smoke;
+- [x] verificare trace, scoring e reset senza LLM;
+- [x] collegare il percorso reale `rag_only`;
+- [x] collegare il percorso reale `passive_memory`;
+- [x] selezionare un campione QA ridotto, dichiarato e deterministico;
+- [x] produrre il primo report A/B `rag_only` contro `passive_memory`.
+
+Il rilascio ufficiale acquisito contiene 10 conversazioni, 272 sessioni, 5.882
+turni e 1.986 domande. L'adapter segnala 5 evidence che, dopo la normalizzazione
+dei riferimenti multipli, non corrispondono a un `dia_id` presente. Questi difetti
+del gold restano visibili nei report.
+
+La selezione `locomo-conv26-s1-s2-q8-v1` contiene 35 turni e 8 domande. La prima
+run reale non mostra un vantaggio della memoria passiva: F1 0,370 → 0,356,
+evidence recall invariato a 0,750 e accuracy avversariale 1,000 → 0,500. Le tre
+memorie passive aggiunte hanno aumentato le chiamate locali da 16 a 27; una
+memoria episodica pertinente all'estate ha indotto un over-answer su una domanda
+non supportata. Il risultato è diagnostico e non ufficiale, data la dimensione
+del campione e lo scorer deterministico interno.
+
+Replica v1 con gli stessi corpus, seed e modello: il baseline `rag_only` è
+identico; il trattamento passa da F1 0,356 a 0,364 e l'accuratezza avversariale
+torna da 0,500 a 1,000. Questo conferma variabilità nel percorso passivo, non un
+vantaggio dimostrato.
+
+La selezione indipendente `locomo-conv42-s1-s2-q8-v1` contiene 51 turni e 8
+domande, coprendo tutte le cinque categorie. Risultato: F1 0,187 → 0,162,
+exact match 0 → 0, evidence recall 0,625 → 0,625 e accuracy avversariale
+1,000 → 1,000. Il Passive learner ha prodotto 10 candidati, salvato 8 memorie
+e usato 55 chiamate locali contro 16 della baseline. Anche qui nessun beneficio
+misurabile; il campione resta diagnostico, non una valutazione LoCoMo ufficiale.
+
+### Controllo in italiano
+
+È stata aggiunta una localizzazione italiana versionata della selezione v2:
+stessi 51 turni, 8 domande, categorie ed evidence ID. Il prompt di risposta e
+l'astensione sono localizzati; lo scorer riconosce sia “I don't know” sia
+“Non lo so”.
+
+Run pulita del 25 luglio 2026:
+
+- `rag_only`: F1 0,318; evidence hit 0,625; avversariale 1,000;
+- `passive_memory`: F1 0,368; evidence hit 0,625; avversariale 1,000;
+- delta F1 +0,050, senza delta di retrieval;
+- 9 memorie estratte, 6 salvate e 3 classificate come duplicate;
+- 48 chiamate LLM locali nel trattamento contro 16 nel baseline.
+
+Il confronto ha isolato due difetti: falsi duplicati fra fatti distinti e
+normalizzazione temporale errata di “venerdì scorso”. Entrambi sono ora coperti
+da regressioni. La fonte conversazionale prevale sul testo generato,
+`event_start` risolve al 21 gennaio 2022 e un eventuale `20/01/2022` viene
+corretto prima del salvataggio. La deduplicazione non decide più dalla sola
+cosine: richiede soggetto compatibile, copertura completa dei marker informativi
+e verdetto LLM `DUPLICATO` esatto.
+
+Replica post-fix dedup/data: baseline F1 0,331, Passive F1 0,405 (+0,074),
+evidence hit 0,625 invariato, 9 memorie salvate su 9, zero falsi duplicati e 36
+chiamate locali. La run ha anche mostrato che una sintesi poteva includere una
+clausola proveniente da un turno non dichiarato in `source_turn_ids`.
+
+La provenienza è ora verificata semanticamente sul testo finale: l'audit può
+riparare gli ID incompleti, il nome originale del parlante resta nel contratto e
+il Buttafuori passivo non riscrive più i fatti. Replica finale: 7/7 memorie
+salvate, zero rifiuti, 4 liste sorgente riparate, F1 0,318→0,325 ed evidence
+0,625 invariato. La sonda reale del caso combinato della sceneggiatura corregge
+`[25]` in `[25,27]`, cioè `D2:3` + `D2:5`.
+
+L'estrazione atomica a finestre corregge anche l'omissione del genere. Replica
+conclusiva: F1 `0,318→0,396`, evidence `0,625→0,875`, avversariale invariata a
+`1,000`; q99 passa dall'astensione alla risposta corretta e q207 resta in
+astensione. Il nodo del genere cita `[25,27]`. Sono però state salvate 22
+memorie con 92 chiamate locali: copertura e costo devono restare metriche
+separate.
+
+Il report storico non è stato rigenerato.
+Il token F1 EN/IT non va confrontato come misura assoluta perché cambia la
+superficie linguistica delle risposte; evidence hit e analisi per domanda sono
+il confronto più affidabile.
 
 ### Fase 2 — LoCoMo completo
 
@@ -243,7 +323,8 @@ La prima milestone è completa soltanto se:
 
 ## Prima azione alla ripresa
 
-Non scaricare subito tutti i dataset. Prima creare il contratto
-`IsolatedRuntime + ConversationAdapter + QuestionRunner`, con fixture sintetiche
-minime e test di non contaminazione. Solo dopo collegare LoCoMo.
-
+Eseguire un'ablation della nuova estrazione: finestra intera contro finestre
+sovrapposte, deduplica esatta contro consolidamento sessionale e audit su tutti
+i candidati contro soli candidati differiti. Obiettivo: conservare q99,
+evidence 0,875 e l'astensione q207 riducendo le 92 chiamate e le 22 memorie
+frammentate. Soltanto dopo ampliare LoCoMo.

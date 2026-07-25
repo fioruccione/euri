@@ -18,6 +18,8 @@ from utils.date_utils import now, format_datetime_full, from_timestamp
 
 _OWNER_NAME = config.OWNER_DISPLAY_NAME
 _ASSISTANT_NAME = config.ASSISTANT_DISPLAY_NAME
+_PASSIVE_EXTRACTION_WINDOW_MESSAGES = 12
+_PASSIVE_EXTRACTION_OVERLAP_MESSAGES = 4
 
 
 class Brain:
@@ -408,6 +410,96 @@ class Brain:
         Estrae fatti autosufficienti e fili conversazionali specifici ancora aperti.
         Ogni risultato conserva supporto, tipo e turni sorgente per la cronologia.
         """
+        windows = self._passive_extraction_windows(conversation)
+        if not windows:
+            return []
+
+        collected: list[dict] = []
+        for window_index, window in enumerate(windows, 1):
+            collected.extend(
+                self._extract_passive_memories_window(
+                    window,
+                    window_index=window_index,
+                    window_count=len(windows),
+                )
+            )
+        merged = self._merge_exact_passive_items(collected)
+        logger.info(
+            "Passive extractor aggregate: "
+            f"windows={len(windows)} candidates={len(collected)} "
+            f"exact_collapsed={len(collected) - len(merged)} returned={len(merged)}"
+        )
+        return merged
+
+    @staticmethod
+    def _passive_extraction_windows(conversation: list[dict]) -> list[list[dict]]:
+        """Finestre sovrapposte: il dettaglio locale non compete con una sessione intera."""
+        if len(conversation) < 2:
+            return []
+        size = _PASSIVE_EXTRACTION_WINDOW_MESSAGES
+        overlap = _PASSIVE_EXTRACTION_OVERLAP_MESSAGES
+        if len(conversation) <= size:
+            return [list(conversation)]
+
+        windows: list[list[dict]] = []
+        start = 0
+        while start < len(conversation):
+            end = min(start + size, len(conversation))
+            window = list(conversation[start:end])
+            if len(window) >= 2:
+                windows.append(window)
+            if end >= len(conversation):
+                break
+            start = end - overlap
+        return windows
+
+    @classmethod
+    def _merge_exact_passive_items(cls, items: list[dict]) -> list[dict]:
+        """Collassa soltanto identità testuali prodotte dall'overlap, unendo le fonti."""
+        merged: list[dict] = []
+        positions: dict[tuple[str, str], int] = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            normalized = " ".join(
+                re.findall(
+                    r"\w+",
+                    str(item.get("content") or "").casefold(),
+                    re.UNICODE,
+                )
+            )
+            kind = str(item.get("memory_kind") or "semantic_fact")
+            key = (kind, normalized)
+            if not normalized or key not in positions:
+                positions[key] = len(merged)
+                merged.append(dict(item))
+                continue
+
+            existing = merged[positions[key]]
+            source_ids: list[int] = []
+            for value in (
+                list(existing.get("source_turn_ids") or [])
+                + list(item.get("source_turn_ids") or [])
+            ):
+                try:
+                    turn_id = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if turn_id not in source_ids:
+                    source_ids.append(turn_id)
+            existing["source_turn_ids"] = source_ids
+            if item.get("support") == "strong":
+                existing["support"] = "strong"
+        return merged
+
+    def _extract_passive_memories_window(
+        self,
+        conversation: list[dict],
+        *,
+        window_index: int,
+        window_count: int,
+    ) -> list[dict]:
+        """Estrae un inventario atomico da un singolo blocco conversazionale."""
         # Un singolo scambio user/assistant può già contenere un fatto tecnico
         # utile. I filtri di provenienza, soggetto e validazione restano applicati
         # dopo l'estrazione; non richiediamo quindi due scambi per entrare nel
@@ -415,23 +507,48 @@ class Brain:
         if len(conversation) < 2:
             return []
 
+        owner_name = next(
+            (
+                str(msg.get("speaker"))
+                for msg in conversation
+                if msg.get("role") == "user" and msg.get("speaker")
+            ),
+            _OWNER_NAME,
+        )
+        assistant_name = next(
+            (
+                str(msg.get("speaker"))
+                for msg in conversation
+                if msg.get("role") == "assistant" and msg.get("speaker")
+            ),
+            _ASSISTANT_NAME,
+        )
         lines = []
+        local_to_source_turn: dict[int, int] = {}
         for index, msg in enumerate(conversation, 1):
-            role = _OWNER_NAME if msg["role"] == "user" else _ASSISTANT_NAME
-            turn_id = msg.get("seq", index)
+            role = str(
+                msg.get("speaker")
+                or (_OWNER_NAME if msg["role"] == "user" else _ASSISTANT_NAME)
+            )
+            try:
+                source_turn_id = int(msg.get("seq", index))
+            except (TypeError, ValueError):
+                source_turn_id = index
+            local_to_source_turn[index] = source_turn_id
             observed_at = msg.get("observed_at")
             if observed_at is not None:
                 try:
-                    turn_time = from_timestamp(float(observed_at)).strftime("%d/%m/%Y %H:%M:%S")
+                    turn_time = format_datetime_full(from_timestamp(float(observed_at)))
                 except Exception:
                     turn_time = "tempo non registrato"
             else:
                 turn_time = "tempo non registrato"
-            lines.append(f"[T{turn_id} | {turn_time}] {role}: {msg['content']}")
+            lines.append(f"[T{index} | {turn_time}] {role}: {msg['content']}")
         dialogue = "\n".join(lines)
 
         prompt = (
-            f"Analizza questa conversazione tra {_OWNER_NAME} e il suo assistente.\n\n"
+            f"Analizza questa conversazione tra {owner_name} e il suo assistente "
+            f"{assistant_name}.\n\n"
             f"{dialogue}\n\n"
             f"Estrai SOLO elementi che vale la pena ricordare per una conversazione futura.\n"
             f"Distingui due tipi:\n"
@@ -442,29 +559,41 @@ class Brain:
             f"Ogni fatto deve nominare esplicitamente il soggetto a cui si riferisce "
             f"(persona, azienda, cliente, prodotto, macchina, progetto, materiale...).\n"
             f"Risolvi il soggetto dal contesto conversazionale solo quando è chiaro; NON "
-            f"defaultare mai a {_OWNER_NAME}. Se il soggetto non è risolvibile con certezza, scarta il fatto.\n\n"
-            f"Priorità operativa: se le parole di {_OWNER_NAME} contengono numeri, quantità, "
+            f"defaultare mai a {owner_name}. Se il soggetto non è risolvibile con certezza, scarta il fatto.\n\n"
+            f"Priorità operativa: se le parole di {owner_name} contengono numeri, quantità, "
             f"risultati preliminari, decisioni di prova o piani concreti (per esempio 'preparo 100 kg', "
             f"'i primi 20 pezzi sono dubbi', 'il cliente richiede una finitura opaca'), estrai questi "
-            f"elementi anche se {_ASSISTANT_NAME} li ha solo commentati o riformulati. Non richiedere che "
+            f"elementi anche se {assistant_name} li ha solo commentati o riformulati. Non richiedere che "
             f"il dato sia già misurato: in quel caso usa DEBOLE e conserva l'incertezza nel testo. "
             f"Non restituire NOTHING solo perché la conversazione è breve o il risultato è preliminare.\n\n"
             f"Fonte epistemica:\n"
-            f"- FORTE: il fatto è affermato, corretto o ripreso operativamente da {_OWNER_NAME}.\n"
-            f"- DEBOLE: il fatto viene comunque dalle parole di {_OWNER_NAME}, ma e' incerto, "
+            f"- FORTE: il fatto è affermato, corretto o ripreso operativamente da {owner_name}.\n"
+            f"- DEBOLE: il fatto viene comunque dalle parole di {owner_name}, ma e' incerto, "
             f"provvisorio o espresso come possibilita'.\n"
-            f"- SCARTA SEMPRE: fatti, spiegazioni, inferenze o autocorrezioni formulate da {_ASSISTANT_NAME}. "
+            f"- SCARTA SEMPRE: fatti, spiegazioni, inferenze o autocorrezioni formulate da {assistant_name}. "
             f"Il silenzio, il cambio di argomento e la mancata contestazione NON sono conferma. "
             f"Una risposta breve come 'si' o 'esatto' non autorizza a copiare la formulazione di "
-            f"{_ASSISTANT_NAME} in un FATTO passivo: se il dettaglio non compare nelle parole "
-            f"di {_OWNER_NAME}, scartalo.\n\n"
+            f"{assistant_name} in un FATTO passivo: se il dettaglio non compare nelle parole "
+            f"di {owner_name}, scartalo.\n\n"
             f"Memorie aggiuntive: se il fatto aggiunge un nuovo asse a un soggetto già noto, "
             f"formulalo come aggiunta, non come definizione esaustiva. Usa parole come 'anche' "
             f"o 'inoltre' quando servono.\n\n"
+            f"Copertura e atomicità (questo è il blocco {window_index}/{window_count}):\n"
+            f"- Esamina uno per uno TUTTI i turni di {owner_name} nel blocco. Un dettaglio "
+            f"breve ma riutilizzabile non è meno importante di un racconto lungo.\n"
+            f"- Ogni riga deve avere un solo predicato informativo principale. Non fondere "
+            f"progetto, hobby, salute e relazioni in un profilo riassuntivo.\n"
+            f"- Una proprietà aggiunta in un turno successivo — genere, materiale, valore, "
+            f"stato, destinazione, preferenza — va in una riga autonoma riferita esplicitamente "
+            f"all'oggetto. Esempio: 'La sceneggiatura di Giulia è un dramma romantico.'\n"
+            f"- Data, quantità e condizione che qualificano lo stesso evento restano invece "
+            f"nella sua riga e citano tutti i turni necessari.\n"
+            f"- Non omettere una proprietà solo perché hai già estratto l'esistenza "
+            f"dell'oggetto o il suo completamento.\n\n"
             f"Esempi:\n"
             f"- OK: 'Giada è una nuova collaboratrice di laboratorio con basi teoriche di chimica.'\n"
-            f"- OK: '{_OWNER_NAME} si occupa anche di architetture agentiche e analisi DSC.'\n"
-            f"- OK: '{_OWNER_NAME} lavora da casa in modalità remota.'\n"
+            f"- OK: '{owner_name} si occupa anche di architetture agentiche e analisi DSC.'\n"
+            f"- OK: '{owner_name} lavora da casa in modalità remota.'\n"
             f"- NO: 'Lavora da casa in modalità remota.'\n"
             f"- NO: 'Ha un collega di nome Leonardo.'\n\n"
             f"Categorie utili:\n"
@@ -476,25 +605,35 @@ class Brain:
             f"consegne, appuntamenti con fornitori o clienti. Includi sempre la data esatta o "
             f"approssimativa menzionata. Esempio: 'Dopo il 28 maggio il materiale X sarà "
             f"disponibile in azienda per la prova Y.'\n"
+            f"Per riferimenti relativi come 'ieri', 'venerdì scorso' o 'questa mattina', "
+            f"conserva nel contenuto esattamente l'espressione detta da {owner_name}: NON "
+            f"calcolare né inventare una data assoluta. La conversione viene eseguita dopo "
+            f"da un resolver temporale deterministico.\n"
             f"- Relazioni causali e strategiche: dipendenze tra domini diversi, piani condizionali "
             f"('se X allora Y'), connessioni concrete tra risultati tecnici, vendite, investimenti, "
             f"decisioni hardware/software. Esempio: 'Se la vendita dei neutri va a buon fine, "
-            f"{_OWNER_NAME} userà i proventi per aggiornare la GPU della workstation.'\n\n"
+            f"{owner_name} userà i proventi per aggiornare la GPU della workstation.'\n\n"
             f"IGNORA: conversazione generica, saluti, test del sistema senza un tema futuro specifico, "
-            f"informazioni già ovvie (es. '{_OWNER_NAME} usa {_ASSISTANT_NAME}'), frasi "
+            f"informazioni già ovvie (es. '{owner_name} usa {assistant_name}'), frasi "
             f"acefale senza soggetto esplicito.\n\n"
-            f"Se trovi fatti utili: scrivi una lista numerata, un fatto per riga, max 6.\n"
+            f"Se trovi fatti utili: scrivi una lista numerata, un fatto per riga, "
+            f"fino a 10 elementi PER QUESTO BLOCCO.\n"
             f"Ogni riga deve avere questo formato esatto:\n"
-            f"1. FORTE: [TIPO=FATTO; TURNI=12,13] contenuto\n"
-            f"oppure: 1. FORTE: [TIPO=EPISODIO; TURNI=12,13] contenuto\n"
-            f"TURNI deve contenere soltanto i turni che sostengono quell'elemento. Non copiare "
-            f"nel contenuto l'orario tecnico tra parentesi: preserva invece gli eventuali "
-            f"riferimenti temporali detti da {_OWNER_NAME}. Per TIPO=FATTO, TURNI deve contenere "
-            f"ESCLUSIVAMENTE turni di {_OWNER_NAME}; i turni di {_ASSISTANT_NAME} possono "
+            f"1. FORTE: [TIPO=FATTO; TURNI=T12,T13] contenuto\n"
+            f"oppure: 1. FORTE: [TIPO=EPISODIO; TURNI=T12,T13] contenuto\n"
+            f"TURNI usa soltanto gli identificatori LOCALI T1, T2, ... mostrati "
+            f"in questo blocco; non rinumerarli rispetto alla sessione completa.\n"
+            f"TURNI deve contenere l'unione di TUTTI i turni necessari a sostenere OGNI "
+            f"affermazione della riga. Se una riga combina un risultato detto in T12 e una "
+            f"proprietà precisata in T15, scrivi TURNI=12,15: citare solo T12 è errato. "
+            f"Non citare turni che condividono soltanto l'argomento. Non copiare "
+            f"nel contenuto l'orario tecnico tra parentesi: preserva invece, senza convertirli, "
+            f"gli eventuali riferimenti temporali detti da {owner_name}. Per TIPO=FATTO, TURNI deve contenere "
+            f"ESCLUSIVAMENTE turni di {owner_name}; i turni di {assistant_name} possono "
             f"comparire solo in un "
             f"TIPO=EPISODIO, che descrive il filo del dialogo e non e' una prova fattuale.\n"
-            f"Esempio FATTO: 1. FORTE: [TIPO=FATTO; TURNI=4] {_OWNER_NAME} si occupa anche di architetture agentiche e analisi DSC.\n"
-            f"Esempio EPISODIO: 2. FORTE: [TIPO=EPISODIO; TURNI=7,8] {_OWNER_NAME} ha riaperto il tema della prova IZOD riferita a quella mattina; non ha ancora fornito valori o risultati.\n"
+            f"Esempio FATTO: 1. FORTE: [TIPO=FATTO; TURNI=4] {owner_name} si occupa anche di architetture agentiche e analisi DSC.\n"
+            f"Esempio EPISODIO: 2. FORTE: [TIPO=EPISODIO; TURNI=7,8] {owner_name} ha riaperto il tema della prova IZOD riferita a quella mattina; non ha ancora fornito valori o risultati.\n"
             f"Se non c'è nulla di concreto da salvare: scrivi solo NOTHING."
         )
         try:
@@ -511,9 +650,9 @@ class Brain:
             has_nothing = "NOTHING" in result.upper()
             if not result or has_nothing:
                 logger.info(
-                    "Passive extractor: "
+                    f"Passive extractor block {window_index}/{window_count}: "
                     f"raw_chars={len(result)} nothing={has_nothing} "
-                    "numbered=0 parsed=0 acephalous=0 provenance_rejected=0 accepted=0"
+                    "numbered=0 parsed=0 acephalous=0 provenance_deferred=0 returned=0"
                 )
                 return []
             # Parsa la lista numerata — estrae il testo dopo "1. ", "2. " ecc.
@@ -528,22 +667,38 @@ class Brain:
                 if not item:
                     parse_rejected += 1
                     continue
+                local_turn_ids = list(item.get("source_turn_ids") or [])
+                if local_turn_ids:
+                    if any(
+                        turn_id not in local_to_source_turn
+                        for turn_id in local_turn_ids
+                    ):
+                        item["source_turn_ids"] = []
+                        item["provenance_resolution"] = "deferred"
+                    else:
+                        item["source_turn_ids"] = [
+                            local_to_source_turn[turn_id]
+                            for turn_id in local_turn_ids
+                        ]
+                        item = self._with_anaphoric_source_context(item, conversation)
                 if len(item["content"]) <= 10 or self._looks_acephalous_fact(item["content"]):
                     acephalous += 1
                     continue
                 if not self._passive_item_has_valid_provenance(item, conversation):
                     provenance_rejected += 1
-                    continue
+                    item["provenance_resolution"] = "deferred"
                 parsed.append(item)
             logger.info(
-                "Passive extractor: "
+                f"Passive extractor block {window_index}/{window_count}: "
                 f"raw_chars={len(result)} nothing={has_nothing} numbered={len(facts)} "
                 f"parsed_rejected={parse_rejected} acephalous={acephalous} "
-                f"provenance_rejected={provenance_rejected} accepted={len(parsed)}"
+                f"provenance_deferred={provenance_rejected} returned={len(parsed)}"
             )
             return parsed
         except Exception as e:
-            logger.error(f"Errore extract_passive_memories: {e}")
+            logger.error(
+                f"Errore extract_passive_memories block {window_index}/{window_count}: {e}"
+            )
             return []
 
     _PASSIVE_FACT_SUPPORT_RE = re.compile(
@@ -551,7 +706,8 @@ class Brain:
         re.IGNORECASE,
     )
     _PASSIVE_FACT_META_RE = re.compile(
-        r"^\s*\[TIPO=(FATTO|EPISODIO);\s*TURNI=([0-9,\s]+)\]\s*(.+)$",
+        r"^\s*\[TIPO=(FATTO|EPISODIO);\s*"
+        r"(?:TURNI|TURNOS)=(T?\s*\d+(?:\s*,\s*T?\s*\d+)*)\]\s*(.+)$",
         re.IGNORECASE,
     )
 
@@ -577,15 +733,19 @@ class Brain:
         meta = cls._PASSIVE_FACT_META_RE.match(content)
         if meta:
             kind = meta.group(1).lower()
-            turn_ids = []
-            for raw in meta.group(2).split(","):
-                try:
-                    turn_ids.append(int(raw.strip()))
-                except ValueError:
-                    continue
+            turn_ids = [
+                int(match.group(1))
+                for match in re.finditer(
+                    r"(?:^|,)\s*T?\s*(\d+)",
+                    meta.group(2),
+                    flags=re.IGNORECASE,
+                )
+            ]
             parsed["content"] = meta.group(3).strip()
             parsed["memory_kind"] = "episode" if kind == "episodio" else "semantic_fact"
             parsed["source_turn_ids"] = turn_ids
+        elif content.lstrip().upper().startswith("[TIPO="):
+            return None
         return parsed
 
     @staticmethod
@@ -618,9 +778,215 @@ class Brain:
             return False
         if not any(message.get("role") == "user" for message in selected):
             return False
-        if item.get("memory_kind") == "episode":
+        if item.get("memory_kind") in {"episode", "conversation_anchor"}:
             return True
         return all(message.get("role") == "user" for message in selected)
+
+    _ANAPHORIC_SOURCE_RE = re.compile(
+        r"(?:^|[.!?]\s+)(?:"
+        r"è|era|sono|erano|sarà|saranno|"
+        r"lo|la|li|le|quest[oaie]|quell[oaie]|"
+        r"it(?:'s|\s+is|\s+was)|they(?:'re|\s+are|\s+were)"
+        r")\b",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _with_anaphoric_source_context(
+        cls,
+        item: dict,
+        conversation: list[dict],
+    ) -> dict:
+        """Completa la lineage quando un turno utente usa un referente anaforico."""
+        if item.get("memory_kind") in {"episode", "conversation_anchor"}:
+            return item
+
+        source_ids: set[int] = set()
+        indexed: list[tuple[int, dict]] = []
+        for index, message in enumerate(conversation, 1):
+            try:
+                turn_id = int(message.get("seq", index))
+            except (TypeError, ValueError):
+                turn_id = index
+            indexed.append((turn_id, message))
+        for value in item.get("source_turn_ids") or []:
+            try:
+                source_ids.add(int(value))
+            except (TypeError, ValueError):
+                continue
+
+        for position, (turn_id, message) in enumerate(indexed):
+            if turn_id not in source_ids or message.get("role") != "user":
+                continue
+            content = str(message.get("content") or "").strip()
+            if not cls._ANAPHORIC_SOURCE_RE.search(content):
+                continue
+            for previous_turn_id, previous in reversed(indexed[:position]):
+                if previous.get("role") == "user":
+                    source_ids.add(previous_turn_id)
+                    break
+
+        candidate = dict(item)
+        candidate["source_turn_ids"] = [
+            turn_id for turn_id, _message in indexed if turn_id in source_ids
+        ]
+        return candidate
+
+    def audit_passive_memory_provenance(
+        self,
+        item: dict,
+        conversation: list[dict],
+    ) -> dict | None:
+        """Verifica semanticamente e, se necessario, ripara i turni sorgente.
+
+        Questo controllo gira dopo il gate KEEP/JUNK passivo. Non basta che gli
+        ID esistano: ogni affermazione riutilizzabile deve essere sostenuta dai
+        turni restituiti dall'auditor. Output non parsabile, fonti invalide o una
+        clausola senza supporto fanno scartare il candidato.
+        """
+        if not isinstance(item, dict):
+            return None
+        candidate = dict(item)
+        declared_turn_ids = list(candidate.get("source_turn_ids") or [])
+        candidate = self._with_anaphoric_source_context(candidate, conversation)
+        content = str(candidate.get("content") or "").strip()
+        if not content:
+            return None
+
+        original_turn_ids = declared_turn_ids
+        kind = candidate.get("memory_kind") or "semantic_fact"
+        is_episode = kind in {"episode", "conversation_anchor"}
+
+        lines: list[str] = []
+        for index, message in enumerate(conversation, 1):
+            try:
+                turn_id = int(message.get("seq", index))
+            except (TypeError, ValueError):
+                turn_id = index
+            role = str(message.get("role") or "")
+            if not is_episode and role != "user":
+                continue
+            role_label = "UTENTE" if role == "user" else "ASSISTENTE"
+            speaker = str(
+                message.get("speaker")
+                or (_OWNER_NAME if role == "user" else _ASSISTANT_NAME)
+            )
+            lines.append(
+                f"[T{turn_id} | {role_label} | PARLANTE={speaker}] "
+                f"{str(message.get('content') or '').strip()}"
+            )
+        if not lines:
+            return None
+
+        allowed_roles = (
+            "Per un FATTO puoi usare esclusivamente turni UTENTE."
+            if not is_episode
+            else (
+                "Per un EPISODIO puoi usare turni UTENTE e ASSISTENTE, ma gli ID "
+                "devono sostenere ciò che è realmente accaduto nel dialogo."
+            )
+        )
+        prompt = (
+            "Sei l'auditor di provenienza di una memoria conversazionale.\n"
+            "Controlla il contenuto proposizione per proposizione: soggetto, fatto, "
+            "relazione, proprietà, elemento di lista, stato, evento, numero, data e "
+            "qualificazione. Lo stesso tema non è una prova.\n"
+            "Il soggetto esplicito può risolvere un 'io' inequivocabile del parlante. "
+            "Il campo PARLANTE stabilisce l'identità di quell'io. "
+            "Una data assoluta prodotta dal resolver locale può corrispondere a "
+            "un'espressione relativa presente nella fonte; non fare tu nuovi calcoli.\n"
+            f"{allowed_roles}\n"
+            "Se OGNI affermazione è sostenuta, restituisci tutti e soli i TURNI "
+            "necessari, anche aggiungendo quelli dimenticati dall'estrattore. "
+            "Se anche una sola affermazione non è sostenuta da alcun turno, usa "
+            "UNSUPPORTED. Non correggere e non riscrivere la memoria.\n\n"
+            f"TIPO: {'EPISODIO' if is_episode else 'FATTO'}\n"
+            f"TURNI DICHIARATI: {','.join(str(value) for value in original_turn_ids)}\n"
+            f"MEMORIA: {content}\n\n"
+            "TURNI DISPONIBILI:\n"
+            + "\n".join(lines)
+            + "\n\nRispondi soltanto con JSON valido, senza markdown:\n"
+            '{"verdict":"SUPPORTED","source_turn_ids":[12,15]}\n'
+            "oppure:\n"
+            '{"verdict":"UNSUPPORTED","source_turn_ids":[]}'
+        )
+        try:
+            response = chat_client.chat(
+                model=config.OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0, "num_predict": 200},
+                think=False,
+            )
+            raw = self._clean(response.message.content or "")
+            verdict = self._extract_json(raw)
+        except Exception as exc:
+            logger.warning(f"Passive provenance audit fallito: {exc}")
+            return None
+
+        if str(verdict.get("verdict") or "").strip().upper() != "SUPPORTED":
+            logger.info("Passive provenance audit: candidato non sostenuto")
+            return None
+
+        audited_turn_ids: list[int] = []
+        raw_turn_ids = (
+            verdict.get("source_turn_ids")
+            if "source_turn_ids" in verdict
+            else verdict.get("turn_ids", verdict.get("TURNI"))
+        )
+        if isinstance(raw_turn_ids, str):
+            values = [
+                match.group(1)
+                for match in re.finditer(
+                    r"(?:^|[\s,;])T?\s*(\d+)(?=$|[\s,;])",
+                    raw_turn_ids,
+                    flags=re.IGNORECASE,
+                )
+            ]
+        elif isinstance(raw_turn_ids, int) and not isinstance(raw_turn_ids, bool):
+            values = [raw_turn_ids]
+        elif isinstance(raw_turn_ids, (list, tuple)):
+            values = list(raw_turn_ids)
+        else:
+            logger.info(
+                "Passive provenance audit: formato TURNI non valido "
+                f"({type(raw_turn_ids).__name__})"
+            )
+            return None
+        for value in values:
+            if isinstance(value, bool):
+                return None
+            match = re.fullmatch(r"T?\s*(\d+)", str(value).strip(), re.IGNORECASE)
+            if not match:
+                logger.info("Passive provenance audit: ID turno non parsabile")
+                return None
+            turn_id = int(match.group(1))
+            if turn_id not in audited_turn_ids:
+                audited_turn_ids.append(turn_id)
+        if not audited_turn_ids:
+            logger.info("Passive provenance audit: nessun TURNI restituito")
+            return None
+
+        candidate["source_turn_ids"] = audited_turn_ids
+        candidate = self._with_anaphoric_source_context(candidate, conversation)
+        audited_turn_ids = list(candidate.get("source_turn_ids") or [])
+        if not self._passive_item_has_valid_provenance(candidate, conversation):
+            logger.info("Passive provenance audit: TURNI restituiti non validi")
+            return None
+
+        repaired = audited_turn_ids != original_turn_ids
+        candidate["provenance_audit"] = {
+            "schema_version": 1,
+            "status": "supported",
+            "original_source_turn_ids": original_turn_ids,
+            "source_turn_ids": audited_turn_ids,
+            "repaired": repaired,
+        }
+        if repaired:
+            logger.info(
+                "Passive provenance audit: TURNI riparati "
+                f"{original_turn_ids} → {audited_turn_ids}"
+            )
+        return candidate
 
     _ACEPHALOUS_FACT_RE = re.compile(
         r"^\s*(?:ha|aveva|avrà|lavora|lavorava|opera|gestisce|gestiva|collabora|"

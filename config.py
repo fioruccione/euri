@@ -33,9 +33,11 @@ EXECUTOR_RATE_LIMIT_PER_MIN = 10   # max chiamate per minuto per tool
 EXECUTOR_ALLOWED_DRIVES: list[str] = []
 
 # Redis
-REDIS_HOST = "localhost"
-REDIS_PORT = 6379
-REDIS_DB = 0
+# I default restano quelli dell'installazione personale. I benchmark impostano
+# questi override soltanto nel proprio subprocess, prima di importare Euri.
+REDIS_HOST = os.environ.get("EURI_REDIS_HOST", "localhost").strip() or "localhost"
+REDIS_PORT = int(os.environ.get("EURI_REDIS_PORT", "6379"))
+REDIS_DB = int(os.environ.get("EURI_REDIS_DB", "0"))
 
 # Ollama
 OLLAMA_HOST = "http://localhost:11434"   # default condiviso (offline-first)
@@ -345,8 +347,11 @@ EPISODE_TTL_DAYS = 7
 EPISODE_MAX_INJECT = 3               # max episodi iniettati nel contesto Ollama
 
 # Obsidian Integration (Phase 3)
-OBSIDIAN_SYNC_ENABLED = True
-OBSIDIAN_VAULT_PATH = "/home/fio/EuriVault"
+OBSIDIAN_SYNC_ENABLED = os.environ.get("EURI_OBSIDIAN_SYNC_ENABLED", "1") == "1"
+OBSIDIAN_VAULT_PATH = os.environ.get(
+    "EURI_OBSIDIAN_VAULT_PATH",
+    "/home/fio/EuriVault",
+)
 
 # Euri Pulse (bus afferente)
 # I sensi esistenti emettono eventi tipizzati su euri:pulse. Il controller

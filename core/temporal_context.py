@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Any
 
 import config
+from loguru import logger
 from utils.date_utils import from_timestamp
 from utils.temporal import extract_temporal_range
 
@@ -23,10 +24,14 @@ _TEMPORAL_EXPRESSION_RE = re.compile(
     r"(?:\d+|un['’]?|una|due|tre|quattro|cinque|sei|sette|otto|nove|dieci)"
     r"\s*(?:ora|ore)\s+fa|"
     r"poco\s+fa|\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?|"
-    r"(?:luned[iì]|marted[iì]|mercoled[iì]|gioved[iì]|venerd[iì]|sabato|domenica)|"
+    r"(?:luned[iì]|marted[iì]|mercoled[iì]|gioved[iì]|venerd[iì]|sabato|domenica)"
+    r"(?:\s+scors[oa])?|"
     r"\d{1,2}\s+(?:gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|"
     r"settembre|ottobre|novembre|dicembre))\b",
     re.IGNORECASE,
+)
+_NUMERIC_DATE_RE = re.compile(
+    r"\b(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)\b"
 )
 
 
@@ -191,8 +196,53 @@ def derive_passive_memory_metadata(
     source_text = " ".join(
         str(msg.get("content") or "") for _, msg in selected if msg.get("role") == "user"
     )
-    combined = f"{source_text} {fact_item.get('content', '')}".strip()
-    event_time = resolve_text_event_time(combined, asserted_at=asserted_at)
+    content = str(fact_item.get("content") or "").strip()
+
+    # La fonte conversazionale è canonica per il tempo. Il modello estrattore può
+    # riassumere il fatto, ma non può sostituire una data relativa pronunciata
+    # dall'utente con un proprio calcolo. Se la fonte non contiene alcun riferimento
+    # temporale, ricadiamo sul contenuto estratto per compatibilità.
+    source_event_time = resolve_text_event_time(source_text, asserted_at=asserted_at)
+    content_event_time = resolve_text_event_time(content, asserted_at=asserted_at)
+    event_time = (
+        source_event_time
+        if source_event_time.get("event_start") is not None
+        else content_event_time
+    )
+
+    # Rete deterministica contro normalizzazioni LLM errate: se il contenuto
+    # estratto materializza una data numerica diversa da quella risolta dalla
+    # fonte, correggiamo soltanto quell'espressione. Il resto del fatto resta
+    # invariato e l'originale relativo rimane tracciato nel temporal_context.
+    canonical_content = content
+    content_date_match = _NUMERIC_DATE_RE.search(content)
+    content_date_corrected = False
+    original_content_date = content_date_match.group(0) if content_date_match else ""
+    canonical_event_start = _as_timestamp(event_time.get("event_start"))
+    if content_date_match and canonical_event_start is not None:
+        content_date_event = resolve_text_event_time(
+            original_content_date,
+            asserted_at=asserted_at,
+        )
+        content_date_start = _as_timestamp(content_date_event.get("event_start"))
+        canonical_dt = from_timestamp(canonical_event_start)
+        content_dt = from_timestamp(content_date_start)
+        if (
+            canonical_dt is not None
+            and content_dt is not None
+            and canonical_dt.date() != content_dt.date()
+        ):
+            canonical_date = canonical_dt.strftime("%d/%m/%Y")
+            canonical_content = (
+                content[: content_date_match.start()]
+                + canonical_date
+                + content[content_date_match.end() :]
+            )
+            content_date_corrected = True
+            logger.warning(
+                "Passive temporal guard: data estratta corretta "
+                f"{original_content_date} → {canonical_date}"
+            )
 
     latest = selected[-1][1] if selected else {}
     temporal_context = {
@@ -201,12 +251,20 @@ def derive_passive_memory_metadata(
         "source_turn_ids": [tid for tid, _ in selected],
         "conversation_id": latest.get("conversation_id") or "",
         "segment_id": latest.get("segment_id"),
+        "source_temporal_expression": source_event_time.get("temporal_expression") or "",
+        "content_temporal_expression": content_event_time.get("temporal_expression") or "",
+        "content_date_corrected": content_date_corrected,
+        "content_original_date": original_content_date if content_date_corrected else "",
         **event_time,
     }
     kind = fact_item.get("memory_kind") or "semantic_fact"
     if kind == "episode":
         kind = "conversation_anchor"
-    return {"memory_kind": kind, "temporal_context": temporal_context}
+    return {
+        "memory_kind": kind,
+        "temporal_context": temporal_context,
+        "canonical_content": canonical_content,
+    }
 
 
 def memory_time_label(memory: dict, *, reference_at: Any = None) -> str:

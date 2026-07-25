@@ -1,5 +1,34 @@
 # Handoff Euri - 2026-07-24 - Passive learner e conferma Pulse completati
 
+- Estrazione passiva atomica a finestre completata il 25 luglio: finestre 12/4,
+  parlanti dinamici, ID locali rimappati, parser controllato `TURNI`/`TURNOS`,
+  fonti invalide differite all'audit e chiusura anaforica deterministica. Replica
+  finale LoCoMo-IT: q99 risponde correttamente sul genere della sceneggiatura,
+  nodo con `[25,27]` (`D2:3` + `D2:5`), q207 resta in astensione, F1
+  `0,318→0,396`, evidence `0,625→0,875`, avversariale `1,000`. Tradeoff:
+  22 memorie e 92 chiamate locali; prossimo lavoro è un'ablation di costo e
+  frammentazione che non riduca la copertura.
+- Benchmark LoCoMo italiano aggiunto il 25 luglio 2026: la selezione `conv-42`
+  v2 è localizzata integralmente mantenendo gli stessi ID ed evidence. Run
+  pulita: `rag_only` F1 0,318, `passive_memory` F1 0,368; evidence hit invariato
+  a 0,625 e avversariale invariato a 1,000. Il test ha esposto falsi duplicati e
+  una normalizzazione temporale errata. Entrambi sono corretti: il Passive
+  learner usa l'àncora italiana completa, la fonte conversazionale prevale e il
+  guard corregge `20/01/2022` in `21/01/2022` prima del salvataggio; la
+  deduplicazione non elimina più in base alla sola cosine e richiede copertura
+  completa più verdetto `DUPLICATO` esplicito.
+- Replica isolata post-fix: `rag_only` F1 0,331, `passive_memory` F1 0,405
+  (+0,074); evidence hit 0,625 invariato, 9/9 memorie salvate, zero duplicati e
+  36 chiamate locali contro le 48 della run IT storica. “Venerdì scorso” è
+  conservato e risolto al 21/01/2022.
+- Copertura semantica di `source_turn_ids` corretta: il prompt richiede l'unione
+  delle fonti per ogni clausola, il Buttafuori passivo non riscrive più il testo
+  (`KEEP/JUNK`) e un audit finale ripara gli ID prima del salvataggio. Il
+  benchmark preserva il nome originale del parlante. Replica finale: 7/7
+  memorie salvate, zero rifiuti, 4 provenienze riparate; sonda reale
+  sceneggiatura `[25] → [25,27]` (`D2:3` + `D2:5`). F1 0,318→0,325 ed evidence
+  0,625 invariato: il valore utile del fix è la lineage corretta, mentre
+  estrazione e risposta restano variabili.
 - Diagnosi live: il Passive learner riceveva i turni ma `extract_passive_memories`
   restituiva zero elementi. La soglia minima era inizialmente di quattro messaggi
   e Gemma 4 26B usava `think=True` per un compito strutturato.
@@ -29,6 +58,26 @@
   su LoCoMo, LongMemEval, MemBench e LoCoMo-Plus. Il piano canonico dettagliato è
   `docs/EURI_MEMORY_BENCHMARK_PLAN.md`; la prima azione è costruire isolamento e
   adapter su fixture sintetiche, senza scaricare subito i dataset.
+- Fase 0 benchmark completata in `benchmarks/euri_memory`: processo Redis
+  effimero con RedisJSON/RediSearch, Vault temporaneo, porta casuale, verifica PID
+  e marker prima di reset/scrittura, contratti distinti per corpus/prompt/gold,
+  profili dichiarativi, adapter LoCoMo e smoke deterministico senza LLM.
+- LoCoMo ufficiale è stato acquisito localmente con licenza CC BY-NC 4.0, URL e
+  SHA-256 registrati; i file del corpus sono ignorati da Git. Adapter validato su
+  10 conversazioni, 272 sessioni, 5.882 turni e 1.986 domande. Cinque evidence
+  mancanti restano segnalate come difetti del gold.
+- Smoke sulla prima conversazione reale: 419 turni ingeriti, 199 domande e 618
+  eventi trace, senza accesso a Redis/Vault personali. Lo score keyword 16/199 è
+  intenzionalmente non ufficiale e misura solo il cablaggio. Prossimo passo:
+  il collegamento ai percorsi reali `rag_only` e `passive_memory` è stato completato; seguono i risultati A/B.
+- Prima A/B reale completata e replicata: v1 `conv-26` baseline stabile, Passive
+  F1 0,356 e poi 0,364 contro 0,370; il falso ricordo avversariale è comparso una
+  volta su due. Seconda selezione dichiarata `conv-42` (51 turni, 8 domande,
+  cinque categorie): F1 0,187→0,162, evidence recall invariato 0,625, Passive
+  8 memorie salvate su 10 candidati e 55 chiamate locali contro 16. Nessuna API
+  cloud: Ollama, Gemma ed embedder sono locali; restano da rispettare le licenze
+  del modello Gemma e di LoCoMo. Prossimo passo: campione LoCoMo completo o
+  stratificato più ampio.
 
 ---
 
