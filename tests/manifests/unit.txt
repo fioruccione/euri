@@ -28,6 +28,7 @@ test_loop2a_reflection.py
 test_loop2e_attention.py
 test_memory_idempotency.py
 test_memory_benchmark.py
+test_memory_benchmark_heldout.py
 test_memory_dedup.py
 test_memory_outbox.py
 test_named_save.py

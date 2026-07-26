@@ -473,6 +473,7 @@ def _answer_questions(
     tracker: LLMCallTracker,
     model: str,
     answer_system: str,
+    answer_seed: int,
 ) -> list[QuestionResult]:
     from core.rag_context import build_rag_context
 
@@ -494,7 +495,7 @@ def _answer_questions(
                     {"role": "system", "content": answer_system},
                     {"role": "user", "content": user_prompt},
                 ],
-                options={"temperature": 0, "num_predict": 160, "seed": 42},
+                options={"temperature": 0, "num_predict": 160, "seed": answer_seed},
                 think=False,
             )
         answer = _response_content(response)
@@ -553,6 +554,7 @@ def _run_profile(
     runtime_id: str,
     model: str,
     answer_system: str,
+    answer_seed: int,
 ) -> dict:
     from core.brain import Brain
     from core.memory_manager import MemoryManager
@@ -583,6 +585,7 @@ def _run_profile(
         tracker,
         model,
         answer_system,
+        answer_seed,
     )
     scoring = score_locomo_reduced(case.questions, results)
     after_questions = _database_stats(redis_client)
@@ -632,7 +635,23 @@ def main() -> int:
     parser.add_argument("--selection", type=Path, default=DEFAULT_SELECTION)
     parser.add_argument("--localization", type=Path)
     parser.add_argument("--output", type=Path, required=True)
+    # Flag additivi: i default riproducono esattamente il comportamento storico.
+    parser.add_argument(
+        "--branch-order",
+        default="rag_only,passive_memory",
+        help="ordine di esecuzione dei bracci, separati da virgola",
+    )
+    parser.add_argument("--answer-seed", type=int, default=42)
+    parser.add_argument("--run-label", default=None)
     args = parser.parse_args()
+
+    branch_order = tuple(
+        name.strip() for name in args.branch_order.split(",") if name.strip()
+    )
+    if sorted(branch_order) != ["passive_memory", "rag_only"]:
+        parser.error(
+            "--branch-order deve contenere esattamente rag_only e passive_memory"
+        )
 
     runtime_id = _require_isolated_environment()
 
@@ -663,7 +682,7 @@ def main() -> int:
     embed_elapsed_ms = round((time.perf_counter() - embed_started) * 1000, 3)
 
     reports = []
-    for profile_name in ("rag_only", "passive_memory"):
+    for profile_name in branch_order:
         print(json.dumps({"event": "profile_start", "profile": profile_name}), flush=True)
         reports.append(
             _run_profile(
@@ -675,6 +694,7 @@ def main() -> int:
                 runtime_id,
                 config.OLLAMA_MODEL,
                 answer_system,
+                args.answer_seed,
             )
         )
         print(json.dumps({"event": "profile_complete", "profile": profile_name}), flush=True)
@@ -738,8 +758,13 @@ def main() -> int:
             "embedder": _MODEL_NAME,
             "embedder_load_ms": embed_elapsed_ms,
             "answer_temperature": 0,
-            "answer_seed": 42,
+            "answer_seed": args.answer_seed,
             "answer_system_sha256": hashlib.sha256(answer_system.encode()).hexdigest(),
+        },
+        "run": {
+            "run_label": args.run_label,
+            "branch_order": list(branch_order),
+            "answer_seed": args.answer_seed,
         },
         "gold_boundary": {
             "ingest_received_questions": False,

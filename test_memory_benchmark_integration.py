@@ -17,6 +17,7 @@ from benchmarks.euri_memory.runtime import IsolatedRuntime
 
 ROOT = Path(__file__).resolve().parent
 FIXTURE = ROOT / "benchmarks" / "euri_memory" / "fixtures" / "locomo_smoke.json"
+OFFICIAL = ROOT / "benchmarks" / "euri_memory" / "data" / "locomo10.json"
 
 
 def test_runtime_smoke_uses_ephemeral_redis_and_vault():
@@ -74,6 +75,34 @@ def test_runtime_smoke_uses_ephemeral_redis_and_vault():
         assert runtime_root is not None and not runtime_root.exists()
 
 
+def test_heldout_dry_run_forecasts_without_models():
+    if not OFFICIAL.is_file():
+        return
+    from benchmarks.euri_memory.heldout import build_manifest, write_manifest
+    from benchmarks.euri_memory.heldout_runner import run_all
+
+    with tempfile.TemporaryDirectory() as directory:
+        work = Path(directory)
+        manifest = build_manifest(seed=99, budget_name="smoke", git_commit="dry")
+        manifest_path = write_manifest(manifest, work / "manifest.json")
+        result = run_all(
+            manifest_path=manifest_path,
+            output_dir=work / "out",
+            corpus_path=OFFICIAL,
+            dry_run=True,
+        )
+        assert result["mode"] == "dry_run"
+        assert result["isolation_probe_ok"] is True
+        assert len(result["plan"]) == len(manifest["conversations"]) * len(
+            manifest["replicas"]
+        )
+        assert result["forecast"]["estimated_llm_calls"]["high"] >= 1
+        # nessun report cognitivo generato in dry-run
+        assert not (work / "out" / "runs").exists()
+        assert (work / "out" / "forecast.json").is_file()
+
+
 if __name__ == "__main__":
     test_runtime_smoke_uses_ephemeral_redis_and_vault()
+    test_heldout_dry_run_forecasts_without_models()
     print("test_memory_benchmark_integration: OK")

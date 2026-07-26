@@ -37,6 +37,29 @@ def main() -> int:
     ab.add_argument("--localization", type=Path)
     ab.add_argument("--output", type=Path, required=True)
     ab.add_argument("--timeout", type=int, default=7200)
+
+    # --- Valutazione indipendente held-out (preregistrata) ---
+    hs = subparsers.add_parser("heldout-select")
+    # --seed è OBBLIGATORIO e senza default: il campione non esiste finché non
+    # viene fornito un seed dopo il commit del protocollo.
+    hs.add_argument("--seed", type=int, required=True)
+    hs.add_argument("--budget", required=True)
+    hs.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
+    hs.add_argument("--output", type=Path, required=True)
+
+    hr = subparsers.add_parser("heldout-run")
+    hr.add_argument("--manifest", type=Path, required=True)
+    hr.add_argument("--output-dir", type=Path, required=True)
+    hr.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
+    hr.add_argument("--dry-run", action="store_true")
+    hr.add_argument("--seconds-per-call", type=float, default=3.0)
+    hr.add_argument("--per-pair-timeout", type=int, default=21_600)
+
+    ha = subparsers.add_parser("heldout-analyze")
+    ha.add_argument("--results-dir", type=Path, required=True)
+    ha.add_argument("--manifest", type=Path)
+    ha.add_argument("--output", type=Path, required=True)
+
     args = parser.parse_args()
 
     if args.command == "smoke":
@@ -101,6 +124,86 @@ def main() -> int:
             shutil.copy2(worker_report, args.output)
             report = json.loads(worker_report.read_text(encoding="utf-8"))
         print(json.dumps(report["comparison"]["metric_delta"], sort_keys=True))
+        return 0
+    if args.command == "heldout-select":
+        from benchmarks.euri_memory.heldout import (
+            HeldoutError,
+            build_manifest,
+            write_manifest,
+        )
+
+        try:
+            manifest = build_manifest(
+                seed=args.seed,
+                budget_name=args.budget,
+                corpus_path=args.source,
+            )
+        except HeldoutError as exc:
+            parser.error(str(exc))
+        write_manifest(manifest, args.output)
+        print(
+            json.dumps(
+                {
+                    "manifest_sha256": manifest["manifest_sha256"],
+                    "budget": manifest["budget"]["name"],
+                    "seed": manifest["seed"],
+                    "conversations": [c["sample_id"] for c in manifest["conversations"]],
+                    "n_independent": manifest["n_independent"],
+                    "output": str(args.output),
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+    if args.command == "heldout-run":
+        from benchmarks.euri_memory.heldout_runner import BudgetExceeded, run_all
+
+        try:
+            result = run_all(
+                manifest_path=args.manifest,
+                output_dir=args.output_dir,
+                corpus_path=args.source,
+                dry_run=args.dry_run,
+                seconds_per_call=args.seconds_per_call,
+                per_pair_timeout=args.per_pair_timeout,
+            )
+        except BudgetExceeded as exc:
+            print(json.dumps({"event": "budget_exceeded", "detail": str(exc)}), flush=True)
+            return 3
+        if args.dry_run:
+            print(json.dumps(result["forecast"]["estimated_llm_calls"], sort_keys=True))
+        else:
+            print(
+                json.dumps(
+                    {
+                        "pairs_completed": result["pairs_completed"],
+                        "pairs_planned": result["pairs_planned"],
+                        "cumulative_llm_calls": result["cumulative_llm_calls"],
+                    },
+                    sort_keys=True,
+                )
+            )
+        return 0
+    if args.command == "heldout-analyze":
+        from benchmarks.euri_memory.analysis import analyze
+
+        report = analyze(args.results_dir, args.manifest)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(
+            json.dumps(report, indent=2, ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+        print(
+            json.dumps(
+                {
+                    "n_conversations": report["n_conversations"],
+                    "pairs_complete": report["pairs_complete"],
+                    "underpowered": report["power"]["underpowered"],
+                    "output": str(args.output),
+                },
+                sort_keys=True,
+            )
+        )
         return 0
     return 2
 
