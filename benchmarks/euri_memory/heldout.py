@@ -338,6 +338,10 @@ def build_final_manifest(
         verify_selected_localization,
     )
 
+    # La finalizzazione non deve fidarsi del solo hash incorporato nel file:
+    # il selection manifest viene riverificato integralmente prima di copiarne
+    # qualunque campo nel manifest finale.
+    verify_manifest(selection_manifest)
     verify_selected_localization(localization, corpus_path, selection_manifest)
     final = {
         "schema_version": SCHEMA_VERSION,

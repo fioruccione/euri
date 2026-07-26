@@ -234,6 +234,12 @@ R=benchmarks/euri_memory/reports
 Il checkpoint salta solo le coppie complete E rivalidate; se identità, percorso o
 report divergono, si arresta chiuso invece di proseguire.
 
+Anche il passo 2 è ripristinabile: ogni unità tradotta viene salvata
+atomicamente in un checkpoint legato a selection manifest, corpus, protocollo e
+modello. Rilanciando lo stesso comando si riparte dalla prima unità mancante. Se
+l'artefatto italiano finale esiste già ed è valido, viene riusato senza
+rigenerarne timestamp o SHA.
+
 I budget `smoke` / `validation` / `extended` cambiano solo `--budget` al passo 1.
 
 ### Stime (dal forecast, ordine di grandezza; il seed reale può variare)
@@ -242,8 +248,9 @@ I budget `smoke` / `validation` / `extended` cambiano solo `--budget` al passo 1
   traduzione (turni + domande + risposte), ≈ **35–75 min** a 1–2 s/chiamata,
   fino a ~2 h se il modello è più lento. Solo locale, nessun costo.
 - **Validation 3×3 (passo 5):** 9 coppie, ≈ **5.000–12.000** chiamate LLM locali,
-  ≈ **4–10 h** a 3 s/chiamata. Cap preregistrato: 40.000 chiamate / 8 h wall per
-  coppia cumulato — se superato, nessuna nuova coppia parte (arresto tecnico).
+  ≈ **4–10 h** a 3 s/chiamata. Cap preregistrato: 40.000 chiamate / 8 h wall
+  cumulati, controllati ai confini tra coppie — se superato, nessuna nuova coppia
+  parte (arresto tecnico).
 
 ---
 
@@ -304,9 +311,11 @@ tradurre ~4.800 turni prima del seed, si adotta questa **variante preregistrata*
    selezionate**, ma integralmente (tutti i turni + le domande campionate).
 3. **Nessuna ispezione o correzione manuale** del contenuto selezionato.
 4. **Controlli automatici soltanto:** completezza di ID turni/domande, evidence
-   (preservata perché resta nel corpus), date e riferimenti temporali relativi,
-   numeri (anni/quantità ≥4 cifre come invariante duro), nomi, answerability e
-   presenza delle risposte avversariali.
+   (preservata perché resta nel corpus), numeri di almeno quattro cifre come
+   invariante duro, derive sui numeri di due/tre cifre segnalate, answerability e
+   presenza delle risposte avversariali. Nomi e riferimenti temporali sono
+   vincolati dal prompt congelato ma non vengono dichiarati semanticamente
+   verificati da una regex.
 5. L'artefatto italiano è **sigillato con SHA-256**; un **manifest finale
    derivato** lega `selection_manifest_sha256` + protocollo di traduzione +
    `localization_sha256`, con il proprio `manifest_sha256`.

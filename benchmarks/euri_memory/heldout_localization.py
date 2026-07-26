@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from benchmarks.euri_memory.adapters import LoCoMoAdapter
+from benchmarks.euri_memory.integrity import sha256_file
 
 
 class LocalizationError(ValueError):
@@ -107,6 +108,19 @@ def build_selected_localization(
     model: str,
     model_version: str | None,
 ) -> dict:
+    # Fail-closed prima di avviare migliaia di chiamate: il selection manifest
+    # deve essere integro e il corpus realmente tradotto deve essere quello
+    # preregistrato, non soltanto avere gli stessi ID.
+    from benchmarks.euri_memory.heldout import verify_manifest
+
+    verify_manifest(selection_manifest)
+    actual_source_sha = sha256_file(corpus_path)
+    expected_source_sha = selection_manifest.get("corpus", {}).get("sha256")
+    if actual_source_sha != expected_source_sha:
+        raise LocalizationError(
+            "corpus da tradurre diverso dal selection manifest: "
+            f"atteso {expected_source_sha}, trovato {actual_source_sha}"
+        )
     cases = {case.sample_id: case for case in LoCoMoAdapter().load(corpus_path)}
     conversations: dict[str, dict] = {}
     for conv in selection_manifest["conversations"]:
@@ -174,7 +188,17 @@ def verify_selected_localization(
 ) -> dict:
     """Controlli automatici; solleva su fallimento duro, riporta le derive molli."""
 
+    from benchmarks.euri_memory.heldout import verify_manifest
+
+    verify_manifest(selection_manifest)
     verify_localization_seal(localization)
+    actual_source_sha = sha256_file(corpus_path)
+    expected_source_sha = selection_manifest.get("corpus", {}).get("sha256")
+    if actual_source_sha != expected_source_sha:
+        raise LocalizationError(
+            "corpus verificato diverso dal selection manifest: "
+            f"atteso {expected_source_sha}, trovato {actual_source_sha}"
+        )
     if localization.get("language") != TARGET_LANGUAGE:
         raise LocalizationError("lingua della localizzazione non è italiano")
     if localization.get("selection_manifest_sha256") != selection_manifest["manifest_sha256"]:
@@ -182,7 +206,7 @@ def verify_selected_localization(
     if localization.get("source_sha256") != selection_manifest["corpus"]["sha256"]:
         raise LocalizationError("source_sha256 diverso dal corpus del selection manifest")
     protocol = localization.get("translation_protocol") or {}
-    if protocol.get("prompt_sha256") != translation_prompt_sha256():
+    if protocol != translation_protocol():
         raise LocalizationError("protocollo di traduzione diverso da quello congelato")
 
     cases = {case.sample_id: case for case in LoCoMoAdapter().load(corpus_path)}
@@ -338,5 +362,79 @@ def ollama_translator(model: str) -> Callable[[str, str], str]:
         if content is None and isinstance(message, dict):
             content = message.get("content")
         return str(content or "").strip()
+
+    return translate
+
+
+def checkpointed_translator(
+    translate_fn: Callable[[str, str], str],
+    *,
+    checkpoint_path: Path,
+    identity: dict,
+) -> Callable[[str, str], str]:
+    """Cache incrementale fail-closed per migliaia di unità di traduzione.
+
+    Ogni traduzione completata viene salvata atomicamente. Rilanciare lo stesso
+    comando riusa soltanto entry legate allo stesso selection manifest, corpus,
+    protocollo e modello; un checkpoint divergente viene rifiutato.
+    """
+
+    checkpoint_path = Path(checkpoint_path)
+    expected_identity = json.loads(_canonical(identity))
+    if checkpoint_path.is_file():
+        try:
+            checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise LocalizationError(
+                f"checkpoint traduzione non leggibile {checkpoint_path}: {exc}"
+            ) from exc
+        if checkpoint.get("identity") != expected_identity:
+            raise LocalizationError(
+                "checkpoint traduzione appartenente a un protocollo/campione diverso"
+            )
+        translations = checkpoint.get("translations")
+        if not isinstance(translations, dict):
+            raise LocalizationError("checkpoint traduzione privo di translations")
+    else:
+        checkpoint = {
+            "schema_version": 1,
+            "identity": expected_identity,
+            "translations": {},
+        }
+        translations = checkpoint["translations"]
+
+    def save() -> None:
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = checkpoint_path.with_name(checkpoint_path.name + ".tmp")
+        temporary.write_text(
+            json.dumps(checkpoint, indent=2, ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+        temporary.replace(checkpoint_path)
+
+    def translate(text: str, kind: str) -> str:
+        source_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        key = hashlib.sha256(f"{kind}\0{text}".encode("utf-8")).hexdigest()
+        cached = translations.get(key)
+        if cached is not None:
+            if (
+                cached.get("kind") != kind
+                or cached.get("source_sha256") != source_sha
+                or not str(cached.get("translation") or "").strip()
+            ):
+                raise LocalizationError(
+                    f"entry checkpoint traduzione divergente/corrotta: {key}"
+                )
+            return str(cached["translation"])
+        translated = str(translate_fn(text, kind) or "").strip()
+        if not translated:
+            raise LocalizationError(f"traduzione vuota per unità {kind}/{source_sha}")
+        translations[key] = {
+            "kind": kind,
+            "source_sha256": source_sha,
+            "translation": translated,
+        }
+        save()
+        return translated
 
     return translate

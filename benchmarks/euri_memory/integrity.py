@@ -237,6 +237,9 @@ def validate_pair_report(report: dict, manifest: dict, expected: ExpectedPair) -
         expected_loc = manifest.get("localization", {}).get("localization_sha256")
         if binding.get("localization_sha256") != expected_loc:
             problems.append("binding.localization_sha256 diverso dal manifest")
+        expected_loc_id = manifest.get("localization", {}).get("localization_id")
+        if binding.get("localization_id") != expected_loc_id:
+            problems.append("binding.localization_id diverso dal manifest")
         if binding.get("language") != "it":
             problems.append(f"lingua {binding.get('language')} ≠ it")
 
@@ -251,9 +254,14 @@ def validate_pair_report(report: dict, manifest: dict, expected: ExpectedPair) -
             if not scoring:
                 problems.append(f"scoring mancante per {name}")
                 continue
-            covered = {item.get("question_id") for item in scoring.get("items", [])}
-            if covered != set(expected.question_ids):
-                problems.append(f"item di scoring di {name} non coprono esattamente le domande attese")
+            covered = tuple(
+                item.get("question_id") for item in scoring.get("items", [])
+            )
+            if covered != expected.question_ids:
+                problems.append(
+                    f"item di scoring di {name} non seguono esattamente le "
+                    "domande attese"
+                )
     return problems
 
 

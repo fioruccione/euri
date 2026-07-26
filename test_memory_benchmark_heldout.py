@@ -33,6 +33,8 @@ from benchmarks.euri_memory.heldout import (
 from benchmarks.euri_memory.heldout_localization import (
     LocalizationError,
     build_selected_localization,
+    checkpointed_translator,
+    localization_digest,
     localization_forecast,
     verify_localization_seal,
     verify_selected_localization,
@@ -386,6 +388,9 @@ def _valid_pair_report(manifest: dict, expected) -> dict:
             "localization_sha256": (manifest.get("localization") or {}).get(
                 "localization_sha256"
             ),
+            "localization_id": (manifest.get("localization") or {}).get(
+                "localization_id"
+            ),
             "language": "it",
         },
         "git": {"commit": manifest["git_commit"], "worktree_tracked_dirty": False},
@@ -609,6 +614,28 @@ def test_localization_pipeline_builds_and_verifies():
     else:
         raise AssertionError("localizzazione incompleta accettata")
 
+    # Il protocollo completo è congelato: non basta conservare il prompt hash.
+    broken_protocol = json.loads(json.dumps(loc))
+    broken_protocol["translation_protocol"]["options"]["seed"] += 1
+    broken_protocol["localization_sha256"] = localization_digest(broken_protocol)
+    try:
+        verify_selected_localization(broken_protocol, OFFICIAL, manifest)
+    except LocalizationError as exc:
+        assert "protocollo" in str(exc)
+    else:
+        raise AssertionError("protocollo di traduzione alterato accettato")
+
+    # Stessi dati logici ma file con SHA diverso: non è il corpus preregistrato.
+    with tempfile.TemporaryDirectory() as directory:
+        different_bytes = Path(directory) / "locomo10.json"
+        different_bytes.write_bytes(OFFICIAL.read_bytes() + b"\n")
+        try:
+            verify_selected_localization(loc, different_bytes, manifest)
+        except LocalizationError as exc:
+            assert "corpus" in str(exc)
+        else:
+            raise AssertionError("localizzazione verificata contro corpus con SHA diverso")
+
 
 def test_final_manifest_binds_selection_and_localization():
     if not _corpus_available():
@@ -652,6 +679,30 @@ def test_final_manifest_binds_selection_and_localization():
     bad_lang = json.loads(json.dumps(good))
     bad_lang["binding"]["language"] = "en"
     assert validate_pair_report(bad_lang, final, exp)
+    bad_loc_id = json.loads(json.dumps(good))
+    bad_loc_id["binding"]["localization_id"] = "wrong"
+    assert validate_pair_report(bad_loc_id, final, exp)
+
+    # La finalizzazione riverifica il selection manifest, non si limita a
+    # copiarne il manifest_sha256 incorporato.
+    tampered_selection = json.loads(json.dumps(manifest))
+    tampered_selection["seed"] += 1
+    try:
+        build_final_manifest(tampered_selection, loc, corpus_path=OFFICIAL)
+    except Exception as exc:  # noqa: BLE001
+        assert "manifest" in str(exc).lower()
+    else:
+        raise AssertionError("selection manifest alterato accettato in finalizzazione")
+
+    # Duplicati/ordine diverso negli item di scoring non sono copertura esatta.
+    bad_items = json.loads(json.dumps(good))
+    first_profile_items = bad_items["profiles"][0]["scoring"]["items"]
+    if first_profile_items:
+        first_profile_items.append(dict(first_profile_items[0]))
+    else:
+        # Il fixture sintetico usa items vuoti: rendilo certamente divergente.
+        first_profile_items.append({"question_id": exp.question_ids[0]})
+    assert validate_pair_report(bad_items, final, exp)
 
 
 def test_localization_forecast_is_structural():
@@ -661,6 +712,47 @@ def test_localization_forecast_is_structural():
     forecast = localization_forecast(manifest, OFFICIAL)
     assert forecast["translation_units_total"] > 0
     assert len(forecast["per_conversation"]) == len(manifest["conversations"])
+
+
+def test_translation_checkpoint_resumes_and_rejects_other_identity():
+    calls = []
+
+    def underlying(text: str, kind: str) -> str:
+        calls.append((text, kind))
+        return f"IT:{text}"
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "translations.json"
+        identity = {
+            "selection_manifest_sha256": "selection-a",
+            "corpus_sha256": "corpus-a",
+            "translation_protocol": {"version": "v1"},
+            "model": "stub",
+            "model_version": "1",
+        }
+        first = checkpointed_translator(
+            underlying, checkpoint_path=path, identity=identity
+        )
+        assert first("hello", "turn") == "IT:hello"
+        assert len(calls) == 1
+
+        # Simula un nuovo processo: la stessa unità viene ripresa dal checkpoint.
+        second = checkpointed_translator(
+            underlying, checkpoint_path=path, identity=identity
+        )
+        assert second("hello", "turn") == "IT:hello"
+        assert len(calls) == 1
+
+        divergent = dict(identity)
+        divergent["model"] = "other"
+        try:
+            checkpointed_translator(
+                underlying, checkpoint_path=path, identity=divergent
+            )
+        except LocalizationError as exc:
+            assert "diverso" in str(exc)
+        else:
+            raise AssertionError("checkpoint traduzione divergente accettato")
 
 
 def test_resume_rejects_bad_checkpoints():
@@ -782,6 +874,7 @@ if __name__ == "__main__":
     test_localization_pipeline_builds_and_verifies()
     test_final_manifest_binds_selection_and_localization()
     test_localization_forecast_is_structural()
+    test_translation_checkpoint_resumes_and_rejects_other_identity()
     test_resume_rejects_bad_checkpoints()
     test_output_dir_rejects_tampered_manifest_with_stale_sha()
     print("test_memory_benchmark_heldout: OK")

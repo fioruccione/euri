@@ -181,8 +181,10 @@ def main() -> int:
         from benchmarks.euri_memory.heldout_localization import (
             LocalizationError,
             build_selected_localization,
+            checkpointed_translator,
             localization_forecast,
             ollama_translator,
+            translation_protocol,
             verify_selected_localization,
         )
 
@@ -205,14 +207,41 @@ def main() -> int:
 
         model = args.model or config.OLLAMA_MODEL
         try:
-            localization = build_selected_localization(
-                corpus_path=args.source,
-                selection_manifest=selection_manifest,
-                translate_fn=ollama_translator(model),
-                model=model,
-                model_version=args.model_version,
-            )
-            verify_selected_localization(localization, args.source, selection_manifest)
+            # Idempotenza: un artefatto finale già valido viene riusato senza
+            # rigenerare built_at/SHA. Durante la prima generazione, invece, un
+            # checkpoint incrementale evita di perdere ore su errori transitori.
+            if args.output.is_file():
+                localization = json.loads(args.output.read_text(encoding="utf-8"))
+                verify_selected_localization(
+                    localization, args.source, selection_manifest
+                )
+            else:
+                cache_path = args.output.with_name(
+                    args.output.name + ".translation-checkpoint.json"
+                )
+                translator = checkpointed_translator(
+                    ollama_translator(model),
+                    checkpoint_path=cache_path,
+                    identity={
+                        "selection_manifest_sha256": selection_manifest[
+                            "manifest_sha256"
+                        ],
+                        "corpus_sha256": selection_manifest["corpus"]["sha256"],
+                        "translation_protocol": translation_protocol(),
+                        "model": model,
+                        "model_version": args.model_version,
+                    },
+                )
+                localization = build_selected_localization(
+                    corpus_path=args.source,
+                    selection_manifest=selection_manifest,
+                    translate_fn=translator,
+                    model=model,
+                    model_version=args.model_version,
+                )
+                verify_selected_localization(
+                    localization, args.source, selection_manifest
+                )
         except LocalizationError as exc:
             print(json.dumps({"event": "localization_error", "detail": str(exc)}), flush=True)
             return 4
