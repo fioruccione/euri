@@ -156,7 +156,8 @@ def main() -> int:
         )
         return 0
     if args.command == "heldout-run":
-        from benchmarks.euri_memory.heldout_runner import BudgetExceeded, run_all
+        from benchmarks.euri_memory.heldout_runner import BudgetExceeded, RunnerError, run_all
+        from benchmarks.euri_memory.integrity import IntegrityError
 
         try:
             result = run_all(
@@ -170,6 +171,9 @@ def main() -> int:
         except BudgetExceeded as exc:
             print(json.dumps({"event": "budget_exceeded", "detail": str(exc)}), flush=True)
             return 3
+        except (RunnerError, IntegrityError) as exc:
+            print(json.dumps({"event": "integrity_error", "detail": str(exc)}), flush=True)
+            return 4
         if args.dry_run:
             print(json.dumps(result["forecast"]["estimated_llm_calls"], sort_keys=True))
         else:
@@ -185,9 +189,13 @@ def main() -> int:
             )
         return 0
     if args.command == "heldout-analyze":
-        from benchmarks.euri_memory.analysis import analyze
+        from benchmarks.euri_memory.analysis import AnalysisError, analyze
 
-        report = analyze(args.results_dir, args.manifest)
+        try:
+            report = analyze(args.results_dir, args.manifest)
+        except AnalysisError as exc:
+            print(json.dumps({"event": "analysis_error", "detail": str(exc)}), flush=True)
+            return 4
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(
             json.dumps(report, indent=2, ensure_ascii=False, sort_keys=True),

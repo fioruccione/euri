@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from benchmarks.euri_memory.heldout import verify_manifest
+from benchmarks.euri_memory.integrity import expected_pairs, validate_pair_report
 
 
 # Soglia sotto la quale l'inferenza è dichiarata sotto-potenziata a prescindere.
@@ -41,12 +42,22 @@ def _profiles_by_name(report: dict) -> dict[str, dict]:
     return {item.get("profile", {}).get("name"): item for item in report.get("profiles", [])}
 
 
+def _load_raw_reports(runs_dir: Path) -> list[tuple[Path, dict]]:
+    reports = []
+    for path in sorted(Path(runs_dir).glob("*.json")):
+        reports.append((path, json.loads(path.read_text(encoding="utf-8"))))
+    return reports
+
+
 def load_completed_pairs(runs_dir: Path) -> list[dict]:
-    """Carica i report delle coppie complete (entrambi i bracci con scoring)."""
+    """Carica i report delle coppie complete (entrambi i bracci con scoring).
+
+    Percorso permissivo: usato solo senza manifest. Con manifest la selezione è
+    legata rigidamente in :func:`analyze`.
+    """
 
     pairs = []
-    for path in sorted(Path(runs_dir).glob("*.json")):
-        report = json.loads(path.read_text(encoding="utf-8"))
+    for path, report in _load_raw_reports(runs_dir):
         profiles = _profiles_by_name(report)
         if {"rag_only", "passive_memory"} - set(profiles):
             continue
@@ -56,6 +67,54 @@ def load_completed_pairs(runs_dir: Path) -> list[dict]:
         replica = report.get("run", {}).get("run_label")
         pairs.append({"path": str(path), "sample_id": sample_id, "run_label": replica, "report": report})
     return pairs
+
+
+def _bind_pairs_to_manifest(runs_dir: Path, manifest: dict) -> tuple[list[dict], dict]:
+    """Accetta solo report legati ESATTAMENTE al manifest.
+
+    Rifiuta (fail-closed) report estranei, duplicati o non validi. Le coppie
+    mancanti sono ammesse ma dichiarate: una run parziale non è una validation
+    completa.
+    """
+
+    expected = expected_pairs(manifest)
+    seen: dict[str, dict] = {}
+    foreign: list[str] = []
+    duplicate: list[str] = []
+    invalid: list[dict] = []
+    for path, report in _load_raw_reports(runs_dir):
+        key = report.get("run", {}).get("run_label")
+        if key not in expected:
+            foreign.append(str(path))
+            continue
+        problems = validate_pair_report(report, manifest, expected[key])
+        if problems:
+            invalid.append({"path": str(path), "problems": problems})
+            continue
+        if key in seen:
+            duplicate.append(str(path))
+            continue
+        seen[key] = {
+            "path": str(path),
+            "sample_id": report.get("dataset", {}).get("sample_id"),
+            "run_label": key,
+            "report": report,
+        }
+    if foreign or duplicate or invalid:
+        raise AnalysisError(
+            "report non legati al manifest: "
+            f"estranei={foreign}, duplicati={duplicate}, non_validi={invalid}"
+        )
+    missing = sorted(set(expected) - set(seen))
+    binding = {
+        "manifest_bound": True,
+        "manifest_sha256": manifest.get("manifest_sha256"),
+        "expected_pairs": sorted(expected),
+        "complete_pairs": sorted(seen),
+        "missing_pairs": missing,
+        "partial": bool(missing),
+    }
+    return list(seen.values()), binding
 
 
 def mcnemar_exact(b: int, c: int) -> dict:
@@ -253,14 +312,16 @@ def _exact_match(item: dict) -> bool | None:
 
 
 def analyze(runs_dir: Path, manifest_path: Path | None = None) -> dict:
-    pairs = load_completed_pairs(runs_dir)
-    if not pairs:
-        raise AnalysisError(f"nessuna coppia completa in {runs_dir}")
-
     manifest = None
+    binding: dict = {"manifest_bound": False}
     if manifest_path is not None:
         manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
         verify_manifest(manifest)
+        pairs, binding = _bind_pairs_to_manifest(runs_dir, manifest)
+    else:
+        pairs = load_completed_pairs(runs_dir)
+    if not pairs:
+        raise AnalysisError(f"nessuna coppia completa/valida in {runs_dir}")
 
     per_conv_deltas = _per_conversation_deltas(pairs)
     conversations = sorted(per_conv_deltas)
@@ -305,6 +366,8 @@ def analyze(runs_dir: Path, manifest_path: Path | None = None) -> dict:
         "replicas_present": replicas,
         "pairs_complete": len(pairs),
         "manifest_sha256": manifest.get("manifest_sha256") if manifest else None,
+        "binding": binding,
+        "is_partial_run": bool(binding.get("partial")),
         "direction": "passive_memory_minus_rag_only",
         "primary_metrics": primary,
         "secondary_mcnemar_exact": {
@@ -331,5 +394,12 @@ def analyze(runs_dir: Path, manifest_path: Path | None = None) -> dict:
             "3 conversazioni × repliche è una validazione held-out sostanziale ma "
             "resta un pilot clusterizzato: non è una stima definitiva sull'intero "
             "LoCoMo."
+            + (
+                " ATTENZIONE: run PARZIALE, coppie mancanti "
+                f"{binding.get('missing_pairs')}: non confondere con la validation "
+                "completa."
+                if binding.get("partial")
+                else ""
+            )
         ),
     }

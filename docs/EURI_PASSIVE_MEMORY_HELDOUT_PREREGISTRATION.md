@@ -219,3 +219,46 @@ esprime un verdetto sull'efficacia della memoria passiva.
 ```
 
 I budget `smoke` / `validation` / `extended` cambiano solo `--budget` al passo 1.
+
+---
+
+## 10. Hardening di integrità pre-esecuzione (protocollo v1)
+
+Audit indipendente (Codex) completato: metodologia approvata, tutti i test
+passano, nessun held-out eseguito. Poiché **nessun risultato è stato visto e non
+esiste ancora un seed reale**, le seguenti guardie sono documentate come
+**hardening pre-esecuzione del protocollo v1** — non una nuova versione. Legano
+rigidamente gli artefatti a valle al manifest immutabile, così due esperimenti
+non possono mescolarsi accidentalmente prima della cecità. Non toccano
+campionamento, budget, metriche né codice di produzione.
+
+1. **Corpus:** al run l'SHA-256 del corpus usato deve coincidere con
+   `manifest["corpus"]["sha256"]`; un `--source` diverso è ammesso solo a parità
+   di hash.
+2. **Commit e worktree:** prima del run reale HEAD deve combaciare col commit del
+   manifest e i file **tracciati** devono essere puliti (i report non tracciati
+   sono ammessi).
+3. **Output directory:** se contiene già `manifest.json`, il suo `manifest_sha256`
+   deve coincidere, altrimenti fail-closed senza sovrascrivere. Il checkpoint
+   registra `manifest_sha256`, `corpus_sha256` e git commit; un resume con valori
+   diversi è rifiutato.
+4. **Selezioni:** `_write_selection` costruisce il payload canonico atteso e non
+   riusa mai alla cieca un file preesistente: identico → riuso, diverso →
+   fail-closed.
+5. **Report per coppia:** una coppia è completa solo se il report combacia su
+   `sample_id`, `run_label`, `answer_seed`, `branch_order`, `source_sha256`, git
+   commit + worktree tracciata pulita, `question_ids` esatti, hash della selezione
+   e presenza di entrambi i bracci con scoring. Solo i report validati entrano nel
+   checkpoint.
+6. **Analisi:** con `--manifest`, `analyze` deriva le coppie attese, accetta solo
+   report legati a quel manifest, rifiuta estranei e duplicati, elenca le coppie
+   mancanti/incomplete e dichiara esplicitamente una run **parziale** (non la
+   confonde con la validation completa).
+7. **Tempo e cap:** il checkpoint accumula il **wall-clock reale** per coppia
+   (avvio Redis, caricamento embedder, teardown inclusi). Il cap LLM/tempo è
+   applicato a **granularità di coppia**: una coppia in corso può oltrepassarlo,
+   ma nessuna nuova coppia parte dopo il superamento.
+8. **Regressioni:** test che dimostrano il rifiuto di corpus con hash diverso,
+   manifest diverso nella stessa output-dir, identità di checkpoint divergente,
+   selezione preesistente alterata, report con seed/domande/ordine/commit/corpus
+   errati, e report estraneo/duplicato in analisi.

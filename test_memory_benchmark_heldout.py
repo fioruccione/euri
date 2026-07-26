@@ -29,7 +29,19 @@ from benchmarks.euri_memory.heldout import (
     manifest_digest,
     verify_manifest,
 )
-from benchmarks.euri_memory.heldout_runner import cost_forecast, plan_runs
+from benchmarks.euri_memory.heldout_runner import (
+    RunnerError,
+    cost_forecast,
+    plan_runs,
+    run_all,
+    _write_selection,
+)
+from benchmarks.euri_memory.integrity import (
+    IntegrityError,
+    assert_same_identity,
+    expected_pairs,
+    validate_pair_report,
+)
 from benchmarks.euri_memory.selection import BenchmarkSelection
 
 
@@ -322,6 +334,209 @@ def test_analysis_reports_per_conversation_deltas_and_power():
         assert report["cost_and_fragmentation"]["extra_llm_calls_passive_vs_rag"] > 0
 
 
+def _valid_pair_report(manifest: dict, expected) -> dict:
+    conv = next(
+        c for c in manifest["conversations"] if c["sample_id"] == expected.sample_id
+    )
+    scoring = {
+        "mean_token_f1": 0.4,
+        "exact_match": 0.0,
+        "adversarial_accuracy": 1.0,
+        "evidence_recall": 0.5,
+        "items": [],
+    }
+    return {
+        "dataset": {
+            "sample_id": expected.sample_id,
+            "source_sha256": manifest["corpus"]["sha256"],
+        },
+        "run": {
+            "run_label": expected.key,
+            "answer_seed": expected.answer_seed,
+            "branch_order": list(expected.branch_order),
+        },
+        "git": {"commit": manifest["git_commit"], "worktree_tracked_dirty": False},
+        "selection": {
+            "question_ids": list(conv["question_ids"]),
+            "selection_sha256": expected.selection_sha256,
+        },
+        "profiles": [
+            {"profile": {"name": "rag_only"}, "scoring": scoring},
+            {"profile": {"name": "passive_memory"}, "scoring": scoring},
+        ],
+    }
+
+
+def test_run_rejects_corpus_with_wrong_hash():
+    if not _corpus_available():
+        return
+    from benchmarks.euri_memory.heldout import write_manifest
+
+    with tempfile.TemporaryDirectory() as directory:
+        work = Path(directory)
+        manifest = build_manifest(seed=4, budget_name="smoke", git_commit="x")
+        manifest_path = write_manifest(manifest, work / "manifest.json")
+        fake_corpus = work / "fake_corpus.json"
+        fake_corpus.write_text("[]", encoding="utf-8")  # hash diverso dal reale
+        try:
+            run_all(
+                manifest_path=manifest_path,
+                output_dir=work / "out",
+                corpus_path=fake_corpus,
+                dry_run=True,
+            )
+        except IntegrityError as exc:
+            assert "corpus" in str(exc).lower()
+        else:
+            raise AssertionError("corpus con hash diverso accettato")
+
+
+def test_run_rejects_different_manifest_in_output_dir():
+    if not _corpus_available():
+        return
+    from benchmarks.euri_memory.heldout import write_manifest
+
+    with tempfile.TemporaryDirectory() as directory:
+        work = Path(directory)
+        out = work / "out"
+        out.mkdir()
+        other = build_manifest(seed=1, budget_name="smoke", git_commit="x")
+        (out / "manifest.json").write_text(
+            json.dumps(other, sort_keys=True), encoding="utf-8"
+        )
+        current = build_manifest(seed=2, budget_name="smoke", git_commit="x")
+        current_path = write_manifest(current, work / "manifest.json")
+        assert current["manifest_sha256"] != other["manifest_sha256"]
+        try:
+            run_all(
+                manifest_path=current_path,
+                output_dir=out,
+                corpus_path=OFFICIAL,
+                dry_run=True,
+            )
+        except RunnerError as exc:
+            assert "output-dir" in str(exc).lower()
+        else:
+            raise AssertionError("manifest diverso nella stessa output-dir accettato")
+
+
+def test_resume_checkpoint_identity_is_enforced():
+    recorded = {"manifest_sha256": "a", "corpus_sha256": "b", "git_commit": "c"}
+    assert_same_identity(recorded, dict(recorded), context="ok")  # non solleva
+    for field in ("manifest_sha256", "corpus_sha256", "git_commit"):
+        broken = dict(recorded)
+        broken[field] = "different"
+        try:
+            assert_same_identity(broken, recorded, context="resume")
+        except IntegrityError as exc:
+            assert field in str(exc)
+        else:
+            raise AssertionError(f"identità divergente accettata su {field}")
+
+
+def test_write_selection_is_fail_closed_on_alteration():
+    if not _corpus_available():
+        return
+    manifest = build_manifest(seed=6, budget_name="smoke", git_commit="x")
+    spec = plan_runs(manifest, OFFICIAL)[0]
+    with tempfile.TemporaryDirectory() as directory:
+        selections = Path(directory)
+        path = _write_selection(spec, selections)
+        # riuso identico: nessun errore
+        assert _write_selection(spec, selections) == path
+        # alterazione di un solo campo: fail-closed
+        tampered = json.loads(path.read_text())
+        tampered["question_ids"].append("conv-XX:q1")
+        path.write_text(json.dumps(tampered, indent=2, sort_keys=True), encoding="utf-8")
+        try:
+            _write_selection(spec, selections)
+        except RunnerError as exc:
+            assert "fail-closed" in str(exc).lower()
+        else:
+            raise AssertionError("selezione alterata riusata silenziosamente")
+
+
+def test_pair_report_validation_catches_every_mismatch():
+    if not _corpus_available():
+        return
+    manifest = build_manifest(seed=9, budget_name="validation", git_commit="fixed")
+    expected = expected_pairs(manifest)
+    key = sorted(expected)[0]
+    exp = expected[key]
+    good = _valid_pair_report(manifest, exp)
+    assert validate_pair_report(good, manifest, exp) == []
+
+    mutators = {
+        "answer_seed": lambda r: r["run"].__setitem__("answer_seed", exp.answer_seed + 1),
+        "branch_order": lambda r: r["run"].__setitem__("branch_order", ["passive_memory", "rag_only"] if list(exp.branch_order) == ["rag_only", "passive_memory"] else ["rag_only", "passive_memory"]),
+        "question_ids": lambda r: r["selection"]["question_ids"].append("conv-XX:q9"),
+        "commit": lambda r: r["git"].__setitem__("commit", "other-commit"),
+        "corpus": lambda r: r["dataset"].__setitem__("source_sha256", "deadbeef"),
+        "worktree": lambda r: r["git"].__setitem__("worktree_tracked_dirty", True),
+        "selection_sha": lambda r: r["selection"].__setitem__("selection_sha256", "bad"),
+        "missing_branch": lambda r: r.__setitem__("profiles", [r["profiles"][0]]),
+    }
+    for name, mutate in mutators.items():
+        report = json.loads(json.dumps(good))
+        mutate(report)
+        problems = validate_pair_report(report, manifest, exp)
+        assert problems, f"mutazione {name} non rilevata"
+
+
+def test_analysis_rejects_foreign_and_duplicate_reports():
+    if not _corpus_available():
+        return
+    from benchmarks.euri_memory.heldout import write_manifest
+
+    manifest = build_manifest(seed=10, budget_name="smoke", git_commit="fixed")
+    expected = expected_pairs(manifest)
+    key = sorted(expected)[0]
+    with tempfile.TemporaryDirectory() as directory:
+        work = Path(directory)
+        manifest_path = write_manifest(manifest, work / "manifest.json")
+        runs = work / "runs"
+        runs.mkdir()
+        # report valido per una coppia attesa
+        (runs / f"{key}.json").write_text(
+            json.dumps(_valid_pair_report(manifest, expected[key])), encoding="utf-8"
+        )
+        # report ESTRANEO (run_label non nel manifest)
+        foreign = _valid_pair_report(manifest, expected[key])
+        foreign["run"]["run_label"] = "conv-99__r0"
+        (runs / "conv-99__r0.json").write_text(json.dumps(foreign), encoding="utf-8")
+        try:
+            analyze(runs, manifest_path)
+        except Exception as exc:  # noqa: BLE001
+            assert "estranei" in str(exc) or "manifest" in str(exc).lower()
+        else:
+            raise AssertionError("report estraneo accettato nell'analisi")
+
+
+def test_analysis_declares_partial_run():
+    if not _corpus_available():
+        return
+    from benchmarks.euri_memory.heldout import write_manifest
+
+    manifest = build_manifest(seed=12, budget_name="validation", git_commit="fixed")
+    expected = expected_pairs(manifest)
+    # tieni solo le coppie di UNA conversazione → run parziale legittima
+    one_conv = manifest["conversations"][0]["sample_id"]
+    keep = [k for k in expected if expected[k].sample_id == one_conv]
+    with tempfile.TemporaryDirectory() as directory:
+        work = Path(directory)
+        manifest_path = write_manifest(manifest, work / "manifest.json")
+        runs = work / "runs"
+        runs.mkdir()
+        for key in keep:
+            (runs / f"{key}.json").write_text(
+                json.dumps(_valid_pair_report(manifest, expected[key])), encoding="utf-8"
+            )
+        report = analyze(runs, manifest_path)
+        assert report["is_partial_run"] is True
+        assert report["binding"]["missing_pairs"]
+        assert "PARZIALE" in report["interpretation_limit"]
+
+
 if __name__ == "__main__":
     test_seed_is_mandatory_without_default()
     test_manifest_is_deterministic_and_seed_sensitive()
@@ -334,4 +549,11 @@ if __name__ == "__main__":
     test_mcnemar_exact_matches_known_values()
     test_cluster_bootstrap_is_deterministic_and_clusters_by_conversation()
     test_analysis_reports_per_conversation_deltas_and_power()
+    test_run_rejects_corpus_with_wrong_hash()
+    test_run_rejects_different_manifest_in_output_dir()
+    test_resume_checkpoint_identity_is_enforced()
+    test_write_selection_is_fail_closed_on_alteration()
+    test_pair_report_validation_catches_every_mismatch()
+    test_analysis_rejects_foreign_and_duplicate_reports()
+    test_analysis_declares_partial_run()
     print("test_memory_benchmark_heldout: OK")

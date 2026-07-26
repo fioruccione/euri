@@ -24,10 +24,18 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.euri_memory.adapters import LoCoMoAdapter
-from benchmarks.euri_memory.heldout import (
-    _SPEAKER_MAPPING,
-    get_budget,
-    verify_manifest,
+from benchmarks.euri_memory.heldout import get_budget, verify_manifest
+from benchmarks.euri_memory.integrity import (
+    ExpectedPair,
+    assert_corpus_matches,
+    assert_head_matches_manifest,
+    assert_same_identity,
+    assert_worktree_clean,
+    canonical_selection_bytes,
+    canonical_selection_payload,
+    expected_pairs,
+    run_identity,
+    validate_pair_report,
 )
 
 
@@ -199,22 +207,25 @@ def cost_forecast(
 
 
 def _write_selection(spec: RunSpec, directory: Path) -> Path:
+    """Scrive/riusa la selezione canonica, fail-closed se differisce.
+
+    Un file preesistente non viene mai riusato alla cieca: se anche un solo campo
+    diverge dal payload atteso, la run fallisce senza sovrascrivere.
+    """
+
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{spec.sample_id}.json"
-    if not path.exists():
-        payload = {
-            "schema_version": 1,
-            "selection_id": f"heldout-{spec.sample_id}",
-            "dataset": "locomo",
-            "sample_id": spec.sample_id,
-            "session_ids": list(spec.session_ids),
-            "question_ids": list(spec.question_ids),
-            "speaker_mapping": dict(_SPEAKER_MAPPING),
-        }
-        path.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True),
-            encoding="utf-8",
-        )
+    payload = canonical_selection_payload(
+        spec.sample_id, list(spec.session_ids), list(spec.question_ids)
+    )
+    data = canonical_selection_bytes(payload)
+    if path.exists():
+        if path.read_bytes() != data:
+            raise RunnerError(
+                f"selezione preesistente {path} differisce da quella attesa: fail-closed"
+            )
+        return path
+    path.write_bytes(data)
     return path
 
 
@@ -234,7 +245,9 @@ def _run_pair(
     selection_path: Path,
     runs_dir: Path,
     timeout: int,
-) -> Path:
+    manifest: dict,
+    expected: ExpectedPair,
+) -> tuple[Path, dict]:
     from benchmarks.euri_memory.runtime import IsolatedRuntime
 
     report_path = runs_dir / f"{spec.key}.json"
@@ -280,9 +293,14 @@ def _run_pair(
         report = json.loads(worker_report.read_text(encoding="utf-8"))
         if not _pair_report_is_complete(report):
             raise RunnerError(f"coppia {spec.key}: report incompleto, non registrata")
+        problems = validate_pair_report(report, manifest, expected)
+        if problems:
+            raise RunnerError(
+                f"coppia {spec.key}: report non legato al manifest: {'; '.join(problems)}"
+            )
         runs_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(worker_report, report_path)
-    return report_path
+    return report_path, report
 
 
 def _report_llm_calls(report: dict) -> int:
@@ -319,11 +337,26 @@ def run_all(
 ) -> dict:
     manifest = load_and_verify_manifest(manifest_path)
     budget = get_budget(manifest["budget"]["name"])
+
+    # 1. CORPUS: l'hash del corpus usato deve coincidere col preregistrato.
+    assert_corpus_matches(manifest, corpus_path)
+    identity = run_identity(manifest)
+
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Copia verificata del manifest + forecast, sempre (anche in dry-run).
-    shutil.copy2(manifest_path, output_dir / "manifest.json")
+    # 3. OUTPUT DIRECTORY: fail-closed se contiene già un manifest diverso.
+    existing_manifest = output_dir / "manifest.json"
+    if existing_manifest.exists():
+        prev = json.loads(existing_manifest.read_text(encoding="utf-8"))
+        if prev.get("manifest_sha256") != manifest["manifest_sha256"]:
+            raise RunnerError(
+                "output-dir già usata da un manifest diverso: fail-closed, non "
+                "sovrascrivo"
+            )
+    else:
+        shutil.copy2(manifest_path, existing_manifest)
+
     forecast = cost_forecast(manifest, corpus_path, seconds_per_call=seconds_per_call)
     (output_dir / "forecast.json").write_text(
         json.dumps(forecast, indent=2, ensure_ascii=False, sort_keys=True),
@@ -368,44 +401,65 @@ def run_all(
         )
         return result
 
+    # 2. COMMIT E WORKTREE: prima del run reale HEAD deve combaciare col manifest
+    # e i file tracciati devono essere puliti (i report non tracciati sono ammessi).
+    assert_head_matches_manifest(manifest, REPO_ROOT)
+    assert_worktree_clean(REPO_ROOT)
+
+    expected = expected_pairs(manifest)
+
     checkpoint = _load_checkpoint(checkpoint_path)
+    # 3. Un checkpoint di un altro esperimento nella stessa dir è rifiutato.
+    if checkpoint.get("identity"):
+        assert_same_identity(checkpoint["identity"], identity, context="resume checkpoint")
     completed: dict[str, Any] = dict(checkpoint.get("completed", {}))
     cumulative_calls = int(checkpoint.get("cumulative_llm_calls", 0))
+    cumulative_wall = float(checkpoint.get("cumulative_wall_seconds", 0.0))
     cumulative_ms = float(checkpoint.get("cumulative_elapsed_ms", 0.0))
 
     for spec in specs:
         if spec.key in completed and (runs_dir / f"{spec.key}.json").is_file():
             print(json.dumps({"event": "pair_skip_completed", "key": spec.key}), flush=True)
             continue
-        # Cap preregistrati: arresto tecnico, mai guidato dalle metriche.
+        # 7. Cap a granularità di coppia: nessuna NUOVA coppia parte dopo il
+        # superamento; una coppia in corso può oltrepassarlo. Il tempo è
+        # wall-clock reale (avvio Redis, embedder, teardown inclusi). Arresto
+        # tecnico, mai guidato dalle metriche.
         if cumulative_calls >= budget.max_llm_calls:
             raise BudgetExceeded(
                 f"cap chiamate LLM superato: {cumulative_calls} ≥ {budget.max_llm_calls}"
             )
-        if cumulative_ms / 1000.0 >= budget.max_seconds:
+        if cumulative_wall >= budget.max_seconds:
             raise BudgetExceeded(
-                f"cap tempo superato: {cumulative_ms / 1000.0:.0f}s ≥ {budget.max_seconds}s"
+                f"cap tempo (wall) superato: {cumulative_wall:.0f}s ≥ {budget.max_seconds}s"
             )
         selection_path = _write_selection(spec, selections_dir)
         print(json.dumps({"event": "pair_start", "key": spec.key}), flush=True)
-        report_path = _run_pair(
+        started = time.perf_counter()
+        report_path, report = _run_pair(
             spec,
             source=corpus_path,
             selection_path=selection_path,
             runs_dir=runs_dir,
             timeout=per_pair_timeout,
+            manifest=manifest,
+            expected=expected[spec.key],
         )
-        report = json.loads(report_path.read_text(encoding="utf-8"))
+        wall_seconds = time.perf_counter() - started
         cumulative_calls += _report_llm_calls(report)
+        cumulative_wall += wall_seconds
         cumulative_ms += _report_elapsed_ms(report)
         completed[spec.key] = {
             "report": str(report_path.relative_to(output_dir)),
             "sample_id": spec.sample_id,
             "replica_index": spec.replica_index,
+            "wall_seconds": round(wall_seconds, 3),
         }
         checkpoint = {
+            "identity": identity,
             "completed": completed,
             "cumulative_llm_calls": cumulative_calls,
+            "cumulative_wall_seconds": cumulative_wall,
             "cumulative_elapsed_ms": cumulative_ms,
         }
         _save_checkpoint(checkpoint_path, checkpoint)
@@ -417,6 +471,7 @@ def run_all(
         "pairs_planned": len(specs),
         "pairs_completed": len(completed),
         "cumulative_llm_calls": cumulative_calls,
+        "cumulative_wall_seconds": cumulative_wall,
         "cumulative_elapsed_ms": cumulative_ms,
         "output_dir": str(output_dir),
     }

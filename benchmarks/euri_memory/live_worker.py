@@ -90,13 +90,27 @@ def _git_metadata() -> dict[str, Any]:
             capture_output=True,
             text=True,
         ).stdout
+        tracked = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=Path(__file__).resolve().parents[2],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
         return {
             "commit": commit,
             "worktree_dirty": bool(status.strip()),
+            # Solo file tracciati: i report non tracciati/ignorati non sporcano.
+            "worktree_tracked_dirty": bool(tracked.strip()),
             "worktree_status_sha256": hashlib.sha256(status.encode()).hexdigest(),
         }
     except (OSError, subprocess.SubprocessError):
-        return {"commit": None, "worktree_dirty": None, "worktree_status_sha256": None}
+        return {
+            "commit": None,
+            "worktree_dirty": None,
+            "worktree_tracked_dirty": None,
+            "worktree_status_sha256": None,
+        }
 
 
 def _timestamp(value: str | None, *, offset: int = 0) -> float:
