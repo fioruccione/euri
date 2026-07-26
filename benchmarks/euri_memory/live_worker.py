@@ -657,6 +657,13 @@ def main() -> int:
     )
     parser.add_argument("--answer-seed", type=int, default=42)
     parser.add_argument("--run-label", default=None)
+    # Legame crittografico col manifest finale (opzionali per compatibilità con
+    # smoke/ab storici; l'held-out italiano li fornisce sempre).
+    parser.add_argument("--manifest-sha256", default=None)
+    parser.add_argument("--selection-manifest-sha256", default=None)
+    parser.add_argument("--localization-sha256", default=None)
+    parser.add_argument("--localization-id", default=None)
+    parser.add_argument("--expected-language", default=None)
     args = parser.parse_args()
 
     branch_order = tuple(
@@ -683,6 +690,10 @@ def main() -> int:
         localization = BenchmarkLocalization.load(args.localization)
         case = localization.apply(case)
     language = str(case.metadata.get("language") or "en")
+    if args.expected_language and language != args.expected_language:
+        raise RuntimeError(
+            f"lingua applicata {language!r} diversa dall'attesa {args.expected_language!r}"
+        )
     answer_system = _ANSWER_SYSTEM_IT if language == "it" else _ANSWER_SYSTEM_EN
     redis_client = get_client()
     if redis_client.get(_RUNTIME_MARKER_KEY) != runtime_id:
@@ -779,6 +790,14 @@ def main() -> int:
             "run_label": args.run_label,
             "branch_order": list(branch_order),
             "answer_seed": args.answer_seed,
+        },
+        # Legame crittografico col manifest finale (punto 4 dell'hardening).
+        "binding": {
+            "manifest_sha256": args.manifest_sha256,
+            "selection_manifest_sha256": args.selection_manifest_sha256,
+            "localization_sha256": args.localization_sha256,
+            "localization_id": args.localization_id,
+            "language": language,
         },
         "gold_boundary": {
             "ingest_received_questions": False,

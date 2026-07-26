@@ -25,8 +25,13 @@ from typing import Any
 
 from benchmarks.euri_memory.adapters import LoCoMoAdapter
 from benchmarks.euri_memory.heldout import get_budget, verify_manifest
+from benchmarks.euri_memory.heldout_localization import (
+    selection_localization_slice,
+    verify_localization_seal,
+)
 from benchmarks.euri_memory.integrity import (
     ExpectedPair,
+    IntegrityError,
     assert_corpus_matches,
     assert_head_matches_manifest,
     assert_same_identity,
@@ -229,6 +234,35 @@ def _write_selection(spec: RunSpec, directory: Path) -> Path:
     return path
 
 
+def _write_localization_slice(
+    localization: dict, spec: RunSpec, directory: Path
+) -> Path:
+    """Slice italiana per conversazione, fail-closed come la selezione.
+
+    Lo stesso file viene passato a entrambi i bracci: la traduzione è identica.
+    """
+
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{spec.sample_id}.it.json"
+    slice_payload = selection_localization_slice(
+        localization,
+        spec.sample_id,
+        list(spec.question_ids),
+        f"heldout-{spec.sample_id}",
+    )
+    data = json.dumps(
+        slice_payload, indent=2, ensure_ascii=False, sort_keys=True
+    ).encode("utf-8")
+    if path.exists():
+        if path.read_bytes() != data:
+            raise RunnerError(
+                f"slice italiana preesistente {path} differisce dall'attesa: fail-closed"
+            )
+        return path
+    path.write_bytes(data)
+    return path
+
+
 def _pair_report_is_complete(report: dict) -> bool:
     """Vera solo se entrambi i bracci hanno prodotto uno scoring."""
 
@@ -243,6 +277,7 @@ def _run_pair(
     *,
     source: Path,
     selection_path: Path,
+    localization_path: Path,
     runs_dir: Path,
     timeout: int,
     manifest: dict,
@@ -276,12 +311,24 @@ def _run_pair(
                 str(source.resolve()),
                 "--selection",
                 str(selection_path.resolve()),
+                "--localization",
+                str(localization_path.resolve()),
                 "--branch-order",
                 ",".join(spec.branch_order),
                 "--answer-seed",
                 str(spec.answer_seed),
                 "--run-label",
                 spec.key,
+                "--manifest-sha256",
+                str(manifest["manifest_sha256"]),
+                "--selection-manifest-sha256",
+                str(manifest["selection_manifest_sha256"]),
+                "--localization-sha256",
+                str(manifest["localization"]["localization_sha256"]),
+                "--localization-id",
+                str(manifest["localization"]["localization_id"]),
+                "--expected-language",
+                "it",
                 "--output",
                 str(worker_report),
             ],
@@ -319,6 +366,67 @@ def _load_checkpoint(path: Path) -> dict:
     return {"completed": {}, "cumulative_llm_calls": 0, "cumulative_elapsed_ms": 0.0}
 
 
+_IDENTITY_FIELDS = ("manifest_sha256", "corpus_sha256", "git_commit")
+
+
+def _prepare_resume(
+    checkpoint_path: Path,
+    *,
+    manifest: dict,
+    identity: dict,
+    expected: dict,
+    output_dir: Path,
+) -> dict:
+    """Resume fail-closed. Un checkpoint esistente deve dimostrare la sua validità.
+
+    - identity completa e coincidente col manifest;
+    - solo chiavi previste dal manifest;
+    - percorso report atteso, file presente e integro;
+    - ogni coppia rivalidata con ``validate_pair_report`` prima di poter saltarla.
+    """
+
+    if not checkpoint_path.is_file():
+        return {
+            "identity": identity,
+            "completed": {},
+            "cumulative_llm_calls": 0,
+            "cumulative_wall_seconds": 0.0,
+            "cumulative_elapsed_ms": 0.0,
+        }
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    recorded = checkpoint.get("identity") or {}
+    if any(recorded.get(field) is None for field in _IDENTITY_FIELDS):
+        raise IntegrityError("checkpoint esistente senza identity completa: rifiuto")
+    assert_same_identity(recorded, identity, context="resume checkpoint")
+
+    completed = checkpoint.get("completed", {})
+    for key, entry in completed.items():
+        if key not in expected:
+            raise IntegrityError(f"checkpoint con coppia estranea al manifest: {key}")
+        expected_rel = f"runs/{key}.json"
+        if entry.get("report") != expected_rel:
+            raise IntegrityError(f"percorso report del checkpoint divergente per {key}")
+        report_file = output_dir / expected_rel
+        if not report_file.is_file():
+            raise IntegrityError(f"report mancante per coppia completed {key}")
+        try:
+            report = json.loads(report_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise IntegrityError(f"report corrotto per coppia completed {key}: {exc}") from exc
+        problems = validate_pair_report(report, manifest, expected[key])
+        if problems:
+            raise IntegrityError(
+                f"report divergente dopo il checkpoint per {key}: {'; '.join(problems)}"
+            )
+    return {
+        "identity": identity,
+        "completed": dict(completed),
+        "cumulative_llm_calls": int(checkpoint.get("cumulative_llm_calls", 0)),
+        "cumulative_wall_seconds": float(checkpoint.get("cumulative_wall_seconds", 0.0)),
+        "cumulative_elapsed_ms": float(checkpoint.get("cumulative_elapsed_ms", 0.0)),
+    }
+
+
 def _save_checkpoint(path: Path, checkpoint: dict) -> None:
     path.write_text(
         json.dumps(checkpoint, indent=2, ensure_ascii=False, sort_keys=True),
@@ -331,6 +439,7 @@ def run_all(
     manifest_path: Path,
     output_dir: Path,
     corpus_path: Path,
+    localization_path: Path | None = None,
     dry_run: bool = False,
     seconds_per_call: float = _DEFAULT_SECONDS_PER_CALL,
     per_pair_timeout: int = 21_600,
@@ -342,14 +451,36 @@ def run_all(
     assert_corpus_matches(manifest, corpus_path)
     identity = run_identity(manifest)
 
+    # Artefatto italiano: sigillo + legame col manifest finale. Richiesto per il
+    # run reale; nel dry-run (solo forecast) è opzionale.
+    localization = None
+    if localization_path is not None:
+        if manifest.get("stage") != "final":
+            raise RunnerError("localization fornita ma il manifest non è finale")
+        localization = json.loads(Path(localization_path).read_text(encoding="utf-8"))
+        verify_localization_seal(localization)
+        if localization.get("localization_sha256") != manifest["localization"]["localization_sha256"]:
+            raise RunnerError("localization SHA diverso da quello del manifest finale")
+        if localization.get("language") != "it":
+            raise RunnerError("artefatto di localizzazione non italiano")
+
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 3. OUTPUT DIRECTORY: fail-closed se contiene già un manifest diverso.
+    # 3. OUTPUT DIRECTORY: un manifest preesistente deve superare verify_manifest
+    # e avere identità canonica identica; contenuto o digest divergenti -> chiuso.
     existing_manifest = output_dir / "manifest.json"
     if existing_manifest.exists():
         prev = json.loads(existing_manifest.read_text(encoding="utf-8"))
-        if prev.get("manifest_sha256") != manifest["manifest_sha256"]:
+        try:
+            verify_manifest(prev)
+        except Exception as exc:  # noqa: BLE001
+            raise RunnerError(
+                f"manifest preesistente nell'output-dir non integro: {exc}"
+            ) from exc
+        if prev.get("manifest_sha256") != manifest["manifest_sha256"] or run_identity(
+            prev
+        ) != identity:
             raise RunnerError(
                 "output-dir già usata da un manifest diverso: fail-closed, non "
                 "sovrascrivo"
@@ -401,6 +532,17 @@ def run_all(
         )
         return result
 
+    # Il run reale richiede il manifest FINALE italiano + l'artefatto sigillato.
+    if manifest.get("stage") != "final" or manifest.get("language") != "it":
+        raise RunnerError(
+            "run reale richiede il manifest FINALE italiano (stage=final, "
+            "language=it): esegui prima heldout-localize e heldout-finalize"
+        )
+    if localization is None:
+        raise RunnerError(
+            "run reale senza artefatto italiano: passa --localization (sigillato)"
+        )
+
     # 2. COMMIT E WORKTREE: prima del run reale HEAD deve combaciare col manifest
     # e i file tracciati devono essere puliti (i report non tracciati sono ammessi).
     assert_head_matches_manifest(manifest, REPO_ROOT)
@@ -408,17 +550,25 @@ def run_all(
 
     expected = expected_pairs(manifest)
 
-    checkpoint = _load_checkpoint(checkpoint_path)
-    # 3. Un checkpoint di un altro esperimento nella stessa dir è rifiutato.
-    if checkpoint.get("identity"):
-        assert_same_identity(checkpoint["identity"], identity, context="resume checkpoint")
-    completed: dict[str, Any] = dict(checkpoint.get("completed", {}))
-    cumulative_calls = int(checkpoint.get("cumulative_llm_calls", 0))
-    cumulative_wall = float(checkpoint.get("cumulative_wall_seconds", 0.0))
-    cumulative_ms = float(checkpoint.get("cumulative_elapsed_ms", 0.0))
+    # 2. RESUME fail-closed: identity completa obbligatoria, ogni coppia completed
+    # rivalidata, percorso atteso, report presente/integro; niente skip cieco.
+    checkpoint = _prepare_resume(
+        checkpoint_path,
+        manifest=manifest,
+        identity=identity,
+        expected=expected,
+        output_dir=output_dir,
+    )
+    completed: dict[str, Any] = dict(checkpoint["completed"])
+    cumulative_calls = int(checkpoint["cumulative_llm_calls"])
+    cumulative_wall = float(checkpoint["cumulative_wall_seconds"])
+    cumulative_ms = float(checkpoint["cumulative_elapsed_ms"])
+
+    localizations_dir = output_dir / "localizations"
 
     for spec in specs:
-        if spec.key in completed and (runs_dir / f"{spec.key}.json").is_file():
+        if spec.key in completed:
+            # Le coppie completed sono già state rivalidate da _prepare_resume.
             print(json.dumps({"event": "pair_skip_completed", "key": spec.key}), flush=True)
             continue
         # 7. Cap a granularità di coppia: nessuna NUOVA coppia parte dopo il
@@ -434,12 +584,16 @@ def run_all(
                 f"cap tempo (wall) superato: {cumulative_wall:.0f}s ≥ {budget.max_seconds}s"
             )
         selection_path = _write_selection(spec, selections_dir)
+        localization_slice_path = _write_localization_slice(
+            localization, spec, localizations_dir
+        )
         print(json.dumps({"event": "pair_start", "key": spec.key}), flush=True)
         started = time.perf_counter()
         report_path, report = _run_pair(
             spec,
             source=corpus_path,
             selection_path=selection_path,
+            localization_path=localization_slice_path,
             runs_dir=runs_dir,
             timeout=per_pair_timeout,
             manifest=manifest,

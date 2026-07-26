@@ -24,22 +24,32 @@ from benchmarks.euri_memory.analysis import (
 from benchmarks.euri_memory.heldout import (
     BUDGETS,
     GUARD_EXCLUDED_SAMPLE_IDS,
+    build_final_manifest,
     build_manifest,
     dev_excluded_sample_ids,
     manifest_digest,
     verify_manifest,
+)
+from benchmarks.euri_memory.heldout_localization import (
+    LocalizationError,
+    build_selected_localization,
+    localization_forecast,
+    verify_localization_seal,
+    verify_selected_localization,
 )
 from benchmarks.euri_memory.heldout_runner import (
     RunnerError,
     cost_forecast,
     plan_runs,
     run_all,
+    _prepare_resume,
     _write_selection,
 )
 from benchmarks.euri_memory.integrity import (
     IntegrityError,
     assert_same_identity,
     expected_pairs,
+    run_identity,
     validate_pair_report,
 )
 from benchmarks.euri_memory.selection import BenchmarkSelection
@@ -338,13 +348,27 @@ def _valid_pair_report(manifest: dict, expected) -> dict:
     conv = next(
         c for c in manifest["conversations"] if c["sample_id"] == expected.sample_id
     )
-    scoring = {
-        "mean_token_f1": 0.4,
-        "exact_match": 0.0,
-        "adversarial_accuracy": 1.0,
-        "evidence_recall": 0.5,
-        "items": [],
-    }
+    qids = list(conv["question_ids"])
+
+    def scoring() -> dict:
+        return {
+            "mean_token_f1": 0.4,
+            "exact_match": 0.0,
+            "adversarial_accuracy": 1.0,
+            "evidence_recall": 0.5,
+            "items": [
+                {
+                    "question_id": q,
+                    "answerable": True,
+                    "evidence_hit": True,
+                    "exact_match": False,
+                    "correct": True,
+                    "token_f1": 0.5,
+                }
+                for q in qids
+            ],
+        }
+
     return {
         "dataset": {
             "sample_id": expected.sample_id,
@@ -355,16 +379,31 @@ def _valid_pair_report(manifest: dict, expected) -> dict:
             "answer_seed": expected.answer_seed,
             "branch_order": list(expected.branch_order),
         },
+        "models": {"answer_seed": expected.answer_seed},
+        "binding": {
+            "manifest_sha256": manifest["manifest_sha256"],
+            "selection_manifest_sha256": manifest.get("selection_manifest_sha256"),
+            "localization_sha256": (manifest.get("localization") or {}).get(
+                "localization_sha256"
+            ),
+            "language": "it",
+        },
         "git": {"commit": manifest["git_commit"], "worktree_tracked_dirty": False},
         "selection": {
-            "question_ids": list(conv["question_ids"]),
+            "question_ids": qids,
             "selection_sha256": expected.selection_sha256,
         },
         "profiles": [
-            {"profile": {"name": "rag_only"}, "scoring": scoring},
-            {"profile": {"name": "passive_memory"}, "scoring": scoring},
+            {"profile": {"name": "rag_only"}, "scoring": scoring()},
+            {"profile": {"name": "passive_memory"}, "scoring": scoring()},
         ],
     }
+
+
+def _stub_translate(text: str, _kind: str) -> str:
+    # Traduttore fittizio deterministico per i test: conserva i numeri perché
+    # include il testo originale. Non è una traduzione reale.
+    return "IT: " + text
 
 
 def test_run_rejects_corpus_with_wrong_hash():
@@ -468,13 +507,18 @@ def test_pair_report_validation_catches_every_mismatch():
 
     mutators = {
         "answer_seed": lambda r: r["run"].__setitem__("answer_seed", exp.answer_seed + 1),
+        "models_answer_seed": lambda r: r["models"].__setitem__("answer_seed", exp.answer_seed + 7),
         "branch_order": lambda r: r["run"].__setitem__("branch_order", ["passive_memory", "rag_only"] if list(exp.branch_order) == ["rag_only", "passive_memory"] else ["rag_only", "passive_memory"]),
-        "question_ids": lambda r: r["selection"]["question_ids"].append("conv-XX:q9"),
+        "question_ids_sequence": lambda r: r["selection"]["question_ids"].append("conv-XX:q9"),
         "commit": lambda r: r["git"].__setitem__("commit", "other-commit"),
         "corpus": lambda r: r["dataset"].__setitem__("source_sha256", "deadbeef"),
         "worktree": lambda r: r["git"].__setitem__("worktree_tracked_dirty", True),
         "selection_sha": lambda r: r["selection"].__setitem__("selection_sha256", "bad"),
+        "binding_manifest": lambda r: r["binding"].__setitem__("manifest_sha256", "bad"),
         "missing_branch": lambda r: r.__setitem__("profiles", [r["profiles"][0]]),
+        "duplicate_profile": lambda r: r["profiles"].append(r["profiles"][0]),
+        "extra_profile": lambda r: r["profiles"].append({"profile": {"name": "consolidation"}, "scoring": r["profiles"][0]["scoring"]}),
+        "scoring_coverage": lambda r: r["profiles"][0]["scoring"]["items"].pop(),
     }
     for name, mutate in mutators.items():
         report = json.loads(json.dumps(good))
@@ -537,6 +581,185 @@ def test_analysis_declares_partial_run():
         assert "PARZIALE" in report["interpretation_limit"]
 
 
+def test_localization_pipeline_builds_and_verifies():
+    if not _corpus_available():
+        return
+    manifest = build_manifest(seed=21, budget_name="smoke", git_commit="x")
+    loc = build_selected_localization(
+        corpus_path=OFFICIAL,
+        selection_manifest=manifest,
+        translate_fn=_stub_translate,
+        model="stub",
+        model_version="v0",
+    )
+    verify_localization_seal(loc)
+    result = verify_selected_localization(loc, OFFICIAL, manifest)
+    assert result["verified"] is True
+    assert sorted(loc["selected_sample_ids"]) == sorted(
+        c["sample_id"] for c in manifest["conversations"]
+    )
+    assert loc["language"] == "it"
+    # sigillo: alterare il contenuto senza aggiornare lo SHA è rifiutato
+    broken = json.loads(json.dumps(loc))
+    broken["conversations"] = {}
+    try:
+        verify_selected_localization(broken, OFFICIAL, manifest)
+    except LocalizationError:
+        pass
+    else:
+        raise AssertionError("localizzazione incompleta accettata")
+
+
+def test_final_manifest_binds_selection_and_localization():
+    if not _corpus_available():
+        return
+    manifest = build_manifest(seed=22, budget_name="smoke", git_commit="fixed")
+    loc = build_selected_localization(
+        corpus_path=OFFICIAL,
+        selection_manifest=manifest,
+        translate_fn=_stub_translate,
+        model="stub",
+        model_version="v0",
+    )
+    final = build_final_manifest(manifest, loc, corpus_path=OFFICIAL)
+    verify_manifest(final)
+    assert final["stage"] == "final"
+    assert final["language"] == "it"
+    assert final["selection_manifest_sha256"] == manifest["manifest_sha256"]
+    assert final["localization"]["localization_sha256"] == loc["localization_sha256"]
+    # blindness: nessun testo di domanda o gold nel manifest finale
+    banned = {"answer", "expected_answer", "question", "text", "adversarial_answer"}
+
+    def walk(n):
+        if isinstance(n, dict):
+            for k, v in n.items():
+                assert k not in banned, k
+                walk(v)
+        elif isinstance(n, list):
+            for x in n:
+                walk(x)
+
+    walk(final)
+    # report legato al finale valida; alterare i legami italiani è rilevato
+    expected = expected_pairs(final)
+    exp = expected[sorted(expected)[0]]
+    good = _valid_pair_report(final, exp)
+    assert validate_pair_report(good, final, exp) == []
+    for field in ("localization_sha256", "selection_manifest_sha256"):
+        bad = json.loads(json.dumps(good))
+        bad["binding"][field] = "wrong"
+        assert validate_pair_report(bad, final, exp), field
+    bad_lang = json.loads(json.dumps(good))
+    bad_lang["binding"]["language"] = "en"
+    assert validate_pair_report(bad_lang, final, exp)
+
+
+def test_localization_forecast_is_structural():
+    if not _corpus_available():
+        return
+    manifest = build_manifest(seed=25, budget_name="validation", git_commit="x")
+    forecast = localization_forecast(manifest, OFFICIAL)
+    assert forecast["translation_units_total"] > 0
+    assert len(forecast["per_conversation"]) == len(manifest["conversations"])
+
+
+def test_resume_rejects_bad_checkpoints():
+    if not _corpus_available():
+        return
+    manifest = build_manifest(seed=23, budget_name="smoke", git_commit="fixed")
+    expected = expected_pairs(manifest)
+    identity = run_identity(manifest)
+    key = sorted(expected)[0]
+    with tempfile.TemporaryDirectory() as directory:
+        out = Path(directory)
+        cp = out / "checkpoint.json"
+
+        def prepare():
+            return _prepare_resume(
+                cp, manifest=manifest, identity=identity, expected=expected, output_dir=out
+            )
+
+        # (a) checkpoint senza identity completa
+        cp.write_text(json.dumps({"completed": {}}), encoding="utf-8")
+        try:
+            prepare()
+        except IntegrityError as exc:
+            assert "identity" in str(exc)
+        else:
+            raise AssertionError("checkpoint senza identity accettato")
+
+        # (b) coppia completed estranea al manifest
+        cp.write_text(
+            json.dumps(
+                {"identity": identity, "completed": {"conv-99__r0": {"report": "runs/conv-99__r0.json"}}}
+            ),
+            encoding="utf-8",
+        )
+        try:
+            prepare()
+        except IntegrityError as exc:
+            assert "estranea" in str(exc)
+        else:
+            raise AssertionError("coppia estranea accettata")
+
+        # (c) report mancante per coppia completed
+        cp.write_text(
+            json.dumps({"identity": identity, "completed": {key: {"report": f"runs/{key}.json"}}}),
+            encoding="utf-8",
+        )
+        try:
+            prepare()
+        except IntegrityError as exc:
+            assert "mancante" in str(exc)
+        else:
+            raise AssertionError("report mancante accettato")
+
+        # (d) report manomesso dopo il checkpoint
+        runs = out / "runs"
+        runs.mkdir()
+        tampered = _valid_pair_report(manifest, expected[key])
+        tampered["run"]["answer_seed"] += 1
+        (runs / f"{key}.json").write_text(json.dumps(tampered), encoding="utf-8")
+        cp.write_text(
+            json.dumps({"identity": identity, "completed": {key: {"report": f"runs/{key}.json"}}}),
+            encoding="utf-8",
+        )
+        try:
+            prepare()
+        except IntegrityError as exc:
+            assert "divergente" in str(exc)
+        else:
+            raise AssertionError("report manomesso accettato")
+
+
+def test_output_dir_rejects_tampered_manifest_with_stale_sha():
+    if not _corpus_available():
+        return
+    from benchmarks.euri_memory.heldout import write_manifest
+
+    manifest = build_manifest(seed=24, budget_name="smoke", git_commit="x")
+    with tempfile.TemporaryDirectory() as directory:
+        work = Path(directory)
+        out = work / "out"
+        out.mkdir()
+        # contenuto cambiato ma manifest_sha256 lasciato invariato -> non integro
+        tampered = json.loads(json.dumps(manifest))
+        tampered["seed"] = 999999
+        (out / "manifest.json").write_text(json.dumps(tampered), encoding="utf-8")
+        manifest_path = write_manifest(manifest, work / "manifest.json")
+        try:
+            run_all(
+                manifest_path=manifest_path,
+                output_dir=out,
+                corpus_path=OFFICIAL,
+                dry_run=True,
+            )
+        except RunnerError as exc:
+            assert "non integro" in str(exc)
+        else:
+            raise AssertionError("manifest manomesso con SHA stantio accettato")
+
+
 if __name__ == "__main__":
     test_seed_is_mandatory_without_default()
     test_manifest_is_deterministic_and_seed_sensitive()
@@ -556,4 +779,9 @@ if __name__ == "__main__":
     test_pair_report_validation_catches_every_mismatch()
     test_analysis_rejects_foreign_and_duplicate_reports()
     test_analysis_declares_partial_run()
+    test_localization_pipeline_builds_and_verifies()
+    test_final_manifest_binds_selection_and_localization()
+    test_localization_forecast_is_structural()
+    test_resume_rejects_bad_checkpoints()
+    test_output_dir_rejects_tampered_manifest_with_stale_sha()
     print("test_memory_benchmark_heldout: OK")

@@ -196,29 +196,54 @@ esprime un verdetto sull'efficacia della memoria passiva.
 
 ---
 
-## 9. Comandi
+## 9. Comandi (flusso italiano a due stadi)
 
 ```bash
+R=benchmarks/euri_memory/reports
+
 # 1) Selezione (seed OBBLIGATORIO, fornito dopo il commit del protocollo)
 ./venv/bin/python -m benchmarks.euri_memory.cli heldout-select \
-  --seed <S> --budget validation \
-  --output benchmarks/euri_memory/reports/heldout_validation_seed<S>_manifest.json
+  --seed <S> --budget validation --output $R/sel_seed<S>.json
 
-# 2) Dry-run: forecast di costo + prova d'isolamento, nessun modello
+# 2) Traduzione automatica delle SOLE 3 conversazioni selezionate (locale, Gemma)
+#    (forecast:   ... heldout-localize --selection-manifest $R/sel_seed<S>.json --dry-run --output $R/locfc.json)
+./venv/bin/python -m benchmarks.euri_memory.cli heldout-localize \
+  --selection-manifest $R/sel_seed<S>.json --output $R/it_seed<S>.json
+
+# 3) Manifest FINALE derivato (lega selezione + protocollo + localization SHA)
+./venv/bin/python -m benchmarks.euri_memory.cli heldout-finalize \
+  --selection-manifest $R/sel_seed<S>.json --localization $R/it_seed<S>.json \
+  --output $R/final_seed<S>.json
+
+# 4) Dry-run: forecast + prova d'isolamento, nessun modello
 ./venv/bin/python -m benchmarks.euri_memory.cli heldout-run \
-  --manifest <manifest> --output-dir <dir> --dry-run
+  --manifest $R/final_seed<S>.json --output-dir $R/run_seed<S> --dry-run
 
-# 3) Run reale appaiata (checkpoint/resume, cap di arresto)
+# 5) Run reale appaiata italiana (checkpoint/resume, cap di arresto)
 ./venv/bin/python -m benchmarks.euri_memory.cli heldout-run \
-  --manifest <manifest> --output-dir <dir>
+  --manifest $R/final_seed<S>.json --localization $R/it_seed<S>.json \
+  --output-dir $R/run_seed<S>
 
-# 4) Analisi clusterizzata per conversazione
+# 6) Analisi clusterizzata per conversazione (--manifest OBBLIGATORIO)
 ./venv/bin/python -m benchmarks.euri_memory.cli heldout-analyze \
-  --results-dir <dir> --manifest <manifest> \
-  --output <dir>/analysis.json
+  --results-dir $R/run_seed<S> --manifest $R/final_seed<S>.json \
+  --output $R/run_seed<S>/analysis.json
 ```
 
+**Resume** (se la run non termina entro domattina): rilancia identico il passo 5.
+Il checkpoint salta solo le coppie complete E rivalidate; se identità, percorso o
+report divergono, si arresta chiuso invece di proseguire.
+
 I budget `smoke` / `validation` / `extended` cambiano solo `--budget` al passo 1.
+
+### Stime (dal forecast, ordine di grandezza; il seed reale può variare)
+
+- **Traduzione delle 3 conversazioni selezionate (passo 2):** ~2.200 unità di
+  traduzione (turni + domande + risposte), ≈ **35–75 min** a 1–2 s/chiamata,
+  fino a ~2 h se il modello è più lento. Solo locale, nessun costo.
+- **Validation 3×3 (passo 5):** 9 coppie, ≈ **5.000–12.000** chiamate LLM locali,
+  ≈ **4–10 h** a 3 s/chiamata. Cap preregistrato: 40.000 chiamate / 8 h wall per
+  coppia cumulato — se superato, nessuna nuova coppia parte (arresto tecnico).
 
 ---
 
@@ -262,3 +287,72 @@ campionamento, budget, metriche né codice di produzione.
    manifest diverso nella stessa output-dir, identità di checkpoint divergente,
    selezione preesistente alterata, report con seed/domande/ordine/commit/corpus
    errati, e report estraneo/duplicato in analisi.
+
+---
+
+## 11. Lingua primaria italiana — variante a pipeline congelata
+
+Euri, i suoi prompt, le regex e la gestione temporale operano **principalmente in
+italiano**: l'held-out primario deve quindi essere italiano. Per non dover
+tradurre ~4.800 turni prima del seed, si adotta questa **variante preregistrata**
+(equivalente per validità, esplicitamente documentata):
+
+1. Il **protocollo di traduzione** è **congelato e committato prima del seed**:
+   deterministico, locale (Gemma via Ollama, `temperature=0`, `seed` fisso),
+   `prompt_sha256` registrato. Nessun servizio a pagamento.
+2. **Dopo** il seed si traducono automaticamente **solo le 3 conversazioni
+   selezionate**, ma integralmente (tutti i turni + le domande campionate).
+3. **Nessuna ispezione o correzione manuale** del contenuto selezionato.
+4. **Controlli automatici soltanto:** completezza di ID turni/domande, evidence
+   (preservata perché resta nel corpus), date e riferimenti temporali relativi,
+   numeri (anni/quantità ≥4 cifre come invariante duro), nomi, answerability e
+   presenza delle risposte avversariali.
+5. L'artefatto italiano è **sigillato con SHA-256**; un **manifest finale
+   derivato** lega `selection_manifest_sha256` + protocollo di traduzione +
+   `localization_sha256`, con il proprio `manifest_sha256`.
+6. **Entrambi i bracci ricevono esattamente lo stesso artefatto italiano** (la
+   stessa slice per conversazione): la traduzione è cieca, congelata e identica,
+   quindi non introduce alcun vantaggio artificiale per la memoria passiva.
+7. **Nessun risultato è osservabile prima della chiusura del manifest finale**:
+   `heldout-run` reale rifiuta un manifest non `stage=final`/`language=it` e un
+   artefatto il cui SHA non combacia.
+
+Il manifest resta **cieco**: né il selection manifest né il finale contengono
+testo di domande o gold; l'artefatto italiano (che li contiene, tradotti
+automaticamente) è un file separato, sigillato, mai ispezionato manualmente.
+
+Alternativa più stringente (se un domani c'è tempo macchina): localizzare
+**l'intero universo eleggibile** (8 conversazioni) prima del seed. La pipeline la
+supporta concettualmente; la variante a 3 conversazioni è quella scelta per il
+lancio, per costo.
+
+---
+
+## 12. Hardening di integrità #2 (pre-esecuzione, protocollo v1)
+
+Secondo giro d'audit indipendente, sempre prima del seed e dei risultati. Legami
+crittografici rafforzati; nessun cambio a campionamento, budget, bracci, metriche
+o codice di produzione.
+
+- **Resume fail-closed:** un checkpoint esistente deve avere identità completa
+  (`manifest/corpus/git`) e coincidente; ogni coppia `completed` è **rivalidata**
+  con `validate_pair_report` prima di poterla saltare; report assente, corrotto,
+  con percorso divergente o coppia estranea → rifiuto, non skip.
+- **Manifest nell'output-dir:** il manifest preesistente deve superare
+  `verify_manifest` **e** avere identità canonica identica; contenuto o digest
+  divergenti (anche con `manifest_sha256` lasciato stantìo) → chiuso.
+- **Legame crittografico report ↔ manifest:** il report registra
+  `manifest_sha256`, `selection_manifest_sha256`, `localization_sha256` e lingua;
+  `validate_pair_report` ne richiede l'uguaglianza esatta, oltre a
+  `models.answer_seed`, `question_ids` come **sequenza** esatta, profili
+  **esattamente** `rag_only`+`passive_memory` (niente duplicati/extra) e item di
+  scoring che coprono esattamente le domande attese.
+- **Analisi:** `--manifest` è **obbligatorio** in `heldout-analyze`; il percorso
+  permissivo resta solo come API esplicitamente non-held-out.
+- **Git fail-closed:** `assert_head_matches_manifest` fallisce anche quando il
+  commit atteso o HEAD non sono disponibili, non solo quando differiscono.
+- **Regressioni:** aggiunte per checkpoint senza identity, report manomesso dopo
+  il checkpoint, coppia `completed` estranea, report mancante, manifest manomesso
+  con SHA stantìo, e ogni alterazione del legame report↔manifest.
+
+Siamo ancora **prima del seed e dei risultati**: resta protocollo v1.

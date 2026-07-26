@@ -47,17 +47,36 @@ def main() -> int:
     hs.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
     hs.add_argument("--output", type=Path, required=True)
 
+    # Traduzione italiana automatica delle SOLE conversazioni selezionate.
+    hl = subparsers.add_parser("heldout-localize")
+    hl.add_argument("--selection-manifest", type=Path, required=True)
+    hl.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
+    hl.add_argument("--output", type=Path, required=True)
+    hl.add_argument("--model", default=None)
+    hl.add_argument("--model-version", default=None)
+    hl.add_argument("--dry-run", action="store_true")
+    hl.add_argument("--seconds-per-call", type=float, default=2.0)
+
+    # Manifest finale derivato: lega selezione + protocollo + localization SHA.
+    hf = subparsers.add_parser("heldout-finalize")
+    hf.add_argument("--selection-manifest", type=Path, required=True)
+    hf.add_argument("--localization", type=Path, required=True)
+    hf.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
+    hf.add_argument("--output", type=Path, required=True)
+
     hr = subparsers.add_parser("heldout-run")
     hr.add_argument("--manifest", type=Path, required=True)
     hr.add_argument("--output-dir", type=Path, required=True)
     hr.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
+    hr.add_argument("--localization", type=Path)
     hr.add_argument("--dry-run", action="store_true")
     hr.add_argument("--seconds-per-call", type=float, default=3.0)
     hr.add_argument("--per-pair-timeout", type=int, default=21_600)
 
     ha = subparsers.add_parser("heldout-analyze")
     ha.add_argument("--results-dir", type=Path, required=True)
-    ha.add_argument("--manifest", type=Path)
+    # --manifest OBBLIGATORIO: l'analisi held-out è sempre legata al manifest.
+    ha.add_argument("--manifest", type=Path, required=True)
     ha.add_argument("--output", type=Path, required=True)
 
     args = parser.parse_args()
@@ -155,6 +174,94 @@ def main() -> int:
             )
         )
         return 0
+    if args.command == "heldout-localize":
+        import json as _json
+
+        from benchmarks.euri_memory.heldout import verify_manifest
+        from benchmarks.euri_memory.heldout_localization import (
+            LocalizationError,
+            build_selected_localization,
+            localization_forecast,
+            ollama_translator,
+            verify_selected_localization,
+        )
+
+        selection_manifest = json.loads(
+            args.selection_manifest.read_text(encoding="utf-8")
+        )
+        verify_manifest(selection_manifest)
+        if args.dry_run:
+            forecast = localization_forecast(
+                selection_manifest, args.source, seconds_per_call=args.seconds_per_call
+            )
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(
+                _json.dumps(forecast, indent=2, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            print(_json.dumps(forecast, sort_keys=True))
+            return 0
+        import config
+
+        model = args.model or config.OLLAMA_MODEL
+        try:
+            localization = build_selected_localization(
+                corpus_path=args.source,
+                selection_manifest=selection_manifest,
+                translate_fn=ollama_translator(model),
+                model=model,
+                model_version=args.model_version,
+            )
+            verify_selected_localization(localization, args.source, selection_manifest)
+        except LocalizationError as exc:
+            print(json.dumps({"event": "localization_error", "detail": str(exc)}), flush=True)
+            return 4
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(
+            _json.dumps(localization, indent=2, ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+        print(
+            json.dumps(
+                {
+                    "localization_sha256": localization["localization_sha256"],
+                    "language": localization["language"],
+                    "conversations": localization["selected_sample_ids"],
+                    "output": str(args.output),
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+    if args.command == "heldout-finalize":
+        from benchmarks.euri_memory.heldout import build_final_manifest, write_manifest
+        from benchmarks.euri_memory.heldout_localization import LocalizationError
+
+        selection_manifest = json.loads(
+            args.selection_manifest.read_text(encoding="utf-8")
+        )
+        localization = json.loads(args.localization.read_text(encoding="utf-8"))
+        try:
+            final = build_final_manifest(
+                selection_manifest, localization, corpus_path=args.source
+            )
+        except LocalizationError as exc:
+            print(json.dumps({"event": "finalize_error", "detail": str(exc)}), flush=True)
+            return 4
+        write_manifest(final, args.output)
+        print(
+            json.dumps(
+                {
+                    "manifest_sha256": final["manifest_sha256"],
+                    "stage": final["stage"],
+                    "language": final["language"],
+                    "localization_sha256": final["localization"]["localization_sha256"],
+                    "output": str(args.output),
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
     if args.command == "heldout-run":
         from benchmarks.euri_memory.heldout_runner import BudgetExceeded, RunnerError, run_all
         from benchmarks.euri_memory.integrity import IntegrityError
@@ -164,6 +271,7 @@ def main() -> int:
                 manifest_path=args.manifest,
                 output_dir=args.output_dir,
                 corpus_path=args.source,
+                localization_path=args.localization,
                 dry_run=args.dry_run,
                 seconds_per_call=args.seconds_per_call,
                 per_pair_timeout=args.per_pair_timeout,

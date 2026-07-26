@@ -320,6 +320,66 @@ def _build_replicas(seed: int, num_replicas: int) -> list[dict]:
     return replicas
 
 
+def build_final_manifest(
+    selection_manifest: dict,
+    localization: dict,
+    *,
+    corpus_path: Path = DEFAULT_SOURCE,
+) -> dict:
+    """Manifest finale derivato che sigilla selezione + traduzione + localization.
+
+    Verifica che l'artefatto italiano copra esattamente la selezione e sia legato
+    a questo selection manifest e al corpus, poi produce un manifest finale con il
+    proprio ``manifest_sha256``. È questo il manifest che runner e analisi
+    consumano: la chiusura del manifest finale precede qualsiasi risultato.
+    """
+
+    from benchmarks.euri_memory.heldout_localization import (
+        verify_selected_localization,
+    )
+
+    verify_selected_localization(localization, corpus_path, selection_manifest)
+    final = {
+        "schema_version": SCHEMA_VERSION,
+        "experiment": EXPERIMENT_NAME,
+        "experiment_version": EXPERIMENT_VERSION,
+        "stage": "final",
+        "language": "it",
+        "seed": selection_manifest["seed"],
+        "budget": selection_manifest["budget"],
+        "git_commit": selection_manifest["git_commit"],
+        "corpus": selection_manifest["corpus"],
+        "eligible_universe": selection_manifest["eligible_universe"],
+        "excluded_sample_ids": selection_manifest["excluded_sample_ids"],
+        "categories": selection_manifest["categories"],
+        "independent_unit": selection_manifest["independent_unit"],
+        "n_independent": selection_manifest["n_independent"],
+        "conversations": selection_manifest["conversations"],
+        "replicas": selection_manifest["replicas"],
+        "scorer": selection_manifest["scorer"],
+        "profiles": selection_manifest["profiles"],
+        "ingestion_unit": selection_manifest["ingestion_unit"],
+        "selection_manifest_sha256": selection_manifest["manifest_sha256"],
+        "translation_protocol": localization["translation_protocol"],
+        "localization": {
+            "localization_id": localization["localization_id"],
+            "localization_sha256": localization["localization_sha256"],
+            "language": localization["language"],
+            "source_language": localization["source_language"],
+            "selected_sample_ids": localization["selected_sample_ids"],
+        },
+        "notes": list(selection_manifest.get("notes", []))
+        + [
+            "Manifest finale: lega selection manifest + protocollo di traduzione + "
+            "localization SHA.",
+            "Lingua primaria italiana; entrambi i bracci ricevono lo stesso "
+            "artefatto tradotto.",
+        ],
+    }
+    final["manifest_sha256"] = manifest_digest(final)
+    return final
+
+
 def write_manifest(manifest: dict, path: Path) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

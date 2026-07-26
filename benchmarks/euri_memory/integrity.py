@@ -101,9 +101,14 @@ def assert_worktree_clean(repo_root: Path) -> None:
 
 
 def assert_head_matches_manifest(manifest: dict, repo_root: Path) -> None:
+    # Fail-closed: manca il commit atteso, manca HEAD, o differiscono.
     expected = manifest.get("git_commit")
     head = git_head(repo_root)
-    if expected and head and expected != head:
+    if not expected:
+        raise IntegrityError("manifest privo di git_commit: rifiuto")
+    if not head:
+        raise IntegrityError("HEAD non disponibile: rifiuto")
+    if expected != head:
         raise IntegrityError(
             f"HEAD {head} diverso dal commit registrato nel manifest {expected}"
         )
@@ -146,7 +151,7 @@ class ExpectedPair:
     sample_id: str
     replica_index: int
     key: str
-    question_ids: frozenset[str]
+    question_ids: tuple[str, ...]
     answer_seed: int
     branch_order: tuple[str, ...]
     selection_sha256: str
@@ -171,7 +176,7 @@ def expected_pairs(manifest: dict) -> dict[str, ExpectedPair]:
                 sample_id=conversation["sample_id"],
                 replica_index=index,
                 key=key,
-                question_ids=frozenset(conversation["question_ids"]),
+                question_ids=tuple(conversation["question_ids"]),
                 answer_seed=int(replica["answer_seed"]),
                 branch_order=tuple(replica["branch_order"]),
                 selection_sha256=sel_sha,
@@ -197,6 +202,8 @@ def validate_pair_report(report: dict, manifest: dict, expected: ExpectedPair) -
     run = report.get("run", {})
     selection = report.get("selection", {})
     git = report.get("git", {})
+    models = report.get("models", {})
+    binding = report.get("binding", {})
 
     if dataset.get("sample_id") != expected.sample_id:
         problems.append(f"sample_id {dataset.get('sample_id')} ≠ {expected.sample_id}")
@@ -204,6 +211,9 @@ def validate_pair_report(report: dict, manifest: dict, expected: ExpectedPair) -
         problems.append(f"run_label {run.get('run_label')} ≠ {expected.key}")
     if int(run.get("answer_seed", -1)) != expected.answer_seed:
         problems.append(f"answer_seed {run.get('answer_seed')} ≠ {expected.answer_seed}")
+    # models.answer_seed deve coincidere col seed atteso (oltre a run.answer_seed).
+    if int(models.get("answer_seed", -1)) != expected.answer_seed:
+        problems.append(f"models.answer_seed {models.get('answer_seed')} ≠ {expected.answer_seed}")
     if tuple(run.get("branch_order") or ()) != expected.branch_order:
         problems.append(f"branch_order {run.get('branch_order')} ≠ {list(expected.branch_order)}")
     if corpus_sha and dataset.get("source_sha256") != corpus_sha:
@@ -212,18 +222,38 @@ def validate_pair_report(report: dict, manifest: dict, expected: ExpectedPair) -
         problems.append(f"git commit {git.get('commit')} ≠ {git_commit}")
     if git.get("worktree_tracked_dirty") is not False:
         problems.append("report prodotto con worktree tracciata non pulita")
-    if frozenset(selection.get("question_ids") or ()) != expected.question_ids:
-        problems.append("question_ids diversi dall'insieme preregistrato")
+    # question_ids come SEQUENZA esatta, non solo come insieme.
+    if tuple(selection.get("question_ids") or ()) != expected.question_ids:
+        problems.append("question_ids diversi dalla sequenza preregistrata")
     if selection.get("selection_sha256") != expected.selection_sha256:
         problems.append("selection_sha256 diverso dalla selezione attesa")
 
-    profiles = {item.get("profile", {}).get("name"): item for item in report.get("profiles", [])}
-    if {"rag_only", "passive_memory"} - set(profiles):
-        problems.append("manca uno dei due bracci")
+    # Legame crittografico col manifest.
+    if binding.get("manifest_sha256") != manifest.get("manifest_sha256"):
+        problems.append("binding.manifest_sha256 diverso dal manifest")
+    if manifest.get("stage") == "final":
+        if binding.get("selection_manifest_sha256") != manifest.get("selection_manifest_sha256"):
+            problems.append("binding.selection_manifest_sha256 diverso dal manifest")
+        expected_loc = manifest.get("localization", {}).get("localization_sha256")
+        if binding.get("localization_sha256") != expected_loc:
+            problems.append("binding.localization_sha256 diverso dal manifest")
+        if binding.get("language") != "it":
+            problems.append(f"lingua {binding.get('language')} ≠ it")
+
+    # Profili ESATTAMENTE rag_only e passive_memory, senza duplicati o extra.
+    names = [item.get("profile", {}).get("name") for item in report.get("profiles", [])]
+    if sorted(names) != ["passive_memory", "rag_only"]:
+        problems.append(f"profili {names} ≠ esattamente [rag_only, passive_memory]")
     else:
+        profiles = {item.get("profile", {}).get("name"): item for item in report.get("profiles", [])}
         for name in ("rag_only", "passive_memory"):
-            if "scoring" not in profiles[name]:
+            scoring = profiles[name].get("scoring")
+            if not scoring:
                 problems.append(f"scoring mancante per {name}")
+                continue
+            covered = {item.get("question_id") for item in scoring.get("items", [])}
+            if covered != set(expected.question_ids):
+                problems.append(f"item di scoring di {name} non coprono esattamente le domande attese")
     return problems
 
 
