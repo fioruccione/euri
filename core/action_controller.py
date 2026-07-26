@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+import unicodedata
+import uuid
+from dataclasses import dataclass, field, replace as dataclass_replace
 from enum import Enum
 
 from loguru import logger
@@ -58,6 +60,8 @@ class ActionProposal:
     reason: str = ""
     alternative: bool = False
     unmet_intent: str = ""
+    integrate_response: bool = False
+    trace_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -72,7 +76,7 @@ class ActionDecision:
 _ACTION_HINT_RE = re.compile(
     r"\b(?:puoi|potresti|vorrei|voglio|fammi|facciamo|procedi|vai|"
     r"controll\w*|verific\w*|guard\w*|legg\w*|cerc\w*|apr\w*|"
-    r"salv\w*|memorizz\w*|ricord\w*|scriv\w*|prepar\w*|"
+    r"salv\w*|memorizz\w*|ricord\w*|scriv\w*|prepara(?:mi|lo|la)?|"
     r"invi\w*|mand\w*|pubblic\w*|stamp\w*|avvi\w*|riavvi\w*|"
     r"chiud\w*|chius\w*|complet\w*|finit\w*|fatt[oa]|risolt\w*|"
     r"cancell\w*|rimuov\w*|togli\w*|archivi\w*|sospend\w*|"
@@ -80,6 +84,101 @@ _ACTION_HINT_RE = re.compile(
     r"lasci\w*.{0,30}sospes\w*|mett\w*.{0,30}sospes\w*)\b",
     re.IGNORECASE,
 )
+
+_AGENDA_EXPLICIT_RE = {
+    "agenda.complete": re.compile(
+        r"\b(?:(?:puoi|potresti|vorrei|voglio|devi|dovresti|ti\s+chiedo\s+di)"
+        r"\s+(?:per\s+favore\s+)?(?:chiuder(?:e|lo|la)|completar(?:e|lo|la)|"
+        r"toglier(?:e|lo|la))|"
+        r"mi\s+(?:chiudi|completi|togli)|"
+        r"chiudi(?:lo|la)?|completa(?:lo|la)?|segn(?:a|alo|ala)\s+come\s+"
+        r"(?:fatt[oa]|completat[oa])|consider(?:o|a|alo|ala)\s+chius[oa]|"
+        r"togli(?:lo|la)?|ho\s+(?:finit[oa]|completat[oa])|"
+        r"(?:e|è)\s+(?:finit[oa]|fatt[oa])|non\s+(?:e|è)\s+pi[uù]\s+da\s+fare)\b",
+        re.IGNORECASE,
+    ),
+    "agenda.suspend": re.compile(
+        r"\b(?:(?:puoi|potresti|vorrei|voglio|devi|dovresti|ti\s+chiedo\s+di)"
+        r"\s+(?:per\s+favore\s+)?(?:sospender(?:e|lo|la)|"
+        r"lasciar(?:e|lo|la)\s+in\s+sospeso)|"
+        r"mi\s+(?:sospendi|lasci)\s+in\s+sospeso|"
+        r"sospendi(?:lo|la)?|metti(?:lo|la)?\s+in\s+sospeso|"
+        r"lasci(?:o|a|alo|ala)\s+(?:apert[oa]\s+)?in\s+sospeso|"
+        r"tieni(?:lo|la)?\s+in\s+sospeso|senza\s+scadenza)\b",
+        re.IGNORECASE,
+    ),
+    "agenda.reschedule": re.compile(
+        r"\b(?:(?:puoi|potresti|vorrei|voglio|devi|dovresti|ti\s+chiedo\s+di)"
+        r"\s+(?:per\s+favore\s+)?(?:spostar(?:e|lo|la)|rimandar(?:e|lo|la)|"
+        r"rinviar(?:e|lo|la)|posticipar(?:e|lo|la)|riprogrammar(?:e|lo|la))|"
+        r"mi\s+(?:sposti|rimandi|rinvii|posticipi|riprogrammi)|"
+        r"sposta(?:lo|la)?|rimanda(?:lo|la)?|rinvia(?:lo|la)?|"
+        r"posticipa(?:lo|la)?|riprogramma(?:lo|la)?|"
+        r"(?:lo|la)\s+(?:spostiamo|rimandiamo|rinviamo|riprogrammiamo)|"
+        r"(?:cambia|modifica)\s+(?:la\s+)?scadenza)\b",
+        re.IGNORECASE,
+    ),
+}
+
+_ELLIPTIC_AGENDA_RE = re.compile(
+    r"\b(?:lo|la|quello|quella|questo|questa|considero\s+chius[oa]|"
+    r"(?:sposta|rimanda|rinvia|posticipa|riprogramma|sospendi|chiudi|completa)(?:lo|la)|"
+    r"(?:spostar|rimandar|rinviar|posticipar|riprogrammar|sospender|chiuder|completar)(?:lo|la)|"
+    r"ho\s+(?:finit[oa]|completat[oa])|(?:e|è)\s+(?:finit[oa]|fatt[oa]))\b",
+    re.IGNORECASE,
+)
+
+_GROUNDING_STOP = {
+    "agenda", "appuntamento", "chiudi", "chiuso", "chiusa", "completa",
+    "completato", "completata", "considero", "domani", "dopodomani", "fatto",
+    "fatta", "finito", "finita", "impegno", "lascia", "metti", "oggi",
+    "posticipa", "promemoria", "prossima", "prossimo", "rimanda", "rinvia",
+    "riprogramma", "scadenza", "senza", "sospendi", "sospeso", "sposta",
+    "tieni",
+}
+
+
+def _grounding_tokens(text: str) -> set[str]:
+    normalized = unicodedata.normalize("NFKD", text or "")
+    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch)).lower()
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]{4,}", normalized)
+        if token not in _GROUNDING_STOP
+    }
+
+
+def has_explicit_agenda_authority(text: str, capability: str) -> bool:
+    """Un racconto o una data futura non autorizzano una mutazione agenda.
+
+    Il modello continua a comprendere l'intento, ma per una capability mutante
+    serve anche un gesto linguistico corrente e specifico della capability.
+    """
+    pattern = _AGENDA_EXPLICIT_RE.get(capability)
+    return bool(pattern and pattern.search(text or ""))
+
+
+def agenda_target_is_grounded(
+    text: str,
+    previous_euri_turn: str,
+    target: dict | None,
+) -> bool:
+    """Il target deve comparire nel turno o essere il referente immediato.
+
+    Impedisce al modello di scegliere un todo semanticamente estraneo soltanto
+    perché è presente nello snapshot dei pending.
+    """
+    if not target:
+        return False
+    target_tokens = _grounding_tokens(str(target.get("content") or ""))
+    if not target_tokens:
+        return False
+    if target_tokens.intersection(_grounding_tokens(text)):
+        return True
+    return bool(
+        _ELLIPTIC_AGENDA_RE.search(text or "")
+        and target_tokens.intersection(_grounding_tokens(previous_euri_turn))
+    )
 
 
 def looks_actionable(text: str) -> bool:
@@ -206,13 +305,22 @@ Regole:
 3. Usa soltanto una capability elencata e soltanto un target_id presente nello stato.
 4. Se l'azione e' chiara ma il bersaglio e' ambiguo, indica la capability e target_id null.
 5. Se e' conversazione, racconto, desiderio non operativo o semplice domanda di opinione,
-   usa capability null e authority none.
+   usa capability null e authority none. Una richiesta di esaminare le capacita' di Euri,
+   riflettere sul suo codice o proporre miglioramenti resta conversazione anche se dice
+   genericamente "usa i tuoi strumenti": non trasformarla in un controllo hardware
+   casuale. Serve un sottopasso operativo specifico e realmente pertinente.
 6. Se origine=user: user_explicit solo quando il turno autorizza davvero il gesto.
    Se origine=euri: usa euri_proposed; una bozza di risposta di Euri non si auto-autorizza.
 7. La dichiarazione esplicita 'chiuso/chiudilo/consideralo chiuso' ha precedenza:
    scegli agenda.complete anche se l'utente dice che rifara' l'attivita' in futuro.
    Quel futuro sara' un nuovo impegno. Scegli agenda.suspend soltanto se il turno
    chiede esplicitamente di mantenerlo aperto/in sospeso senza data.
+   Una descrizione di cio' che l'utente sta facendo o fara' ("sto preparando",
+   "domani avro' i risultati", "oggi faccio la prova") NON chiede di creare,
+   spostare o associare un impegno. Una data nel racconto non e' autorita'.
+   Per agenda.reschedule serve nel turno corrente un gesto esplicito come
+   "sposta/rimanda/riprogramma" e il bersaglio deve essere nominato o il referente
+   inequivoco dell'ultimo turno.
 8. Se il gesto esatto richiesto NON e' disponibile, puoi proporre una sola alternativa
    utile usando ESCLUSIVAMENTE una capability reale elencata: mode=alternative,
    authority=euri_proposed e unmet_intent descrive in poche parole cio' che non puoi fare.
@@ -224,9 +332,13 @@ Regole:
    proponi read_log come alternative per verificare lo stato; non fingere il riavvio.
 9. mode=direct significa che la capability realizza il gesto corrente; mode=alternative
    significa che realizza soltanto il miglior passo fattibile sostitutivo.
+10. response_mode=tool_result soltanto se l'esito del tool esaurisce da solo TUTTA la
+    richiesta corrente (es. "controlla la GPU"). Usa response_mode=integrated se resta
+    da dare una spiegazione, valutazione, raccomandazione o risposta conversazionale.
+    Ogni mode=alternative e ogni azione proposta da Euri richiede integrated.
 
 Rispondi SOLO con JSON:
-{{"mode":"direct|alternative|none","capability":"nome o null","args":{{}},"target_id":"id o null","authority":"user_explicit|euri_proposed|none","confidence":0.0,"unmet_intent":"breve o vuoto","reason":"breve"}}"""
+{{"mode":"direct|alternative|none","response_mode":"tool_result|integrated","capability":"nome o null","args":{{}},"target_id":"id o null","authority":"user_explicit|euri_proposed|none","confidence":0.0,"unmet_intent":"breve o vuoto","reason":"breve"}}"""
 
 
 class ActionController:
@@ -246,6 +358,7 @@ class ActionController:
         capabilities: list[ActionCapability],
         state_context: str = "",
         origin: str = "user",
+        targets_by_id: dict[str, dict] | None = None,
     ) -> ActionProposal | None:
         if not utterance.strip() or not capabilities:
             return None
@@ -276,6 +389,10 @@ class ActionController:
             capability = ""
         mode = str(data.get("mode", "direct" if capability else "none")).strip().lower()
         alternative = mode == "alternative" and bool(capability)
+        response_mode = str(data.get("response_mode", "")).strip().lower()
+        integrate_response = bool(capability) and (
+            alternative or origin == "euri" or response_mode == "integrated"
+        )
         try:
             authority = ActionAuthority(str(data.get("authority", "none")).lower())
         except ValueError:
@@ -289,7 +406,7 @@ class ActionController:
         args = data.get("args") if isinstance(data.get("args"), dict) else {}
         target = data.get("target_id")
         target_id = None if target in (None, "", "null", "none") else str(target)
-        return ActionProposal(
+        proposal = ActionProposal(
             capability=capability,
             args=args,
             target_id=target_id,
@@ -298,7 +415,31 @@ class ActionController:
             reason=str(data.get("reason", ""))[:240],
             alternative=alternative,
             unmet_intent=str(data.get("unmet_intent", ""))[:160],
+            integrate_response=integrate_response,
+            trace_id=f"action:{uuid.uuid4()}",
         )
+        if (
+            origin == "user"
+            and proposal.capability.startswith("agenda.")
+            and proposal.authority == ActionAuthority.USER_EXPLICIT
+        ):
+            if not has_explicit_agenda_authority(utterance, proposal.capability):
+                proposal = dataclass_replace(
+                    proposal,
+                    authority=ActionAuthority.NONE,
+                    reason=(proposal.reason + " | gesto agenda non esplicito")[:240],
+                )
+            elif proposal.target_id and targets_by_id is not None and not agenda_target_is_grounded(
+                utterance,
+                previous_euri_turn,
+                targets_by_id.get(proposal.target_id),
+            ):
+                proposal = dataclass_replace(
+                    proposal,
+                    target_id=None,
+                    reason=(proposal.reason + " | bersaglio agenda non grounded")[:240],
+                )
+        return proposal
 
     def decide(
         self,

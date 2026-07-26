@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "localization_id": "locomo-conv42-s1-s2-q8-it-v1",
+  "selection_id": "locomo-conv42-s1-s2-q8-v1",
+  "language": "it",
+  "source_language": "en",
+  "method": "traduzione umana controllata e versionata",
+  "turns": {
+    "D1:1": "Ciao Joanna! È da tanto che non ci vediamo! Come va? Succede qualcosa di divertente?",
+    "D1:2": "Ciao Nate! È da tanto che non ci vediamo! Ultimamente sto lavorando a un progetto ed è stato davvero interessante. E tu, hai qualche progetto o hobby divertente?",
+    "D1:3": "Ciao Joanna! Che bello! La settimana scorsa ho vinto il mio primo torneo di videogiochi: è stato emozionante!",
+    "D1:4": "Wow Nate, congratulazioni per la vittoria! Raccontami: che gioco era?",
+    "D1:5": "Grazie! È uno sparatutto a squadre.",
+    "D1:6": "Wow, bravissimo! Come si chiamava?",
+    "D1:7": "Il gioco si chiamava Counter-Strike: Global Offensive e io e la mia squadra ci siamo divertiti un mondo fino alla fine!",
+    "D1:8": "Bello, Nate! Sembra un'esperienza divertente, anche se a me i videogiochi non interessano.",
+    "D1:9": "Lo è stata! E tu? Hai degli hobby che ami?",
+    "D1:10": "Sì! Oltre a scrivere, mi piace leggere, guardare film ed esplorare la natura. Cos'altro ti piace fare, Nate?",
+    "D1:11": "Giocare ai videogiochi e guardare film sono i miei hobby principali.",
+    "D1:12": "Bello, Nate! Allora abbiamo interessi simili. Che tipo di film ti piace di più?",
+    "D1:13": "Adoro i film d'azione e di fantascienza, gli effetti sono bellissimi! E tu, qual è il tuo genere preferito?",
+    "D1:14": "Io adoro i film drammatici e le commedie romantiche. Mi piace immergermi nelle emozioni e nelle trame.",
+    "D1:15": "Wow, i film possono essere davvero potenti! Hai qualche consiglio per me?",
+    "D1:16": "Sì, certo! Hai visto quel dramma romantico che parla di memoria e relazioni? È davvero bellissimo.",
+    "D1:17": "Oh, bello! Potrei guardarlo presto! Mi piace molto vedere i classici.",
+    "D1:18": "Sì, quel film è fantastico. L'ho visto per la prima volta circa tre anni fa. Ne ho persino comprato una copia fisica!",
+    "D1:19": "Sembra bello! L'hai visto molte volte? Sembra che tu conosca bene il film!",
+    "D1:20": "Qualche volta. È uno dei miei preferiti! Mi piacciono molto l'idea e la recitazione.",
+    "D1:21": "Bello! Lo guarderò sicuramente. Grazie per il consiglio!",
+    "D1:22": "Di niente, Nate! Fammi sapere se ti piace!",
+    "D2:1": "Ciao Nate! Non parliamo da qualche giorno. Mi sono successe cose incredibili!",
+    "D2:2": "Ciao Joanna! È da un po' che non ci vediamo! Che cosa è successo? Sembri emozionata!",
+    "D2:3": "Evviva! Ho finalmente finito la mia prima sceneggiatura completa e l'ho stampata venerdì scorso. Ci lavoravo da un po': è un vero sollievo averla terminata!",
+    "D2:4": "Wow, sembra fantastico! Di cosa parla? Sono contento che tu l'abbia finita!",
+    "D2:5": "Grazie, Nate! È un misto di dramma e romanticismo!",
+    "D2:6": "Wow, è fantastico! Come ti senti ora che è finita? Hai nuovi progetti per la sceneggiatura?",
+    "D2:7": "Evviva, Nate! Dopo aver finito questo progetto provo un vortice di emozioni: sollievo, entusiasmo e un po' d'ansia. Ora la presenterò ad alcuni festival cinematografici e spero che produttori e registi la prendano in considerazione. Incrociamo le dita!",
+    "D2:8": "Congratulazioni, Joanna! Sembra un'esperienza incredibile. Continua così, spero che piaccia!",
+    "D2:9": "Grazie Nate! È sicuramente un miscuglio di emozioni. Spero che porti commenti positivi e nuove opportunità.",
+    "D2:10": "Sì, certo. Speriamo per il meglio! Mi piace avere vicino questi piccoli amici: mi aiutano a restare calmo quando succede qualcosa di molto importante e sono nervoso.",
+    "D2:11": "Awww! Da quanto tempo li hai?",
+    "D2:12": "Li ho da tre anni e mi danno tantissima gioia!",
+    "D2:13": "Si vede proprio! Sono adorabili!",
+    "D2:14": "Grazie! Le tartarughe saranno anche piccole, ma hanno entrambe una grande personalità. Nei momenti di stress consiglio davvero di avere accanto animaletti come loro.",
+    "D2:15": "Bella idea, Nate! Ci penserò e magari prenderò degli animali anch'io, se ne trovo qualcuno a cui non sono allergica. Tu hai fatto qualcosa di recente?",
+    "D2:16": "Sì, in realtà! Al torneo ho iniziato a frequentare alcune persone al di fuori della mia solita cerchia. Sono simpatiche!",
+    "D2:17": "Oh? Sembra bello! È uno strano rapporto, visto che siete anche avversari?",
+    "D2:18": "Un po'. Alcune persone sono più competitive di altre, quindi tendo a stare con quelle più tranquille.",
+    "D2:19": "Ha senso! Farai il tifo per loro anche se perdi?",
+    "D2:20": "Assolutamente! Non mi aspetto una grande vittoria, mi piace giocare per divertirmi! Prima hai detto di essere allergica agli animali: quanto è grave?",
+    "D2:21": "Oh, è davvero grave. Quando sono vicina a certi animali il viso mi si gonfia e mi prude, quindi li ho sempre evitati.",
+    "D2:22": "Mi dispiace. Le allergie possono essere difficili. A cosa sei allergica esattamente?",
+    "D2:23": "Sono allergica alla maggior parte dei rettili e agli animali con il pelo. È un po' seccante, ma trovo altri modi per essere felice.",
+    "D2:24": "Ottimo! Ci sono tante cose che possono dare gioia anche senza animali. Cos'altro ti rende felice?",
+    "D2:25": "Scrivere e stare con gli amici! Così posso esprimermi attraverso le storie oppure semplicemente divertirmi con le persone.",
+    "D2:26": "Mi fa piacere! Sono entrambe cose bellissime. Sono contento che tu abbia altri modi per superare i momenti d'ansia, anche se non puoi avere animali!",
+    "D2:27": "Grazie, Nate! Scrivere mi aiuta a creare mondi incredibili con personaggi fantastici. Inoltre è un ottimo modo per esprimere ciò che provo. Non riesco a immaginare la vita senza la scrittura.",
+    "D2:28": "Wow, Joanna, è fantastico! Continua a fare ciò che ami!",
+    "D2:29": "Grazie, Nate! Continuerò sicuramente a coltivare la mia passione per la scrittura. Significa molto per me."
+  },
+  "questions": {
+    "conv-42:q1": {
+      "text": "È probabile che Nate abbia altri amici oltre a Joanna?",
+      "answer": "Sì, i compagni della sua squadra di videogiochi."
+    },
+    "conv-42:q3": {
+      "text": "Quando ha visto per la prima volta «Se mi lasci ti cancello» Joanna?",
+      "answer": "Nel 2019."
+    },
+    "conv-42:q6": {
+      "text": "Quali sono gli hobby di Joanna?",
+      "answer": "Scrivere, guardare film, esplorare la natura e stare con gli amici."
+    },
+    "conv-42:q8": {
+      "text": "Quando ha finito la sua prima sceneggiatura Joanna?",
+      "answer": "Il venerdì precedente al 23 gennaio 2022."
+    },
+    "conv-42:q97": {
+      "text": "Quale tipo di film preferisce guardare Nate?",
+      "answer": "Film d'azione e di fantascienza."
+    },
+    "conv-42:q99": {
+      "text": "Di quale genere è la prima sceneggiatura di Joanna?",
+      "answer": "Drammatico e romantico."
+    },
+    "conv-42:q206": {
+      "text": "Quale tipo di film Nate odia guardare più di tutti?",
+      "answer": null,
+      "adversarial_answer": "Film d'azione e di fantascienza."
+    },
+    "conv-42:q207": {
+      "text": "Di quale genere è il primo romanzo breve di Joanna?",
+      "answer": null,
+      "adversarial_answer": "Drammatico e romantico."
+    }
+  }
+}

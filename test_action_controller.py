@@ -19,6 +19,7 @@ from core.action_controller import (
     ActionDisposition,
     ActionEffect,
     ActionProposal,
+    has_explicit_agenda_authority,
     looks_actionable,
 )
 from core.brain import Brain
@@ -85,6 +86,7 @@ class _Memory:
         ]
         self.completed = []
         self.suspended = []
+        self.rescheduled = []
         self.logged = []
         self.rag_ctx = None
 
@@ -102,7 +104,8 @@ class _Memory:
         self.suspended.append(todo_id)
         return True
 
-    def reschedule_todo(self, _todo_id, _due):
+    def reschedule_todo(self, todo_id, due):
+        self.rescheduled.append((todo_id, due))
         return True
 
     def log_conversation(self, role, text):
@@ -113,12 +116,23 @@ class _Memory:
 
 
 class _Brain:
+    def __init__(self):
+        self.responses = []
+        self.injections = []
+
     @staticmethod
     def complete_todo_response(content):
         return f"Fatto. '{content}' segnato come completato."
 
-    def inject_tool_result(self, *_args):
-        pass
+    def inject_tool_result(self, *args):
+        self.injections.append(args)
+
+    def respond(self, text, *, context="", **_kwargs):
+        self.responses.append((text, context))
+        return (
+            "Il controllo mostra 7.8 GiB liberi. Questo dato è solo un sottopasso: "
+            "per rispondere alla domanda originale bisogna valutare anche il flusso del codice."
+        )
 
 
 class _Executor:
@@ -135,6 +149,16 @@ class _Executor:
         return ToolResult(True, "GPU libera: 7.8 GiB")
 
 
+class _PulseRedis:
+    def __init__(self):
+        self.events = []
+
+    def xadd(self, stream, fields, **_kwargs):
+        event_id = f"{len(self.events) + 1}-0"
+        self.events.append((stream, event_id, fields))
+        return event_id
+
+
 def _daemon(payload, *, contextual=None):
     daemon = VoiceDaemon.__new__(VoiceDaemon)
     daemon.memory = _Memory()
@@ -142,8 +166,11 @@ def _daemon(payload, *, contextual=None):
     daemon.executor = _Executor(contextual)
     daemon.action_controller = ActionController(chat=_Chat(payload), model="fake")
     daemon._brain_lock = threading.Lock()
+    daemon.r = object()
     daemon._pending_action = None
     daemon._pending_reschedule = None
+    daemon._build_context = lambda _text: "[contesto conversazionale]"
+    daemon._augment_context_by_strategy = lambda _text, context: context
     daemon.spoken = []
     daemon._speak = daemon.spoken.append
     return daemon
@@ -280,6 +307,8 @@ def test_euri_can_fulfil_only_read_only_intention():
         "Ora controllo la GPU e ti dico.", "Come siamo messi con le risorse?"
     ) is True
     assert [call.tool_name for call in daemon.executor.calls] == ["gpu_usage"]
+    assert "sottopasso" in daemon.spoken[-1]
+    assert "Esito: GPU libera: 7.8 GiB" in daemon.brain.responses[-1][1]
 
 
 def test_unavailable_action_can_use_grounded_read_only_alternative():
@@ -305,7 +334,69 @@ def test_unavailable_action_can_use_grounded_read_only_alternative():
     )
     assert handled is True and veto is False
     assert [call.tool_name for call in daemon.executor.calls] == ["read_log"]
-    assert "come alternativa" in daemon.spoken[-1].lower()
+    assert "sottopasso" in daemon.spoken[-1].lower()
+    assert "riavviare il servizio" in daemon.brain.responses[-1][1]
+
+
+def test_reflective_request_keeps_tool_result_inside_final_answer():
+    contextual = [{
+        "name": "top_processes",
+        "description": "Mostra i processi che usano più CPU",
+        "parameters_schema": {"n": "integer", "sort_by": "string"},
+        "effect": "read_only",
+        "requires_confirm": False,
+    }]
+    daemon = _daemon({
+        "mode": "alternative",
+        # response_mode omesso apposta: ogni alternativa deve integrare comunque.
+        "capability": "executor.top_processes",
+        "args": {"n": 5, "sort_by": "cpu"},
+        "target_id": None,
+        "authority": "user_explicit",
+        "confidence": 0.90,
+        "unmet_intent": "valutare cosa migliorare nel sistema di Euri",
+        "reason": "controllo parziale delle risorse",
+    }, contextual=contextual)
+    text = (
+        "Fai un esame di quello che sai fare, magari usando i tuoi strumenti, "
+        "e dimmi dove sarebbe necessario migliorare il tuo sistema."
+    )
+    handled, veto = daemon._try_contextual_action(text)
+    assert handled is True and veto is False
+    assert [call.tool_name for call in daemon.executor.calls] == ["top_processes"]
+    assert daemon.spoken[-1] != "GPU libera: 7.8 GiB"
+    assert "domanda originale" in daemon.spoken[-1]
+    prompt_text, context = daemon.brain.responses[-1]
+    assert prompt_text == text
+    assert "executor.top_processes" in context
+    assert "valutare cosa migliorare" in context
+    assert daemon.brain.injections == []
+
+
+def test_integrated_document_result_is_not_injected_twice():
+    contextual = [{
+        "name": "read_document",
+        "description": "Legge un documento e ne espone i dati",
+        "parameters_schema": {"question": "string"},
+        "effect": "read_only",
+        "requires_confirm": False,
+    }]
+    daemon = _daemon({
+        "mode": "direct",
+        "response_mode": "integrated",
+        "capability": "executor.read_document",
+        "args": {"question": "valuta il documento"},
+        "target_id": None,
+        "authority": "user_explicit",
+        "confidence": 0.97,
+        "reason": "la lettura e la valutazione fanno parte dello stesso turno",
+    }, contextual=contextual)
+    handled, veto = daemon._try_contextual_action(
+        "Leggi il documento e spiegami quali problemi vedi."
+    )
+    assert handled is True and veto is False
+    assert daemon.brain.injections == []
+    assert len(daemon.brain.responses) == 1
 
 
 def test_mutating_alternative_is_proposed_then_confirmed():
@@ -345,6 +436,70 @@ def test_action_hint_is_recall_only():
     assert looks_actionable("Puoi controllarla adesso?")
     assert not looks_actionable("Euri, ho dei todo in sospeso?")
     assert not looks_actionable("È interessante quello che dici sui polimeri")
+    assert not looks_actionable(
+        "Sto preparando l'estrusione di prova e preparerò 20-30 kg; "
+        "oggi faccio la prova e domani avrò le risposte meccaniche."
+    )
+
+
+def test_descriptive_future_cannot_reschedule_unrelated_todo():
+    daemon = _daemon({
+        "capability": "agenda.reschedule",
+        "args": {},
+        "target_id": HARDWARE_ID,
+        "authority": "user_explicit",
+        "confidence": 0.99,
+        "reason": "domani è presente nel turno",
+    })
+    daemon.r = _PulseRedis()
+    handled, veto = daemon._try_contextual_action(
+        "Sto preparando l'estrusione di prova e preparerò 20-30 kg di prodotto. "
+        "Oggi 23 luglio faccio la prova e domani avrò le risposte meccaniche."
+    )
+    assert handled is False and veto is True
+    assert daemon.memory.rescheduled == []
+    assert [event[2]["kind"] for event in daemon.r.events] == ["proposed", "decided"]
+    assert daemon.r.events[1][2]["causation_id"] == daemon.r.events[0][1]
+    assert daemon.r.events[0][2]["event_class"] == "cognitive"
+
+
+def test_explicit_reschedule_requires_and_uses_grounded_referent():
+    daemon = _daemon({
+        "capability": "agenda.reschedule",
+        "args": {},
+        "target_id": POSEIDON_ID,
+        "authority": "user_explicit",
+        "confidence": 0.99,
+        "reason": "rimandalo riferisce il Poseidon appena nominato",
+    })
+    handled, veto = daemon._try_contextual_action("Rimandalo a domani.")
+    assert handled is True and veto is False
+    assert [item[0] for item in daemon.memory.rescheduled] == [POSEIDON_ID]
+    assert has_explicit_agenda_authority(
+        "Puoi rimandarlo a domani?", "agenda.reschedule"
+    )
+    assert has_explicit_agenda_authority(
+        "Vorrei sospendere il checkpoint hardware.", "agenda.suspend"
+    )
+    assert has_explicit_agenda_authority(
+        "Puoi chiudere il todo Poseidon?", "agenda.complete"
+    )
+
+
+def test_explicit_not_more_to_do_remains_authorized_completion():
+    daemon = _daemon({
+        "capability": "agenda.complete",
+        "args": {},
+        "target_id": POSEIDON_ID,
+        "authority": "user_explicit",
+        "confidence": 0.99,
+        "reason": "il todo Poseidon non è più da fare",
+    })
+    handled, veto = daemon._try_contextual_action(
+        "Quello del Poseidon per me non è più da fare."
+    )
+    assert handled is True and veto is False
+    assert daemon.memory.completed == [POSEIDON_ID]
 
 
 class _JsonRecorder:
@@ -418,10 +573,15 @@ if __name__ == "__main__":
     test_contextual_read_only_uses_executor()
     test_euri_can_fulfil_only_read_only_intention()
     test_unavailable_action_can_use_grounded_read_only_alternative()
+    test_reflective_request_keeps_tool_result_inside_final_answer()
+    test_integrated_document_result_is_not_injected_twice()
     test_mutating_alternative_is_proposed_then_confirmed()
     test_executor_rejects_invented_parameters()
     test_action_hint_is_recall_only()
+    test_descriptive_future_cannot_reschedule_unrelated_todo()
+    test_explicit_reschedule_requires_and_uses_grounded_referent()
+    test_explicit_not_more_to_do_remains_authorized_completion()
     test_suspend_todo_keeps_it_pending_without_due_date()
     test_overdue_wording_uses_calendar_days()
     test_semantic_gate_can_request_reasoning_without_regex()
-    print("test_action_controller: 13/13 OK")
+    print("test_action_controller: 18/18 OK")

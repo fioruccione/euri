@@ -17,6 +17,7 @@ e scrive DUE file:
 
 Read-only su Redis. Uso:  python scripts/experiments/sample_dream_audit.py [n_per_braccio]
 """
+import hashlib
 import json
 import random
 import sys
@@ -37,6 +38,27 @@ ANTI_ECHO_RESTART_TS = 1783956958.0  # 13/07/2026 17:35:58 Europe/Rome
 OUTPUT_DIR = Path("audit_output")
 
 
+def _complete_trace_content(fields):
+    """Restituisce solo contenuti marcati integri e verificabili nella trace.
+
+    Le entry legacy salvavano i primi 600 caratteri senza dichiarare il taglio. Non
+    sono ammissibili per un audit del ponte finale, anche quando il frammento sembra
+    sufficiente a un valutatore.
+    """
+    if fields.get("seed_content_complete") != "1":
+        return None
+    content = fields.get("seed_content") or ""
+    try:
+        expected_chars = int(fields.get("seed_content_chars") or "-1")
+    except ValueError:
+        return None
+    expected_sha = fields.get("seed_content_sha256") or ""
+    actual_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    if not content or expected_chars != len(content) or expected_sha != actual_sha:
+        return None
+    return content.strip()
+
+
 def main():
     n = int(sys.argv[1]) if len(sys.argv) > 1 else N_DEFAULT
     r = redis.Redis(host=config.REDIS_HOST, port=config.REDIS_PORT,
@@ -45,14 +67,17 @@ def main():
     seen = set()
     arms = {"baseline": [], "trattamento": []}
     excluded_anti_echo = 0
+    excluded_incomplete = set()
     for _eid, f in r.xrange("euri:convergence:trace", "-", "+"):
         sid = f.get("seed_id", "")
         if not sid or sid in seen:
             continue
-        seen.add(sid)
-        content = (f.get("seed_content") or "").strip()
-        if not content:
+        content = _complete_trace_content(f)
+        if content is None:
+            excluded_incomplete.add(sid)
             continue
+        seen.add(sid)
+        excluded_incomplete.discard(sid)
         ti = f.get("trace_injected", "")
         if ti == "1":
             created_at = float(f.get("created_at") or 0)
@@ -76,16 +101,22 @@ def main():
 
     print(f"candidate distinti: baseline={len(arms['baseline'])} "
           f"trattamento={len(arms['trattamento'])} "
-          f"esclusi_anti_echo={excluded_anti_echo}")
+          f"esclusi_anti_echo={excluded_anti_echo} "
+          f"esclusi_trace_incompleta={len(excluded_incomplete)}")
+
+    undersized = {arm: len(pool) for arm, pool in arms.items() if len(pool) < n}
+    if undersized:
+        details = ", ".join(f"{arm}={count}/{n}" for arm, count in undersized.items())
+        raise RuntimeError(
+            "Audit non generato: servono trace complete per entrambi i bracci "
+            f"({details}). Le entry legacy troncate non possono essere usate."
+        )
 
     rng = random.Random(20260713)  # riproducibile
     sample = []
     for arm, pool in arms.items():
-        take = rng.sample(pool, min(n, len(pool)))
+        take = rng.sample(pool, n)
         sample.extend((arm, item) for item in take)
-        if len(pool) < n:
-            print(f"  ATTENZIONE: {arm} ha solo {len(pool)} candidate (< {n}) — "
-                  f"raccogliere ancora prima dell'audit?")
     rng.shuffle(sample)
 
     tag = date.today().strftime("%Y%m%d")

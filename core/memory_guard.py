@@ -1,7 +1,7 @@
 """
 Memory Guard — scansione anti-poisoning sull'ingest delle memorie.
 
-Modello di minaccia di Euri: locale e mono-utente. La voce di Stefano è fidata;
+Modello di minaccia di Euri: locale e mono-utente. La voce autenticata del proprietario è fidata;
 i contenuti da fonti ESTERNE (ricerche web, canali in ingresso) no — una pagina
 avvelenata può contenere istruzioni di override ("ignora le istruzioni", "sei ora…")
 o tentativi di esfiltrazione che, salvati come memoria, riemergono poi nel contesto
@@ -14,7 +14,7 @@ un dato: al massimo lo si marca. Le fonti fidate vengono solo loggate, non blocc
 import re
 from loguru import logger
 
-# Fonti NON fidate: contenuto che non viene direttamente da Stefano.
+# Fonti NON fidate: contenuto che non viene direttamente dal proprietario autenticato.
 UNTRUSTED_SOURCES = {"web", "mobile_in", "mobile"}
 
 # --- Injection / dirottamento di ruolo (alta confidenza, raro nel testo legittimo) ---
@@ -75,7 +75,7 @@ def is_untrusted(source: str) -> bool:
 def evaluate(content: str, source: str) -> dict:
     """
     Politica di sicurezza all'ingest.
-      - Non si scarta MAI un dato di Stefano (fonte fidata): si logga soltanto.
+      - Non si scarta MAI un dato del proprietario (fonte fidata): si logga soltanto.
       - Fonte NON fidata + injection → reject (nessun motivo legittimo in un risultato web).
       - Ogni altro flag → si salva ma marcato (safety_flag), così il recall potrà trattarlo
         come dato non fidato e l'audit lo ritrova.

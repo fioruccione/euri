@@ -16,6 +16,7 @@ from core.initiative import (
     hydrate_related,
     parse_question_response,
 )
+from core.utterance_pragmatics import classify_memory_verification_reply
 
 
 class _Msg:
@@ -192,6 +193,19 @@ def run():
     ok.append(check(
         "focus relevance fail-closed su output ambiguo",
         classify_focus_relevance("focus vivo", cand, chat=FakeChat("forse RELATED")) == "UNRELATED",
+    ))
+    verification_chat = FakeChat("CONFERMA")
+    verdict = classify_memory_verification_reply(
+        "La prova prevede 100 kg?",
+        "Stefano prevede di preparare 100 kg.",
+        "Sì, cento chili per pezzi da 500-600 grammi.",
+        chat=verification_chat,
+        model="fake",
+    )
+    ok.append(check(
+        "conferma memoria passiva classificata semanticamente",
+        verdict == "CONFIRM" and verification_chat.calls[-1]["think"] is False,
+        verdict,
     ))
 
     passed = sum(ok)

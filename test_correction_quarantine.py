@@ -2,6 +2,8 @@
 """Regression per quarantena immediata delle correzioni nello stesso contesto."""
 
 import sys
+import time
+from fnmatch import fnmatch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -26,6 +28,12 @@ class FakeJSON:
         field = path.removeprefix("$.")
         self.docs.setdefault(key, {})[field] = value
         return True
+
+    def numincrby(self, key, path, amount):
+        field = path.removeprefix("$.")
+        value = self.docs.setdefault(key, {}).get(field, 0) + amount
+        self.docs[key][field] = value
+        return [value]
 
 
 class FakeRedis:
@@ -52,6 +60,11 @@ class FakeRedis:
 
     def xadd(self, *args, **kwargs):
         self.stream.append((args, kwargs))
+
+    def scan_iter(self, pattern):
+        for key in list(self.j.docs):
+            if fnmatch(key, pattern):
+                yield key
 
 
 def test_explicit_same_context_correction_quarantines_only_matching_memory():
@@ -81,6 +94,8 @@ def test_explicit_same_context_correction_quarantines_only_matching_memory():
 
     signal = docs[f"euri:correction:{sid}"]
     assert signal["quarantined_memory_ids"] == ["food"]
+    assert signal["mutation_policy"] == "explicit_correction"
+    assert signal["status"] == "pending"
     assert docs["euri:memory:food"]["requires_verification"] is True
     assert docs["euri:memory:food"]["correction_pending"] is True
     assert docs["euri:memory:food"]["correction_signal_id"] == sid
@@ -95,6 +110,72 @@ def test_joke_clarification_is_detected_as_correction_signal():
     assert memory.detect_correction(
         "No, stavo scherzando, ti prendevo in giro, dovrebbe essere una schifezza."
     )
+
+
+def test_meta_joke_clarification_does_not_quarantine_unrelated_rag_memory():
+    docs = {
+        "euri:memory:recycling": {
+            "id": "recycling",
+            "content": (
+                "Su una connessione proposta tra riciclo materiali e misurazione "
+                "temperatura, Stefano ha smentito la connessione."
+            ),
+            "requires_verification": False,
+        },
+    }
+    memory = MemoryManager(FakeRedis(docs), embedder=None)
+    text = (
+        "Niente, solo stavo scherzando e volevo vedere se avevi capito ancora "
+        "cosa significava quel termine."
+    )
+
+    assert memory.detect_correction(text)
+    sid = memory.save_correction_signal(
+        prompt_originale="Buongiorno Euri, sei proprio una fraida!",
+        risposta_euri="Cosa ho combinato di così fraido?",
+        correzione_user=text,
+        rag_ctx_ids=["recycling"],
+    )
+
+    signal = docs[f"euri:correction:{sid}"]
+    assert signal["quarantined_memory_ids"] == []
+    assert signal["mutation_policy"] == "audit_only"
+    assert signal["status"] == "dismissed"
+    assert signal["verdict"] == "not_a_correction"
+    assert memory.r.stream == []
+    assert docs["euri:memory:recycling"].get("correction_pending") is None
+    assert docs["euri:memory:recycling"]["requires_verification"] is False
+
+
+def test_joke_marker_with_named_rag_subject_is_signal_only():
+    docs = {
+        "euri:memory:poseidon": {
+            "id": "poseidon",
+            "content": "Il progetto Poseidon riguarda il pallet dei sacconi.",
+            "requires_verification": False,
+        },
+    }
+    memory = MemoryManager(FakeRedis(docs), embedder=None)
+    text = (
+        "Stavo scherzando su Poseidon e sul pallet: volevo solo vedere se "
+        "ricordavi il contesto."
+    )
+
+    assert memory.detect_correction(text)
+    sid = memory.save_correction_signal(
+        prompt_originale="Ti ricordi Poseidon?",
+        risposta_euri="Sì, riguarda il pallet dei sacconi.",
+        correzione_user=text,
+        rag_ctx_ids=["poseidon"],
+    )
+
+    signal = docs[f"euri:correction:{sid}"]
+    assert signal["quarantined_memory_ids"] == []
+    assert signal["mutation_policy"] == "audit_only"
+    assert signal["status"] == "dismissed"
+    assert memory.r.stream == []
+    assert docs["euri:memory:poseidon"].get("correction_pending") is None
+    assert docs["euri:memory:poseidon"]["requires_verification"] is False
 
 
 def test_correction_pending_suffix_is_stronger_than_generic_verification():
@@ -136,6 +217,7 @@ def test_soft_correction_does_not_quarantine_immediately():
     )
 
     assert docs[f"euri:correction:{sid}"]["quarantined_memory_ids"] == []
+    assert docs[f"euri:correction:{sid}"]["mutation_policy"] == "proposal_only"
     assert docs["euri:memory:food"].get("correction_pending") is None
     assert docs["euri:memory:food"]["requires_verification"] is False
 
@@ -163,7 +245,7 @@ def test_tied_max_score_quarantines_all_tied_targets():
     sid = memory.save_correction_signal(
         prompt_originale="x",
         risposta_euri="x",
-        correzione_user="Era una provocazione: fragole e cipolla non mi piacciono davvero.",
+        correzione_user="Ti correggo: fragole e cipolla non mi piacciono davvero.",
         rag_ctx_ids=["a", "b", "c"],
     )
 
@@ -322,8 +404,10 @@ def test_settle_reindexes_loop2e_when_memory_becomes_candidate_again():
             "correction_pending_prev_requires_verification": False,
             "audit_flag": 0,
             "recalled_count": 3,
-            "last_recalled_at": 1782390000.0,
-            "created_at": 1782380000.0,
+            # Deve restare nella finestra mobile di attenzione anche quando il
+            # calendario avanza: timestamp assoluti rendevano il test marcescente.
+            "last_recalled_at": time.time() - 3600,
+            "created_at": time.time() - 7200,
             "embedding": [0.1, 0.2],
             "memory_axes": {"subject_status": "explicit"},
         }
@@ -373,9 +457,81 @@ def test_partial_crash_without_signal_link_is_not_settled():
     assert docs["euri:memory:m1"]["requires_verification"] is True
 
 
+def test_loop2g_proposal_only_cannot_mutate_memory_on_bad_memory_verdict():
+    docs = {
+        "euri:memory:m1": {
+            "id": "m1",
+            "content": "Memoria corretta che non deve essere toccata.",
+            "requires_verification": False,
+            "audit_flag": 0,
+        },
+        "euri:correction:s1": {
+            "id": "s1",
+            "status": "pending",
+            "mutation_policy": "proposal_only",
+            "prompt_original": "x",
+            "risposta_euri": "y",
+            "correzione_user": "Forse non era proprio così.",
+            "rag_ctx_ids": ["m1"],
+            "quarantined_memory_ids": [],
+            "created_at": 1,
+        },
+    }
+    engine = _engine_with_docs(docs)
+    engine._llm_classify_correction = lambda *_args: "bad_memory"
+    engine._correction_target_ids = lambda *_args: ["m1"]
+
+    engine._audit_corrections_pass()
+
+    memory = docs["euri:memory:m1"]
+    signal = docs["euri:correction:s1"]
+    assert memory["audit_flag"] == 0
+    assert memory["requires_verification"] is False
+    assert signal["status"] == "proposed"
+    assert signal["proposed_verdict"] == "bad_memory"
+    assert signal["requires_owner_confirmation"] is True
+    assert signal["verdict"] is None
+
+
+def test_loop2g_explicit_correction_can_apply_bad_memory_verdict():
+    docs = {
+        "euri:memory:m1": {
+            "id": "m1",
+            "content": "Memoria esplicitamente corretta dall'owner.",
+            "requires_verification": False,
+            "audit_flag": 0,
+        },
+        "euri:correction:s1": {
+            "id": "s1",
+            "status": "pending",
+            "mutation_policy": "explicit_correction",
+            "prompt_original": "x",
+            "risposta_euri": "y",
+            "correzione_user": "Ti correggo: il dato è errato.",
+            "rag_ctx_ids": ["m1"],
+            "quarantined_memory_ids": [],
+            "created_at": 1,
+        },
+    }
+    engine = _engine_with_docs(docs)
+    engine._llm_classify_correction = lambda *_args: "bad_memory"
+    engine._correction_target_ids = lambda *_args: ["m1"]
+
+    engine._audit_corrections_pass()
+
+    memory = docs["euri:memory:m1"]
+    signal = docs["euri:correction:s1"]
+    assert memory["audit_flag"] == 1
+    assert memory["requires_verification"] is True
+    assert signal["status"] == "analyzed"
+    assert signal["verdict"] == "bad_memory"
+
+
 if __name__ == "__main__":
     test_explicit_same_context_correction_quarantines_only_matching_memory()
     test_joke_clarification_is_detected_as_correction_signal()
+    test_meta_joke_clarification_does_not_quarantine_unrelated_rag_memory()
+    test_joke_marker_with_named_rag_subject_is_signal_only()
     test_correction_pending_suffix_is_stronger_than_generic_verification()
     test_tacit_acceptance_is_named_as_unconfirmed_provenance()
     test_soft_correction_does_not_quarantine_immediately()
@@ -389,4 +545,6 @@ if __name__ == "__main__":
     test_settle_reindexes_loop2e_when_memory_becomes_candidate_again()
     test_loop2f_skips_correction_pending_candidates()
     test_partial_crash_without_signal_link_is_not_settled()
+    test_loop2g_proposal_only_cannot_mutate_memory_on_bad_memory_verdict()
+    test_loop2g_explicit_correction_can_apply_bad_memory_verdict()
     print("test_correction_quarantine: OK")

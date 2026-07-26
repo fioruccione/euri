@@ -56,8 +56,32 @@ def test_disabled_worker_is_visible_but_not_started():
     assert health["failures"] == 0
 
 
+def test_alive_worker_with_old_heartbeat_is_reported_stalled():
+    supervisor = WorkerSupervisor()
+    entered = threading.Event()
+
+    def worker():
+        supervisor.heartbeat("probe")
+        entered.set()
+        supervisor.stop_event.wait()
+
+    supervisor.start("probe", worker)
+    assert entered.wait(1)
+    supervisor._update(
+        "probe",
+        "running",
+        last_heartbeat=time.time() - 10,
+    )
+    health = supervisor.health(stale_after_s=1)["probe"]
+    assert health["alive"] is True
+    assert health["responsive"] is False
+    assert health["state"] == "stalled"
+    assert supervisor.shutdown(timeout=1) == []
+
+
 if __name__ == "__main__":
     test_failed_worker_restarts_and_reports_health()
     test_shutdown_interrupts_wait_and_joins_all_workers()
     test_disabled_worker_is_visible_but_not_started()
+    test_alive_worker_with_old_heartbeat_is_reported_stalled()
     print("test_worker_supervisor: OK")

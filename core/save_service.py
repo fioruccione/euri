@@ -43,6 +43,15 @@ _SAVE_CONFIDENCE_FLOOR = 0.6  # sotto → il risolutore semantico cede al fallba
 
 _TRUSTED_MERGE_SOURCES = {"user", "teach"}
 
+# Comando nominato: il nome è metadato, il contenuto va risolto dalla conversazione.
+# Include "questi informazioni" perché è la forma realmente arrivata da STT/chat.
+_NAMED_SAVE_RE = re.compile(
+    r"^(?P<prefix>(?:(?:salva|memorizza|segna|ricorda)\s+)?"
+    r"(?:quest[aei]\s+informazion[ei]|questo))\s+(?:con|col)\s+(?:il\s+)?nome\s*[:\-]?\s*"
+    r"(?P<title>[^.!?\n]+?)\s*[.!?]*$",
+    re.IGNORECASE,
+)
+
 
 def _norm(s: str) -> str:
     """Normalizza per confronto di identità testuale (minuscole + spazi collassati)."""
@@ -82,6 +91,17 @@ def _match_is_epistemically_weak(match: dict) -> bool:
 def is_anaphoric(content: str) -> bool:
     """True se il payload è un puro riferimento meta (il fatto è altrove, non in queste parole)."""
     return bool(content and _META_SAVE_REF.match(content))
+
+
+def extract_named_save(text: str) -> tuple[str, str] | None:
+    """Ritorna (comando_meta, titolo) per ``queste informazioni con nome X``."""
+    match = _NAMED_SAVE_RE.match((text or "").strip())
+    if not match:
+        return None
+    title = " ".join(match.group("title").split()).strip(" '«»\"`")
+    if len(title) < 2:
+        return None
+    return match.group("prefix"), title
 
 
 def _content_before_trigger(text: str, triggers: list[str]) -> str:
@@ -158,12 +178,15 @@ def _resolve_content(text: str, brain, prev_user_text: str, prev_assistant_text:
     return fact, "mix"
 
 
-def _save_or_merge(content: str, memory, brain) -> dict:
+def _save_or_merge(content: str, memory, brain, *, memory_title: str = "") -> dict:
     """Salva nuovo, oppure ARRICCHISCE la memoria esistente più simile (fusione costruttiva)."""
     match = memory.find_similar_memory(content)
     # Niente di abbastanza simile → memoria nuova
     if match is None or match.get("similarity", 0.0) < _SIM_MERGE_FLOOR:
-        new_id = memory.save_memory(content, source="user", idempotent=True)
+        fields = {"memory_title": memory_title} if memory_title else None
+        new_id = memory.save_memory(
+            content, source="user", idempotent=True, final_fields=fields
+        )
         if not new_id:
             return {"saved": False, "merged": False, "reply": "Non sono riuscito a salvare.", "content": None}
         return {"saved": True, "merged": False, "reply": brain.confirm_save("memory", content), "content": content}
@@ -177,7 +200,10 @@ def _save_or_merge(content: str, memory, brain) -> dict:
         # Save esplicito > memoria debole. Non fondere: il merge LLM tende a conservare
         # dettagli vecchi anche quando l'utente sta restringendo il fatto (caso nastro
         # adesivizzato: una memoria passiva ha reintrodotto "impostazioni macchina").
-        new_id = memory.save_memory(content, source="user", idempotent=True)
+        fields = {"memory_title": memory_title} if memory_title else None
+        new_id = memory.save_memory(
+            content, source="user", idempotent=True, final_fields=fields
+        )
         if not new_id:
             return {"saved": False, "merged": False, "reply": "Non sono riuscito a salvare.", "content": None}
         if not memory.supersede_memory(match["id"], new_id):
@@ -191,12 +217,18 @@ def _save_or_merge(content: str, memory, brain) -> dict:
     if (not merged) or mu.startswith("DIVERSO"):
         # Soggetto diverso (o dubbio) → salva SEPARATO, niente supersede: meglio un
         # doppione (lo consolida il Loop 2e) che conflare due entità distinte.
-        new_id = memory.save_memory(content, source="user", idempotent=True)
+        fields = {"memory_title": memory_title} if memory_title else None
+        new_id = memory.save_memory(
+            content, source="user", idempotent=True, final_fields=fields
+        )
         if not new_id:
             return {"saved": False, "merged": False, "reply": "Non sono riuscito a salvare.", "content": None}
         return {"saved": True, "merged": False, "reply": brain.confirm_save("memory", content), "content": content}
     # Arricchimento reale (stesso soggetto) → salva la fusa, soft-delete della vecchia
-    new_id = memory.save_memory(merged, source="user", idempotent=True)
+    fields = {"memory_title": memory_title} if memory_title else None
+    new_id = memory.save_memory(
+        merged, source="user", idempotent=True, final_fields=fields
+    )
     if not new_id:
         return {"saved": False, "merged": False, "reply": "Non sono riuscito a salvare.", "content": None}
     if not memory.supersede_memory(match["id"], new_id):
@@ -223,7 +255,12 @@ def save_memory_command(
     Il chiamante parla/stampa 'reply' e, se 'saved', logga la conversazione.
     `recent_history` (lista di {role,content}) abilita il risolutore semantico Gradino 1.
     """
-    content, kind = _resolve_content(text, brain, prev_user_text, prev_assistant_text,
+    named = extract_named_save(text)
+    # Il prefisso nominato contiene solo metadati: per il resolver va trasformato
+    # in un riferimento anaforico, altrimenti la regex lo scambierebbe per il fatto.
+    resolve_text = "memorizza questo" if named else text
+    memory_title = named[1] if named else ""
+    content, kind = _resolve_content(resolve_text, brain, prev_user_text, prev_assistant_text,
                                      fresh, recent_history)
     if content is None:
         reply = "Cosa devo ricordare?" if kind == "ask" else "Non sono riuscito a capire cosa salvare."
@@ -235,4 +272,9 @@ def save_memory_command(
         if not clean:
             return {"saved": False, "merged": False, "reply": "Non sembra una cosa utile da ricordare.", "content": None}
         content = clean
-    return _save_or_merge(content, memory, brain)
+    result = _save_or_merge(content, memory, brain, memory_title=memory_title)
+    if memory_title:
+        result["memory_title"] = memory_title
+        if result.get("saved"):
+            result["reply"] = f"{result['reply']} Nome: {memory_title}."
+    return result

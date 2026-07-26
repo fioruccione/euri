@@ -1,4 +1,5 @@
 # Servizi/modelli richiesti, ma nessuna chiave di produzione modificata intenzionalmente.
+test_memory_benchmark_integration.py
 test_plausibility_gate.py
 test_save_resolver.py
 test_tool_vectorset.py

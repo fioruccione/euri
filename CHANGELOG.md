@@ -1,5 +1,455 @@
 # Changelog
 
+## 2026-07-26 — Identità, analogia e promozione epistemica
+
+- La convergenza di tre sogni non promuove più automaticamente un insight.
+  La promozione è fail-closed: richiede premesse completamente fedeli e un
+  ponte `SUPPORTED`; valutazioni mancanti, infedeli o `FORCED` restano candidate.
+- Un ponte `HYPOTHESIS` entra nel nuovo stato intermedio `hypothesis`: viene
+  dichiarato sul Pulse e conservato per audit, ma resta fuori dal RAG e dagli
+  insight promossi in Obsidian. Anche le ipotesi trasversali del Loop 2i seguono
+  questa separazione.
+- `source_memory_ids` conserva soltanto le premesse dirette del testo. Le fonti
+  degli insight simili assorbiti sono registrate separatamente in
+  `convergence_source_memory_ids`, evitando provenienze cumulative inquinate.
+- Il Loop 2h usa un giudizio semantico locale `SAME/RELATED/DIFFERENT/UNKNOWN`,
+  senza regex o liste di progetti: solo `SAME` può diventare autobiografia di
+  evoluzione.
+- Se due memorie erroneamente collegate da `superseded_by` risultano entità
+  diverse, l'arco viene invertito in modo tracciato e reversibile. `RELATED`
+  genera inoltre un Pulse che esplicita somiglianze e differenze, invece di
+  fondere materiali o progetti distinti.
+- Bonifica del campione live: due promozioni con ponte `HYPOTHESIS` sono state
+  riclassificate come ipotesi, una promozione priva di misura è tornata
+  candidate; la reflection che costruiva una traiettoria `Altosele 720 → UBQ
+  1250 MPa` è stata soft-esclusa e la memoria Altosele originale ripristinata.
+  Copie Redis recuperabili vengono conservate per 30 giorni.
+- Aggiunte regressioni per promozione sostenuta, ipotesi convergente, misura
+  mancante, premesse infedeli, confronto semantico, inversione della
+  supersessione e identità incerta. Stabilizzato inoltre un test dell'indice
+  Loop 2e che usava timestamp assoluti ormai usciti dalla finestra mobile.
+
+## 2026-07-25 — Estrazione passiva atomica a finestre
+
+- Le sessioni lunghe vengono analizzate in finestre da 12 messaggi con overlap
+  di 4: un dettaglio locale non compete più con l'intera conversazione né con un
+  limite globale di sei fatti.
+- Il contratto richiede memorie atomiche e proprietà autonome. Identità dei
+  parlanti e ID locali `T1...T12` vengono risolti negli ID reali della sessione
+  prima del salvataggio.
+- Il parser accetta in modo controllato `TURNI` e la variante Gemma `TURNOS`,
+  con o senza prefisso `T`; altre intestazioni `[TIPO=...]` malformate vengono
+  scartate e non possono finire nel contenuto.
+- Gli ID formalmente dubbi non eliminano più subito un fatto: vengono differiti
+  all'audit semantico fail-closed. Validazione e risoluzione temporale avvengono
+  nell'ordine contenuto → audit fonti → data canonica.
+- Una chiusura deterministica conserva il precedente turno dell'utente quando
+  serve a risolvere un'anafora come “È un misto...”.
+- Replica LoCoMo-IT: q99 passa da astensione a “La sceneggiatura di Joanna è un
+  misto di dramma e romanticismo”, con fonti `[25,27]` (`D2:3` + `D2:5`);
+  evidence recall `0,625 → 0,875`, F1 `0,318 → 0,396` e accuracy avversariale
+  invariata a `1,000`. Il costo sale a 92 chiamate locali e 22 memorie salvate:
+  la prossima ablation deve ridurre frammentazione e costo senza perdere
+  copertura.
+
+## 2026-07-25 — Provenienza semantica delle memorie passive
+
+- `TURNI` deve ora contenere l'unione di tutte le fonti necessarie a sostenere
+  ogni affermazione della memoria, non soltanto turni esistenti del ruolo giusto.
+- Un audit finale, eseguito dopo il gate di utilità e prima di dedup/salvataggio,
+  confronta il contenuto con i turni originali, aggiunge le fonti dimenticate e
+  scarta output non supportati o non verificabili.
+- Il benchmark conserva il nome originale del parlante: un “io” di Joanna non
+  viene più attribuito genericamente al ruolo `UTENTE`; nell'uso reale il
+  fallback resta il profilo locale di Stefano/Euri.
+- Il Buttafuori passivo non riscrive più il contenuto. Risponde soltanto
+  `KEEP/JUNK`, evitando che una parafrasi aggiunga qualificazioni senza fonte.
+- Il parser dell'audit accetta in modo controllato ID numerici, `T25` e liste
+  `T25,T27`, poi verifica comunque esistenza e ruolo nel dialogo.
+- Replica LoCoMo-IT finale: 7 candidati estratti, 7 validati e 7 salvati, zero
+  scarti di provenienza e 4 liste di fonti riparate. Sonda reale sul difetto
+  originario: la memoria combinata della sceneggiatura corregge `[25]` in
+  `[25,27]`, cioè evidence `D2:3` + `D2:5`.
+
+## 2026-07-25 — Deduplicazione passiva conservativa
+
+- La similarità vettoriale individua ora soltanto candidati: non può più
+  eliminare automaticamente una memoria. L'identità testuale resta un fast path.
+- Prima del giudice LLM, il candidato deve coprire tutti i marker informativi
+  della nuova frase; soggetti espliciti diversi, numeri/date diversi e negazioni
+  fanno conservare il fatto.
+- Il giudice elimina soltanto su risposta esatta `DUPLICATO`; output ambigui,
+  errori e dubbi sono fail-open. Il prompt chiarisce che stesso tema o soggetto
+  non equivalgono allo stesso contenuto.
+- Regressioni aggiunte per i tre falsi positivi LoCoMo-IT, quantità `100/120 kg`,
+  soggetti distinti, negazione, identità normalizzata e risposta LLM ambigua.
+- Replica isolata dopo i fix data+dedup: 9 memorie estratte e 9 salvate, zero
+  falsi duplicati e 36 chiamate LLM contro 48 nella run storica. Nella stessa
+  replica F1 `0,331 → 0,405` (+0,074), con evidence hit invariato a 0,625.
+  Il campione resta diagnostico e non statistico.
+
+## 2026-07-25 — Data locale canonica nel Passive learner
+
+- Il prompt di estrazione passiva usa ora `format_datetime_full`: giorno della
+  settimana, mese e ora sono esplicitamente italiani e indipendenti dal locale
+  `C/POSIX`, come nel percorso conversazionale principale.
+- Gemma deve conservare i riferimenti relativi pronunciati dall'utente
+  (`ieri`, `venerdì scorso`, `questa mattina`) senza convertirli autonomamente.
+- La fonte conversazionale e `asserted_at` sono canonici: il resolver
+  deterministico produce `event_start/event_end` prima del salvataggio.
+- Aggiunto un guard condiviso da voce, Silent Chat e benchmark: se il testo LLM
+  contiene una data numerica in conflitto con la fonte, viene corretto prima di
+  validazione e deduplica. Il `temporal_context` conserva espressione sorgente,
+  espressione generata, data originale e flag di correzione.
+- Regressione LoCoMo-IT: domenica 23 gennaio 2022 + “venerdì scorso” risolve al
+  21 gennaio e corregge deterministicamente l'uscita errata `20/01/2022`.
+
+## 2026-07-25 — LoCoMo italiano e confronto EN/IT
+
+- Aggiunta una localizzazione italiana completa e versionata della selezione
+  `conv-42` v2, preservando sessioni, turn ID, categorie ed evidence.
+- Il comando A/B accetta `--localization`; prompt di risposta, gold e astensione
+  possono ora essere eseguiti interamente in italiano.
+- Lo scorer ridotto riconosce anche le principali astensioni italiane.
+- Run IT pulita: F1 `0,318 → 0,368`, evidence hit `0,625 → 0,625`,
+  avversariale `1,000 → 1,000`; 9 memorie estratte e 6 salvate.
+- Evidenziati falsi duplicati e una data passiva errata (`20/01/2022`); la data
+  è ora coperta dalla correzione deterministica descritta sopra e i falsi
+  duplicati dalla deduplicazione conservativa descritta nella prima sezione.
+
+## 2026-07-24 - Prima A/B reale LoCoMo: RAG contro memoria passiva
+
+- Aggiunto il comando `benchmarks.euri_memory.cli ab`: avvia il codice Euri in un
+  processo figlio soltanto dopo aver fissato Redis e Vault temporanei, carica
+  l'embedder locale una volta e resetta lo stesso runtime fra i due profili.
+- La baseline indicizza 35 turni LoCoMo grezzi; il trattamento aggiunge il
+  percorso reale Passive learner, Buttafuori, deduplica, dominio e salvataggio.
+  Answer gold ed evidence entrano soltanto nello scorer dopo la generazione.
+- Il report registra dataset e selezione con SHA-256, stato Git, modello, prompt,
+  seed, chiamate e token Ollama, tempi, crescita Redis, memorie passive e trace di
+  retrieval per domanda.
+- Prima run con `gemma4:26b`: F1 0,370→0,356, exact match invariato a 0,333,
+  evidence recall invariato a 0,750 e accuracy avversariale 1,000→0,500. Le tre
+  memorie passive non migliorano questo piccolo campione e rivelano un caso di
+  over-answer da conservare come regressione.
+- Replica v1: baseline identico, Passive F1 0,364 e accuracy avversariale 1,000;
+  la variazione conferma instabilità del trattamento. Seconda selezione `conv-42`
+  su 51 turni/8 domande: F1 0,187→0,162, evidence recall 0,625 invariato,
+  8 memorie passive salvate su 10 candidati. Il passo successivo è ampliare il
+  campione, non promuovere questa sonda a risultato ufficiale.
+
+## 2026-07-24 - Banco prova memoria isolato e adapter LoCoMo
+
+- Creato `benchmarks/euri_memory` con contratti separati per corpus, prompt e
+  gold, profili A/B dichiarativi, trace e scoring deterministico di cablaggio.
+- Ogni run usa un processo Redis effimero con RedisJSON/RediSearch e un Vault
+  temporaneo; porta personale, percorsi esterni, PID e marker sono verificati
+  prima di reset o scritture.
+- L'adapter LoCoMo gestisce sessioni, timestamp, immagini annotate, categorie,
+  evidence multiple e riferimenti mancanti senza nascondere difetti del gold.
+- Il downloader acquisisce corpus e licenza CC BY-NC 4.0 dalla fonte ufficiale,
+  registra gli SHA-256 e lascia i dati fuori da Git.
+- Smoke reale completato su 419 turni e 199 domande della prima conversazione,
+  con 618 eventi trace e nessun accesso a Redis o Vault personali.
+
+## 2026-07-24 - Passive learner osservabile e conferme Pulse fondate
+
+- Il Passive learner analizza anche un singolo scambio completo e rende visibili
+  estrazione, validazione, scarti, duplicati e salvataggi.
+- L'estrazione strutturata con Gemma 4 26B usa `think=False`: il reasoning esteso
+  impediva spesso di produrre la lista finale parsabile.
+- La diagnostica dell'estrattore registra solo contatori e forma dell'output,
+  senza contenuti grezzi.
+- Le domande Pulse sulle memorie passive aprono ora una verifica associata all'ID
+  esatto. La risposta dell'utente viene classificata semanticamente e aggiorna
+  realmente lo stato epistemico del nodo confermato o smentito.
+- Verifica live dell'estrazione: 5 candidati accettati, 3 memorie salvate e 2
+  duplicati esclusi. Test Initiative estesi a 12/12.
+
+## 2026-07-24 - Corretto il salvataggio nominato delle informazioni UBQ
+
+- “Queste informazioni con il nome …” viene ora riconosciuto come SAVE_MEMORY,
+  anche nella forma STT “questi informazioni”, invece di entrare accidentalmente
+  nella sessione TEACH.
+- Il contenuto viene risolto dallo scambio precedente e il nome viene conservato
+  come `memory_title`; la conferma non può più dichiarare salvata una semplice
+  etichetta.
+- Riparato in modo reversibile il record UBQ live: il frammento errato è
+  soft-superseded e quarantinato, mentre la memoria corretta resta da verificare
+  sulle prove meccaniche. Aggiunti test deterministici e repair idempotente.
+
+## 2026-07-23 - Recall distinto dall'uso osservabile nella risposta
+
+- I turni conversazionali RAG di voce, Silent Chat e mobile producono una trace
+  cognitiva completa: confine del turno, memorie e insight realmente iniettati,
+  risposta generata e uso attribuibile.
+- `recalled` resta distinto da `used_in_response`. L'uso viene emesso soltanto
+  quando la risposta finale conserva evidenza lessicale distintiva non spiegata
+  dalla sola domanda; il risultato è marcato `supported_not_proven` e non cambia
+  memoria, ranking o risposta.
+- Il Pulse conserva soltanto hash, lunghezze e metadati di retrieval/evidenza:
+  nessun prompt, risposta o contenuto mnemonico viene copiato nella timeline.
+- L'audit cognitivo riassume ora turni, recall, uso supportato e canali. Aggiunti
+  test puri per provenance del prompt, causalità, privacy ed esclusione delle
+  semplici eco.
+
+## 2026-07-23 - Loop 2h con lineage e smentite escluse dal judge
+
+- La prova idle reale ha confermato che Loop 2a non riprocessa più dialoghi
+  precedenti al checkpoint. Ha però mostrato che Loop 2h pubblicava le proprie
+  narrative senza parent né confine epistemico e poteva contare due volte una
+  coppia restituita più volte da Redis `SCAN`.
+- Ogni self-observation porta ora loser/winner, coppie causali deduplicate e stato
+  `internal_self_observation`; resta da verificare e produce un evento cognitivo
+  `reflection/created`. Un cambio di attività o di supersessione durante il lavoro
+  annulla il commit senza consumare le coppie.
+- I candidate già demoti vengono esclusi prima delle misure e dei judge costosi.
+  Una smentita esterna non può essere superata da convergenza interna o richiamo
+  incidentale; annotazione, log, trace e Pulse del blocco sono emessi una sola volta.
+- Aggiunto un repair idempotente per completare la lineage della reflection live
+  `92bac556` senza alterarne il contenuto.
+
+## 2026-07-23 - Reflection sessionali e agenda protetta dal parlato descrittivo
+
+- Il Loop 2a non tratta più una finestra globale di quattro ore come sessione:
+  usa un checkpoint Redis durevole, un singolo segmento conversazionale e parent
+  ID espliciti. Dopo cinque minuti di vero idle genera una reflection interna da
+  verificare; se nel frattempo riparte il dialogo, il commit viene annullato.
+- Le azioni agenda richiedono sia un gesto corrente specifico (`chiudi`, `sospendi`,
+  `rimanda`...) sia un bersaglio grounded nel turno o nel riferimento immediato.
+  Frasi descrittive come “oggi faccio la prova, domani avrò i risultati” non
+  autorizzano più modifiche e un guasto del controller fallisce chiuso.
+- Il Pulse traccia proposta, decisione, rivalidazione ed esito delle azioni, inclusi
+  stato precedente e successivo. Una mutazione non può più restare nascosta dentro
+  una risposta conversazionale generata.
+- Riparato reversibilmente l'incidente UBQ: reflection stale ritratta, precedente
+  riattivata, todo hardware lasciato pending senza scadenza, copia Vault posta in
+  quarantena e before/after conservato nell'audit.
+
+## 2026-07-23 - Pulse v2 distingue telemetria e lineage cognitiva
+
+- `euri:pulse` resta compatibile, ma ogni nuovo evento porta un envelope v2 che
+  distingue telemetria grezza e transizione cognitiva, con produttore, trace,
+  causalità, entità, antenati e confine epistemico.
+- Il nuovo Cognitive Projector usa un consumer group durevole e copia soltanto gli
+  eventi cognitivi in `euri:cognitive:events`. La proiezione è idempotente e
+  osservazionale: non crea memorie, non modifica insight e non esegue azioni.
+- Prima lineage collegata a memoria salvata, semi Dream, candidate creati/scartati,
+  promozioni/demozioni, reaction con verdetto e consolidamenti figlio-genitori.
+- `docs/PULSE_COGNITIVE_ROADMAP.md` è il checkpoint persistente del cantiere;
+  `scripts/audit_cognitive_pulse.py` verifica stream, consumer e copertura senza
+  mutare Redis.
+- Verifica pre-riavvio: 42/42 unit; Redis storico invariato (3.924 eventi legacy,
+  timeline cognitiva e consumer group ancora assenti).
+
+## 2026-07-23 - Uno scherzo sul turno non ritira una memoria del RAG
+
+- Il caso live "stavo scherzando, volevo vedere se avevi capito il termine" resta
+  osservabile come correction signal, ma non apre più una quarantena immediata:
+  descriveva il tono del saluto precedente, non ritirava il record `fd66ecb3`.
+- `stavo scherzando` ed `era una provocazione` sono ora segnali di audit non
+  mutanti, anche quando nominano soggetti presenti nel RAG. Nascono già chiusi come
+  `mutation_policy=audit_only`, non emettono Pulse e non possono quindi essere
+  reinterpretati dal Loop 2g notturno come correzioni o lezioni. La quarantena
+  immediata resta soltanto per ritrattazioni fattuali esplicite (`non ho davvero`,
+  `ti correggo`, `hai sbagliato`) con un bersaglio sostanziale identificabile.
+- Il confine vale per ogni correction signal, non solo per gli scherzi:
+  `proposal_only` consente al Loop 2g di registrare un `proposed_verdict`, ma vieta
+  `audit_flag`, `requires_verification` e nuove lezioni finché manca una correzione
+  esplicita. Anche i signal legacy senza policy falliscono chiusi come proposte.
+- Il falso segnale live `28d74085` è stato chiuso come `not_a_correction`; la
+  quarantena reversibile di `fd66ecb3` è stata rimossa e la traccia audit conservata.
+
+## 2026-07-23 - Sincronia canonica e confine interno/esterno degli insight
+
+- `save_memory(final_fields=...)` pubblica ora il documento gia' completo: dominio,
+  provenienza e fragilita' epistemica entrano nello stesso commit RedisJSON+outbox.
+  Reaction, memoria passiva, web, Obsidian, confronti 2f e consolidamenti 2e non
+  post-mutano piu' una bozza gia' osservata da Pulse, indici e Vault.
+- Lo ZSET del Loop 2e viene ricostruito dal JSON canonico al boot. Riconciliazione
+  live: da 133 ID indicizzati contro 117 validi (9 mancanti, 25 stale) a 117/117,
+  zero missing e zero stale.
+- La convergenza Dream conserva il proprio significato nel sistema del paper:
+  `candidate/promoted` descrive una dinamica INTERNA, non una validazione del mondo.
+  Ogni insight nasce `internally_emergent`, diventa `internally_convergent` e resta
+  esplicitamente da verificare finche' una reaction esterna `CONFERMA` non attraversa
+  il confine epistemico.
+- Riconciliati 164 insight promossi storici: 160 interni/da verificare e 4 confermati
+  esternamente. Il contesto li presenta come "connessioni emerse", mai come principi
+  acquisiti per il solo fatto di essere ricorrenti.
+- Obsidian distingue nel titolo/frontmatter emergenza interna e conferma esterna;
+  il filename include anche l'ID, evitando collisioni tra promozioni nello stesso secondo.
+- I timeout Dream/Loop 2h ora sono timeout HTTP reali del client Ollama: eliminato il
+  `ThreadPoolExecutor` che, in uscita dal context manager, poteva attendere comunque
+  una chiamata bloccata. Un watchdog segnala inoltre worker vivi ma senza heartbeat.
+- Verifica: 41/41 unit, 3/3 integration, compilazione completa e drift Redis azzerato.
+
+## 2026-07-23 - Le smentite non conservano parti inventate dell'insight
+
+- L'ack vocale di una reaction e' ora neutro: arriva prima del verdetto asincrono
+  e non presume piu' che la risposta contenga insieme conferme e correzioni.
+- Un verdetto `SMENTITA` esclude per costruzione la sintesi generativa. La lezione
+  conserva domini, verdetto e reazione grezza, senza ripetere la tesi bocciata né
+  inventare una parte dell'insight che "resta valida".
+- Aggiunte provenienza `extractive_refutation` e regressioni contro il caso reale
+  `03ppr102`/setpoint. Il record contaminato e il primo repair intermedio sono
+  soft-superseded; Redis e Obsidian espongono soltanto la lezione estrattiva finale.
+
+## 2026-07-23 - VisualGate recupera gli stalli USB della webcam
+
+- Un `cap.read()` V4L2 fallito non lascia piu' il loop agganciato per sempre allo
+  stream guasto: la cattura viene rilasciata e la webcam riaperta con backoff
+  crescente e limitato.
+- Durante la riconnessione il gate e' esplicitamente cieco e fail-open, quindi la
+  voce non viene ignorata; l'identita' sticky del vecchio stream viene invalidata.
+- La discovery automatica riparte dai nodi `/dev/video*`, così un replug USB che
+  rinumera la webcam viene recuperato senza riavviare Euri. Regressione dedicata
+  sul guasto runtime e sul recupero verso un device differente.
+
+## 2026-07-22 - I tool restano dentro la risposta conversazionale
+
+- Distinte le richieste operative pure dalle domande che usano un tool come
+  sottopasso: `response_mode=tool_result` chiude il turno solo quando l'esito
+  soddisfa tutta la richiesta; `integrated` restituisce invece il risultato al
+  Brain e produce una risposta unica che copre anche spiegazione o valutazione.
+- Le alternative e le azioni read-only proposte da Euri sono sempre integrate:
+  l'output verificato diventa evidenza, non un sostituto della domanda originale.
+  Il percorso non rientra nel dispatch e non puo' innescare una seconda azione.
+- Rafforzati classificatore e ActionController sul caso reale "esamina quello che
+  sai fare e dimmi come migliorare il sistema, magari usando i tuoi strumenti":
+  una richiesta riflessiva senza sottopasso concreto resta `CHAT`, non autorizza
+  un controllo hardware casuale. Prova sul modello locale: abstain con authority
+  `none`; regressione dedicata e suite unitaria 39/39.
+
+## 2026-07-22 - Reaction parziali come patch di proposizioni
+
+- `PARZIALE` non lascia piu' un insight promosso come se fosse interamente valido:
+  imposta `requires_verification` e `verification_status=partially_refuted_by_user`.
+- Le reazioni miste vengono scomposte in claim confermati, smentiti e sostitutivi.
+  Ogni claim deve portare una citazione contigua realmente presente nella risposta;
+  le voci prive di evidenza letterale vengono scartate deterministicamente.
+- Per una reaction parziale la lezione e' costruita in modo estrattivo: non inventa
+  il collegamento operativo mancante. Il RAG presenta sempre insight originale e
+  patch correttiva insieme, marcandoli come ipotesi da verificare.
+- Riparato il caso Giuseppe/back office: la sintesi inferenziale precedente resta
+  come provenienza ma e' `superseded`; la lezione confermata distingue carichi e
+  partenze (back office) dalla valutazione materiale (laboratorio). L'insight resta
+  promosso perche' il principio generale e' stato confermato, ma e' marcato parziale.
+
+## 2026-07-22 - VisualGate disponibile nella Silent Chat senza biometria condivisa
+
+- Il Voice Daemon pubblica su Redis uno snapshot operativo effimero del VisualGate
+  con TTL breve: disponibilita' camera, presenza e identita' dichiarativa. Frame,
+  embedding e punteggio di similarita' non attraversano il ponte.
+- La Silent Chat riceve lo snapshot come contesto operativo, non come memoria: un
+  owner riconosciuto e' forte evidenza locale di presenza, ma non autorizzazione
+  crittografica del dattilografo e non sostituisce conferme per azioni sensibili.
+- Se lo snapshot manca o scade, Euri distingue "stato corrente non disponibile"
+  da "non possiedo VisualGate", evitando la falsa negazione osservata dal vivo.
+
+## 2026-07-22 - Self-model senza autocertificazione e identita' configurabile
+
+- Il prompt distingue ora stato operativo verificato, descrizione progettuale fornita
+  dall'utente, valutazione soggettiva e interpretazione/autobiografia di Euri. Una
+  memoria Redis prova che il contenuto e' stato registrato, non che sia vero o attuale.
+- Le sintesi clipboard persistenti usano `memory_kind=document_summary`; le vecchie
+  `semantic_fact` vengono riconosciute senza migrazione e marcate nel RAG come sintesi
+  documentali, non verifiche interne. Nessuna memoria viva e' stata modificata.
+- Introdotto il profilo installazione `OWNER_ACTOR_ID` / `OWNER_DISPLAY_NAME` /
+  `ASSISTANT_DISPLAY_NAME`, configurabile via ambiente. I principali percorsi cognitivi,
+  cronologici, proattivi e di autenticazione non dipendono piu' dal nome letterale del
+  proprietario; il default dell'istanza corrente resta Stefano/Euri.
+- Regressione portabilita' con profilo fittizio Ada/Nora e verifica del piano documentale
+  nel RAG. Aggiornata anche la descrizione della clipboard nel self-model.
+
+## 2026-07-22 - Clipboard: analisi temporanea separata dalla memoria
+
+- `analizza/riassumi gli appunti` usa ora il contenuto soltanto nella sessione e non
+  crea automaticamente una memoria permanente `source=teach`.
+- `salva/memorizza gli appunti` e `analizza e salva` passano da un tool distinto;
+  la persistenza richiede quindi un'intenzione esplicita dell'utente.
+- Gestite le negazioni mirate (`senza salvare` analizza soltanto; `non analizzare`
+  non esegue nulla) e i fallimenti di salvataggio vengono dichiarati senza falsi
+  successi. Aggiunte regressioni su persistenza, routing ed esposizione contestuale.
+
+## 2026-07-22 - Dream Trace Paired v2: isolamento batch e residuo fail-closed
+
+- Chiuso come pilot diagnostico il batch v1 (1 warm-up + 8 coppie): 5 trattamenti
+  avevano ricevuto la sentinella errata `NESSUN INSIGHT`; nessun trattamento era
+  entrato nella memoria reale.
+- Nuova `experiment_version=dream_trace_paired_v2`; residuo e contatore usano chiavi
+  Redis versionate. Lo stream v1 resta intatto ma non può contaminare o entrare
+  nell'export v2.
+- La distillazione appaiata accetta solo righe strutturate, elimina la chiave se non
+  resta alcuna riga valida e forza quindi un nuovo warm-up. Un filtro deterministico
+  scarta anche righe che riecheggiano fortemente il residuo appena iniettato.
+- Il campionatore verifica anche hash del residuo, durata e stati ammessi; l'allarme
+  sugli errori ora rileva anche gli squilibri `0:N`, prima invisibili.
+- Regressioni aggiunte per sentinella errata, residuo stale, compatibilità legacy,
+  eco vibrazioni/EMI, integrità e squilibrio errori.
+
+## 2026-07-21 - Dream Trace Paired V2: qualita' separata da utilita', confronto sullo stesso seme
+
+- Nuovo protocollo `ESPERIMENTO_DREAM_TRACE_V2.md`: il vecchio N/O/? non mescola
+  piu' grounding, novita', chiarezza e utilita' personale. Pass primario tecnico:
+  `G2 + V2 + C`; utilita' di Stefano separata in `U_NOW/U_LATER/U_NO/U_CONTEXT`.
+- Una prima stesura usava bracci concorrenti a blocchi di due cicli con coppie di
+  domini estratte a caso (mai attivata, nessun dato raccolto). Su indicazione di
+  Stefano, sostituita da un disegno APPAIATO: stesso seme (stesse due memorie)
+  generato due volte, con e senza residuo — elimina la variabilita' tra coppie di
+  domini diverse invece di mediarla su n grande, e non richiede piu' bilanciamento a
+  blocchi (ogni coppia contiene per costruzione un baseline e un trattamento).
+- Il residuo evolve SOLO dal lato trattamento: il baseline resta strutturalmente
+  isolato, prompt bit-identico a oggi a flag spento.
+- Stream dedicato `euri:dream_trace:paired:cycles`: salva al momento della
+  generazione output, due sorgenti, `pair_id`+`arm`, residuo, lunghezze e SHA-256
+  completi, anche per scarti/errori; nessuna dipendenza dalla sopravvivenza del
+  candidate. Uno scarto conta come non-passa per quel lato, non come esclusione
+  della coppia (altrimenti si ripeterebbe la sopravvivenza asimmetrica del batch
+  precedente in una forma diversa).
+- Esportatore cieco fail-closed: richiede 50 coppie complete (entrambi i lati non-
+  error, non duplicati, hash coerenti su QUALUNQUE stato) e include le memorie
+  sorgente per giudicare davvero il grounding. Due valutatori indipendenti (Codex,
+  Claude) giudicano separatamente; un disaccordo su una qualunque dimensione rende
+  quel lato AMBIGUO — nessuna adjudicazione, nessuno dei due corregge l'altro — nota
+  aperta in `ESPERIMENTO_DREAM_TRACE_V2.md` sui limiti di indipendenza tra due
+  modelli linguistici.
+- Analisi primaria: McNemar ESATTO (binomiale), non l'approssimazione χ² — con 50
+  coppie i discordanti saranno quasi certamente troppo pochi per l'approssimazione.
+
+### Correzioni post-review Codex (stesso giorno, prima di qualunque raccolta)
+
+- Solo il lato baseline persiste come `euri:insight:*` vivo (embedding, retrieval,
+  eleggibile a promozione); il trattamento resta strumentazione pura finche' non e'
+  validato — altrimenti ogni coppia raddoppiava i candidate che entrano nella
+  cognizione reale di Euri.
+- Il residuo loggato per lato ora e' quello REALMENTE iniettato in quel prompt
+  (vuoto per il baseline), non il residuo vivo in generale.
+- Validazione hash/lunghezza dell'output estesa a `discarded`, non solo `candidate`.
+- Un lato duplicato (stesso pair_id+arm) invalida l'intera coppia, non viene piu'
+  tenuta silenziosamente la prima occorrenza.
+- Errori di generazione contati per braccio con soglia di allarme (rapporto >=2x),
+  non piu' esclusi in silenzio dal conteggio.
+- Aggiunta la misura di durata per lato (`duration_s`), prevista ma assente.
+
+`DREAM_TRACE_PAIRED_ENABLED=True` (avviato da Stefano, poi corretto): la raccolta
+non aveva ancora generato nulla su Redis reale (chiavi/stream assenti, verificato)
+quando le correzioni sono state applicate — nessuna pulizia necessaria, ma serve un
+nuovo riavvio di Euri per caricare il codice corretto. Regressioni 36/36 (inclusi i
+nuovi casi su duplicati/errori/hash-su-scarti), inventario 45 test.
+
+## 2026-07-21 - Audit Dream Trace fermato per troncamento della misura
+
+- L'audit cieco 60+60 non e' valutabile: la convergence trace salvava soltanto
+  `seed_content[:600]`, tagliando in 109/120 item la terza riga da giudicare.
+- Controllo read-only senza unblinding: 81 testi recuperabili dallo stato Redis vivo
+  o dai sogni grezzi, 39 perduti. Il sottoinsieme recuperato non viene usato perche'
+  introdurrebbe bias di sopravvivenza. La chiave resta sigillata.
+- La trace salva ora l'intero candidate con numero di caratteri, SHA-256 e marcatore
+  esplicito di completezza. Il campionatore rifiuta le entry legacy/incomplete e si
+  arresta se uno dei bracci non raggiunge la numerosita' richiesta.
+- Il report Codex e' conservato come verbale, ma marcato chiaramente non valido.
+
 ## 2026-07-21 - Raccolta Dream Trace congelata e semi epistemicamente puliti
 
 - La raccolta `dream_trace` e' stata chiusa prima di modificare la generazione:

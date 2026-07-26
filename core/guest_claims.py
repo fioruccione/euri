@@ -34,14 +34,16 @@ def _clean_model_text(text: str) -> str:
 
 def respond_to_guest(text: str) -> str:
     """Risposta isolata: nessuna memoria privata e nessun accesso ai tool."""
+    owner = config.OWNER_DISPLAY_NAME
+    assistant = config.ASSISTANT_DISPLAY_NAME
     system = (
-        "Sei Euri e stai parlando con una persona non ancora identificata. "
+        f"Sei {assistant} e stai parlando con una persona non ancora identificata. "
         "Puoi sostenere una normale conversazione generale, in italiano, con tono "
         "cordiale e diretto. Non possiedi in questo contesto alcuna memoria privata "
-        "di Stefano: non rivelare progetti, agenda, file, conversazioni, dati personali "
+        f"di {owner}: non rivelare progetti, agenda, file, conversazioni, dati personali "
         "o stato della workstation. Non puoi eseguire azioni, salvare memorie, creare "
         "promemoria o modificare dati. Se vengono richieste queste operazioni, spiega "
-        "brevemente che serve l'identita' verificata di Stefano. Rispondi in 2-4 frasi "
+        f"brevemente che serve l'identita' verificata di {owner}. Rispondi in 2-4 frasi "
         "semplici, adatte al parlato, senza markdown. Non affermare di avere eseguito azioni."
     )
     messages = [{"role": "system", "content": system}]
@@ -54,7 +56,7 @@ def respond_to_guest(text: str) -> str:
             think=False,
         )
         reply = _clean_model_text(response.message.content or "")
-        return reply or "Posso risponderti, ma per le funzioni personali deve esserci Stefano."
+        return reply or f"Posso risponderti, ma per le funzioni personali deve esserci {owner}."
     except Exception as exc:
         logger.warning(f"Guest conversation fallita: {exc}")
         return "In questo momento non riesco a rispondere. Riprova tra poco."
@@ -180,7 +182,7 @@ class GuestClaimStore:
         claim_id: str,
         status: str,
         *,
-        reviewed_by: str = "stefano",
+        reviewed_by: str | None = None,
         promoted_memory_id: str | None = None,
     ) -> dict | None:
         if status not in {"confirmed", "rejected", "deferred"}:
@@ -190,7 +192,7 @@ class GuestClaimStore:
             return None
         doc["status"] = status
         doc["reviewed_at"] = time.time()
-        doc["reviewed_by"] = reviewed_by
+        doc["reviewed_by"] = reviewed_by or config.OWNER_ACTOR_ID
         doc["promoted_memory_id"] = promoted_memory_id
         self.r.set(
             self._key(claim_id),

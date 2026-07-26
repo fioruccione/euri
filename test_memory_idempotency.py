@@ -17,6 +17,20 @@ class FakeRedis:
         self.zsets = {}
 
     def eval(self, _script, numkeys, *args):
+        if numkeys == 3:
+            memory_key, outbox_key, pending_key = args[:3]
+            memory_id, raw_doc, enqueued_at = args[3:]
+            if self.fail_commit:
+                raise RuntimeError("simulated JSON.SET failure")
+            self.docs[memory_key] = json.loads(raw_doc)
+            self.hashes[outbox_key] = {
+                "memory_key": memory_key,
+                "memory_id": memory_id,
+                "enqueued_at": enqueued_at,
+                "attempts": "0",
+            }
+            self.zsets.setdefault(pending_key, {})[outbox_key] = float(enqueued_at)
+            return memory_id
         assert numkeys == 4
         idem_key, memory_key, outbox_key, pending_key = args[:4]
         memory_id, raw_doc, prefix, enqueued_at = args[4:]
@@ -48,12 +62,22 @@ def _manager(redis):
     return MemoryManager(redis, embedder=None)
 
 
-def _save(manager, content="Stefano usa un journal sequenziale per la history."):
+def _save(
+    manager,
+    content="Stefano usa un journal sequenziale per la history.",
+    *,
+    final_fields=None,
+):
     with (
         patch("core.memory_manager.assign_domain", return_value="test"),
         patch("core.memory_manager.process_memory_outbox_event", return_value=True),
     ):
-        return manager.save_memory(content, source="user", idempotent=True)
+        return manager.save_memory(
+            content,
+            source="user",
+            idempotent=True,
+            final_fields=final_fields,
+        )
 
 
 def test_failed_commit_leaves_no_phantom_winner():
@@ -149,10 +173,81 @@ def test_temporal_context_is_canonical_memory_metadata():
     assert doc["memory_axes"]["observed_at"] == asserted_at
 
 
+def test_final_fields_are_committed_before_outbox_visibility():
+    redis = FakeRedis()
+    manager = _manager(redis)
+    observed = {}
+
+    def observe_outbox(_redis, event_key):
+        mid = event_key.rsplit(":", 1)[-1]
+        observed.update(redis.docs[f"euri:memory:{mid}"])
+        return True
+
+    with (
+        patch("core.memory_manager.assign_domain", return_value="auto"),
+        patch(
+            "core.memory_manager.process_memory_outbox_event",
+            side_effect=observe_outbox,
+        ),
+    ):
+        mid = manager.save_memory(
+            "Una correzione esterna deve essere pubblicata già completa.",
+            source="reaction",
+            final_fields={
+                "domain": "logica",
+                "requires_verification": False,
+                "reacted_to": "insight-1",
+            },
+        )
+
+    assert mid
+    assert observed["domain"] == "logica"
+    assert observed["requires_verification"] is False
+    assert observed["reacted_to"] == "insight-1"
+
+
+def test_final_fields_cannot_replace_canonical_identity():
+    redis = FakeRedis()
+    manager = _manager(redis)
+    with (
+        patch("core.memory_manager.assign_domain", return_value="test"),
+        patch("core.memory_manager.process_memory_outbox_event", return_value=True),
+    ):
+        try:
+            manager.save_memory(
+                "Contenuto canonico.",
+                final_fields={"content": "Riscrittura tardiva."},
+            )
+            raise AssertionError("final_fields non deve riscrivere il contenuto")
+        except ValueError as exc:
+            assert "content" in str(exc)
+    assert redis.docs == {}
+
+
+def test_precommit_guard_can_cancel_stale_background_publication():
+    redis = FakeRedis()
+    manager = _manager(redis)
+    with (
+        patch("core.memory_manager.assign_domain", return_value="test"),
+        patch("core.memory_manager.process_memory_outbox_event", return_value=True),
+    ):
+        mid = manager.save_memory(
+            "Ipotesi costruita su uno snapshot ormai superato.",
+            source="reflection",
+            precommit_guard=lambda: False,
+        )
+    assert mid is None
+    assert redis.docs == {}
+    assert redis.hashes == {}
+
+
 if __name__ == "__main__":
     test_failed_commit_leaves_no_phantom_winner()
     test_document_build_failure_never_reserves_winner()
     test_duplicate_returns_only_existing_document()
     test_stale_mapping_is_replaced()
     test_temporal_context_is_canonical_memory_metadata()
+    test_final_fields_are_committed_before_outbox_visibility()
+    test_final_fields_cannot_replace_canonical_identity()
+    test_precommit_guard_can_cancel_stale_background_publication()
     print("test_memory_idempotency: OK")

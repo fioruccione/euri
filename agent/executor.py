@@ -149,7 +149,13 @@ class Executor:
         )
         from agent.tools.log_reader import tool_read_log
         from agent.tools.math_eval import tool_evaluate_math
-        from agent.tools.text_writer import tool_write_text, tool_clipboard_write, tool_clipboard_read, tool_clipboard_analyze
+        from agent.tools.text_writer import (
+            tool_write_text,
+            tool_clipboard_write,
+            tool_clipboard_read,
+            tool_clipboard_analyze,
+            tool_clipboard_analyze_save,
+        )
 
         tools = [
             ToolSpec(
@@ -246,9 +252,18 @@ class Executor:
             ),
             ToolSpec(
                 name="clipboard_analyze",
-                description="Analizza il testo o l'immagine negli appunti con il LLM e salva i punti chiave in memoria.",
+                description="Analizza il testo o l'immagine negli appunti con il LLM per la sessione corrente. Non salva nulla nella memoria permanente.",
                 parameters_schema={},
                 handler=tool_clipboard_analyze,
+                timeout_seconds=60,
+                effect="read_only",
+                contextual=True,
+            ),
+            ToolSpec(
+                name="clipboard_analyze_save",
+                description="Analizza il testo o l'immagine negli appunti e salva la sintesi nella memoria permanente. Usalo solo se l'utente chiede esplicitamente di salvare o memorizzare.",
+                parameters_schema={},
+                handler=tool_clipboard_analyze_save,
                 timeout_seconds=60,
             ),
         ]
@@ -428,7 +443,7 @@ class Executor:
 
         def _tool_teach_text(params: dict, **kwargs) -> ToolResult:
             """
-            Stefano INSEGNA esplicitamente un testo/elenco INCOLLATO in chat
+            Il proprietario INSEGNA esplicitamente un testo/elenco INCOLLATO in chat
             ("memorizza questo: …", "impara quanto segue: …", "tieni a mente: …") e
             lo salva come memoria PERMANENTE (source=teach): niente TTL, intoccabile
             dai cicli notturni. È il gemello di ingest_documents — che però studia i
@@ -449,7 +464,7 @@ class Executor:
                 '', raw, count=1, flags=re.IGNORECASE)
             # Caso 2: nessun due punti → toglie il comando + eventuali determinanti e
             # nomi generici ("queste informazioni", "questi dati", "la lista") finché
-            # non resta il contenuto vero. Se Stefano scrive solo il comando senza
+            # non resta il contenuto vero. Se l'utente scrive solo il comando senza
             # incollare nulla ("memorizza queste informazioni"), il corpo collassa a
             # vuoto e sotto scatta l'avviso "manca il testo" invece di salvare un guscio.
             if body == raw:
@@ -483,7 +498,7 @@ class Executor:
 
         def _tool_read_url(params: dict, **kwargs) -> ToolResult:
             """
-            Legge una pagina WEB il cui URL è dato ESPLICITAMENTE da Stefano (NON
+            Legge una pagina WEB il cui URL è dato ESPLICITAMENTE dall'utente (NON
             navigazione autonoma): fetch del testo + comprensione, iniettata nel
             contesto di sessione. NON salva di default (salva-su-richiesta via
             save_url). Contenuto trattato come fonte esterna/indicativa.
@@ -523,13 +538,15 @@ class Executor:
             if memory is None:
                 return ToolResult(success=False, output="Memoria non disponibile.")
             content = f"[pagina web: {url}]\n{page[:4000]}"
-            mid = memory.save_memory(content, category="web", source="web", tags=["web", "pagina", url])
+            mid = memory.save_memory(
+                content,
+                category="web",
+                source="web",
+                tags=["web", "pagina", url],
+                final_fields={"requires_verification": True},
+            )
             if mid is None:
                 return ToolResult(success=False, output="Pagina NON salvata: contenuto sospetto bloccato dal Memory Guard.")
-            try:
-                memory.r.json().set(f"euri:memory:{mid}", "$.requires_verification", True)
-            except Exception:
-                pass
             return ToolResult(success=True, output=f"Salvata in memoria la pagina {url} come fonte web (indicativa, da verificare).")
 
         def _tool_run_eval(params: dict, **kwargs) -> ToolResult:
@@ -636,13 +653,13 @@ class Executor:
             ),
             ToolSpec(
                 name="teach_text",
-                description="Salva in memoria a lungo termine (permanente) un testo o un elenco che Stefano INCOLLA in chat. Per 'memorizza questo: …', 'impara quanto segue: …', 'tieni a mente: …'. Gemello di ingest_documents ma per testo incollato al volo, non per file.",
+                description=f"Salva in memoria a lungo termine (permanente) un testo o un elenco che {config.OWNER_DISPLAY_NAME} INCOLLA in chat. Per 'memorizza questo: …', 'impara quanto segue: …', 'tieni a mente: …'. Gemello di ingest_documents ma per testo incollato al volo, non per file.",
                 parameters_schema={"text": {"type": "str", "required": True}},
                 handler=_tool_teach_text,
             ),
             ToolSpec(
                 name="read_url",
-                description="Legge una pagina web il cui URL è fornito ESPLICITAMENTE da Stefano (es. 'leggi questa pagina https://…') ed estrae i contenuti. NON naviga né cerca da solo. Parametro: url (str) — il messaggio contenente l'URL.",
+                description=f"Legge una pagina web il cui URL è fornito ESPLICITAMENTE da {config.OWNER_DISPLAY_NAME} (es. 'leggi questa pagina https://…') ed estrae i contenuti. NON naviga né cerca da solo. Parametro: url (str) — il messaggio contenente l'URL.",
                 parameters_schema={"url": {"type": "str", "required": True}},
                 handler=_tool_read_url,
                 timeout_seconds=60,
@@ -766,9 +783,18 @@ class Executor:
             r'|\blog\s+di\s+euri\b',
             re.IGNORECASE,
         ), "read_log", {}),
-        # clipboard_analyze — PRIMA di clipboard_read (pattern più specifici)
+        # Salvataggio clipboard: deve essere ESPLICITO e precedere l'analisi temporanea.
         (re.compile(
-            r'\b(analizza|studia|elabora|approfondisci|esamina|riassumi|sintetizza|salva)\s+.*\b(appunti|clipboard)\b',
+            r'\b(salva|memorizza|ricorda)\s+.*\b(appunti|clipboard)\b'
+            r'|\b(analizza|studia|elabora|approfondisci|esamina|riassumi|sintetizza)\b'
+            r'.*\b(salva|memorizza)\b.*\b(appunti|clipboard)\b'
+            r'|\b(analizza|studia|elabora|approfondisci|esamina|riassumi|sintetizza)\b'
+            r'.*\b(appunti|clipboard)\b.*\b(salva|memorizza)\b',
+            re.IGNORECASE,
+        ), "clipboard_analyze_save", {}),
+        # Analisi temporanea — PRIMA di clipboard_read (pattern più specifico).
+        (re.compile(
+            r'\b(analizza|studia|elabora|approfondisci|esamina|riassumi|sintetizza)\s+.*\b(appunti|clipboard)\b',
             re.IGNORECASE,
         ), "clipboard_analyze", {}),
         # clipboard_read — consente parole intermedie tra "leggi" e "clipboard/appunti"
@@ -862,6 +888,23 @@ class Executor:
         Selettore deterministico: evita la chiamata LLM per i tool comuni.
         Ritorna None se nessun pattern corrisponde (si cade sul LLM).
         """
+        # "Analizza gli appunti senza salvarli" nega soltanto la persistenza,
+        # non l'analisi. Va risolto prima della guardia generale, che altrimenti
+        # potrebbe interpretare "senza salvare" come negazione dell'intero tool.
+        clipboard_analysis = re.search(
+            r'\b(analizza|studia|elabora|approfondisci|esamina|riassumi|sintetizza)\b'
+            r'.*\b(appunti|clipboard)\b',
+            text,
+            re.IGNORECASE,
+        )
+        persistence_negated = re.search(
+            r'\b(?:senza|non)\s+(?:salvar\w*|memorizzar\w*|ricordar\w*)\b',
+            text,
+            re.IGNORECASE,
+        )
+        if clipboard_analysis and persistence_negated:
+            return ToolCall(tool_name="clipboard_analyze", parameters={})
+
         if self._is_negated_tool_request(text):
             return None
         for pattern, tool_name, params in self._TOOL_PATTERNS:
@@ -985,7 +1028,7 @@ class Executor:
 
         # Continuità: inietta il contenuto fedele nella history del Brain, così i
         # turn successivi leggono i valori esatti invece di confabularli.
-        if call.tool_name in ("analyze_image", "clipboard_analyze", "run_code", "read_document", "ingest_documents", "read_url", "teach_text") \
+        if call.tool_name in ("analyze_image", "clipboard_analyze", "clipboard_analyze_save", "run_code", "read_document", "ingest_documents", "read_url", "teach_text") \
                 and getattr(self, "brain", None) is not None:
             try:
                 self.brain.inject_tool_result(text, build_injected_context(result.output, result.raw_data))

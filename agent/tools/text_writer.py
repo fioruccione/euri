@@ -4,7 +4,8 @@ Tool di scrittura e clipboard per l'Executor sandbox di Euri.
 - write_text: salva testo dettato su file + lo copia negli appunti
 - clipboard_write: copia testo negli appunti (senza salvare su file)
 - clipboard_read: legge il contenuto degli appunti
-- clipboard_analyze: analizza il contenuto degli appunti (testo o immagine) e lo salva in memoria
+- clipboard_analyze: analizza il contenuto degli appunti per la sessione corrente
+- clipboard_analyze_save: analizza e salva in memoria solo su richiesta esplicita
 """
 import os
 import re
@@ -230,10 +231,13 @@ def _analyze_text_full(text: str, cfg, brain) -> str:
     return _chat(synth_prompt, _OPTS_SYNTH)
 
 
-def tool_clipboard_analyze(params: dict, **kwargs) -> ToolResult:
+def _tool_clipboard_analyze(params: dict, *, persist: bool, **kwargs) -> ToolResult:
     """
     Analizza il contenuto degli appunti (testo lungo o immagine PNG/JPG) con il LLM,
-    estrae i fatti rilevanti e li salva in Redis come memoria teach.
+    estrae i fatti rilevanti e, solo con persist=True, li salva in Redis come memoria
+    teach. In entrambi i casi l'Executor inietta il risultato nella history della
+    sessione, quindi i follow-up possono usarlo senza trasformarlo in conoscenza
+    permanente.
 
     kwargs attesi: brain (Brain), memory (MemoryManager)
     """
@@ -251,16 +255,39 @@ def tool_clipboard_analyze(params: dict, **kwargs) -> ToolResult:
                 "Se contiene dati tecnici, tabelle o specifiche, riportali fedelmente. "
                 "Usa frasi complete, niente elenchi puntati."
             ))
-            mid = memory.save_memory(
-                content=f"Immagine analizzata dagli appunti:\n{description}",
-                category="conoscenza",
-                source="teach",
-                tags=["clipboard", "immagine"],
-            )
+            mid = None
+            if persist:
+                mid = memory.save_memory(
+                    content=f"Immagine analizzata dagli appunti:\n{description}",
+                    category="conoscenza",
+                    source="teach",
+                    tags=["clipboard", "immagine"],
+                    memory_kind="document_summary",
+                )
+                if not mid:
+                    return ToolResult(
+                        success=False,
+                        output=(
+                            "Ho analizzato l'immagine, ma non sono riuscito a "
+                            f"salvarla in memoria. {description}"
+                        ),
+                        error="memory save rejected",
+                        raw_data={
+                            "memory_id": None,
+                            "persisted": False,
+                            "type": "image",
+                        },
+                    )
+            action = "analizzato l'immagine e salvato i dettagli in memoria" if persist \
+                else "analizzato l'immagine senza salvarla in memoria"
             return ToolResult(
                 success=True,
-                output=f"Ho analizzato l'immagine e salvato i dettagli in memoria. {description[:200]}",
-                raw_data={"memory_id": mid, "type": "image"},
+                output=f"Ho {action}. {description}",
+                raw_data={
+                    "memory_id": mid,
+                    "persisted": persist,
+                    "type": "image",
+                },
             )
         except Exception as e:
             return ToolResult(success=False, output="Errore nell'analisi dell'immagine.", error=str(e))
@@ -285,19 +312,54 @@ def tool_clipboard_analyze(params: dict, **kwargs) -> ToolResult:
         if not summary:
             return ToolResult(success=False, output="Non sono riuscito ad analizzare il testo.")
 
-        mid = memory.save_memory(
-            content=f"Testo analizzato dagli appunti:\n{summary}",
-            category="conoscenza",
-            source="teach",
-            tags=["clipboard", "testo"],
-        )
+        mid = None
+        if persist:
+            mid = memory.save_memory(
+                content=f"Testo analizzato dagli appunti:\n{summary}",
+                category="conoscenza",
+                source="teach",
+                tags=["clipboard", "testo"],
+                memory_kind="document_summary",
+            )
+            if not mid:
+                return ToolResult(
+                    success=False,
+                    output=(
+                        f"Ho letto {len(text)} caratteri e prodotto la sintesi, "
+                        f"ma non sono riuscito a salvarla in memoria. {summary}"
+                    ),
+                    error="memory save rejected",
+                    raw_data={
+                        "memory_id": None,
+                        "persisted": False,
+                        "type": "text",
+                        "original_length": len(text),
+                    },
+                )
+        persistence_note = " Ho salvato la sintesi in memoria." if persist \
+            else " Non ho salvato nulla in memoria."
         return ToolResult(
             success=True,
-            output=f"Ho letto {len(text)} caratteri. {summary}",
-            raw_data={"memory_id": mid, "type": "text", "original_length": len(text)},
+            output=f"Ho letto {len(text)} caratteri.{persistence_note} {summary}",
+            raw_data={
+                "memory_id": mid,
+                "persisted": persist,
+                "type": "text",
+                "original_length": len(text),
+            },
         )
     except Exception as e:
         return ToolResult(success=False, output="Errore nell'analisi del testo.", error=str(e))
+
+
+def tool_clipboard_analyze(params: dict, **kwargs) -> ToolResult:
+    """Analisi temporanea: il risultato vive nella history, non in Redis."""
+    return _tool_clipboard_analyze(params, persist=False, **kwargs)
+
+
+def tool_clipboard_analyze_save(params: dict, **kwargs) -> ToolResult:
+    """Analisi persistente, selezionata solo da una richiesta esplicita di salvataggio."""
+    return _tool_clipboard_analyze(params, persist=True, **kwargs)
 
 
 def _clipboard_image() -> str | None:

@@ -7,7 +7,7 @@ import time
 from loguru import logger
 
 from core.memory_attention import update_loop2e_candidate_index
-from core.pulse import pulse_emit_once
+from core.pulse import COGNITIVE_EVENT, pulse_emit_once
 from utils.obsidian_sync import write_memory
 
 
@@ -68,6 +68,17 @@ def process_memory_outbox_event(r, event_key: str) -> bool:
 
         source = doc.get("source") or ""
         axes = doc.get("memory_axes") or {}
+        parent_refs = (
+            doc.get("consolidated_from")
+            or doc.get("source_memory_ids")
+            or doc.get("source_turn_ids")
+            or []
+        )
+        epistemic_after = (
+            doc.get("epistemic_status")
+            or doc.get("verification_status")
+            or ("requires_verification" if doc.get("requires_verification") else "recorded")
+        )
         emitted = pulse_emit_once(
             r,
             event_id=f"memory-saved:{memory_id}",
@@ -95,6 +106,13 @@ def process_memory_outbox_event(r, event_key: str) -> bool:
             if (doc.get("safety_flag") or doc.get("requires_verification"))
             else 0.35,
             marker_key=event_key,
+            event_class=COGNITIVE_EVENT,
+            producer="memory_outbox",
+            trace_id=f"memory:{memory_id}",
+            entity_refs=[{"type": "memory", "id": memory_id}],
+            parent_refs=parent_refs,
+            epistemic_before="absent",
+            epistemic_after=epistemic_after,
         )
         if not emitted:
             raise RuntimeError("Pulse non disponibile")

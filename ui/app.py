@@ -826,8 +826,24 @@ with main_col:
                 with st.chat_message("assistant"):
                     with st.spinner("Euri assorbe…"):
                         try:
-                            _rx.capture_reaction(memory_manager, _pending["insight"], prompt)
-                            ack = "Capito, me lo segno — lo lascio sedimentare e ci ri-sogno su."
+                            outcome = _rx.capture_reaction(
+                                memory_manager, _pending["insight"], prompt
+                            )
+                            if not outcome.get("persisted"):
+                                ack = (
+                                    "Ho capito la risposta, ma non sono riuscita a fissarla "
+                                    "in memoria: non la considero salvata."
+                                )
+                            elif outcome.get("verdict") == "PARZIALE":
+                                ack = (
+                                    "Ricevuto. Ho tenuto separate la parte che confermi, "
+                                    "quella che smentisci e i fatti che metti al suo posto."
+                                )
+                            else:
+                                ack = (
+                                    "Capito, me lo segno — lo lascio sedimentare e ci "
+                                    "ri-sogno su."
+                                )
                         except Exception as e:
                             ack = f"(Non sono riuscito a fissare la lezione: {e})"
                     st.markdown(ack)
@@ -967,7 +983,11 @@ with main_col:
                         response = save_res["reply"]
                     else:
                         chat_hint = "[Modalità chat testuale — nessun vincolo TTS. Puoi rispondere con più profondità, sviluppare i concetti, fare domande di ritorno. Sii presente e partecipe come in una conversazione reale.]"
-                        context_full = (context + "\n\n" + chat_hint) if context else chat_hint
+                        from core.visual_presence import visual_presence_context
+                        visual_context = visual_presence_context(r)
+                        context_full = "\n\n".join(
+                            part for part in (context, visual_context, chat_hint) if part
+                        )
                         # Gradino 2 — strategia di retrieval (wide/subject) sul modello caldo,
                         # solo quando la pre-gate cheap scatta; specific_search → invariato.
                         from core.retrieval_strategy import augment_context_with_ids
@@ -987,14 +1007,51 @@ with main_col:
                         # proprio quelli che causano una risposta poi corretta da Stefano.
                         ctx_ids_effective = list(dict.fromkeys([*ctx_ids_now, *augment_ids]))
                         memory_manager.set_last_rag_ctx(ctx_ids_effective)
+                        from core.response_lineage import (
+                            finish_response_turn,
+                            load_augmented_memory_nodes,
+                            start_response_turn,
+                        )
+                        lineage_nodes = list(_rag.nodes)
+                        memory_positions = [
+                            int(node.get("position") or 0)
+                            for node in lineage_nodes if node.get("kind") == "memory"
+                        ]
+                        lineage_nodes.extend(load_augmented_memory_nodes(
+                            memory_manager,
+                            augment_ids,
+                            start_position=max(memory_positions, default=0) + 1,
+                        ))
+                        response_lineage = start_response_turn(
+                            r,
+                            query=prompt,
+                            channel="silent_chat",
+                            mode=_context_mode,
+                            nodes=lineage_nodes,
+                        )
                         from core.honesty import scrub_unbacked_save_claim
                         from core.act_word_check import (
                             emit_unbacked_action_commitment,
                             scrub_unbacked_action_claim,
                         )
-                        response = scrub_unbacked_save_claim(brain.respond(prompt, context=context_full))
+                        try:
+                            response = scrub_unbacked_save_claim(
+                                brain.respond(prompt, context=context_full)
+                            )
+                        except Exception:
+                            finish_response_turn(
+                                r,
+                                response_lineage,
+                                response="",
+                                outcome="failed",
+                                attribute_usage=False,
+                            )
+                            raise
                         emit_unbacked_action_commitment(r, response, set(), channel="silent_chat")
                         response = scrub_unbacked_action_claim(response, set())
+                        finish_response_turn(
+                            r, response_lineage, response=response
+                        )
                     st.markdown(response)
 
             # Salva risposta
@@ -1009,7 +1066,7 @@ with main_col:
             # Ogni 6 turni (3 scambi) lancia l'estrazione passiva inline
             if len(st.session_state.messages) % 6 == 0:
                 try:
-                    from core.validator import validate_payload
+                    from core.validator import validate_passive_payload
                     full_log = memory_manager.get_today_conversation()
                     st.session_state.chat_log_offset = len(full_log)
                     # extract_passive_memories vuole list[dict] con role/content
@@ -1021,15 +1078,45 @@ with main_col:
                             from core.temporal_context import derive_passive_memory_metadata
                             weak_support = isinstance(fact_item, dict) and fact_item.get("support") == "weak"
                             fact = fact_item.get("content", "") if isinstance(fact_item, dict) else str(fact_item)
-                            metadata = derive_passive_memory_metadata(
-                                fact_item if isinstance(fact_item, dict) else {"content": fact},
-                                recent_msgs,
-                            )
-                            clean = validate_payload(fact, "memory")
+                            clean = validate_passive_payload(fact)
                             if not clean:
                                 continue
+                            audit_candidate = (
+                                dict(fact_item)
+                                if isinstance(fact_item, dict)
+                                else {
+                                    "content": clean,
+                                    "memory_kind": "semantic_fact",
+                                    "source_turn_ids": [],
+                                }
+                            )
+                            audit_candidate["content"] = clean
+                            audited_item = brain.audit_passive_memory_provenance(
+                                audit_candidate,
+                                recent_msgs,
+                            )
+                            if not audited_item:
+                                continue
+                            provenance_audit = dict(
+                                audited_item.get("provenance_audit") or {}
+                            )
+                            metadata = derive_passive_memory_metadata(
+                                audited_item,
+                                recent_msgs,
+                            )
+                            clean = metadata["canonical_content"]
                             if memory_manager.is_duplicate_memory(clean, llm_probe_fn=brain.probe_same_meaning):
                                 continue
+                            final_fields = {
+                                "passive_provenance": provenance_audit,
+                            }
+                            if weak_support:
+                                final_fields.update(
+                                    {
+                                        "requires_verification": True,
+                                        "passive_support": "tacit_acceptance",
+                                    }
+                                )
                             mid = memory_manager.save_memory(
                                 clean,
                                 category="passivo",
@@ -1037,13 +1124,10 @@ with main_col:
                                 idempotent=True,
                                 memory_kind=metadata["memory_kind"],
                                 temporal_context=metadata["temporal_context"],
+                                final_fields=final_fields,
                             )
                             if mid and (weak_support or metadata["memory_kind"] == "conversation_anchor"):
                                 from core.memory_attention import remove_loop2e_candidate
-                                key = f"euri:memory:{mid}"
-                                if weak_support:
-                                    memory_manager.r.json().set(key, "$.requires_verification", True)
-                                    memory_manager.r.json().set(key, "$.passive_support", "tacit_acceptance")
                                 remove_loop2e_candidate(memory_manager.r, mid)
                             saved += 1
                         if saved:

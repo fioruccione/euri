@@ -9,12 +9,12 @@ Costruisce il contesto base da Redis senza conoscere domini specifici:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from loguru import logger
 
 import config
-from core.memory_risk import memory_verification_suffix
+from core.memory_risk import is_document_summary, memory_verification_suffix
 from core.temporal_context import memory_time_label, temporal_prompt_contract, turn_time_label
 from utils.date_utils import now
 
@@ -54,6 +54,27 @@ class RagContext:
     text: str
     ids: list[str]
     mode: str
+    # Provenance osservazionale dei soli nodi realmente inseriti nel prompt.
+    # `ids` resta invariato per compatibilità con l'Audit di Coerenza legacy:
+    # include soltanto il blocco results, mentre nodes distingue anche reflection,
+    # impegni e insight senza cambiare retrieval o risposta.
+    nodes: list[dict] = field(default_factory=list)
+
+
+def insight_requires_external_validation(insight: dict) -> bool:
+    """La convergenza interna fa emergere un insight, ma non lo valida nel mondo."""
+    external = insight.get("external_reaction") or {}
+    if external.get("verdict") != "CONFERMA":
+        return True
+    return (
+        bool(insight.get("requires_verification"))
+        or insight.get("verification_status") in {
+            "hypothesis_to_test",
+            "partially_refuted_by_user",
+            "internally_emergent",
+            "internally_convergent",
+        }
+    )
 
 
 def infer_context_mode(text: str, default: str = "chat") -> str:
@@ -87,7 +108,11 @@ def _format_recent_history(
             and observed_at - previous_at > getattr(config, "TEMPORAL_EPISODE_GAP_SECONDS", 1800)
         ):
             rows.append("- [nuovo segmento dopo una pausa]")
-        who = "Stefano" if role == "user" else "Euri" if role == "assistant" else str(role or "?")
+        who = (
+            config.OWNER_DISPLAY_NAME if role == "user"
+            else config.ASSISTANT_DISPLAY_NAME if role == "assistant"
+            else str(role or "?")
+        )
         rows.append(
             f"- [{turn_time_label(observed_at, reference_at)}] {who}: {content[:500]}"
         )
@@ -118,9 +143,12 @@ def build_rag_context(
     history_resolves_query = recent_context_query and bool(history_lines)
 
     reflection_lines: list[str] = []
+    reflection_docs: list[dict] = []
     if not history_resolves_query and not config.DEMO_MODE and (not search_mode or recent_context_query):
         for r in memory.get_recent_reflections(limit=2, touch=False):
-            reflection_lines.append(f"- [INTERPRETAZIONE DI EURI] {r['content']}")
+            assistant_label = config.ASSISTANT_DISPLAY_NAME.upper()
+            reflection_lines.append(f"- [INTERPRETAZIONE DI {assistant_label}] {r['content']}")
+            reflection_docs.append(r)
 
     if history_resolves_query:
         results = []
@@ -148,6 +176,7 @@ def build_rag_context(
         results = merged
         seen_ids = merged_seen
         reflection_lines = []
+        reflection_docs = []
 
     words = re.findall(
         r'\b[a-zA-ZàáâãäåèéêëìíîïòóôõöùúûüÀÁÂÃÄÅÈÉÊËÌÍÎÏÒÓÔÕÖÙÚÛÜ]{4,}\b',
@@ -173,6 +202,7 @@ def build_rag_context(
     # a domani). I pending sono pochi per natura → il blocco resta compatto e compare
     # solo quando l'agenda non è vuota; niente diluizione degli slot.
     commitment_lines: list[str] = []
+    commitment_docs: list[dict] = []
     commitment_ids: set = set()
     try:
         for t in memory.get_pending_todos()[:5]:
@@ -180,6 +210,7 @@ def build_rag_context(
             if tid in commitment_ids:
                 continue
             commitment_ids.add(tid)
+            commitment_docs.append(t)
             due = t.get("_due_at")
             state = "senza scadenza"
             if due:
@@ -197,18 +228,44 @@ def build_rag_context(
         logger.debug(f"RAG impegni aperti non disponibili: {e}")
 
     insight_lines: list[str] = []
+    insight_docs: list[dict] = []
     if keywords and not history_resolves_query:
         for ins in memory.search_insights(text, limit=2):
             dom_a = ins.get("domain_a", "?")
             dom_b = ins.get("domain_b", "?")
             ext = ins.get("external_reaction") or {}
-            tentative = (
-                bool(ins.get("requires_verification"))
-                or ins.get("verification_status") == "hypothesis_to_test"
-                or ext.get("verdict") == "DA_VALUTARE"
+            tentative = insight_requires_external_validation(ins)
+            marker = (
+                "[CONNESSIONE EMERSA INTERNAMENTE — DA VERIFICARE] "
+                if tentative else
+                "[CONNESSIONE CONFERMATA ESTERNAMENTE] "
             )
-            marker = "[IPOTESI DA VERIFICARE] " if tentative else ""
-            insight_lines.append(f"- {marker}[{dom_a} ↔ {dom_b}] {ins['content']}")
+            line = f"- {marker}[{dom_a} ↔ {dom_b}] {ins['content']}"
+            if ext.get("verdict") == "PARZIALE":
+                patch = ext.get("reaction_patch") or ins.get("reaction_patch") or {}
+                patch_parts = []
+                for field, label in (
+                    ("confirmed_claims", "confermato"),
+                    ("refuted_claims", "smentito"),
+                    ("replacement_claims", "sostituzione affermata"),
+                ):
+                    claims = [
+                        str(item.get("claim") or "").strip()
+                        for item in patch.get(field, [])
+                        if isinstance(item, dict) and item.get("claim")
+                    ]
+                    if claims:
+                        patch_parts.append(f"{label}: {'; '.join(claims)}")
+                correction = " | ".join(patch_parts)
+                if not correction:
+                    correction = str(ext.get("reaction") or "").strip()
+                if correction:
+                    line += (
+                        f"\n  [CORREZIONE PARZIALE DI {config.OWNER_DISPLAY_NAME.upper()}] "
+                        f"{correction[:1200]}"
+                    )
+            insight_lines.append(line)
+            insight_docs.append(ins)
 
     sections: list[str] = []
     if recent_context_query:
@@ -224,8 +281,9 @@ def build_rag_context(
     mem_cap = config.RAG_MEM_CAP_TEMPORAL if time_range else config.RAG_MEM_CAP
     if reflection_lines:
         sections.append(
-            "Interpretazioni recenti di Euri (sintesi o ipotesi interne, non fatti "
-            "attribuiti a Stefano):\n" + "\n".join(reflection_lines)
+            f"Interpretazioni recenti di {config.ASSISTANT_DISPLAY_NAME} "
+            f"(sintesi o ipotesi interne, non fatti attribuiti a "
+            f"{config.OWNER_DISPLAY_NAME}):\n" + "\n".join(reflection_lines)
         )
     if commitment_lines:
         sections.append(
@@ -248,6 +306,8 @@ def build_rag_context(
                 kind_label = "LEZIONE DI EURI DA FEEDBACK | "
             elif r.get("passive_support") == "tacit_acceptance":
                 kind_label = "VECCHIA IPOTESI DI EURI NON CONFERMATA | "
+            elif is_document_summary(r):
+                kind_label = "SINTESI DOCUMENTO | "
             else:
                 kind_label = ""
             label = (
@@ -260,18 +320,19 @@ def build_rag_context(
                 if kind == "conversation_anchor" else ""
             )
             episode_note = (
-                " [sintesi del dialogo: preserva il filo ma non usare le parole di Euri "
-                "come fatti di Stefano]"
+                f" [sintesi del dialogo: preserva il filo ma non usare le parole di "
+                f"{config.ASSISTANT_DISPLAY_NAME} come fatti di {config.OWNER_DISPLAY_NAME}]"
                 if kind == "conversation_episode" else ""
             )
             reaction_note = (
-                " [interpretazione operativa di Euri derivata da un feedback: non attribuire "
-                "questa formulazione a Stefano]"
+                f" [interpretazione operativa di {config.ASSISTANT_DISPLAY_NAME} derivata "
+                f"da un feedback: non attribuire questa formulazione a "
+                f"{config.OWNER_DISPLAY_NAME}]"
                 if kind == "reaction_lesson" or source == "reaction" else ""
             )
             tacit_note = (
                 " [derivata storicamente dalla mancata contestazione: non vale come "
-                "affermazione di Stefano]"
+                f"affermazione di {config.OWNER_DISPLAY_NAME}]"
                 if r.get("passive_support") == "tacit_acceptance" else ""
             )
             mem_lines.append(
@@ -281,12 +342,52 @@ def build_rag_context(
         if mem_lines:
             sections.append("Ricordi/note rilevanti:\n" + "\n".join(mem_lines))
     if insight_lines:
-        sections.append("Principi trasversali:\n" + "\n".join(insight_lines))
+        sections.append(
+            "Connessioni trasversali emerse (la convergenza interna non equivale a verità):\n"
+            + "\n".join(insight_lines)
+        )
 
     if results and not recent_history:
         sections.insert(0, "Regola cronologica interna:\n" + temporal_prompt_contract())
 
     ids = [r.get("id") for r in results[:mem_cap] if r.get("id")]
+    nodes: list[dict] = []
+    seen_nodes: set[tuple[str, str]] = set()
+
+    def _append_node(doc: dict, *, kind: str, path: str, position: int) -> None:
+        node_id = str(doc.get("id") or "").removeprefix("euri:memory:").removeprefix(
+            "euri:insight:"
+        )
+        content = str(doc.get("content") or "").strip()
+        key = (kind, node_id)
+        if not node_id or not content or key in seen_nodes:
+            return
+        seen_nodes.add(key)
+        nodes.append({
+            "kind": kind,
+            "id": node_id,
+            "content": content,
+            "position": position,
+            "retrieval_path": path,
+            "source": str(doc.get("source") or ""),
+            "domain": str(
+                doc.get("domain")
+                or doc.get("domain_a")
+                or ""
+            ),
+        })
+
+    for position, doc in enumerate(reflection_docs, 1):
+        _append_node(doc, kind="memory", path="recent_reflection", position=position)
+    for position, doc in enumerate(commitment_docs, 1):
+        _append_node(doc, kind="memory", path="open_commitment", position=position)
+    visible_results = [
+        doc for doc in results[:mem_cap] if doc.get("id") not in commitment_ids
+    ]
+    for position, doc in enumerate(visible_results, 1):
+        _append_node(doc, kind="memory", path="base_rag", position=position)
+    for position, doc in enumerate(insight_docs, 1):
+        _append_node(doc, kind="insight", path="insight_rag", position=position)
     if results:
         node_tags = [
             f"{r.get('source','?')}:{r.get('domain','?')}({r.get('id','')[:8]})"
@@ -294,4 +395,4 @@ def build_rag_context(
         ]
         logger.info(f"RAG ctx [{len(results)} nodi]: {' | '.join(node_tags)}")
 
-    return RagContext(text="\n\n".join(sections), ids=ids, mode=mode)
+    return RagContext(text="\n\n".join(sections), ids=ids, mode=mode, nodes=nodes)
