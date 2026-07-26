@@ -14,8 +14,10 @@ from core.retrieval_strategy import build_subject_recall
 class _FakeDreamEngine(DreamEngine):
     def __init__(self, content: str):
         self._content = content
+        self.calls = []
 
     def _ollama_chat(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
         return SimpleNamespace(message=SimpleNamespace(content=self._content))
 
 
@@ -44,6 +46,21 @@ class _FakeRedis:
 class _FakeMemory:
     def __init__(self, docs):
         self.r = _FakeRedis(docs)
+
+
+class _FakeComparisonMemory:
+    def __init__(self, *, duplicate: bool):
+        self.duplicate = duplicate
+        self.duplicate_checks = []
+        self.saved = []
+
+    def is_duplicate_memory(self, content, llm_probe_fn=None):
+        self.duplicate_checks.append((content, llm_probe_fn))
+        return self.duplicate
+
+    def save_memory(self, content, **kwargs):
+        self.saved.append((content, kwargs))
+        return "comparison-id"
 
 
 def test_same_subject_gate_excludes_unknown_fragments():
@@ -187,6 +204,56 @@ def test_loop2f_does_not_feed_on_comparisons_or_high_risk():
     assert DreamEngine._loop2f_source_allowed(watch_fact)
 
 
+def test_loop2f_comparison_is_descriptive_and_deduplicated():
+    duplicate_memory = _FakeComparisonMemory(duplicate=True)
+    duplicate_engine = _FakeDreamEngine(
+        "Il target è 1100 MPa; la misura è 1250 MPa."
+    )
+    duplicate_engine._memory_manager = duplicate_memory
+    duplicate_engine._r = None
+
+    duplicate_engine._make_comparison_memory(
+        "Target: modulo 1100 MPa, IZOD 4, allungamento >10%.",
+        "Misura UBQ: modulo 1250 MPa, IZOD 3,8, allungamento 9%.",
+        "chimica polimeri",
+        source_ids=["target", "measure"],
+        requires_verification=True,
+    )
+
+    generation_prompt = duplicate_engine.calls[0][1]["messages"][0]["content"]
+    assert "TARGET e un" in generation_prompt
+    assert "RISULTATO MISURATO" in generation_prompt
+    assert "NON raccomandare o preferire A/B" in generation_prompt
+    assert len(duplicate_memory.duplicate_checks) == 1
+    assert callable(duplicate_memory.duplicate_checks[0][1])
+    assert duplicate_memory.saved == []
+
+    new_memory = _FakeComparisonMemory(duplicate=False)
+    new_engine = _FakeDreamEngine(
+        "La voce A è il target; la voce B è la misura e supera il modulo "
+        "di 150 MPa, con IZOD e allungamento sotto il target."
+    )
+    new_engine._memory_manager = new_memory
+    new_engine._r = None
+
+    new_engine._make_comparison_memory(
+        "Target: modulo 1100 MPa, IZOD 4, allungamento >10%.",
+        "Misura UBQ: modulo 1250 MPa, IZOD 3,8, allungamento 9%.",
+        "chimica polimeri",
+        source_ids=["target", "measure"],
+        requires_verification=True,
+    )
+
+    assert len(new_memory.saved) == 1
+    saved_content, saved_kwargs = new_memory.saved[0]
+    assert saved_content.startswith("[confronto] La voce A è il target")
+    assert saved_kwargs["final_fields"]["source_memory_ids"] == [
+        "target",
+        "measure",
+    ]
+    assert saved_kwargs["final_fields"]["requires_verification"] is True
+
+
 if __name__ == "__main__":
     test_same_subject_gate_excludes_unknown_fragments()
     test_same_subject_gate_fails_closed_on_bad_output()
@@ -195,4 +262,5 @@ if __name__ == "__main__":
     test_subject_recall_demotes_risky_giada_consolidation()
     test_passive_fact_parser_marks_tacit_acceptance_as_weak()
     test_loop2f_does_not_feed_on_comparisons_or_high_risk()
+    test_loop2f_comparison_is_descriptive_and_deduplicated()
     print("test_giada_consolidation: OK")

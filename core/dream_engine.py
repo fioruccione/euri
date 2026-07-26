@@ -2575,23 +2575,31 @@ Rispondi SOLO con: CONTRADDIZIONE, CONFRONTO, o NESSUNA."""
         requires_verification: bool = False,
     ) -> None:
         """
-        Idea di Stefano (01/06): quando il Loop 2f trova entità DIVERSE ma simili
-        (due impianti, due clienti…), non sceglie un vincitore — genera una nota di
-        CONFRONTO operativa (cosa in comune, in cosa differiscono, quando preferire
-        l'una o l'altra). È meta-conoscenza, NON un fatto grezzo: resta fuori dal
-        Loop 2f tramite prefisso [confronto], ma eredita la fragilità epistemica dei
-        parent se nasce da memorie già `requires_verification`.
+        Idea di Stefano (01/06): quando due fatti sono confrontabili ma non in
+        contraddizione, non sceglie un vincitore. Genera una nota descrittiva che
+        distingue anche target, misura, stato temporale e vere alternative.
+        È meta-conoscenza, NON un fatto grezzo: resta fuori dal Loop 2f tramite
+        prefisso [confronto] e eredita la fragilità epistemica dei parent.
         """
         if not self._memory_manager:
             return
         prompt = f"""\
-Due voci di memoria descrivono entità DIVERSE ma confrontabili:
+Due voci di memoria sono confrontabili ma NON rappresentano necessariamente
+due alternative. Possono descrivere entità diverse, oppure un TARGET e un
+RISULTATO MISURATO, due momenti dello stesso progetto o due condizioni di prova.
 
 A: "{content_a[:500]}"
 B: "{content_b[:500]}"
 
-Scrivi un breve CONFRONTO operativo (2-4 frasi): cosa hanno in comune, in cosa
-DIFFERISCONO concretamente (valori/limiti), e quando conviene l'una rispetto all'altra.
+Scrivi un breve CONFRONTO DESCRITTIVO (2-4 frasi):
+1. identifica prudentemente il ruolo delle due voci (target, misura, stato,
+   alternativa o entità distinta);
+2. indica cosa hanno in comune e in cosa differiscono nei soli valori presenti;
+3. se una voce è un target e l'altra una misura, descrivi soltanto lo scostamento.
+
+NON raccomandare o preferire A/B, salvo che le fonti dicano esplicitamente che
+sono alternative e forniscano già il criterio di scelta. NON trasformare un
+target in un risultato osservato e non dedurre prestazioni applicative.
 Non inventare dati non presenti nelle due voci.
 Se una fonte e' incerta o richiede verifica, NON usare parole come "validato",
 "definitivo", "certo" o "pronto all'uso" a meno che siano scritte esplicitamente
@@ -2613,6 +2621,23 @@ Rispondi solo col confronto."""
                            flags=_re.DOTALL).strip()
             if not text:
                 return
+            comparison_content = f"[confronto] {text}"
+            try:
+                if self._memory_manager.is_duplicate_memory(
+                    comparison_content,
+                    llm_probe_fn=self._loop2f_comparison_duplicate_probe,
+                ):
+                    logger.info(
+                        "Loop 2f: confronto equivalente già presente "
+                        "— nuova nota non salvata"
+                    )
+                    return
+            except Exception as exc:
+                # Fail-open conservativo: un doppione è rumore recuperabile,
+                # perdere una relazione nuova non lo è.
+                logger.debug(
+                    f"Loop 2f: dedup confronto non disponibile — {exc}"
+                )
             comparison_fields = {
                 "requires_verification": bool(requires_verification),
             }
@@ -2625,7 +2650,7 @@ Rispondi solo col confronto."""
                     "source_ids": list(dict.fromkeys(source_ids or [])),
                 }
             mid = self._memory_manager.save_memory(
-                f"[confronto] {text}", category="conoscenza", source="reflection",
+                comparison_content, category="conoscenza", source="reflection",
                 tags=["confronto", "loop2f", domain],
                 final_fields=comparison_fields,
             )
@@ -2634,6 +2659,17 @@ Rispondi solo col confronto."""
                 logger.info(f"Loop 2f: nota di confronto generata {mid[:8]}… (dominio: {domain})")
         except Exception as e:
             logger.debug(f"Loop 2f: errore _make_comparison_memory — {e}")
+
+    def _loop2f_comparison_duplicate_probe(self, prompt: str) -> str:
+        """Giudice stretto per il dedup delle sole note di confronto."""
+        response = self._ollama_chat(
+            model=config.DREAM_OLLAMA_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0, "num_predict": 12},
+            think=False,
+            _timeout=60,
+        )
+        return (response.message.content or "").strip()
 
     def _contradiction_resolution_pass(self):
         """

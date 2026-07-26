@@ -19,15 +19,32 @@
   diverse, l'arco viene invertito in modo tracciato e reversibile. `RELATED`
   genera inoltre un Pulse che esplicita somiglianze e differenze, invece di
   fondere materiali o progetti distinti.
+- Primo ciclo live post-fix: una vecchia self-observation contaminata aveva
+  alimentato una nuova reflection Altosele/UBQ. Le reflection prodotte dal Loop
+  2h non possono più essere estremi di un'altra self-observation; anche gli
+  status `rejected_cross_entity_evolution` e `cross_entity_conflation` vengono
+  esclusi prima del giudizio LLM. La narrativa non può diventare prova di se
+  stessa.
+- Le note del Loop 2f distinguono ora target, misura, stato temporale, entità
+  diversa e vera alternativa. Il prompt vieta raccomandazioni se le fonti non
+  dichiarano esplicitamente alternative e criterio di scelta; un dedup
+  semantico conserva una sola nota equivalente.
 - Bonifica del campione live: due promozioni con ponte `HYPOTHESIS` sono state
   riclassificate come ipotesi, una promozione priva di misura è tornata
   candidate; la reflection che costruiva una traiettoria `Altosele 720 → UBQ
   1250 MPa` è stata soft-esclusa e la memoria Altosele originale ripristinata.
   Copie Redis recuperabili vengono conservate per 30 giorni.
+- Bonifica del primo ciclo post-fix: la reflection ricorsiva `659b46c4` e il
+  confronto duplicato/prescrittivo `76daa5aa` sono stati soft-esclusi; la
+  reflection `e52ce33d`, nascosta per effetto collaterale dal dedup, è stata
+  ripristinata. Quattro copie Redis aggiuntive restano recuperabili per 30
+  giorni e le coppie ricorsive sono marcate `non_evolution`.
 - Aggiunte regressioni per promozione sostenuta, ipotesi convergente, misura
   mancante, premesse infedeli, confronto semantico, inversione della
   supersessione e identità incerta. Stabilizzato inoltre un test dell'indice
   Loop 2e che usava timestamp assoluti ormai usciti dalla finestra mobile.
+  Il caso live aggiunge regressioni anti-ricorsione, anti-conflazione e
+  deduplicazione dei confronti.
 
 ## 2026-07-25 — Estrazione passiva atomica a finestre
 

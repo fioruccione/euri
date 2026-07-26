@@ -13,6 +13,15 @@
   RELATED ripristina entrambe le memorie, annota l'inversione reversibile del
   vecchio arco e dichiara sul Pulse la somiglianza senza creare identità.
   Nessuna regex o lista di materiali decide la relazione.
+- Primo ciclo live post-fix: la reflection `24658252`, già contaminata, è stata
+  collegata tecnicamente alla memoria UBQ e il Loop 2h l'ha narrata di nuovo
+  come evoluzione `659b46c4`. Fix: gli output `loop2h/self_observation`, gli
+  estremi `rejected_cross_entity_evolution` e quelli
+  `cross_entity_conflation` sono ora esclusi prima della classificazione.
+- Loop 2f ora tratta esplicitamente target vs misura e vieta preferenze
+  applicative non presenti nelle fonti. Prima di salvare una nota esegue il
+  dedup conservativo di `MemoryManager`: errore = conserva, soltanto
+  `DUPLICATO` esplicito scarta.
 - Verifica finale: compilazione e diff-check puliti, inventario 59 file e
   manifest unitario 49/49. Il primo passaggio aveva esposto un timestamp
   assoluto marcescente in `test_correction_quarantine.py`, sostituito con un
@@ -21,6 +30,10 @@
   `b65a0443` e `6607bf50` retrocessi a `hypothesis`, `06eb49eb` a `candidate`;
   reflection `24658252` soft-esclusa come conflazione Altosele/UBQ e memoria
   Altosele `71506a02` resa nuovamente visibile con audit dell'arco invertito.
+- Bonifica Redis del ciclo successivo: `659b46c4` quarantinata,
+  `76daa5aa` superseded dal confronto più prudente `db4ba057`, reflection
+  `e52ce33d` ripristinata dopo il falso dedup; quattro backup `postcycle`
+  conservati per 30 giorni e coppie ricorsive aggiunte a `non_evolution`.
 - Estrazione passiva atomica a finestre completata il 25 luglio: finestre 12/4,
   parlanti dinamici, ID locali rimappati, parser controllato `TURNI`/`TURNOS`,
   fonti invalide differite all'audit e chiusura anaforica deterministica. Replica

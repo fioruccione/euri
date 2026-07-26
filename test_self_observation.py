@@ -230,6 +230,41 @@ def test_failed_reversal_does_not_consume_relation():
     assert redis.streams == []
 
 
+def test_loop2h_reflection_cannot_feed_self_observation_again():
+    observation, redis, memory = _observation()
+    redis.docs["euri:memory:loser"].update({
+        "source": "reflection",
+        "tags": ["self_observation", "loop2h", "evolution"],
+        "self_observation_pairs": [{
+            "loser_id": "older",
+            "winner_id": "newer",
+        }],
+    })
+
+    result = observation.run()
+
+    assert result == {"pairs_found": 0, "reflection_id": None}
+    assert memory.calls == []
+    assert redis.narrated == set()
+    assert redis.streams == []
+
+
+def test_rejected_cross_entity_evolution_is_not_renarrated():
+    observation, redis, memory = _observation()
+    redis.docs["euri:memory:loser"].update({
+        "source": "passive",
+        "verification_status": "rejected_cross_entity_evolution",
+        "epistemic_status": "cross_entity_conflation",
+    })
+
+    result = observation.run()
+
+    assert result == {"pairs_found": 0, "reflection_id": None}
+    assert memory.calls == []
+    assert redis.narrated == set()
+    assert redis.streams == []
+
+
 if __name__ == "__main__":
     test_scan_duplicates_produce_one_causal_pair()
     test_failed_or_stale_publication_does_not_consume_pairs()
@@ -238,4 +273,6 @@ if __name__ == "__main__":
     test_different_entities_are_not_narrated_or_emitted()
     test_unknown_identity_is_fail_closed_but_retriable()
     test_failed_reversal_does_not_consume_relation()
-    print("test_self_observation: 7/7 OK")
+    test_loop2h_reflection_cannot_feed_self_observation_again()
+    test_rejected_cross_entity_evolution_is_not_renarrated()
+    print("test_self_observation: 9/9 OK")

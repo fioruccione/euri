@@ -11,8 +11,10 @@ Prima di narrarle distingue semanticamente identità e somiglianza:
 
 Coerente con paper §7h (autoconsapevolezza in atto) e §7i (tempo asimmetrico):
 la traiettoria del pensiero diventa esplicita invece che nascosta dal
-soft-delete. Il Loop 2f continua a fare il suo lavoro (rimuovere dal
-retrieval); il Loop 2h aggiunge la voce: «ecco come sto cambiando idea».
+soft-delete. Il Loop 2f propone l'arco; il Loop 2h lo racconta soltanto se gli
+estremi sono fatti primari ammissibili. Le reflection già generate dal Loop 2h
+non possono alimentare nuove self-observation: la narrativa non diventa prova
+di se stessa.
 
 La classificazione è affidata al modello locale con un contratto JSON
 domain-agnostic: nessuna lista di progetti o regex decide l'identità.
@@ -183,6 +185,15 @@ class SelfObservation:
                 loser_id = loser.get("id")
                 if not loser_id:
                     continue
+                loser_rejection = self._evolution_endpoint_rejection_reason(
+                    loser
+                )
+                if loser_rejection:
+                    logger.debug(
+                        "Loop 2h: estremo loser escluso "
+                        f"({loser_rejection}) — {loser_id[:8]}"
+                    )
+                    continue
 
                 pair_key = "|".join(sorted([loser_id, winner_id]))
                 # Redis SCAN può restituire la stessa chiave più volte durante
@@ -198,6 +209,15 @@ class SelfObservation:
                 if not w_raw:
                     continue
                 winner = w_raw[0]
+                winner_rejection = self._evolution_endpoint_rejection_reason(
+                    winner
+                )
+                if winner_rejection:
+                    logger.debug(
+                        "Loop 2h: estremo winner escluso "
+                        f"({winner_rejection}) — {str(winner_id)[:8]}"
+                    )
+                    continue
 
                 pairs.append({
                     "loser": loser,
@@ -209,6 +229,41 @@ class SelfObservation:
                 logger.debug(f"Loop 2h: skip {key} — {e}")
                 continue
         return pairs
+
+    @staticmethod
+    def _evolution_endpoint_rejection_reason(doc: dict) -> str | None:
+        """Blocca input derivati o già giudicati contaminati.
+
+        Una self-observation è una narrativa derivata: può essere recuperata in
+        conversazione, ma non deve diventare premessa di un'altra
+        self-observation. Questo evita ricorsioni in cui una vecchia conflazione
+        viene riscritta con tono sempre più plausibile.
+        """
+        if not doc:
+            return "missing_document"
+
+        verification = str(doc.get("verification_status") or "").casefold()
+        epistemic = str(doc.get("epistemic_status") or "").casefold()
+        if verification == "rejected_cross_entity_evolution":
+            return "rejected_cross_entity_evolution"
+        if epistemic == "cross_entity_conflation":
+            return "cross_entity_conflation"
+
+        tags = doc.get("tags") or []
+        if isinstance(tags, str):
+            tags = [tags]
+        tagset = {str(tag).casefold() for tag in tags}
+        is_loop2h_reflection = (
+            doc.get("source") == "reflection"
+            and (
+                "loop2h" in tagset
+                or "self_observation" in tagset
+                or bool(doc.get("self_observation_pairs"))
+            )
+        )
+        if is_loop2h_reflection:
+            return "recursive_self_observation"
+        return None
 
     def _classify_pair_relation(self, pair: dict) -> tuple[str, str]:
         """Giudizio semantico SAME/RELATED/DIFFERENT, senza euristiche nominali.

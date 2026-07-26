@@ -80,7 +80,10 @@ Quando non gli parli per un po', Euri entra in cicli cognitivi offline. Non è p
   superata non viene cancellata, ma esclusa dal retrieval in modo reversibile.
   Le coppie già analizzate restano tracciate per 180 giorni; massimo 15 per
   ciclo. Le fonti web sono escluse, mentre i nodi consolidati Loop 2e possono
-  essere corretti.
+  essere corretti. Le note distinguono target, risultato misurato, stato
+  temporale e vera alternativa: non possono raccomandare una voce se le fonti
+  non dichiarano già alternative e criterio di scelta. Prima del salvataggio,
+  un dedup semantico elimina soltanto confronti esplicitamente equivalenti.
 - **Loop 2g — Audit di Coerenza (V2.14):** chiude il loop tra le correzioni che
   Stefano fa durante la conversazione e la manutenzione della memoria in idle.
   Voice daemon e Silent Chat usano regex soltanto per **rilevare che l'utente
@@ -99,7 +102,9 @@ Quando non gli parli per un po', Euri entra in cicli cognitivi offline. Non è p
   diverso”; `DIFFERENT` ripristina le entità senza inventare un ponte;
   `UNKNOWN` non modifica nulla e lascia la coppia ritentabile. Oggi Euri
   **rileva e registra** queste analogie: il Pulse non le trasforma ancora in
-  relazioni durevoli recuperabili dal RAG.
+  relazioni durevoli recuperabili dal RAG. Una reflection già prodotta dal Loop
+  2h, oppure marcata come conflazione tra entità, non può alimentare una nuova
+  self-observation: la narrativa non diventa prova di se stessa.
 - I gate semantici aggiungono chiamate al modello locale durante la manutenzione:
   cicli più lenti, meno insight promossi e più astensioni sono un costo atteso
   della maggiore integrità, non una regressione.
