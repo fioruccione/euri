@@ -256,9 +256,9 @@ DREAM_CREATIVE_CYCLE_INTERVAL_S = 90 * 60    # nuovo sogno cross-domain + promoz
 DREAM_MAINTENANCE_CYCLE_INTERVAL_S = 24 * 3600  # 2f/2h/cleanup/pruning/2e
 DREAM_INSIGHT_MIN_CONVERGENCES = 3   # era 2 — soglia alzata per ridurre promozioni facili
 # Instrumentazione ADDITIVA: logga la convergenza-al-momento-della-decisione su
-# euri:convergence:trace (ogni esito: promoted/denied_format/denied_repromotion/below_threshold),
+# euri:convergence:trace (promoted/hypothesis_formed/denied_*/below_threshold),
 # per correlarla OFFLINE col recall futuro — misura convergenza↔uso su dati NON selezionati.
-# Non altera nessuna promozione. Read-only sulla decisione. Vedi analisi diag_convergence_*.
+# Registra la decisione della policy senza modificarla. Vedi analisi diag_convergence_*.
 CONVERGENCE_TRACE_ENABLED = True
 # Policy v2 (15/07/2026): la distanza vettoriale seleziona soltanto le coppie da
 # confrontare. Nessun vicino, neppure a distanza zero, conta come convergenza senza
@@ -283,21 +283,20 @@ DREAM_TRACE_TTL_S = 48 * 3600  # residuo stantio dopo 2 giorni di fermo → scad
 # gate finche' non si congelano 50 coppie.
 DREAM_TRACE_PAIRED_ENABLED = True
 DREAM_TRACE_PAIRED_VERSION = "dream_trace_paired_v2"
-# Risveglio lucido — FASE MISURA (14/07): fedeltà-di-premessa dei candidate rispetto alle
-# memorie sorgente (source_memory_ids): il sogno ha detto la verità sulle proprie fonti?
-# ADDITIVA: nessuna decisione di promozione cambiata; punteggio calcolato UNA volta per
-# candidate (cacheato sul doc) e loggato nella convergence trace, da correlare OFFLINE
-# coi verdetti external_reaction di Stefano. Diventa gate SOLO se separa i suoi SÌ dai
-# NO — e comunque dopo la fine dell'esperimento dream_trace.
+# Risveglio lucido — fedeltà-di-premessa dei candidate rispetto alle memorie
+# sorgente (source_memory_ids): il sogno ha detto la verità sulle proprie fonti?
+# Il punteggio viene calcolato UNA volta per candidate e cacheato sul documento.
 PREMISE_FIDELITY_ENABLED = True
 PREMISE_FIDELITY_BUDGET = 5  # max valutazioni LLM per ciclo leggero (ammortizza il backfill)
-# Qualita' del ponte — FASE MISURA (17/07): distingue una deduzione sostenuta dalle
-# fonti da un'ipotesi utile ma incompleta o da una connessione forzata. Soltanto i
-# candidate creati dopo l'introduzione della misura sono eleggibili: niente costoso
-# backfill del pool storico. Il risultato e' osservativo e NON modifica la promozione.
+# Qualita' del ponte: distingue una deduzione sostenuta dalle fonti da un'ipotesi
+# utile ma incompleta o da una connessione forzata. Dal 26/07 le due misure sono
+# un gate fail-closed: SUPPORTED puo' essere promosso; HYPOTHESIS diventa uno stato
+# intermedio non iniettato nel RAG; FORCED/UNKNOWN/non misurato resta candidate.
 BRIDGE_VALIDITY_ENABLED = True
 BRIDGE_VALIDITY_BUDGET = 3
-BRIDGE_VALIDITY_POLICY_VERSION = "bridge_observer_v1"
+BRIDGE_VALIDITY_POLICY_VERSION = "bridge_promotion_gate_v2"
+INSIGHT_PROMOTION_QUALITY_GATE_ENABLED = True
+INSIGHT_PROMOTION_POLICY_VERSION = "fidelity_bridge_fail_closed_v1"
 INSIGHT_TTL_DAYS = 30
 INSIGHT_DEMOTE_DAYS = 14  # PROMOTED non richiamato entro X giorni → torna CANDIDATE
 

@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-07-26 — Identità, analogia e promozione epistemica
+
+- La convergenza di tre sogni non promuove più automaticamente un insight.
+  La promozione è fail-closed: richiede premesse completamente fedeli e un
+  ponte `SUPPORTED`; valutazioni mancanti, infedeli o `FORCED` restano candidate.
+- Un ponte `HYPOTHESIS` entra nel nuovo stato intermedio `hypothesis`: viene
+  dichiarato sul Pulse e conservato per audit, ma resta fuori dal RAG e dagli
+  insight promossi in Obsidian. Anche le ipotesi trasversali del Loop 2i seguono
+  questa separazione.
+- `source_memory_ids` conserva soltanto le premesse dirette del testo. Le fonti
+  degli insight simili assorbiti sono registrate separatamente in
+  `convergence_source_memory_ids`, evitando provenienze cumulative inquinate.
+- Il Loop 2h usa un giudizio semantico locale `SAME/RELATED/DIFFERENT/UNKNOWN`,
+  senza regex o liste di progetti: solo `SAME` può diventare autobiografia di
+  evoluzione.
+- Se due memorie erroneamente collegate da `superseded_by` risultano entità
+  diverse, l'arco viene invertito in modo tracciato e reversibile. `RELATED`
+  genera inoltre un Pulse che esplicita somiglianze e differenze, invece di
+  fondere materiali o progetti distinti.
+- Bonifica del campione live: due promozioni con ponte `HYPOTHESIS` sono state
+  riclassificate come ipotesi, una promozione priva di misura è tornata
+  candidate; la reflection che costruiva una traiettoria `Altosele 720 → UBQ
+  1250 MPa` è stata soft-esclusa e la memoria Altosele originale ripristinata.
+  Copie Redis recuperabili vengono conservate per 30 giorni.
+- Aggiunte regressioni per promozione sostenuta, ipotesi convergente, misura
+  mancante, premesse infedeli, confronto semantico, inversione della
+  supersessione e identità incerta. Stabilizzato inoltre un test dell'indice
+  Loop 2e che usava timestamp assoluti ormai usciti dalla finestra mobile.
+
 ## 2026-07-25 — Estrazione passiva atomica a finestre
 
 - Le sessioni lunghe vengono analizzate in finestre da 12 messaggi con overlap

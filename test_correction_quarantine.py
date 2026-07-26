@@ -2,6 +2,7 @@
 """Regression per quarantena immediata delle correzioni nello stesso contesto."""
 
 import sys
+import time
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -403,8 +404,10 @@ def test_settle_reindexes_loop2e_when_memory_becomes_candidate_again():
             "correction_pending_prev_requires_verification": False,
             "audit_flag": 0,
             "recalled_count": 3,
-            "last_recalled_at": 1782390000.0,
-            "created_at": 1782380000.0,
+            # Deve restare nella finestra mobile di attenzione anche quando il
+            # calendario avanza: timestamp assoluti rendevano il test marcescente.
+            "last_recalled_at": time.time() - 3600,
+            "created_at": time.time() - 7200,
             "embedding": [0.1, 0.2],
             "memory_axes": {"subject_status": "explicit"},
         }

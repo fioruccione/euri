@@ -20,6 +20,10 @@ Nessun modello di linguaggio, da solo, fa questo. Euri lo fa perché sotto non c
 
 ## Architettura Cognitiva (V2.20)
 
+> **Principio di separazione:** Euri può collegare due esperienze senza
+> confonderle. La somiglianza crea una relazione; solo l'identità autorizza
+> aggiornamento, consolidamento o supersessione.
+
 ### 1. Intent Classification — Pipeline a Due Layer
 La classificazione dell'intent è a cascata: il layer veloce esaurisce la maggior parte dei casi, il layer lento interviene solo quando necessario.
 
@@ -53,12 +57,52 @@ Quando non gli parli per un po', Euri entra in cicli cognitivi offline. Non è p
 - **Loop 2b** — Chiede a **Qwen3.6 35B** (*thinking attivo*, modello dedicato) di cercare isomorfismi strutturali tra i due concetti usando un processo in 3 passi: astrazione logica → ricerca della dinamica condivisa → formulazione del principio generale. Qwen3.6 è separato da Gemma4: più lento ma con ragionamento astratto superiore, usato nei cicli offline senza vincoli di latenza realtime.
 - **dream_trace (esperimento concluso nella raccolta, flag spento):** tra un ciclo creativo e il successivo sopravviveva un **residuo di esplorazione** distillato dal chain-of-thought del sogno appena concluso — max 5 righe, a livello di *strategia* ("che tipo di ponte ho provato e perché era debole"), mai contenuti né conclusioni. Raccolta congelata il 21/07 a 160 baseline / 74 trattamento validi; resta da compilare e aprire l'audit cieco descritto in `ESPERIMENTO_DREAM_TRACE.md`.
 - Se l'analogia è forte, genera un **CANDIDATE Insight**.
-- **Loop 2c** — La promozione CANDIDATE→PROMOTED usa un sistema a due livelli: distanza cosine vettoriale (fast path) + **LLM judge con thinking** per la zona grigia (score 0.15–0.40). Il judge valuta se due insight formulati diversamente esprimono lo stesso principio strutturale profondo — un giudizio che il solo vettore cosine non può dare.
-- Se abbastanza sogni indipendenti convergono, l'insight viene **PROMOSSO** e scritto permanentemente in Obsidian.
+- **Loop 2c** — La convergenza usa la distanza cosine soltanto come shortlist e un
+  **LLM judge con thinking** per stabilire se due insight esprimono davvero lo
+  stesso meccanismo. La convergenza da sola non basta più: le due premesse devono
+  essere fedeli alle memorie sorgente e il ponte deve essere semanticamente
+  `SUPPORTED`.
+- Se il ponte è plausibile ma introduce una premessa nuova, nasce uno stato
+  intermedio `hypothesis`: Euri lo dichiara sul Pulse, lo conserva
+  temporaneamente per audit ma non lo inietta nel RAG e non lo scrive tra gli
+  insight promossi. `FORCED`, `UNKNOWN` e misure mancanti sono fail-closed.
+  Solo gli insight sostenuti diventano **PROMOTED**, entrano nel recupero e
+  vengono scritti in Obsidian. `PROMOTED` significa però *sostenuto
+  internamente e recuperabile*, non *vero nel mondo*: senza una conferma esterna
+  l'insight conserva `requires_verification=True`.
 - **Loop 2e — Memory Consolidation:** una volta ogni 24h, Euri raggruppa le memorie episodiche più richiamate (recalled_count ≥ 3) per dominio, individua i cluster semanticamente coerenti via KNN, **pre-filtra i candidati con un indice leggero ordinato per salienza in Redis ZSET** e poi **filtra i frammenti di soggetto diverso con il same-subject gate** (V2.19 — anti-conflazione, vedi changelog 08/06) prima di chiedere a Qwen3.6 di sintetizzare i soli frammenti coerenti in un unico nodo di conoscenza stabile. Il nodo consolidato preserva tutti i dati specifici (numeri, nomi, misure) eliminando la ridondanza episodica. Ogni cluster viene marcato con fingerprint per evitare ri-consolidazioni. Ispirato al consolidamento ippocampale durante il sonno REM: i frammenti episodici diventano conoscenza semantica a lungo termine. Max 3 consolidazioni per ciclo.
-- **Loop 2f — Contradiction Resolution:** nel ciclo manutentivo, Euri cerca coppie di memorie `requires_verification=True` (contenenti valori numerici o fattuali) con similarità cosine > 0.72 all'interno dello stesso dominio. Per ogni coppia, `_llm_check_contradiction` chiede a Qwen3.6 se i due contenuti esprimono un conflitto fattuale reale sullo stesso soggetto (es. "MFI=6" vs "MFI=4"). In caso di conflitto confermato, la memoria più vecchia riceve il tag `superseded_by = [UUID_vincitore]` — **soft-delete**: non viene mai cancellata (audit trail preservato), ma viene esclusa silenziosamente da tutti i path di retrieval (`_hydrate`, `_search_semantic`, `domain_aware_search`). Le coppie già analizzate vengono tracciate in un set Redis con TTL 180 giorni. Max 15 coppie per ciclo. `SKIP_SOURCES = {"web"}` — i nodi consolidati `loop2e` sono **inclusi** (V2.13): entrano nel RAG con priorità alta e devono poter essere corretti, il soft-delete rende il rischio reversibile. **Aggiornamento V2.19:** `_llm_check_contradiction` è diventato `_llm_classify_pair` a 3 vie — *contraddizione* (stesso soggetto → supersede), *confronto* (entità DIVERSE ma confrontabili, es. due impianti → genera una **nota di confronto** operativa con `requires_verification=False` invece di cancellare), *nessuna*. Le schede sorelle (ICMA1/ICMA2, Italrek/Gamma) non si cannibalizzano più: le differenze diventano conoscenza, non un soft-delete.
-- **Loop 2g — Audit di Coerenza (V2.14):** chiude il loop tra le correzioni che Stefano fa durante la conversazione e la manutenzione della memoria in idle. **Capture:** sia il voice daemon (`_handle_chat`) che la Silent Chat intercettano via regex le correzioni utente ("hai fatto confusione", "stai miscelando", "non era X ma Y", "ti sbagli", …) e salvano un `correction_signal` JSON in Redis (`euri:correction:{uuid}`, TTL 30gg) con prompt originale, risposta sbagliata di Euri, correzione dell'utente e — soprattutto — gli ID delle memorie iniettate nel turno errato (tracciate in continuo tramite `euri:last_rag_ctx`, TTL 1h, condiviso tra canali). **Classify:** durante il ciclo leggero in idle `_audit_corrections_pass()` chiama il dream model per classificare ogni signal come `bad_memory` (l'errore deriva da memoria iniettata sbagliata), `bad_reasoning` (memorie OK, errore di ragionamento) o `ambiguous`. **Act:** su `bad_memory` incrementa `audit_flag` sulle memorie sospette del RAG ctx (soft signal, niente azioni distruttive automatiche); su `bad_reasoning` salva la correzione come `lesson` (passive memory) — nutrimento per il futuro retrieval; su `ambiguous` nessuna azione. Test end-to-end via `force_full_cycle.py --inject` con correction signal sintetico → classificato correttamente come `bad_reasoning` in 12.8s.
-- **Loop 2h — Self-Observation (V2.17):** complementa il Loop 2f. Mentre 2f *nasconde* le contraddizioni risolte via `superseded_by`, 2h le *racconta* in prima persona come traiettoria di pensiero. Nel ciclo manutentivo legge le coppie superseded mai narrate prima (tracciate in `euri:loop2h:narrated`, set Redis TTL 365gg), le raggruppa per dominio, e chiede a Qwen3.6 di produrre una breve riflessione narrativa (max 200 parole) che presenta le evoluzioni come *cambio di opinione / precisazione / cambio di contesto operativo*. La reflection viene salvata come memoria `source=reflection, category=meta, tags=[self_observation, loop2h, evolution]` — entra nel canale conversazionale ordinario e diventa richiamabile alla domanda *"come ti vedi cambiare?"*. Additivo: NON modifica 2f, NON cambia retrieval, NON agisce. Cap 10 coppie/ciclo. Prima esecuzione ecologica 27/05/2026: 10 coppie superseded → reflection in 81s → richiamata nel RAG context 3 minuti dopo durante una conversazione vocale, parafrasata da Euri come autobiografia operativa (*"il mio pensiero non si corregge, si espande... pensare significa aggiornare, e aggiornare significa vivere nel tempo reale"*). Qwen distingue **autonomamente** le tre categorie senza schema imposto — la classificazione `error/evolution/context` formale del Loop 2f esteso (futura V2) potrà appoggiarsi sullo stesso LLM judge.
+- **Loop 2f — Contradiction Resolution:** nel ciclo manutentivo, Euri cerca
+  coppie di memorie fattuali vicine nello stesso dominio e usa
+  `_llm_classify_pair` come prima barriera semantica. Il suo vocabolario
+  operativo corrisponde a: `SAME` con valori incompatibili → contraddizione e
+  `superseded_by`; `RELATED` → entità distinte, nessun soft-delete e nota di
+  confronto; `DIFFERENT` o giudizio non risolto → nessuna modifica. La memoria
+  superata non viene cancellata, ma esclusa dal retrieval in modo reversibile.
+  Le coppie già analizzate restano tracciate per 180 giorni; massimo 15 per
+  ciclo. Le fonti web sono escluse, mentre i nodi consolidati Loop 2e possono
+  essere corretti.
+- **Loop 2g — Audit di Coerenza (V2.14):** chiude il loop tra le correzioni che
+  Stefano fa durante la conversazione e la manutenzione della memoria in idle.
+  Voice daemon e Silent Chat usano regex soltanto per **rilevare che l'utente
+  sta segnalando una possibile correzione** e salvare il relativo
+  `correction_signal`; le regex non stabiliscono mai l'identità di materiali,
+  progetti o persone. Il dream model distingue poi `bad_memory`,
+  `bad_reasoning`, `ambiguous` e falsi segnali. Su `bad_memory` incrementa
+  `audit_flag` sulle memorie sospette; su `bad_reasoning` salva una `lesson`;
+  negli altri casi non modifica la conoscenza.
+- **Loop 2h — Self-Observation:** prima di raccontare una supersessione distingue
+  semanticamente **identità** e **somiglianza**, senza liste di progetti o regex
+  decisionali. È la seconda barriera, dopo il Loop 2f: `SAME` consente la
+  reflection di evoluzione; `RELATED` ripristina le due memorie distinte,
+  inverte in due fasi e con audit il vecchio `superseded_by`, quindi pubblica
+  sul Pulse una nota prudente del tipo “X assomiglia a Y per…, ma resta
+  diverso”; `DIFFERENT` ripristina le entità senza inventare un ponte;
+  `UNKNOWN` non modifica nulla e lascia la coppia ritentabile. Oggi Euri
+  **rileva e registra** queste analogie: il Pulse non le trasforma ancora in
+  relazioni durevoli recuperabili dal RAG.
+- I gate semantici aggiungono chiamate al modello locale durante la manutenzione:
+  cicli più lenti, meno insight promossi e più astensioni sono un costo atteso
+  della maggiore integrità, non una regressione.
 - **Filtro del Risveglio (re-rank insight in retrieval):** complementare al Dream Engine. Il sogno (Loop 2b) resta libero e atemporale per design — il filtro di rilevanza opera solo al recupero conversazionale. `search_insights` applica una penalty moltiplicativa (×1.5 default) sulla cosine distance per gli insight i cui due domini non sono apparsi nelle memorie *curate* di Stefano (`teach/user/reflection`) negli ultimi 30 giorni. Non sopprime: deprioritizza. Se domani Stefano riapre un dominio archivio, l'insight risale automaticamente. `passive` e `conversation` escluse dal set `INSIGHT_ACTIVE_SOURCES` perché spugne ambient — dry-run aveva mostrato 0% archivio con tutti i source operativi (no-op). Con `teach/user/reflection` → 35% archivio sui 95 insight promossi, caso "Radio QUQU ↔ materiali" correttamente penalizzato. Cache `_active_domains` 5 min.
 
 - **Propagazione di provenienza (V2.20, invariante A):** ogni ciclo, dopo 2f/2e, `_provenance_propagation_pass` ricalcola **dal vivo** la solidità delle fonti di ogni nodo consolidato (`consolidated_from`). Un nodo le cui fonti sono state superseded/contraddette/cancellate viene marcato `provenance_stale` (**down-rank** nel retrieval: demozione, non esclusione → fail-safe) + `requires_verification` (Euri si copre, *"da confermare"*). Si auto-guarisce se le fonti rientrano. Chiude il buco per cui una correzione a una memoria-foglia poteva essere **silenziosamente disfatta** da un nodo consolidato che l'aveva già assorbita: le correzioni ora si **propagano** lungo gli edge di provenienza, invece di fermarsi alla foglia. Audit read-only in `diag_provenance.py`.
@@ -69,6 +113,13 @@ Quando non gli parli per un po', Euri entra in cicli cognitivi offline. Non è p
 
 ### Euri Pulse — Bus Afferente + Iniziativa
 Euri ha già dei *sensi* — presenza (VisualGate), file del Vault, orologio dei reminder, e l'**interocezione** dei propri loop (sogni, insight, consolidamenti) — ma finora ognuno era un arco riflesso privato: sentiva *e reagiva* nello stesso gesto. **Euri Pulse** dà loro un sensorio condiviso: i sensi emettono eventi tipizzati su uno stream Redis `euri:pulse`, con un envelope volutamente generico `{sense, source (extero|intero), kind, payload, salience, ts}` — così qualsiasi stimolo futuro entra senza toccare il bus. Dal V2.20 esiste anche un consumer prudente: l'**Initiative Controller** rilegge il JSON reale collegato all'evento, valuta tensione/idle/cooldown e chiede al modello se vale una domanda breve. Oggi consuma solo insight promossi e memorie passive incerte: non parla "per riempire", parla solo se può nominare l'evento che l'ha attivata. `pulse_watch.py` resta lo strumento di osservazione (tail / `--replay` / `--stats`). Kill-switch `PULSE_ENABLED` + `INITIATIVE_ENABLED`.
+
+Gli eventi cognitivi `memory_relation/comparison_noted` dichiarano una
+somiglianza tra memorie distinte senza creare una nuova memoria e senza
+autorizzare fusioni. Il Cognitive Projector li conserva come timeline
+osservabile, ma l'Initiative Controller e il RAG non li consumano ancora come
+relazioni semantiche: questo confine è intenzionale e impedisce che un'analogia
+diventi silenziosamente un fatto.
 
 ### 4. Il Secondo Cervello (Integrazione Obsidian)
 Euri è bidirezionalmente sincronizzato con **Obsidian** (cartella `EuriVault`).

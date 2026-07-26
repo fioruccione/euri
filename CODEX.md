@@ -1,5 +1,26 @@
 # Handoff Euri - 2026-07-24 - Passive learner e conferma Pulse completati
 
+- Correzione epistemica del 26 luglio: la convergenza non basta più a promuovere
+  un sogno. `premise_fidelity=1.0` e `bridge_validity=supported` sono gate
+  fail-closed; `hypothesis` produce un evento `hypothesis_formed` sul Pulse ma
+  resta fuori da RAG e Obsidian, mentre forced/unknown/non misurato resta
+  candidate.
+- La provenienza diretta del seed resta in `source_memory_ids`; l'unione delle
+  fonti dei candidate convergenti è separata in
+  `convergence_source_memory_ids`.
+- Loop 2h ora classifica semanticamente le coppie superseded come
+  `SAME/RELATED/DIFFERENT/UNKNOWN`. Solo SAME viene narrato come evoluzione;
+  RELATED ripristina entrambe le memorie, annota l'inversione reversibile del
+  vecchio arco e dichiara sul Pulse la somiglianza senza creare identità.
+  Nessuna regex o lista di materiali decide la relazione.
+- Verifica finale: compilazione e diff-check puliti, inventario 59 file e
+  manifest unitario 49/49. Il primo passaggio aveva esposto un timestamp
+  assoluto marcescente in `test_correction_quarantine.py`, sostituito con un
+  riferimento relativo.
+- Bonifica Redis live completata con backup recuperabili per 30 giorni:
+  `b65a0443` e `6607bf50` retrocessi a `hypothesis`, `06eb49eb` a `candidate`;
+  reflection `24658252` soft-esclusa come conflazione Altosele/UBQ e memoria
+  Altosele `71506a02` resa nuovamente visibile con audit dell'arco invertito.
 - Estrazione passiva atomica a finestre completata il 25 luglio: finestre 12/4,
   parlanti dinamici, ID locali rimappati, parser controllato `TURNI`/`TURNOS`,
   fonti invalide differite all'audit e chiusura anaforica deterministica. Replica

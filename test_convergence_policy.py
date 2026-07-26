@@ -96,7 +96,9 @@ def _engine_for(subject, neighbors):
             "content": doc.content,
             "status": "candidate",
             "convergence_count": 1,
-            "source_memory_ids": [],
+            "source_memory_ids": [f"{doc.id}:a", f"{doc.id}:b"],
+            "premise_fidelity": 1.0,
+            "bridge_validity": "supported",
         }
         for doc in all_docs
     }
@@ -208,8 +210,18 @@ def test_only_judge_confirmed_neighbors_are_absorbed():
 
     assert redis.docs["seed"]["status"] == "promoted"
     assert redis.docs["seed"]["requires_verification"] is True
-    assert redis.docs["seed"]["verification_status"] == "internally_convergent"
+    assert redis.docs["seed"]["verification_status"] == "internally_supported"
     assert redis.docs["seed"]["epistemic_status"] == "internally_convergent"
+    assert redis.docs["seed"]["source_memory_ids"] == ["seed:a", "seed:b"]
+    assert redis.docs["seed"]["convergence_source_memory_ids"] == [
+        "seed:a",
+        "seed:b",
+        "same1:a",
+        "same1:b",
+        "same2:a",
+        "same2:b",
+    ]
+    assert redis.docs["seed"]["convergent_insight_ids"] == ["same1", "same2"]
     assert set(redis.deleted) == {"same1", "same2"}
     assert "different" in redis.docs
     args, meta = traces[-1]
@@ -330,7 +342,7 @@ def test_unused_age_demotion_is_blocked_before_judges():
     assert traces[0][0][4] == "denied_repromotion"
 
 
-def test_bridge_validity_is_observational_and_preserves_hypotheses():
+def test_bridge_validity_classifies_and_preserves_candidate_until_convergence():
     insight_key = "euri:insight:new"
     redis = FakeRedis(docs={
         insight_key: {
@@ -360,6 +372,85 @@ def test_bridge_validity_is_observational_and_preserves_hypotheses():
     assert requests[-1]["options"]["num_predict"] == 5000
 
 
+def test_convergent_hypothesis_emits_pulse_without_entering_rag():
+    subject = _candidate(
+        "seed",
+        "Nel dominio [materiale X] succede: aumenta il modulo. "
+        "Nel dominio [materiale Y] succede: aumenta il modulo. "
+        "La connessione operativa non ovvia è: potrebbero condividere un meccanismo.",
+    )
+    neighbors = [
+        _candidate("same1", "stesso meccanismo, formulazione uno", 0.0),
+        _candidate("same2", "stesso meccanismo, formulazione due", 0.0),
+    ]
+    engine, redis, traces = _engine_for(subject, neighbors)
+    redis.docs["seed"]["bridge_validity"] = "hypothesis"
+    engine._llm_judge_same_insight = lambda *_args: True
+
+    engine._evaluate_insights()
+
+    assert redis.docs["seed"]["status"] == "hypothesis"
+    assert (
+        redis.docs["seed"]["epistemic_status"]
+        == "internally_convergent_hypothesis"
+    )
+    assert redis.docs["seed"]["verification_status"] == "hypothesis_to_test"
+    assert set(redis.deleted) == {"same1", "same2"}
+    assert traces[-1][0][4] == "hypothesis_formed"
+    assert any(fields["kind"] == "hypothesis_formed"
+               for _key, fields, _kwargs in redis.streams)
+
+
+def test_unmeasured_bridge_blocks_promotion_without_absorbing_neighbors():
+    subject = _candidate(
+        "seed",
+        "Nel dominio [a] succede: A. Nel dominio [b] succede: B. "
+        "La connessione operativa non ovvia è: C.",
+    )
+    neighbors = [
+        _candidate("same1", "stesso claim uno", 0.0),
+        _candidate("same2", "stesso claim due", 0.0),
+    ]
+    engine, redis, traces = _engine_for(subject, neighbors)
+    redis.docs["seed"].pop("bridge_validity")
+    engine._llm_judge_same_insight = lambda *_args: True
+
+    engine._evaluate_insights()
+
+    assert redis.docs["seed"]["status"] == "candidate"
+    assert redis.docs["seed"]["promotion_blocked_reason"] == "bridge_unmeasured"
+    assert redis.deleted == []
+    assert traces[-1][0][4] == "denied_quality_bridge_unmeasured"
+
+
+def test_unfaithful_premise_blocks_promotion():
+    subject = _candidate(
+        "seed",
+        "Nel dominio [a] succede: A. Nel dominio [b] succede: B. "
+        "La connessione operativa non ovvia è: C.",
+    )
+    neighbors = [
+        _candidate("same1", "stesso claim uno", 0.0),
+        _candidate("same2", "stesso claim due", 0.0),
+    ]
+    engine, redis, traces = _engine_for(subject, neighbors)
+    redis.docs["seed"]["premise_fidelity"] = 0.5
+    engine._llm_judge_same_insight = lambda *_args: True
+
+    engine._evaluate_insights()
+
+    assert redis.docs["seed"]["status"] == "candidate"
+    assert (
+        redis.docs["seed"]["promotion_blocked_reason"]
+        == "premise_fidelity_below_threshold"
+    )
+    assert redis.deleted == []
+    assert (
+        traces[-1][0][4]
+        == "denied_quality_premise_fidelity_below_threshold"
+    )
+
+
 def test_bridge_parser_rejects_explanatory_free_text():
     parse = DreamEngine._parse_bridge_validity_response
     assert parse("BRIDGE: SUPPORTED\nNOTE: segue dalle fonti") == (
@@ -378,6 +469,9 @@ if __name__ == "__main__":
     test_budget_exhaustion_is_fail_closed()
     test_external_refutation_skips_all_expensive_repromotion_work_once()
     test_unused_age_demotion_is_blocked_before_judges()
-    test_bridge_validity_is_observational_and_preserves_hypotheses()
+    test_bridge_validity_classifies_and_preserves_candidate_until_convergence()
+    test_convergent_hypothesis_emits_pulse_without_entering_rag()
+    test_unmeasured_bridge_blocks_promotion_without_absorbing_neighbors()
+    test_unfaithful_premise_blocks_promotion()
     test_bridge_parser_rejects_explanatory_free_text()
     print("test_convergence_policy: OK")

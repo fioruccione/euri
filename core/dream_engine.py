@@ -1386,16 +1386,17 @@ Rispondi SOLO con SAME, RELATED oppure DIFFERENT."""
         return verdict, True, False
 
     def _ensure_premise_fidelity(self, insight_key: str) -> bool:
-        """Risveglio lucido — FASE MISURA (additiva: NON decide nulla): quanto le due
-        premesse del sogno sono FEDELI alle memorie sorgente da cui è nato — l'atto-parola
-        applicato ai sogni: il sogno ha detto la verità sulle proprie fonti?
+        """Risveglio lucido: quanto le due premesse del sogno sono FEDELI alle
+        memorie sorgente da cui è nato — l'atto-parola applicato ai sogni:
+        il sogno ha detto la verità sulle proprie fonti?
 
         Misurato UNA volta per candidate e cacheato sul doc: `premise_fidelity` 0..1
         (min dei due lati: la connessione poggia su ENTRAMBE le premesse) + nota +
         dettaglio A/B. Candidate senza provenienza (pre-23/06) o con sorgenti scadute →
         None = NON-VERIFICABILE (≠ infedele). Il valore viaggia nella convergence trace
-        per la correlazione offline coi verdetti external_reaction. Ritorna True solo se
-        ha speso una chiamata LLM ora (per il budget per-ciclo). Fail-open."""
+        per la correlazione offline coi verdetti external_reaction e alimenta il
+        gate fail-closed di promozione. Ritorna True solo se ha speso una chiamata
+        LLM ora (per il budget per-ciclo)."""
         if not getattr(config, "PREMISE_FIDELITY_ENABLED", True):
             return False
         try:
@@ -1485,12 +1486,14 @@ Rispondi SOLO con SAME, RELATED oppure DIFFERENT."""
         return verdict, score, note
 
     def _ensure_bridge_validity(self, insight_key: str) -> bool:
-        """Misura read-only della qualita' epistemica della connessione.
+        """Misura della qualita' epistemica della connessione.
 
         `premise_fidelity` controlla se le prime due righe rispettano le fonti; questa
         misura guarda invece la terza riga. Un'interpretazione nuova non e' un errore:
         viene distinta tra deduzione sostenuta, ipotesi verificabile e ponte forzato.
-        Il risultato viene salvato e tracciato, ma NON influenza la promozione.
+        Il risultato viene salvato, tracciato e usato dal gate di promozione:
+        SUPPORTED puo' essere promosso, HYPOTHESIS resta separata dal RAG e FORCED
+        non supera il gate.
         """
         if not getattr(config, "BRIDGE_VALIDITY_ENABLED", False):
             return False
@@ -1572,6 +1575,87 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
             logger.debug(f"bridge_validity fallita (non-critica): {e}")
             return False
 
+    def _promotion_quality_decision(self, insight_key: str) -> tuple[str, str]:
+        """Ritorna ``(azione, motivo)`` per un candidate arrivato alla convergenza.
+
+        Azioni:
+        - ``promote``: premesse fedeli e ponte sostenuto dalle fonti;
+        - ``hypothesis``: premesse fedeli, ma il ponte richiede una premessa nuova;
+        - ``defer``: misura assente/non leggibile, quindi fail-closed;
+        - ``reject``: premesse infedeli o ponte forzato.
+
+        Una conferma esterna esplicita del proprietario prevale sulle misure interne.
+        Il flag di configurazione conserva una via di rollback non distruttiva.
+        """
+        if not getattr(config, "INSIGHT_PROMOTION_QUALITY_GATE_ENABLED", True):
+            return "promote", "quality_gate_disabled"
+        try:
+            def _get(path: str):
+                raw = self._r.json().get(insight_key, path) or []
+                return raw[0] if raw else None
+
+            external = _get("$.external_reaction") or {}
+            if isinstance(external, dict) and external.get("verdict") == "CONFERMA":
+                return "promote", "externally_confirmed"
+
+            fidelity = _get("$.premise_fidelity")
+            if fidelity is None:
+                return "defer", "premise_fidelity_unmeasured"
+            try:
+                if float(fidelity) < 1.0:
+                    return "reject", "premise_fidelity_below_threshold"
+            except (TypeError, ValueError):
+                return "defer", "premise_fidelity_invalid"
+
+            bridge = str(_get("$.bridge_validity") or "").strip().lower()
+            if bridge == "supported":
+                return "promote", "bridge_supported"
+            if bridge == "hypothesis":
+                return "hypothesis", "bridge_hypothesis"
+            if bridge == "forced":
+                return "reject", "bridge_forced"
+            return "defer", "bridge_unmeasured"
+        except Exception as exc:
+            logger.debug(f"Dream Engine: quality gate non leggibile: {exc}")
+            return "defer", "quality_gate_error"
+
+    def _convergence_provenance(
+        self,
+        insight_key: str,
+        similar_ids: list[str],
+    ) -> tuple[list[str], list[str]]:
+        """Separa le fonti dirette del seed dalle fonti dei candidate convergenti.
+
+        ``source_memory_ids`` deve continuare a significare "le due premesse usate
+        per generare questo testo". L'unione cumulativa resta disponibile per audit
+        in ``convergence_source_memory_ids`` senza inquinare la provenienza diretta.
+        """
+        def _ids(raw_value) -> list[str]:
+            if not raw_value:
+                return []
+            value = raw_value[0]
+            if isinstance(value, str):
+                value = [value]
+            if not isinstance(value, (list, tuple)):
+                return []
+            return list(dict.fromkeys(str(item) for item in value if item))
+
+        direct_ids = _ids(
+            self._r.json().get(insight_key, "$.source_memory_ids") or []
+        )
+        convergence_ids = list(direct_ids)
+        for candidate_id in similar_ids:
+            try:
+                raw_ids = self._r.json().get(
+                    candidate_id, "$.source_memory_ids"
+                ) or []
+                for memory_id in _ids(raw_ids):
+                    if memory_id and memory_id not in convergence_ids:
+                        convergence_ids.append(memory_id)
+            except Exception:
+                continue
+        return direct_ids, convergence_ids
+
     def _trace_convergence(self, doc, convergences, n_certain, neighbor_trace, outcome,
                            *, n_vector_shortlisted=0, n_judge_confirmed=0,
                            n_judge_deferred=0, judge_trace=None):
@@ -1636,8 +1720,7 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
                 # della decisione; "" = non ancora valutata o non-verificabile.
                 "premise_fidelity": ("" if g("$.premise_fidelity") is None
                                      else str(g("$.premise_fidelity"))),
-                # Misura separata della terza riga: osservativa, mai usata qui
-                # per promuovere o bloccare il candidate.
+                # Misura separata della terza riga usata dal quality gate.
                 "bridge_validity": str(g("$.bridge_validity", "") or ""),
                 "bridge_validity_score": (
                     "" if g("$.bridge_validity_score") is None
@@ -1897,7 +1980,8 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
                     "judge_trace": judge_trace,
                 }
                         
-                # Se abbiamo abbastanza convergenze, promuoviamo!
+                # Alla soglia di convergenza decide il quality gate: promozione,
+                # ipotesi dichiarata sul pulse oppure blocco fail-closed.
                 if convergences >= config.DREAM_INSIGHT_MIN_CONVERGENCES:
                     # Gate di formato: un CANDIDATE astratto/filosofico (senza il pattern
                     # "Nel dominio X succede / La connessione operativa è") non viene promosso
@@ -1915,28 +1999,155 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
                                                 "denied_format", **trace_meta)
                         continue
 
-                    # Provenienza cumulativa: prima di cancellare i candidate assorbiti,
-                    # unisci i loro nodi sorgente a quelli del candidate promosso. I vecchi
-                    # insight pre-patch possono non avere il campo: in quel caso l'union è
-                    # parziale ma resta corretta per i dati disponibili.
-                    source_memory_ids = []
-                    for iid in [doc.id, *similar_ids]:
-                        try:
-                            raw_ids = self._r.json().get(iid, "$.source_memory_ids") or []
-                            for mid in (raw_ids[0] if raw_ids else []):
-                                if mid:
-                                    source_memory_ids.append(mid)
-                        except Exception:
-                            continue
+                    quality_action, quality_reason = (
+                        self._promotion_quality_decision(doc.id)
+                    )
+                    if quality_action in {"defer", "reject"}:
+                        # La convergenza è un segnale di ricorrenza interna, non una
+                        # licenza per saltare fedeltà e qualità del ponte. Il candidate
+                        # resta vivo e i vicini non vengono assorbiti: una misura
+                        # mancante può essere completata in un ciclo successivo.
+                        self._r.json().set(
+                            doc.id, "$.promotion_blocked_reason", quality_reason
+                        )
+                        self._r.json().set(
+                            doc.id, "$.promotion_blocked_at", time.time()
+                        )
+                        logger.info(
+                            "Dream Engine: promozione bloccata dal quality gate "
+                            f"({quality_reason}) — {doc.id[-8:]}"
+                        )
+                        self._trace_convergence(
+                            doc,
+                            convergences,
+                            n_certain,
+                            neighbor_trace,
+                            f"denied_quality_{quality_reason}",
+                            **trace_meta,
+                        )
+                        continue
 
-                    # Promuovi questo a PROMOTED
+                    # La provenienza diretta del seed resta separata dall'unione delle
+                    # fonti che hanno prodotto candidate semanticamente convergenti.
+                    direct_source_ids, convergence_source_ids = (
+                        self._convergence_provenance(doc.id, similar_ids)
+                    )
+                    self._r.json().set(
+                        doc.id,
+                        "$.convergence_source_memory_ids",
+                        convergence_source_ids,
+                    )
+                    self._r.json().set(
+                        doc.id, "$.convergent_insight_ids", list(similar_ids)
+                    )
+                    self._r.json().set(
+                        doc.id,
+                        "$.promotion_policy_version",
+                        getattr(
+                            config,
+                            "INSIGHT_PROMOTION_POLICY_VERSION",
+                            "fidelity_bridge_fail_closed_v1",
+                        ),
+                    )
+
+                    if quality_action == "hypothesis":
+                        # Somiglianza operativa sì, identità/fatto acquisito no:
+                        # conserva l'emergenza come ipotesi separata dal RAG promosso
+                        # e dichiarala sul pulse per audit e futura interazione.
+                        hypothesis_at = time.time()
+                        self._r.json().set(doc.id, "$.status", "hypothesis")
+                        self._r.json().set(
+                            doc.id, "$.convergence_count", convergences
+                        )
+                        self._r.json().set(
+                            doc.id,
+                            "$.epistemic_status",
+                            "internally_convergent_hypothesis",
+                        )
+                        self._r.json().set(
+                            doc.id, "$.verification_status", "hypothesis_to_test"
+                        )
+                        self._r.json().set(
+                            doc.id, "$.requires_verification", True
+                        )
+                        self._r.json().set(doc.id, "$.hypothesis_at", hypothesis_at)
+
+                        for sid in similar_ids:
+                            self._r.delete(sid)
+
+                        insight_id = str(doc.id).replace("euri:insight:", "")
+                        trace_raw = (
+                            self._r.json().get(doc.id, "$.cognitive_trace_id") or []
+                        )
+                        created_raw = (
+                            self._r.json().get(
+                                doc.id, "$.cognitive_created_event_id"
+                            )
+                            or []
+                        )
+                        hypothesis_event_id = cognitive_emit(
+                            self._r,
+                            "insight",
+                            "intero",
+                            "hypothesis_formed",
+                            producer="loop2c",
+                            trace_id=(
+                                (trace_raw[0] if trace_raw else "")
+                                or f"insight:{insight_id}"
+                            ),
+                            causation_id=(
+                                created_raw[0] if created_raw else ""
+                            ),
+                            logical_event_id=f"insight-hypothesis:{insight_id}",
+                            entity_refs=[
+                                {"type": "insight", "id": insight_id}
+                            ],
+                            parent_refs=convergence_source_ids,
+                            payload={
+                                "id": insight_id,
+                                "key": str(doc.id),
+                                "convergences": convergences,
+                                "quality_reason": quality_reason,
+                                "source_memory_ids": direct_source_ids,
+                                "convergence_source_memory_ids": (
+                                    convergence_source_ids
+                                ),
+                            },
+                            epistemic_before="internally_emergent",
+                            epistemic_after=(
+                                "internally_convergent_hypothesis"
+                            ),
+                            salience=0.5,
+                        )
+                        if hypothesis_event_id:
+                            self._r.json().set(
+                                doc.id,
+                                "$.cognitive_hypothesis_event_id",
+                                hypothesis_event_id,
+                            )
+                        logger.info(
+                            "Dream Engine: ipotesi emersa sul pulse "
+                            f"(convergenze: {convergences}) — {doc.id[-8:]}"
+                        )
+                        self._trace_convergence(
+                            doc,
+                            convergences,
+                            n_certain,
+                            neighbor_trace,
+                            "hypothesis_formed",
+                            **trace_meta,
+                        )
+                        continue
+
+                    # Solo un ponte sostenuto (o già confermato esternamente)
+                    # diventa PROMOTED e quindi recuperabile nel RAG.
                     self._r.json().set(doc.id, "$.status", "promoted")
                     self._r.json().set(doc.id, "$.convergence_count", convergences)
                     self._r.json().set(
                         doc.id, "$.epistemic_status", "internally_convergent"
                     )
-                    # La convergenza appartiene alla dinamica interna del paper:
-                    # fa EMERGERE l'ipotesi, non la valida rispetto al mondo.
+                    # Il gate ha già verificato fedeltà delle premesse e qualità
+                    # del ponte. La conferma esterna resta comunque distinta.
                     external = self._r.json().get(doc.id, "$.external_reaction")
                     external_verdict = (
                         (external[0] or {}).get("verdict") if external else None
@@ -1944,10 +2155,8 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
                     if external_verdict != "CONFERMA":
                         self._r.json().set(doc.id, "$.requires_verification", True)
                         self._r.json().set(
-                            doc.id, "$.verification_status", "internally_convergent"
+                            doc.id, "$.verification_status", "internally_supported"
                         )
-                    if source_memory_ids:
-                        self._r.json().set(doc.id, "$.source_memory_ids", list(dict.fromkeys(source_memory_ids)))
                     self._r.json().set(doc.id, "$.promoted_at", time.time())
                     
                     # Rimuovi i duplicati assorbiti
@@ -1973,12 +2182,15 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
                         causation_id=(created_raw[0] if created_raw else ""),
                         logical_event_id=f"insight-promoted:{insight_id}",
                         entity_refs=[{"type": "insight", "id": insight_id}],
-                        parent_refs=list(dict.fromkeys(source_memory_ids)),
+                        parent_refs=convergence_source_ids,
                         payload={
                             "id": insight_id,
                             "key": str(doc.id),
                             "convergences": convergences,
-                            "source_memory_ids": list(dict.fromkeys(source_memory_ids)),
+                            "source_memory_ids": direct_source_ids,
+                            "convergence_source_memory_ids": (
+                                convergence_source_ids
+                            ),
                         },
                         epistemic_before="internally_emergent",
                         epistemic_after="internally_convergent",
@@ -2203,11 +2415,11 @@ Rispondi SOLO JSON valido:
         insight_doc = {
             "id": insight_id,
             "content": content,
-            "status": "promoted",
+            "status": "hypothesis",
             "domain_a": domains[0] if domains else "episodi operativi",
             "domain_b": domains[1] if len(domains) > 1 else "ipotesi trasversale",
             "created_at": now_ts,
-            "promoted_at": now_ts,
+            "hypothesis_at": now_ts,
             "recalled_count": 0,
             "embedding": vec.tolist() if vec is not None else None,
             "convergence_count": len(selected),
@@ -2226,16 +2438,19 @@ Rispondi SOLO JSON valido:
             self._integrity_failure("loop2i-create-insight", key, e)
             return
 
-        logger.success(f"Loop 2i: ipotesi trasversale PROMOSSA → {insight_id[:8]}…")
+        logger.info(
+            f"Loop 2i: ipotesi trasversale dichiarata sul pulse → "
+            f"{insight_id[:8]}…"
+        )
         trace_id = f"cross-episode:{insight_id}"
-        promotion_event_id = cognitive_emit(
+        hypothesis_event_id = cognitive_emit(
             self._r,
             "insight",
             "intero",
-            "promoted",
+            "hypothesis_formed",
             producer="loop2i",
             trace_id=trace_id,
-            logical_event_id=f"insight-promoted:{insight_id}",
+            logical_event_id=f"insight-hypothesis:{insight_id}",
             entity_refs=[{"type": "insight", "id": insight_id}],
             parent_refs=source_ids,
             payload={
@@ -2246,20 +2461,16 @@ Rispondi SOLO JSON valido:
             },
             epistemic_before="cross_episode_hypothesis",
             epistemic_after="internally_emergent",
-            salience=0.68,
+            salience=0.5,
         )
-        if promotion_event_id:
+        if hypothesis_event_id:
             try:
                 self._r.json().set(key, "$.cognitive_trace_id", trace_id)
                 self._r.json().set(
-                    key, "$.cognitive_promoted_event_id", promotion_event_id
+                    key, "$.cognitive_hypothesis_event_id", hypothesis_event_id
                 )
             except Exception as exc:
                 logger.debug(f"Loop 2i lineage: metadati non annotati ({exc})")
-        try:
-            write_insight(insight_doc)
-        except Exception as e:
-            logger.debug(f"Loop 2i: sync insight su Obsidian fallita: {e}")
 
     def _llm_classify_pair(self, content_a: str, content_b: str) -> str:
         """
@@ -3256,6 +3467,18 @@ Rispondi SOLO con JSON valido:
             for doc in res_stale.docs:
                 self._r.delete(doc.id)
                 logger.info(f"Dream Engine: Candidate scaduto eliminato (ID: {doc.id})")
+
+            # Gate 4: le ipotesi restano separate dal RAG e hanno la stessa
+            # evaporazione dei candidate se non ricevono una validazione esterna.
+            q_hypothesis = Query(
+                f"@status:{{hypothesis}} @created_at:[-inf {delete_cutoff}]"
+            )
+            res_hypothesis = self._r.ft("idx:insights").search(q_hypothesis)
+            for doc in res_hypothesis.docs:
+                self._r.delete(doc.id)
+                logger.info(
+                    f"Dream Engine: Ipotesi scaduta eliminata (ID: {doc.id})"
+                )
 
         except Exception as e:
             logger.error(f"Errore pulizia insights: {e}")
