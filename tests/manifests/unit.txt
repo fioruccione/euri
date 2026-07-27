@@ -36,6 +36,7 @@ test_memory_dedup.py
 test_memory_outbox.py
 test_named_save.py
 test_passive_provenance.py
+test_prompt_ablation.py
 test_reaction_briefing.py
 test_reaction_verdict.py
 test_response_lineage.py
