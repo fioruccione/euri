@@ -85,6 +85,9 @@ def main() -> int:
     dd.add_argument("--output", type=Path, required=True)
 
     dm = subparsers.add_parser("dual-manifest")
+    # --seed OBBLIGATORIO: non seleziona domande (census invariato), fissa in modo
+    # riproducibile gli answer_seed e il braccio iniziale.
+    dm.add_argument("--seed", type=int, required=True)
     dm.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
     dm.add_argument("--replicas", type=int, default=2)
     dm.add_argument("--output", type=Path, required=True)
@@ -404,9 +407,18 @@ def main() -> int:
         )
         return 0
     if args.command == "dual-manifest":
-        from benchmarks.euri_memory.dual_channel_pipeline import build_census_manifest
+        from benchmarks.euri_memory.dual_channel_pipeline import (
+            DualPipelineError,
+            build_census_manifest,
+        )
 
-        manifest = build_census_manifest(corpus_path=args.source, replicas=args.replicas)
+        try:
+            manifest = build_census_manifest(
+                seed=args.seed, corpus_path=args.source, replicas=args.replicas
+            )
+        except DualPipelineError as exc:
+            print(json.dumps({"event": "dual_manifest_error", "detail": str(exc)}), flush=True)
+            return 4
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=True), encoding="utf-8"

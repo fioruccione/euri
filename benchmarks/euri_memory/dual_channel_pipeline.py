@@ -27,7 +27,9 @@ from benchmarks.euri_memory.adapters import LoCoMoAdapter
 from benchmarks.euri_memory.analysis import cluster_bootstrap_ci, mcnemar_exact
 from benchmarks.euri_memory.dual_channel import POLICY_ID
 from benchmarks.euri_memory.dual_channel_worker import build_census, forecast
-from benchmarks.euri_memory.heldout import manifest_digest, verify_manifest
+import random
+
+from benchmarks.euri_memory.heldout import _git_commit, manifest_digest, verify_manifest
 from benchmarks.euri_memory.heldout_localization import (
     selection_localization_slice,
     verify_localization_seal,
@@ -63,12 +65,41 @@ class DualPipelineError(RuntimeError):
 # --------------------------------------------------------------------------- #
 # Manifest census cieco
 # --------------------------------------------------------------------------- #
+def _dual_replicas(seed: int, replicas: int) -> list[dict]:
+    """answer_seed e braccio iniziale derivati dal seed; repliche alternate.
+
+    Il seed NON seleziona domande (il census resta identico): fissa solo, in modo
+    riproducibile, gli answer_seed e quale braccio parte per primo.
+    """
+
+    order_rng = random.Random(f"{seed}:generation-order")
+    seed_rng = random.Random(f"{seed}:answer-seed")
+    base = ["rag_only", "dual_channel"]
+    start_reversed = order_rng.random() < 0.5
+    out = []
+    for index in range(replicas):
+        reversed_here = start_reversed ^ (index % 2 == 1)
+        order = list(reversed(base)) if reversed_here else list(base)
+        out.append(
+            {
+                "replica_index": index,
+                "generation_order": order,
+                "answer_seed": seed_rng.randrange(1, 2**31 - 1),
+            }
+        )
+    return out
+
+
 def build_census_manifest(
     *,
+    seed: int,
     corpus_path: Path = DEFAULT_SOURCE,
     replicas: int = 2,
     git_commit: str | None = None,
 ) -> dict:
+    commit = git_commit if git_commit is not None else _git_commit()
+    if not commit:
+        raise DualPipelineError("manifest senza git commit: rifiuto (HEAD non disponibile)")
     census = build_census(corpus_path)
     cases = {c.sample_id: c for c in LoCoMoAdapter().load(Path(corpus_path))}
     conversations = []
@@ -86,28 +117,17 @@ def build_census_manifest(
                 "excluded": conv["excluded"],
             }
         )
-    # Ordine di generazione controbilanciato per replica (solo l'ordine).
-    base = ["rag_only", "dual_channel"]
-    replica_list = []
-    for index in range(replicas):
-        order = base if index % 2 == 0 else list(reversed(base))
-        replica_list.append(
-            {
-                "replica_index": index,
-                "generation_order": order,
-                "answer_seed": 1000 + index,
-            }
-        )
+    replica_list = _dual_replicas(seed, replicas)
     manifest = {
         "schema_version": 1,
         "experiment": "euri_dual_channel_validation",
         "experiment_version": "v1",
         "stage": "selection",
         "policy_id": POLICY_ID,
-        "seed": "census",
+        "seed": seed,
         "budget": {"name": "census", "max_seconds_per_pair": _PER_PAIR_TIMEOUT},
         "selection_mode": "census_all_eligible",
-        "git_commit": git_commit,
+        "git_commit": commit,
         "corpus": {"path": str(Path(corpus_path).resolve()), "sha256": sha256_file(corpus_path)},
         "universe": census["universe"],
         "independent_unit": "conversation",
@@ -195,6 +215,7 @@ def validate_dual_report(report: dict, manifest: dict, expected: ExpectedDualPai
     git = report.get("git", {})
     binding = report.get("binding", {})
     models = report.get("models", {})
+    seq = tuple(expected.question_ids)
 
     if dataset.get("sample_id") != expected.sample_id:
         problems.append("sample_id diverso")
@@ -212,7 +233,7 @@ def validate_dual_report(report: dict, manifest: dict, expected: ExpectedDualPai
         problems.append("git commit diverso")
     if git.get("worktree_tracked_dirty") is not False:
         problems.append("worktree tracciata non pulita")
-    if tuple(selection.get("question_ids") or ()) != expected.question_ids:
+    if tuple(selection.get("question_ids") or ()) != seq:
         problems.append("question_ids diversi come sequenza")
     if selection.get("selection_sha256") != expected.selection_sha256:
         problems.append("selection_sha256 diverso")
@@ -224,19 +245,54 @@ def validate_dual_report(report: dict, manifest: dict, expected: ExpectedDualPai
         problems.append("binding.localization_sha256 diverso")
     if binding.get("language") != "it":
         problems.append("lingua non italiana")
+
+    # policy, localization_id, scorer, gold_boundary
+    if report.get("policy_id") != manifest.get("policy_id"):
+        problems.append("policy_id diverso dal manifest")
+    if binding.get("localization_id") != manifest.get("localization", {}).get("localization_id"):
+        problems.append("localization_id diverso dal manifest")
+    gold_boundary = report.get("gold_boundary", {})
+    if not gold_boundary or not all(bool(v) for v in gold_boundary.values()):
+        problems.append("gold_boundary non tutto true")
+
+    # base_nodes/locator_nodes: chiavi esattamente le domande attese
+    for field in ("base_nodes_by_question", "locator_nodes_by_question"):
+        if set(report.get(field, {}) or {}) != set(seq):
+            problems.append(f"{field}: chiavi diverse dalle domande attese")
+
     names = sorted(a.get("arm") for a in report.get("arms", []))
     if names != ["dual_channel", "rag_only"]:
         problems.append("bracci non esattamente rag_only+dual_channel")
-    else:
-        by = {a["arm"]: a for a in report["arms"]}
-        for arm in _ARMS:
-            scoring = by[arm].get("scoring")
-            if not scoring:
-                problems.append(f"scoring mancante per {arm}")
-                continue
-            covered = {i.get("question_id") for i in scoring.get("items", [])}
-            if covered != set(expected.question_ids):
-                problems.append(f"item scoring {arm} non coprono le domande attese")
+        return problems
+    by = {a["arm"]: a for a in report["arms"]}
+    rag_base_sha: dict[str, str] = {}
+    for arm in _ARMS:
+        arm_report = by[arm]
+        scoring = arm_report.get("scoring")
+        if not scoring:
+            problems.append(f"scoring mancante per {arm}")
+            continue
+        if scoring.get("name") != manifest.get("scorer"):
+            problems.append(f"scorer {arm} diverso dall'atteso")
+        # risultati e item ESATTAMENTE nella sequenza delle domande, senza duplicati
+        result_ids = tuple(r.get("question_id") for r in arm_report.get("results", []))
+        item_ids = tuple(i.get("question_id") for i in scoring.get("items", []))
+        if result_ids != seq:
+            problems.append(f"risultati {arm} non nella sequenza delle domande")
+        if item_ids != seq:
+            problems.append(f"item scoring {arm} non nella sequenza delle domande")
+        if arm == "rag_only":
+            for r in arm_report.get("results", []):
+                rag_base_sha[r.get("question_id")] = (r.get("metadata") or {}).get("base_sha256")
+
+    # composizione dual: policy_id corretto e base_sha256 == base del rag
+    for r in by["dual_channel"].get("results", []):
+        comp = (r.get("metadata") or {}).get("composition") or {}
+        qid = r.get("question_id")
+        if comp.get("policy_id") != POLICY_ID:
+            problems.append(f"composition.policy_id errato per {qid}")
+        if comp.get("base_sha256") != rag_base_sha.get(qid):
+            problems.append(f"composition.base_sha256 != base rag per {qid}")
     return problems
 
 
@@ -469,23 +525,89 @@ def analyze(runs_dir: Path, manifest_path: Path) -> dict:
         raise DualPipelineError(f"report non legati: estranei={foreign}, non_validi={invalid}")
 
     per_conv = defaultdict(lambda: defaultdict(list))
+    rag_bin = defaultdict(lambda: defaultdict(list))   # metric -> (conv,qid) -> [0/1]
+    dual_bin = defaultdict(lambda: defaultdict(list))
+    cat_delta = defaultdict(list)                      # categoria -> [delta F1] (diagnostico)
+    gold_lost = 0
     for key, report in seen.items():
         sample = report["dataset"]["sample_id"]
-        arms = {a["arm"]: a["scoring"] for a in report["arms"]}
+        by = {a["arm"]: a for a in report["arms"]}
         for m in _METRICS:
-            r, d = arms["rag_only"].get(m), arms["dual_channel"].get(m)
+            r, d = by["rag_only"]["scoring"].get(m), by["dual_channel"]["scoring"].get(m)
             if r is not None and d is not None:
                 per_conv[sample][m].append(d - r)
+        rag_items = {i["question_id"]: i for i in by["rag_only"]["scoring"]["items"]}
+        dual_items = {i["question_id"]: i for i in by["dual_channel"]["scoring"]["items"]}
+        for qid, ri in rag_items.items():
+            di = dual_items.get(qid, {})
+            # gold_lost: evidence recuperata dal RAG e persa dal dual (deve essere 0)
+            if ri.get("evidence_hit") is True and di.get("evidence_hit") is False:
+                gold_lost += 1
+            for metric, val in (
+                ("adversarial_correct", lambda it: it["correct"] if it.get("answerable") is False else None),
+                ("evidence_hit", lambda it: it["evidence_hit"] if it.get("evidence_hit") is not None else None),
+                ("exact_match", lambda it: it["exact_match"] if it.get("answerable") else None),
+            ):
+                rv, dv = val(ri), val(di) if di else None
+                if rv is not None and dv is not None:
+                    rag_bin[metric][(sample, qid)].append(float(rv))
+                    dual_bin[metric][(sample, qid)].append(float(dv))
+            if ri.get("token_f1") is not None and di.get("token_f1") is not None:
+                cat_delta[ri.get("category")].append(di["token_f1"] - ri["token_f1"])
+
     conversations = sorted(per_conv)
+
+    def _mean(xs):
+        return sum(xs) / len(xs) if xs else None
+
     primary = {}
     any_cross = False
     for m in _METRICS:
-        values = [sum(per_conv[c][m]) / len(per_conv[c][m]) for c in conversations if per_conv[c][m]]
+        values = [_mean(per_conv[c][m]) for c in conversations if per_conv[c][m]]
         ci = cluster_bootstrap_ci(values)
-        primary[m] = {"cluster_bootstrap": ci,
-                      "per_conversation_delta": {c: (sum(per_conv[c][m]) / len(per_conv[c][m]) if per_conv[c][m] else None) for c in conversations}}
+        primary[m] = {
+            "cluster_bootstrap": ci,
+            "per_conversation_delta": {c: _mean(per_conv[c][m]) for c in conversations},
+        }
         if ci and ci["ci_crosses_zero"]:
             any_cross = True
+
+    def _mcnemar(metric):
+        b = c = units = 0
+        for k in set(rag_bin[metric]) & set(dual_bin[metric]):
+            rm, dm = _mean(rag_bin[metric][k]), _mean(dual_bin[metric][k])
+            rb = None if rm == 0.5 else rm > 0.5
+            db = None if dm == 0.5 else dm > 0.5
+            if rb is None or db is None:
+                continue
+            units += 1
+            if not rb and db:
+                b += 1
+            elif rb and not db:
+                c += 1
+        res = mcnemar_exact(b, c)
+        res["units"] = units
+        res["direction"] = "b = dual migliora, c = dual peggiora"
+        return res
+
+    mcnemar = {m: _mcnemar(m) for m in ("adversarial_correct", "evidence_hit", "exact_match")}
+
+    f1 = primary["mean_token_f1"]["cluster_bootstrap"]
+    adv = primary["adversarial_accuracy"]["cluster_bootstrap"]
+    mean_f1_delta = f1["point_estimate"] if f1 else None
+    adv_delta = adv["point_estimate"] if adv else None
+    conv_f1 = primary["mean_token_f1"]["per_conversation_delta"]
+    non_negative = sum(1 for v in conv_f1.values() if v is not None and v >= 0)
+
+    # Verdetto a tre stati CONGELATO prima dei risultati.
+    if mean_f1_delta is None or adv_delta is None:
+        verdict = "INCONCLUSIVO"
+    elif mean_f1_delta <= 0 or adv_delta < -0.02 or gold_lost > 0:
+        verdict = "NO-GO"
+    elif mean_f1_delta > 0 and non_negative >= 4 and adv_delta >= -0.02 and gold_lost == 0:
+        verdict = "GO"
+    else:
+        verdict = "INCONCLUSIVO"
 
     return {
         "analysis": "euri_dual_channel_validation_paired_clustered",
@@ -499,6 +621,39 @@ def analyze(runs_dir: Path, manifest_path: Path) -> dict:
         "is_partial_run": bool(set(expected) - set(seen)),
         "manifest_sha256": manifest.get("manifest_sha256"),
         "primary_metrics": primary,
+        "f1_delta_per_conversation": conv_f1,
+        "secondary_mcnemar_exact": {
+            "note": "descrittivo: tratta le domande come indipendenti, non clusterizzato",
+            **mcnemar,
+        },
+        "gold_lost": {
+            "count": gold_lost,
+            "must_be_zero": True,
+            "invariant_holds": gold_lost == 0,
+            "definition": "evidence_hit nel RAG e non nel dual",
+        },
+        "adversarial": {
+            "delta_cluster_point": adv_delta,
+            "discordants": {"b": mcnemar["adversarial_correct"]["b"], "c": mcnemar["adversarial_correct"]["c"]},
+        },
+        "category_breakdown_diagnostic": {
+            "note": "SOLO diagnostico, mai un gate (policy category-agnostic)",
+            "mean_f1_delta": {cat: _mean(v) for cat, v in sorted(cat_delta.items())},
+        },
+        "verdict": {
+            "value": verdict,
+            "frozen_criteria": {
+                "GO": "delta medio F1 > 0 AND >=4/5 conv non-negative AND delta avversariale >= -0.02 AND gold_lost=0",
+                "NO_GO": "delta medio F1 <= 0 OR delta avversariale < -0.02 OR gold_lost > 0",
+                "INCONCLUSIVO": "altrimenti",
+            },
+            "inputs": {
+                "mean_f1_delta": mean_f1_delta,
+                "conversations_non_negative": non_negative,
+                "adversarial_delta": adv_delta,
+                "gold_lost": gold_lost,
+            },
+        },
         "power": {"underpowered": len(conversations) < 10 or any_cross, "n_clusters": len(conversations)},
-        "interpretation_limit": "N=5 conversazioni: validazione clusterizzata, non stima definitiva su LoCoMo.",
+        "interpretation_limit": "N=5 conversazioni: validazione clusterizzata (underpowered), non stima definitiva su LoCoMo.",
     }

@@ -251,9 +251,49 @@ SHA → fail-closed. Fasi LLM registrate separatamente: `passive_ingestion`,
 Comandi (nessuna esecuzione qui — `dual-run` reale attende l'audit):
 ```
 cli dual-dry-run   --source <corpus> --output <dir>/dual_dry_run.json      # struttura+forecast
-cli dual-manifest  --source <corpus> --output <dir>/census.json           # manifest cieco census
+cli dual-manifest  --seed <intero> --source <corpus> --output <dir>/census.json   # manifest cieco census
 cli dual-localize  --selection-manifest <dir>/census.json --output <dir>/it.json   # (+ --dry-run)
 cli dual-finalize  --selection-manifest <dir>/census.json --localization <dir>/it.json --output <dir>/final.json
 cli dual-run       --manifest <dir>/final.json --localization <dir>/it.json --output-dir <dir>/run   # (+ --dry-run)
 cli dual-analyze   --results-dir <dir>/run/runs --manifest <dir>/final.json --output <dir>/run/analysis.json
 ```
+
+---
+
+## 11. Hardening #3 pre-seed + VERDETTO CONGELATO (protocollo v1)
+
+Ultimo giro prima del seed. Census invariato (989, 5×2). Nessun cambio a
+worker/Q/R/budget/renderer/census/produzione oltre alle guardie.
+
+**Seed (`dual-manifest --seed <intero>`, obbligatorio).** Il seed **non seleziona
+domande** — il census resta identico — ma fissa in modo riproducibile gli
+`answer_seed` e quale braccio parte per primo; le due repliche restano alternate.
+Il manifest registra automaticamente l'**HEAD corrente non nullo** e viene
+**rifiutato senza git commit**.
+
+**`validate_dual_report` rafforzato** — oltre ai legami già presenti, verifica:
+`policy_id` == manifest; `localization_id` esatto; `scorer` atteso; `gold_boundary`
+tutto `true`; risultati e item di scoring **esattamente nella sequenza** delle
+domande, senza duplicati; **stessa copertura** nei due bracci; per ogni domanda
+dual `composition.policy_id` corretto e `composition.base_sha256` uguale al
+`base_sha256` del risultato rag; chiavi di `base_nodes_by_question` e
+`locator_nodes_by_question` **esattamente** uguali alle domande attese.
+
+**Analisi completa** (`dual-analyze`): bootstrap clusterizzato per conversazione +
+**McNemar esatto** appaiato sugli esiti binari; **`gold_lost`** (evidence_hit nel
+RAG e non nel dual) — invariante **obbligatoriamente 0**; discordanti e delta
+avversariale; **breakdown per categoria SOLO diagnostico**; **delta F1 per ciascuna
+delle 5 conversazioni**. Intervalli/bootstrap sempre riportati; N=5 dichiarato
+**underpowered**.
+
+**VERDETTO CONGELATO a tre stati** (fissato PRIMA dei risultati; delta =
+`dual − rag`):
+
+- **GO** — delta medio F1 **> 0** **e** almeno **4/5** conversazioni non-negative
+  **e** delta avversariale **≥ −0,02** **e** `gold_lost = 0`;
+- **NO-GO** — delta medio F1 **≤ 0** **oppure** delta avversariale **< −0,02**
+  **oppure** `gold_lost > 0`;
+- **INCONCLUSIVO** — in tutti gli altri casi.
+
+Il verdetto è calcolato deterministicamente da `dual-analyze` e non è modificabile
+dopo aver visto i risultati; qualunque cambiamento produce una nuova versione.
