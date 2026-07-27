@@ -376,6 +376,8 @@ class MemoryManager:
         limit: int = 5,
         source_filter: list[str] | None = None,
         touch: bool = True,
+        *,
+        source_exclude: list[str] | None = None,
     ) -> list[dict]:
         """
         Ricerca a tre livelli:
@@ -407,6 +409,7 @@ class MemoryManager:
                         id_query,
                         max(id_cap * 4, 8),
                         source_filter=source_filter,
+                        source_exclude=source_exclude,
                         touch=False,
                     ),
                     limit=id_cap,
@@ -418,10 +421,19 @@ class MemoryManager:
                         seen_uuids.add(uid)
 
             # Livello 2 — domain-gated semantic
-            semantic = domain_aware_search(query, self._embedder, self.r, limit)
+            semantic = domain_aware_search(
+                query,
+                self._embedder,
+                self.r,
+                limit,
+                source_filter=source_filter,
+                source_exclude=source_exclude,
+            )
             semantic = [r for r in semantic if not r.get("superseded_by")]
             if source_filter is not None:
                 semantic = [r for r in semantic if r.get("source") in source_filter]
+            if source_exclude is not None:
+                semantic = [r for r in semantic if r.get("source") not in source_exclude]
             for r in semantic:
                 uid = r["id"].replace("euri:memory:", "")
                 if uid not in seen_uuids:
@@ -430,7 +442,13 @@ class MemoryManager:
 
             # Livello 3 — hybrid fill se ancora sotto il limite
             if len(merged) < limit:
-                hybrid = self._search_hybrid(query, limit, source_filter=source_filter, touch=False)
+                hybrid = self._search_hybrid(
+                    query,
+                    limit,
+                    source_filter=source_filter,
+                    source_exclude=source_exclude,
+                    touch=False,
+                )
                 for r in hybrid:
                     uid = r.get("id", "")
                     if uid not in seen_uuids and len(merged) < limit:
@@ -451,7 +469,11 @@ class MemoryManager:
 
         if query == "*":
             candidates = self._search_keyword(
-                query, max(limit * 4, limit), source_filter=source_filter, touch=False
+                query,
+                max(limit * 4, limit),
+                source_filter=source_filter,
+                source_exclude=source_exclude,
+                touch=False,
             )
             results = self._rank_epistemically(candidates, limit=limit)
             if touch:
@@ -460,7 +482,11 @@ class MemoryManager:
         kw_list = self._safe_keywords(query)
         kw_query = " | ".join(kw_list[:6]) if kw_list else query
         candidates = self._search_keyword(
-            kw_query, max(limit * 4, limit), source_filter=source_filter, touch=False
+            kw_query,
+            max(limit * 4, limit),
+            source_filter=source_filter,
+            source_exclude=source_exclude,
+            touch=False,
         )
         results = self._rank_epistemically(candidates, limit=limit)
         if touch:
@@ -483,22 +509,28 @@ class MemoryManager:
         return " | ".join(parts) if parts else "*"
 
     @staticmethod
-    def _source_prefix(source_filter: list[str] | None) -> str:
-        """Restituisce il prefisso RediSearch per filtrare per source, o stringa vuota."""
-        if not source_filter:
-            return ""
-        escaped = "|".join(source_filter)
-        return f"@source:{{{escaped}}} "
+    def _source_prefix(
+        source_filter: list[str] | None,
+        source_exclude: list[str] | None = None,
+    ) -> str:
+        """Prefiltro RediSearch inclusivo/esclusivo per la source."""
+        clauses = []
+        if source_filter:
+            clauses.append("@source:{" + "|".join(source_filter) + "}")
+        if source_exclude:
+            clauses.extend(f"-@source:{{{source}}}" for source in source_exclude)
+        return " ".join(clauses)
 
     def _search_keyword(
         self,
         query: str,
         limit: int,
         source_filter: list[str] | None = None,
+        source_exclude: list[str] | None = None,
         touch: bool = True,
     ) -> list[dict]:
         try:
-            prefix = self._source_prefix(source_filter).strip()
+            prefix = self._source_prefix(source_filter, source_exclude).strip()
             safe_query = query if query == "*" else self._sanitize_query_or(query)
 
             # Se abbiamo sia un filtro source che una query testuale, li isoliamo con parentesi
@@ -517,7 +549,13 @@ class MemoryManager:
             logger.error(f"Errore ricerca keyword memories: {e}")
             return []
         
-    def _search_semantic(self, query: str, limit: int, source_filter: list[str] | None = None) -> list[dict]:
+    def _search_semantic(
+        self,
+        query: str,
+        limit: int,
+        source_filter: list[str] | None = None,
+        source_exclude: list[str] | None = None,
+    ) -> list[dict]:
         """KNN search tramite embedding — restituisce docs ordinati per distanza coseno."""
         vec = self._embedder.encode(query, mode="query")
         if vec is None:
@@ -534,7 +572,7 @@ class MemoryManager:
                 db=config.REDIS_DB,
                 decode_responses=False,
             )
-            prefilter = self._source_prefix(source_filter).strip() or "*"
+            prefilter = self._source_prefix(source_filter, source_exclude).strip() or "*"
             q = (RQuery(f"({prefilter})=>[KNN {limit * 2} @embedding $vec AS vec_score]")
                  .sort_by("vec_score")
                  .paging(0, limit * 2)
@@ -571,6 +609,7 @@ class MemoryManager:
         query: str,
         limit: int,
         source_filter: list[str] | None = None,
+        source_exclude: list[str] | None = None,
         touch: bool = True,
     ) -> list[dict]:
         """
@@ -580,8 +619,23 @@ class MemoryManager:
         kw_list = self._safe_keywords(query)
         kw_query = " | ".join(kw_list[:6]) if kw_list else None
 
-        sem_docs = self._search_semantic(query, limit, source_filter=source_filter)
-        kw_docs = self._search_keyword(kw_query, limit, source_filter=source_filter, touch=False) if kw_query else []
+        sem_docs = self._search_semantic(
+            query,
+            limit,
+            source_filter=source_filter,
+            source_exclude=source_exclude,
+        )
+        kw_docs = (
+            self._search_keyword(
+                kw_query,
+                limit,
+                source_filter=source_filter,
+                source_exclude=source_exclude,
+                touch=False,
+            )
+            if kw_query
+            else []
+        )
 
         sem_ids = {d["id"] for d in sem_docs}
         kw_ids = {d["id"] for d in kw_docs}
@@ -693,9 +747,15 @@ class MemoryManager:
         limit: int = 10,
         source_filter: list[str] | None = None,
         touch: bool = True,
+        *,
+        source_exclude: list[str] | None = None,
     ) -> list[dict]:
         candidates = self._search_keyword(
-            "*", limit=max(limit * 4, limit), source_filter=source_filter, touch=False
+            "*",
+            limit=max(limit * 4, limit),
+            source_filter=source_filter,
+            source_exclude=source_exclude,
+            touch=False,
         )
         results = self._rank_epistemically(candidates, limit=limit)
         if touch:
@@ -708,6 +768,8 @@ class MemoryManager:
         ts_end: float,
         limit: int = 5,
         touch: bool = True,
+        *,
+        source_exclude: list[str] | None = None,
     ) -> list[dict]:
         """Recupera memorie per tempo dell'evento, dell'affermazione o del salvataggio."""
         try:
@@ -716,6 +778,9 @@ class MemoryManager:
                 f"@asserted_at:[{ts_start} {ts_end}] | "
                 f"@created_at:[{ts_start} {ts_end}])"
             )
+            source_clause = self._source_prefix(None, source_exclude)
+            if source_clause:
+                temporal_query = f"({source_clause}) ({temporal_query})"
             q = (Query(temporal_query)
                  .sort_by("created_at", asc=False)
                  .paging(0, max(limit * 4, limit)))

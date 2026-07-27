@@ -173,9 +173,12 @@ class VoiceDaemon:
         self.r: redis_lib.Redis = get_client()
         self.embedder = Embedder()
         self.memory = MemoryManager(self.r, embedder=self.embedder)
+        from core.conversation_turns import ConversationTurnStore
+        self.turn_store = ConversationTurnStore(self.r)
         self.guest_claims = GuestClaimStore(self.r)
         self.brain = Brain()
         Brain._shared_instance = self.brain  # Condivisa col CodeRunner
+        self.brain._turn_callback = self.turn_store.persist
         self.brain._episode_callback = lambda summary, temporal_context: self.memory.save_memory(
             summary,
             category="episodio", source="episode",
@@ -341,6 +344,10 @@ class VoiceDaemon:
         else:
             logger.warning("Audio output: Jabra non trovato — uso device di sistema")
         logger.info("Euri pronto. In ascolto...")
+        logger.info(
+            "Memoria dual-channel: mode={} (archivio turni durevole attivo)",
+            config.RAG_DUAL_CHANNEL_MODE,
+        )
 
     def _handle_social_snapshot(self, snapshot: SocialSnapshot) -> None:
         """Persist Phase-0 numbers and transitions, without changing behavior."""
@@ -2103,10 +2110,55 @@ class VoiceDaemon:
 
     def _build_context(self, text: str, *, mode: str = "chat") -> str:
         """Cerca in Redis contenuto rilevante da iniettare come contesto nella risposta."""
-        from core.rag_context import build_rag_context
+        from core.rag_context import build_dual_channel_context, build_rag_context
         with self.brain.history_lock:
             recent_history = list(self.brain._conversation_history)
-        rag = build_rag_context(text, self.memory, mode=mode, recent_history=recent_history)
+        dual_mode = getattr(config, "RAG_DUAL_CHANNEL_MODE", "off")
+        if dual_mode == "on":
+            try:
+                rag = build_dual_channel_context(
+                    text,
+                    self.memory,
+                    self.turn_store,
+                    mode=mode,
+                    recent_history=recent_history,
+                )
+            except Exception as exc:
+                logger.error(
+                    "RAG dual-channel fallito: fallback alla sola base protetta ({})",
+                    exc,
+                )
+                rag = build_rag_context(
+                    text,
+                    self.memory,
+                    mode=mode,
+                    recent_history=recent_history,
+                    excluded_sources={"passive"},
+                )
+        else:
+            rag = build_rag_context(
+                text, self.memory, mode=mode, recent_history=recent_history
+            )
+            if dual_mode == "shadow":
+                try:
+                    shadow = build_dual_channel_context(
+                        text,
+                        self.memory,
+                        self.turn_store,
+                        mode=mode,
+                        recent_history=recent_history,
+                        touch=False,
+                    )
+                    logger.info(
+                        "RAG dual shadow: legacy_chars={} dual_chars={} "
+                        "aggiunti={} base_sha={}",
+                        len(rag.text),
+                        len(shadow.text),
+                        len(shadow.diagnostics.get("added_turn_ids") or []),
+                        str(shadow.diagnostics.get("base_sha256") or "")[:12],
+                    )
+                except Exception as exc:
+                    logger.warning(f"RAG dual shadow non disponibile ({exc})")
         # Thread-local: voce e mobile possono costruire contesti in parallelo.
         # La struttura serve soltanto alla lineage shadow e non entra nel prompt.
         local = getattr(self, "_response_rag_local", None)
@@ -3037,6 +3089,11 @@ class VoiceDaemon:
                 if not new_history:
                     continue
                 through_seq = new_history[-1]["seq"]
+
+                # Il substrato originale deve essere durevole PRIMA che una
+                # memoria passiva possa pubblicarne i riferimenti. Su errore
+                # l'eccezione impedisce l'ack e il journal verrà ritentato.
+                self.turn_store.persist_many(new_history)
 
                 saved = 0
                 extracted = 0

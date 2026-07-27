@@ -45,6 +45,30 @@ Il recupero avviene a tre livelli in cascata:
 2. **Domain-boosted KNN** *(V2.19)* — ricerca vettoriale sull'intero DB con un *boost* per le memorie nel dominio della query: il dominio è una **preferenza, non un filtro**. Un fatto molto pertinente ma archiviato in un dominio diverso da quello (non-deterministico) della domanda riemerge comunque. *(Prima della V2.19 era un gate rigido che filtrava per dominio e faceva fallback solo con <2 risultati → falsi negativi: Euri rispondeva "non ho niente in memoria" su fatti presenti in decine di memorie.)*
 3. **Hybrid fill** — se i risultati sono ancora sotto il limite, `_search_hybrid` (semantic + safe_keywords) riempie i posti rimanenti.
 
+**Dual-channel passivo (V2.20, rollout controllato)** — il census LoCoMo
+italiano ha mostrato che far competere le parafrasi passive con il dialogo
+originale peggiora il substrato di risposta. La policy validata
+`dual-channel-q2r1-v1` separa quindi i ruoli:
+
+- il contesto RAG senza `source=passive` è la base protetta e non viene mai
+  rimosso o troncato dal canale passivo;
+- ogni turno nuovo viene conservato verbatim in un archivio Redis separato
+  (`euri:turn:*`), con un riferimento stabile conversazione+sequenza;
+- una memoria passiva può soltanto localizzare fino a due turni originali:
+  nel prompt entra il verbatim con il parlante, mai il testo sintetico della
+  memoria usata come locator;
+- se la fonte originale non è disponibile, il sistema resta fail-closed e non
+  usa la parafrasi come prova. Le vecchie memorie restano nello storico e non
+  vengono cancellate.
+
+Nel census cieco appaiato (5 conversazioni × 2 repliche, 989 domande) il canale
+duale ha chiuso con verdetto preregistrato **GO**: evidence recall `+0,0311`,
+22 recuperi esclusivi e 0 evidenze perse; token F1 `+0,0023` (piccolo, intervallo
+clusterizzato compatibile con zero) e prudenza avversariale `+0,0080`. Il
+compositore usato dal runtime è lo stesso modulo importato dal benchmark.
+Il rollout è reversibile con `EURI_RAG_DUAL_CHANNEL_MODE=off|shadow|on`;
+il default è `off`, mentre l'archivio dei turni viene popolato in ogni modalità.
+
 ### 3. Dream Engine (Cicli cognitivi in idle)
 Quando non gli parli per un po', Euri entra in cicli cognitivi offline. Non è più un blocco "notturno": l'orchestratore separa pass leggeri, sogni creativi e manutenzione lenta.
 - **Ciclo leggero** (~20 min di cadenza mentre è idle): valuta insight candidati, metabolizza correzioni pending, genera ipotesi trasversali da episodi ripetuti e propaga la provenienza.

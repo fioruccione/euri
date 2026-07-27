@@ -59,6 +59,8 @@ class RagContext:
     # include soltanto il blocco results, mentre nodes distingue anche reflection,
     # impegni e insight senza cambiare retrieval o risposta.
     nodes: list[dict] = field(default_factory=list)
+    turn_ids: list[str] = field(default_factory=list)
+    diagnostics: dict = field(default_factory=dict)
 
 
 def insight_requires_external_validation(insight: dict) -> bool:
@@ -127,12 +129,15 @@ def build_rag_context(
     *,
     mode: str = "chat",
     recent_history: list[dict] | None = None,
+    excluded_sources: set[str] | None = None,
+    touch: bool = True,
 ) -> RagContext:
     """Costruisce il contesto RAG base e ritorna anche gli ID iniettati."""
     from utils.temporal import extract_temporal_range
     from core.temporal_recall import prioritize_window
 
     source_filter = config.DEMO_CONTEXT_SOURCES if config.DEMO_MODE else None
+    source_exclude = sorted(excluded_sources or ())
     search_mode = mode == "search"
     recent_context_query = bool(_RECENT_CONTEXT_RE.search(text or ""))
     reference_at = now().timestamp()
@@ -153,11 +158,14 @@ def build_rag_context(
     if history_resolves_query:
         results = []
     elif not search_mode or recent_context_query:
-        results = memory.get_recent_memories(
-            limit=config.RAG_RECENCY_LIMIT,
-            source_filter=source_filter,
-            touch=False,
-        )
+        recent_kwargs = {
+            "limit": config.RAG_RECENCY_LIMIT,
+            "source_filter": source_filter,
+            "touch": False,
+        }
+        if source_exclude:
+            recent_kwargs["source_exclude"] = source_exclude
+        results = memory.get_recent_memories(**recent_kwargs)
     else:
         results = []
     seen_ids = {r.get("id") for r in results}
@@ -165,7 +173,12 @@ def build_rag_context(
     time_range = extract_temporal_range(text, now())
     if time_range:
         ts_start, ts_end = time_range
-        window = memory.search_memories_by_timerange(ts_start, ts_end, limit=200)
+        temporal_kwargs = {"limit": 200, "touch": touch}
+        if source_exclude:
+            temporal_kwargs["source_exclude"] = source_exclude
+        window = memory.search_memories_by_timerange(
+            ts_start, ts_end, **temporal_kwargs
+        )
         merged = []
         merged_seen = set()
         for r in prioritize_window(window) + results:
@@ -184,9 +197,14 @@ def build_rag_context(
     )
     keywords = list(dict.fromkeys(w for w in words if w.lower() not in _STOP_WORDS))
     if keywords and not history_resolves_query:
-        extra_memories = memory.search_memories(
-            text, limit=config.RAG_SEMANTIC_LIMIT, source_filter=source_filter
-        )
+        search_kwargs = {
+            "limit": config.RAG_SEMANTIC_LIMIT,
+            "source_filter": source_filter,
+            "touch": touch,
+        }
+        if source_exclude:
+            search_kwargs["source_exclude"] = source_exclude
+        extra_memories = memory.search_memories(text, **search_kwargs)
         kw_query = " | ".join(keywords[:8])
         extra_notes = memory.search_notes(kw_query, limit=2)
         for r in extra_memories + extra_notes:
@@ -395,4 +413,147 @@ def build_rag_context(
         ]
         logger.info(f"RAG ctx [{len(results)} nodi]: {' | '.join(node_tags)}")
 
-    return RagContext(text="\n\n".join(sections), ids=ids, mode=mode, nodes=nodes)
+    history_turn_ids = []
+    if history_resolves_query:
+        history_turn_ids = [
+            str(message.get("turn_ref"))
+            for message in (recent_history or [])[-8:]
+            if message.get("turn_ref") and str(message.get("content") or "").strip()
+        ]
+    return RagContext(
+        text="\n\n".join(sections),
+        ids=ids,
+        mode=mode,
+        nodes=nodes,
+        turn_ids=history_turn_ids,
+    )
+
+
+def _load_memory_document(memory, memory_id: str) -> dict:
+    key = (
+        memory_id
+        if str(memory_id).startswith("euri:memory:")
+        else f"euri:memory:{memory_id}"
+    )
+    try:
+        raw = memory.r.json().get(key, "$")
+    except Exception:
+        return {}
+    if not raw:
+        return {}
+    return raw[0] if isinstance(raw, list) else raw
+
+
+def _passive_source_refs(doc: dict) -> list[str]:
+    temporal = doc.get("temporal_context") or {}
+    refs = [
+        str(ref) for ref in temporal.get("source_turn_refs") or [] if ref
+    ]
+    if refs:
+        return list(dict.fromkeys(refs))
+
+    # Compatibilità con le note create prima dei riferimenti stabili. Possono
+    # essere idratate soltanto se il relativo turno esiste già nell'archivio.
+    conversation_id = str(temporal.get("conversation_id") or "").strip()
+    if not conversation_id:
+        return []
+    refs = []
+    for turn_id in temporal.get("source_turn_ids") or []:
+        try:
+            refs.append(f"{conversation_id}:{int(turn_id)}")
+        except (TypeError, ValueError):
+            continue
+    return list(dict.fromkeys(refs))
+
+
+def build_dual_channel_context(
+    text: str,
+    memory,
+    turn_store,
+    *,
+    mode: str = "chat",
+    recent_history: list[dict] | None = None,
+    touch: bool = True,
+) -> RagContext:
+    """Base senza passive + note passive come locator verso turni originali."""
+    from core.dual_channel import FROZEN_POLICY, POLICY_ID, compose_dual_channel
+
+    base = build_rag_context(
+        text,
+        memory,
+        mode=mode,
+        recent_history=recent_history,
+        excluded_sources={"passive"},
+        touch=touch,
+    )
+    locator_view = build_rag_context(
+        text,
+        memory,
+        mode=mode,
+        recent_history=recent_history,
+        touch=False,
+    )
+    passive_nodes = [
+        node
+        for node in sorted(locator_view.nodes, key=lambda item: item.get("position", 0))
+        if node.get("kind") == "memory" and node.get("source") == "passive"
+    ][: FROZEN_POLICY["Q_notes"]]
+
+    locator_notes = [
+        _passive_source_refs(_load_memory_document(memory, node["id"]))
+        for node in passive_nodes
+    ]
+    composition = compose_dual_channel(
+        base_context_text=base.text,
+        base_slots=len(base.nodes),
+        base_turn_ids=base.turn_ids,
+        locator_notes=locator_notes,
+        render_turn=turn_store.render,
+    )
+
+    added_nodes = []
+    for position, turn_ref in enumerate(composition.added_turn_ids(), 1):
+        turn = turn_store.get(turn_ref)
+        if not turn:
+            continue
+        added_nodes.append(
+            {
+                "kind": "turn",
+                "id": turn_ref,
+                "content": turn.content,
+                "position": position,
+                "retrieval_path": "passive_locator_hydrated",
+                "source": "conversation_verbatim",
+                "domain": "",
+            }
+        )
+
+    diagnostics = composition.to_record()
+    diagnostics.update(
+        {
+            "mode": "dual_channel",
+            "locator_memory_ids": [node["id"] for node in passive_nodes],
+            "locator_notes_considered": len(passive_nodes),
+        }
+    )
+    logger.info(
+        "RAG dual-channel [{}]: base={} locator={} aggiunti={} "
+        "non_disponibili={} budget_scartati={}",
+        POLICY_ID,
+        len(base.nodes),
+        len(passive_nodes),
+        len(composition.additions),
+        sum(
+            item.get("decision") == "source_unavailable"
+            for item in composition.candidates_considered
+        ),
+        composition.discarded_budget,
+    )
+    return RagContext(
+        text=composition.final_context_text,
+        ids=list(base.ids),
+        mode=mode,
+        nodes=list(base.nodes) + added_nodes,
+        turn_ids=list(composition.final_turn_ids),
+        diagnostics=diagnostics,
+    )

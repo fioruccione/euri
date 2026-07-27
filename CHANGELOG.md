@@ -1,5 +1,37 @@
 # Changelog
 
+## 2026-07-27 — Memoria passiva dual-channel: dalla sintesi al locator
+
+- Il census held-out italiano preregistrato (5 conversazioni LoCoMo mai usate,
+  2 repliche, 989 domande) ha dato verdetto `GO` alla policy
+  `dual-channel-q2r1-v1`: evidence recall `+0,0311`, 22 vittorie e 0 perdite
+  appaiate, token F1 `+0,0023`, accuratezza avversariale `+0,0080`,
+  `gold_lost=0`. Il guadagno F1 resta piccolo e con intervallo clusterizzato
+  compatibile con zero; la prova forte è strutturale, non una rivendicazione di
+  accuratezza generale.
+- Le memorie passive non competono più come testo nel candidato dual-channel:
+  la base RAG esclude `source=passive` ed è integralmente protetta; le prime due
+  note passive possono soltanto localizzare un turno sorgente ciascuna, con
+  massimo due aggiunte e budget di 2.500 caratteri applicato soltanto alle
+  aggiunte.
+- Aggiunto un archivio Redis separato `euri:turn:*` per i turni verbatim. Ogni
+  messaggio riceve un riferimento stabile `conversation_id:seq`; il passive
+  learner verifica la persistenza dei turni prima di salvare una nota e non fa
+  ack del journal se l'archivio non è scrivibile.
+- `temporal_context.source_turn_refs` accompagna i vecchi
+  `source_turn_ids`. Le note storiche rimangono intatte e auditabili; se il loro
+  turno originale non esiste, il canale duale non usa la parafrasi come prova.
+- Il compositore congelato vive ora in `core/dual_channel.py` ed è re-esportato
+  dal benchmark: runtime e protocollo misurato non possono divergere
+  silenziosamente. Il filtro `source_exclude` viene applicato prima del KNN
+  domain-boosted, non dopo il taglio degli slot.
+- Rollout reversibile: `EURI_RAG_DUAL_CHANNEL_MODE=off|shadow|on`, default
+  `off`. L'archivio durevole viene popolato anche a policy spenta; `shadow`
+  confronta composizione e dimensioni senza cambiare la risposta.
+- Aggiunte regressioni pure per riferimenti stabili, persistenza verbatim,
+  base protetta, assenza del testo sintetico nel prompt, idratazione della
+  fonte e comportamento fail-closed sulle memorie storiche non idratabili.
+
 ## 2026-07-26 — Identità, analogia e promozione epistemica
 
 - La convergenza di tre sogni non promuove più automaticamente un insight.

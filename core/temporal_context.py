@@ -249,6 +249,11 @@ def derive_passive_memory_metadata(
         "schema_version": TEMPORAL_SCHEMA_VERSION,
         "asserted_at": asserted_at,
         "source_turn_ids": [tid for tid, _ in selected],
+        "source_turn_refs": [
+            str(msg.get("turn_ref"))
+            for _, msg in selected
+            if msg.get("turn_ref")
+        ],
         "conversation_id": latest.get("conversation_id") or "",
         "segment_id": latest.get("segment_id"),
         "source_temporal_expression": source_event_time.get("temporal_expression") or "",

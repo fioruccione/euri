@@ -37,6 +37,7 @@ class Brain:
         self._compress_lock = threading.Lock()
         self.history_lock = threading.Lock()  # protegge _conversation_history da accessi concorrenti
         self._episode_callback = None        # fn(summary, temporal_context) -> salva in Redis
+        self._turn_callback = None           # fn(message) -> archivia il turno originale
 
     @staticmethod
     def _clean(text: str) -> str:
@@ -78,8 +79,11 @@ class Brain:
                 self._history_segment_id += 1
             self._last_user_observed_at = at
         self._history_seq += 1
+        from core.conversation_turns import make_turn_ref
+        turn_ref = make_turn_ref(self._conversation_id, self._history_seq)
         message = {
             "seq": self._history_seq,
+            "turn_ref": turn_ref,
             "role": role,
             "content": content,
             "trusted": bool(trusted),
@@ -89,6 +93,17 @@ class Brain:
         }
         self._conversation_history.append(message)
         self._passive_journal.append(dict(message))
+        if self._turn_callback:
+            try:
+                self._turn_callback(dict(message))
+            except Exception as exc:
+                # Il journal conserva il turno e il passive learner ritenterà la
+                # persistenza prima di pubblicare qualsiasi memoria che lo citi.
+                logger.error(
+                    "Archivio turni: scrittura immediata fallita per {} ({})",
+                    turn_ref,
+                    exc,
+                )
 
     def passive_messages_after(self, last_seq: int) -> list[dict]:
         """Snapshot dei messaggi non ancora processati, immune alla compressione."""
@@ -279,6 +294,9 @@ class Brain:
                     "conversation_id": self._conversation_id,
                     "segment_id": chunk[-1].get("segment_id") if chunk else None,
                     "source_turn_ids": [m.get("seq") for m in chunk if m.get("seq") is not None],
+                    "source_turn_refs": [
+                        m.get("turn_ref") for m in chunk if m.get("turn_ref")
+                    ],
                 }
                 self._episodes.append({
                     "summary": summary,

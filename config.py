@@ -337,6 +337,18 @@ RAG_SEMANTIC_LIMIT = 5       # match semantici alla query corrente (la rilevanza
 RAG_MEM_CAP = 6              # slot totali mostrati su query non-temporale
 RAG_MEM_CAP_TEMPORAL = 10    # slot su query con riferimento di tempo (diario più ampio)
 
+# Memoria passiva dual-channel (validazione census 27/07/2026: GO).
+# off    = retrieval storico invariato;
+# shadow = calcola anche il dual-channel ma risponde col retrieval storico;
+# on     = base senza source=passive, note passive solo come locator di turni originali.
+# Il default resta off per un rollout reversibile: l'archivio durevole dei turni
+# viene comunque popolato, preparando evidenza idratabile per l'attivazione.
+RAG_DUAL_CHANNEL_MODE = os.environ.get(
+    "EURI_RAG_DUAL_CHANNEL_MODE", "off"
+).strip().lower()
+if RAG_DUAL_CHANNEL_MODE not in {"off", "shadow", "on"}:
+    RAG_DUAL_CHANNEL_MODE = "off"
+
 # Episodic Compression (Layer 0 — memoria di sessione)
 # Ogni EPISODE_COMPRESSION_THRESHOLD messaggi, i più vecchi vengono compressi in un episodio.
 # Gli episodi sopravvivono EPISODE_TTL_DAYS giorni in Redis e vengono iniettati come contesto.

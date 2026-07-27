@@ -131,7 +131,27 @@ Rispondi SOLO con l'etichetta. Nessuna spiegazione. Niente virgolette. Tutto min
         return "generale"
 
 
-def domain_aware_search(query: str, embedder, r, limit: int = 5) -> list[dict]:
+def _source_prefilter(
+    source_filter: list[str] | None,
+    source_exclude: list[str] | None,
+) -> str:
+    clauses = []
+    if source_filter:
+        clauses.append("@source:{" + "|".join(source_filter) + "}")
+    if source_exclude:
+        clauses.extend(f"-@source:{{{source}}}" for source in source_exclude)
+    return " ".join(clauses) or "*"
+
+
+def domain_aware_search(
+    query: str,
+    embedder,
+    r,
+    limit: int = 5,
+    *,
+    source_filter: list[str] | None = None,
+    source_exclude: list[str] | None = None,
+) -> list[dict]:
     """
     Ricerca vettoriale in due passaggi.
     Prima cerca di capire il dominio della query, poi filtra i risultati in quel dominio.
@@ -154,8 +174,9 @@ def domain_aware_search(query: str, embedder, r, limit: int = 5) -> list[dict]:
     DOMAIN_BOOST = 0.85  # <1: 'score' è una distanza, quindi in-dominio = avvicinato
     pool = max(limit * 4, 20)
     try:
+        prefilter = _source_prefilter(source_filter, source_exclude)
         q_all = (
-            Query(f"*=>[KNN {pool} @embedding $vec AS score]")
+            Query(f"({prefilter})=>[KNN {pool} @embedding $vec AS score]")
             .sort_by("score")
             .return_fields("id", "content", "source", "score", "created_at", "category", "domain")
             .dialect(2)
@@ -178,6 +199,11 @@ def domain_aware_search(query: str, embedder, r, limit: int = 5) -> list[dict]:
         # requires_verification/provenance_stale/audit_flag/consolidation_risk, altrimenti
         # il prompt RAG perde proprio i flag epistemici che guidano la cautela.
         if item.get("superseded_by"):
+            continue
+        source = item.get("source")
+        if source_filter is not None and source not in source_filter:
+            continue
+        if source_exclude is not None and source in source_exclude:
             continue
         dom = item.get("domain") or getattr(doc, "domain", "generale")
         raw = float(doc.score)
