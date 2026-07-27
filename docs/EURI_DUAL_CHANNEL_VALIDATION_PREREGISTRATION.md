@@ -38,12 +38,15 @@ Composizione del contesto (deterministica, nessun LLM; codice in
 `dual_channel.compose_dual_channel`, riprodotta sul dev set dal test
 `test_dual_channel.py::test_dev_set_reproduction_matches_analysis`):
 
-- **base** = top-5 `rag_only`, **protetta**: mai rimossa né troncata;
+- **base** = **intero contesto prodotto dal ramo `rag_only`**, **integralmente
+  protetto**: mai rimosso né troncato (il RAG può produrre **più di 5 nodi** nelle
+  query temporali; il compositore non tronca);
 - **Q = 2** note passive considerate, nell'ordine di retrieval registrato, usate
   **solo come locator**;
 - **R = 1** source turn verbatim per nota;
 - **dedup** rispetto alla base e fra i sorgenti idratati;
-- **max 2 aggiunte** (max 7 slot);
+- **max 2 aggiunte** (quindi `final_slots <= base_slots + 2`, con `base_slots`
+  qualunque sia il numero di nodi prodotti dal RAG);
 - **budget 2.500 caratteri**: limita **solo** le aggiunte, mai la base;
 - **nessun testo sintetico** delle note entra nel prompt;
 - **category-agnostic**: il forte effetto single-hop è **diagnostico**, non un
@@ -57,7 +60,7 @@ La policy è congelata **prima** del seed e dei risultati.
 
 - Confronto **appaiato per domanda**, stessa selezione, stessi modelli, stessa
   base:
-  - **A. `rag_only`** — risposta sulla base top-5 protetta.
+  - **A. `rag_only`** — risposta sull'intera base rag_only protetta.
   - **B. `dual_channel`** — risposta sulla base **+** ≤2 turni verbatim idratati
     dai locator passivi (policy §2).
   Le due risposte condividono **la stessa base**: B aggiunge soltanto, quindi
@@ -180,3 +183,58 @@ La composizione dual-channel è **solo benchmark**: non modifica la produzione.
 
 Nessuna esecuzione del campione, nessuna modifica alla produzione, nessun F1
 prodotto in questo turno.
+
+---
+
+## 10. Hardening #2 pre-seed (correzioni applicate, protocollo v1)
+
+Secondo giro di correzioni, sempre prima del seed e dei risultati. Nessun cambio
+a Q/R/budget/bracci/metriche; nessuna modifica alla produzione.
+
+1. **Base = intero contesto rag_only protetto** (non "top-5"): il compositore non
+   tronca mai; `final_slots <= base_slots + 2` con `base_slots` qualunque.
+2. Policy invariata: `dual-channel-q2r1-v1` (Q=2, R=1, max 2 aggiunte, budget 2.500
+   solo sulle aggiunte).
+3. **Locator congelati come nella simulazione dev**: retrieval normale su store
+   raw+passive, poi i **primi due nodi con `source=passive`** nell'ordine
+   registrato (`locators_from_nodes`). Nessuna nuova ricerca passive-only.
+4. **Testo delle note mai nel prompt**: i `source_turn_ids` sono risolti nel
+   corpus italiano e resi come **turni verbatim con speaker** (`build_turn_renderer`).
+5. **Renderer deterministico**: `final_chars == len(final_context_text)`, inclusi
+   intestazione, speaker, separatori e newline; il budget è calcolato sul rendering
+   reale e **non modifica mai la base**.
+6. **Precalcolo per domanda** — base su store raw-only, locator su store
+   raw+passive, contesto dual composto. **A e B usano la stessa base byte-per-byte**;
+   `base_sha256` registrato e verificato; una divergenza **arresta la coppia
+   fail-closed** (`run_dual_channel_pair`).
+7. **Controbilanciato solo l'ordine di generazione** delle risposte, non la
+   definizione dei contesti.
+8. **Census** di tutte le domande eleggibili delle 5 conversazioni, **incluse le
+   avversariali**; esclusi solo item strutturalmente invalidi (evidence gold non
+   nel corpus), con conteggio e motivo. Risultato del census:
+   **989 eleggibili** (779 answerable + 210 avversariali), **1 esclusa** (conv-50,
+   `evidence_gold_non_nel_corpus`).
+9. **2 repliche** per conversazione; **N indipendente = 5**.
+10. **Nessuna modifica a `core/rag_context.py`** per i punteggi. Si registrano
+    position, retrieval_path, nodi raw, locator, source idratati, contesto finale,
+    SHA, slot e caratteri.
+11. Regressioni aggiunte (`test_dual_channel.py`): base con >5 nodi conservata;
+    `final_slots <= base_slots + 2`; uguaglianza byte/SHA della base fra i bracci;
+    budget sul rendering reale; assenza di testo sintetico; locator coerenti con la
+    simulazione dev.
+12. **Riproduzione dev col renderer definitivo**: invariata —
+    **198 casi, 9 recuperi esclusivi, 0 gold persi, provenance 75,76%**. Il conteggio
+    esatto del budget introduce 28 scarti-budget in più ma non tocca le coperture
+    del gold. **Parametri non ritoccati.**
+
+### Forecast del census (2 repliche)
+
+10 coppie · **3.956 generazioni** (989 × 2 repliche × 2 bracci) · **~12.000–23.000**
+chiamate LLM locali stimate · **~10–19 h** a 3 s/chiamata. Il census è costoso: la
+scelta census-vs-campione resta un punto di revisione (§9.3).
+
+Comandi (nessuna esecuzione qui):
+```
+./venv/bin/python -m benchmarks.euri_memory.cli dual-dry-run \
+  --source benchmarks/euri_memory/data/locomo10.json --output <dir>/dual_dry_run.json
+```

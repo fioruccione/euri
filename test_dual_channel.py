@@ -1,29 +1,39 @@
 #!/usr/bin/env python3
 """Regressioni pure della policy dual-channel congelata (nessun LLM/Redis).
 
-Include una riproduzione sul development set: la policy congelata deve
-riprodurre esattamente il risultato analizzato offline (provenance finale
-75,76%, 9 recuperi esclusivi, 0 gold persi) alla config Q=2/R=1/budget=2500.
+Copre le regressioni della correzione 11 e la riproduzione dev con il renderer
+definitivo (correzione 12): la policy congelata riproduce esattamente il
+risultato analizzato (198 casi, 9 recuperi esclusivi, 0 gold persi, provenance
+finale 75,76%), anche col budget calcolato sul rendering reale.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
+from benchmarks.euri_memory.adapters import LoCoMoAdapter
 from benchmarks.euri_memory.dual_channel import (
+    ADDITIONS_HEADER,
     FROZEN_POLICY,
     compose_dual_channel,
     gold_covered,
 )
+from benchmarks.euri_memory.dual_channel_worker import (
+    build_census,
+    locators_from_nodes,
+    structural_dry_run,
+)
 
 
 ROOT = Path(__file__).resolve().parent
+OFFICIAL = ROOT / "benchmarks" / "euri_memory" / "data" / "locomo10.json"
 DEV_RUN = ROOT / "audit_output" / "passive_memory_heldout_v1_seed914917171" / "run"
 
 
-def _fixed_chars(_turn):  # ogni turno costa 100 caratteri
-    return 100
+def _render_short(t):
+    return f"S: {t}"
 
 
 def test_frozen_policy_values():
@@ -33,98 +43,150 @@ def test_frozen_policy_values():
     assert FROZEN_POLICY["max_additions"] == 2
     assert FROZEN_POLICY["char_budget"] == 2500
     assert FROZEN_POLICY["synthetic_text_in_prompt"] is False
+    assert FROZEN_POLICY["base"] == "entire_rag_only_context_protected"
 
 
-def test_base_is_protected_and_no_synthetic_text():
+def test_base_more_than_5_nodes_fully_preserved():
+    base_ids = [f"D1:{i}" for i in range(1, 8)]  # 7 nodi (query temporale)
+    base_text = "\n".join(f"S: turno {t}" for t in base_ids)
     comp = compose_dual_channel(
-        base_turn_ids=["D1:1", "D1:2"],
-        base_chars=300,
-        locator_notes=[["D5:1"], ["D6:1"]],
-        turn_chars=_fixed_chars,
+        base_context_text=base_text,
+        base_slots=7,
+        base_turn_ids=base_ids,
+        locator_notes=[["D9:1"]],
+        render_turn=_render_short,
     )
-    # base sempre presente e per prima
-    assert comp.final_turn_ids[:2] == ["D1:1", "D1:2"]
-    assert comp.base_chars == 300  # base mai troncata
-    # nessun testo sintetico: le aggiunte portano solo turn_id/chars
-    for a in comp.additions:
+    assert comp.base_slots == 7
+    assert comp.final_context_text.startswith(base_text)  # base intera conservata
+    assert all(t in comp.final_turn_ids for t in base_ids)
+    assert comp.base_chars == len(base_text)
+
+
+def test_max_two_additions_and_slot_bound():
+    base_text = "S: base"
+    comp = compose_dual_channel(
+        base_context_text=base_text,
+        base_slots=7,
+        base_turn_ids=["D1:1"],
+        locator_notes=[["D2:1"], ["D3:1"], ["D4:1"]],  # Q=2 -> solo prime due note
+        render_turn=_render_short,
+    )
+    assert len(comp.additions) == 2
+    assert comp.final_slots <= comp.base_slots + 2
+
+
+def test_base_bytes_and_sha_equal_across_arms():
+    base_text = "OwnerUser: ciao\nAssistant: salve"
+    comp = compose_dual_channel(
+        base_context_text=base_text,
+        base_slots=2,
+        base_turn_ids=["D1:1", "D1:2"],
+        locator_notes=[["D5:1"]],
+        render_turn=_render_short,
+    )
+    # Braccio A userebbe base_text; braccio B usa comp.final_context_text.
+    assert comp.final_context_text[: len(base_text)] == base_text  # byte-per-byte
+    assert comp.base_sha256 == hashlib.sha256(base_text.encode()).hexdigest()
+    assert comp.final_sha256 == hashlib.sha256(comp.final_context_text.encode()).hexdigest()
+
+
+def test_budget_computed_on_real_rendering_never_touches_base():
+    base_text = "x" * 2450  # base vicina al budget
+    long_render = lambda t: "y" * 100  # noqa: E731
+    comp = compose_dual_channel(
+        base_context_text=base_text,
+        base_slots=3,
+        base_turn_ids=["D1:1"],
+        locator_notes=[["D2:1"]],
+        render_turn=long_render,
+    )
+    # header + sep + 100 caratteri superano 2500 -> scartata per budget
+    assert comp.additions == []
+    assert comp.discarded_budget == 1
+    assert comp.base_chars == 2450  # base mai modificata
+    assert comp.final_context_text == base_text
+    # verifica che il conto sia sul rendering reale (header incluso)
+    assert len(base_text) + len(ADDITIONS_HEADER) + 1 + 100 > FROZEN_POLICY["char_budget"]
+
+
+def test_no_synthetic_text_in_record():
+    comp = compose_dual_channel(
+        base_context_text="S: base",
+        base_slots=1,
+        base_turn_ids=["D1:1"],
+        locator_notes=[["D2:1"]],
+        render_turn=_render_short,
+    )
+    rec = comp.to_record()
+    for a in rec["additions"]:
         assert set(a) == {"turn_id", "chars", "from_note_index"}
-    for c in comp.candidates_considered:
+    for c in rec["candidates_considered"]:
         assert "content" not in c and "text" not in c
+    assert "base_context_text" not in rec  # solo hash/lunghezze, non il testo
 
 
 def test_dedup_against_base_and_between_sources():
     comp = compose_dual_channel(
+        base_context_text="S: base",
+        base_slots=1,
         base_turn_ids=["D1:1"],
-        base_chars=100,
         locator_notes=[["D1:1"], ["D2:1"]],  # prima nota duplica la base
-        turn_chars=_fixed_chars,
+        render_turn=_render_short,
     )
     assert comp.duplicates_skipped == 1
     assert comp.added_turn_ids() == ["D2:1"]
 
 
-def test_slot_cap_limits_to_two_additions():
-    comp = compose_dual_channel(
-        base_turn_ids=["D1:1"],
-        base_chars=100,
-        locator_notes=[["D2:1"], ["D3:1"]],  # Q=2, ciascuna 1 source -> 2 aggiunte
-        turn_chars=_fixed_chars,
-    )
-    assert len(comp.additions) == 2
-    # una terza nota non verrebbe comunque considerata (Q=2)
-    comp3 = compose_dual_channel(
-        base_turn_ids=["D1:1"],
-        base_chars=100,
-        locator_notes=[["D2:1"], ["D3:1"], ["D4:1"]],
-        turn_chars=_fixed_chars,
-    )
-    assert len(comp3.additions) == 2
-    assert comp3.discarded_slot_cap == 0  # la 3ª nota è fuori quota Q, non scartata per slot
+def test_locators_match_dev_simulation_selection():
+    nodes = [
+        {"position": 0, "source": "conversation", "evidence_turn_ids": ["D1:1"]},
+        {"position": 1, "source": "passive", "evidence_turn_ids": ["D2:1"]},
+        {"position": 2, "source": "conversation", "evidence_turn_ids": ["D3:1"]},
+        {"position": 3, "source": "passive", "evidence_turn_ids": ["D4:1", "D4:2"]},
+        {"position": 4, "source": "passive", "evidence_turn_ids": ["D5:1"]},
+    ]
+    # primi due nodi con source=passive, in ordine di posizione; niente ricerca nuova
+    assert locators_from_nodes(nodes) == [["D2:1"], ["D4:1", "D4:2"]]
 
 
-def test_budget_limits_only_additions_never_base():
-    # base già oltre il budget: nessuna aggiunta, base intatta
-    comp = compose_dual_channel(
-        base_turn_ids=["D1:1", "D1:2"],
-        base_chars=2600,
-        locator_notes=[["D2:1"]],
-        turn_chars=_fixed_chars,
-    )
-    assert comp.additions == []
-    assert comp.discarded_budget == 1
-    assert comp.base_chars == 2600
-    assert comp.final_turn_ids == ["D1:1", "D1:2"]
+def test_census_includes_adversarial_and_reports_exclusions():
+    if not OFFICIAL.is_file():
+        return
+    census = build_census(OFFICIAL)
+    assert census["universe"] == ["conv-41", "conv-44", "conv-48", "conv-49", "conv-50"]
+    assert census["totals"]["adversarial"] > 0  # avversariali incluse
+    assert census["totals"]["answerable"] > 0
+    for conv in census["conversations"]:
+        for ex in conv["excluded"]:
+            assert ex["reason"] == "evidence_gold_non_nel_corpus"
 
 
-def test_r_limits_sources_per_note():
-    comp = compose_dual_channel(
-        base_turn_ids=["D1:1"],
-        base_chars=100,
-        locator_notes=[["D2:1", "D2:2"]],  # R=1 -> solo il primo
-        turn_chars=_fixed_chars,
-    )
-    assert comp.added_turn_ids() == ["D2:1"]
+def test_structural_dry_run_invariants():
+    if not OFFICIAL.is_file():
+        return
+    res = structural_dry_run(source=OFFICIAL)
+    assert res["all_invariants_ok"] is True
+    assert res["forecast"]["pairs_total"] == 5 * 2
 
 
 def _dev_available() -> bool:
     return (DEV_RUN / "runs").is_dir() and (DEV_RUN / "localizations").is_dir()
 
 
-def test_dev_set_reproduction_matches_analysis():
-    if not _dev_available():
+def test_dev_reproduction_with_definitive_renderer():
+    if not (_dev_available() and OFFICIAL.is_file()):
         return
+    corpus = {c.sample_id: c for c in LoCoMoAdapter().load(OFFICIAL)}
+    speaker = {sid: {t.turn_id: t.speaker for t in case.turns} for sid, case in corpus.items()}
     loc = {}
     for p in sorted((DEV_RUN / "localizations").glob("*.it.json")):
         loc[p.name[: -len(".it.json")]] = json.loads(p.read_text()).get("turns", {})
 
-    n = 0
-    final_hits = 0
-    exclusive = 0
-    gold_lost = 0
+    n = final_hits = exclusive = gold_lost = 0
     for path in sorted((DEV_RUN / "runs").glob("*.json")):
         rep = json.loads(path.read_text())
-        prof = {pr["profile"]["name"]: pr for pr in rep["profiles"]}
         sample = rep["dataset"]["sample_id"]
+        prof = {pr["profile"]["name"]: pr for pr in rep["profiles"]}
         gold_by_q = {g["question_id"]: g for g in rep["evaluation_gold"]}
         rag = {r["question_id"]: r for r in prof["rag_only"]["results"]}
         pas = {r["question_id"]: r for r in prof["passive_memory"]["results"]}
@@ -133,20 +195,23 @@ def test_dev_set_reproduction_matches_analysis():
                 continue
             n += 1
             gold = [str(t) for t in g["evidence_turn_ids"]]
-            rnodes = rag[qid].get("metadata", {}).get("retrieval_nodes", [])
-            base_turns = [str(t) for node in sorted(rnodes, key=lambda x: x.get("position", 0))
+            rn = rag[qid].get("metadata", {}).get("retrieval_nodes", [])
+            base_turns = [str(t) for node in sorted(rn, key=lambda x: x.get("position", 0))
                           if node.get("source") == "conversation"
                           for t in (node.get("evidence_turn_ids") or [])]
             base_chars = rag[qid].get("metadata", {}).get("rag_chars", 0)
-            pnodes = pas[qid].get("metadata", {}).get("retrieval_nodes", [])
-            notes = [[str(t) for t in (node.get("evidence_turn_ids") or [])]
-                     for node in sorted(pnodes, key=lambda x: x.get("position", 0))
-                     if node.get("source") == "passive"]
+            pn = pas[qid].get("metadata", {}).get("retrieval_nodes", [])
+            notes = locators_from_nodes(pn)
+
+            def render(tid, s=sample):
+                return f"{speaker.get(s, {}).get(tid, '?')}: {loc.get(s, {}).get(tid, '')}"
+
             comp = compose_dual_channel(
+                base_context_text="x" * base_chars,
+                base_slots=len(rn),
                 base_turn_ids=base_turns,
-                base_chars=base_chars,
                 locator_notes=notes,
-                turn_chars=lambda t, s=sample: len(loc.get(s, {}).get(t, "")),
+                render_turn=render,
             )
             base_cov = gold_covered(comp.base_turn_ids, gold)
             final_cov = gold_covered(comp.final_turn_ids, gold)
@@ -164,11 +229,7 @@ def test_dev_set_reproduction_matches_analysis():
 
 
 if __name__ == "__main__":
-    test_frozen_policy_values()
-    test_base_is_protected_and_no_synthetic_text()
-    test_dedup_against_base_and_between_sources()
-    test_slot_cap_limits_to_two_additions()
-    test_budget_limits_only_additions_never_base()
-    test_r_limits_sources_per_note()
-    test_dev_set_reproduction_matches_analysis()
+    for name, fn in sorted(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            fn()
     print("test_dual_channel: OK")

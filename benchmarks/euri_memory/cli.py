@@ -79,6 +79,11 @@ def main() -> int:
     ha.add_argument("--manifest", type=Path, required=True)
     ha.add_argument("--output", type=Path, required=True)
 
+    # Dual-channel: census + forecast + invarianti, senza LLM né Redis.
+    dd = subparsers.add_parser("dual-dry-run")
+    dd.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
+    dd.add_argument("--output", type=Path, required=True)
+
     args = parser.parse_args()
 
     if args.command == "smoke":
@@ -344,6 +349,23 @@ def main() -> int:
                     "n_conversations": report["n_conversations"],
                     "pairs_complete": report["pairs_complete"],
                     "underpowered": report["power"]["underpowered"],
+                    "output": str(args.output),
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+    if args.command == "dual-dry-run":
+        from benchmarks.euri_memory.dual_channel_worker import structural_dry_run
+
+        result = structural_dry_run(source=args.source, output=args.output)
+        print(
+            json.dumps(
+                {
+                    "all_invariants_ok": result["all_invariants_ok"],
+                    "census_totals": result["census_totals"],
+                    "estimated_llm_calls": result["forecast"]["estimated_llm_calls"],
+                    "estimated_hours": result["forecast"]["estimated_hours"],
                     "output": str(args.output),
                 },
                 sort_keys=True,
