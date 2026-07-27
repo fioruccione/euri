@@ -11,6 +11,7 @@ test_convergence_policy.py
 test_cross_episode_hypothesis.py
 test_dream_schedule.py
 test_dream_seed_gate.py
+test_dual_channel.py
 test_dream_timeout.py
 test_dream_trace_paired.py
 test_epistemic_ranking.py
