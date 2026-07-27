@@ -22,6 +22,8 @@ from benchmarks.euri_memory.dual_channel import (
 )
 from benchmarks.euri_memory.dual_channel_worker import (
     build_census,
+    hydrate_base_turn_ids,
+    hydrate_locator_notes,
     locators_from_nodes,
     structural_dry_run,
 )
@@ -147,6 +149,37 @@ def test_locators_match_dev_simulation_selection():
     ]
     # primi due nodi con source=passive, in ordine di posizione; niente ricerca nuova
     assert locators_from_nodes(nodes) == [["D2:1"], ["D4:1", "D4:2"]]
+
+
+def test_hydration_from_redis_docs_reconstructs_base_and_locators():
+    # Blocker 1: RagContext.nodes NON contiene evidence_turn_ids; la risoluzione
+    # avviene dai documenti Redis (benchmark_turn_id / benchmark_evidence_turn_ids).
+    nodes = [
+        {"id": "raw-a", "kind": "memory", "source": "conversation", "position": 0},
+        {"id": "pas-a", "kind": "memory", "source": "passive", "position": 1},
+        {"id": "raw-b", "kind": "memory", "source": "conversation", "position": 2},
+        {"id": "pas-b", "kind": "memory", "source": "passive", "position": 3},
+        {"id": "pas-c", "kind": "memory", "source": "passive", "position": 4},
+    ]
+    # nessun nodo porta evidence_turn_ids: devono essere risolti dai doc
+    for n in nodes:
+        assert "evidence_turn_ids" not in n
+    docs = {
+        "raw-a": {"benchmark_turn_id": "D1:1"},
+        "raw-b": {"benchmark_turn_id": "D2:5"},
+        "pas-a": {"benchmark_evidence_turn_ids": ["D3:2"]},
+        "pas-b": {"benchmark_evidence_turn_ids": ["D4:1", "D4:2"]},
+        "pas-c": {"benchmark_evidence_turn_ids": ["D5:9"]},
+        # fallback: nessun benchmark_evidence, ma source_turn_ids canonici
+        "pas-d": {"temporal_context": {"source_turn_ids": ["D6:1"]}},
+    }
+    load = lambda i: docs.get(i, {})  # noqa: E731
+    assert hydrate_base_turn_ids(nodes, load) == ["D1:1", "D2:5"]
+    # Q=2: solo i primi due nodi passive, in ordine di posizione
+    assert hydrate_locator_notes(nodes, load) == [["D3:2"], ["D4:1", "D4:2"]]
+    # fallback ai source_turn_ids canonici quando manca benchmark_evidence
+    fallback_nodes = [{"id": "pas-d", "kind": "memory", "source": "passive", "position": 0}]
+    assert hydrate_locator_notes(fallback_nodes, load) == [["D6:1"]]
 
 
 def test_census_includes_adversarial_and_reports_exclusions():

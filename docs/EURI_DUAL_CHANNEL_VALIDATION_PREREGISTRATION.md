@@ -227,14 +227,33 @@ a Q/R/budget/bracci/metriche; nessuna modifica alla produzione.
     esatto del budget introduce 28 scarti-budget in più ma non tocca le coperture
     del gold. **Parametri non ritoccati.**
 
-### Forecast del census (2 repliche)
+### Census CONFERMATO e forecast (2 repliche)
 
-10 coppie · **3.956 generazioni** (989 × 2 repliche × 2 bracci) · **~12.000–23.000**
-chiamate LLM locali stimate · **~10–19 h** a 3 s/chiamata. Il census è costoso: la
-scelta census-vs-campione resta un punto di revisione (§9.3).
+Census completo confermato: **989 domande eleggibili** (779 answerable + 210
+avversariali, 1 esclusa), 5 conversazioni × 2 repliche, **nessun campionamento**.
+Euri resta spenta.
 
-Comandi (nessuna esecuzione qui):
+- **Traduzione** delle 5 conversazioni (localizzazione sigillata): **5.074 unità**
+  ≈ **~85–170 min** (locale, congelata).
+- **Run A/B**: 10 coppie · **3.956 generazioni** (989 × 2 repliche × 2 bracci) ·
+  **~12.000–23.000** chiamate LLM · **~10–19 h** a 3 s/chiamata. Cap **solo
+  tecnici** (timeout per coppia), nessun arresto guidato dalle metriche.
+
+### Pipeline eseguibile (stadiata, un solo Redis per volta)
+
+Worker stadiato nello stesso ambiente isolato: `reset→raw` (base + turni idratati
+dai doc Redis + SHA) → `reset→raw+passive` (locator idratati) → composizione dual
+sulla base **già salvata** → generazione A/B controbilanciata su contesti
+immutabili. La base è lo **stesso oggetto testuale** per i due bracci; divergenza
+SHA → fail-closed. Fasi LLM registrate separatamente: `passive_ingestion`,
+`base_retrieval`, `locator_retrieval`, `answer_rag`, `answer_dual`.
+
+Comandi (nessuna esecuzione qui — `dual-run` reale attende l'audit):
 ```
-./venv/bin/python -m benchmarks.euri_memory.cli dual-dry-run \
-  --source benchmarks/euri_memory/data/locomo10.json --output <dir>/dual_dry_run.json
+cli dual-dry-run   --source <corpus> --output <dir>/dual_dry_run.json      # struttura+forecast
+cli dual-manifest  --source <corpus> --output <dir>/census.json           # manifest cieco census
+cli dual-localize  --selection-manifest <dir>/census.json --output <dir>/it.json   # (+ --dry-run)
+cli dual-finalize  --selection-manifest <dir>/census.json --localization <dir>/it.json --output <dir>/final.json
+cli dual-run       --manifest <dir>/final.json --localization <dir>/it.json --output-dir <dir>/run   # (+ --dry-run)
+cli dual-analyze   --results-dir <dir>/run/runs --manifest <dir>/final.json --output <dir>/run/analysis.json
 ```

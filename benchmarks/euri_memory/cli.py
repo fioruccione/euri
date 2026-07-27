@@ -84,6 +84,37 @@ def main() -> int:
     dd.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
     dd.add_argument("--output", type=Path, required=True)
 
+    dm = subparsers.add_parser("dual-manifest")
+    dm.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
+    dm.add_argument("--replicas", type=int, default=2)
+    dm.add_argument("--output", type=Path, required=True)
+
+    dl = subparsers.add_parser("dual-localize")
+    dl.add_argument("--selection-manifest", type=Path, required=True)
+    dl.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
+    dl.add_argument("--output", type=Path, required=True)
+    dl.add_argument("--model", default=None)
+    dl.add_argument("--model-version", default=None)
+    dl.add_argument("--dry-run", action="store_true")
+
+    df = subparsers.add_parser("dual-finalize")
+    df.add_argument("--selection-manifest", type=Path, required=True)
+    df.add_argument("--localization", type=Path, required=True)
+    df.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
+    df.add_argument("--output", type=Path, required=True)
+
+    dr = subparsers.add_parser("dual-run")
+    dr.add_argument("--manifest", type=Path, required=True)
+    dr.add_argument("--localization", type=Path)
+    dr.add_argument("--output-dir", type=Path, required=True)
+    dr.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
+    dr.add_argument("--dry-run", action="store_true")
+
+    da = subparsers.add_parser("dual-analyze")
+    da.add_argument("--results-dir", type=Path, required=True)
+    da.add_argument("--manifest", type=Path, required=True)
+    da.add_argument("--output", type=Path, required=True)
+
     args = parser.parse_args()
 
     if args.command == "smoke":
@@ -371,6 +402,110 @@ def main() -> int:
                 sort_keys=True,
             )
         )
+        return 0
+    if args.command == "dual-manifest":
+        from benchmarks.euri_memory.dual_channel_pipeline import build_census_manifest
+
+        manifest = build_census_manifest(corpus_path=args.source, replicas=args.replicas)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=True), encoding="utf-8"
+        )
+        print(json.dumps({
+            "manifest_sha256": manifest["manifest_sha256"],
+            "conversations": [c["sample_id"] for c in manifest["conversations"]],
+            "eligible": sum(c["question_count"] for c in manifest["conversations"]),
+            "output": str(args.output),
+        }, sort_keys=True))
+        return 0
+    if args.command == "dual-localize":
+        from benchmarks.euri_memory.heldout import verify_manifest
+        from benchmarks.euri_memory.heldout_localization import (
+            LocalizationError,
+            build_selected_localization,
+            localization_forecast,
+            ollama_translator,
+            verify_selected_localization,
+        )
+
+        selection_manifest = json.loads(args.selection_manifest.read_text(encoding="utf-8"))
+        verify_manifest(selection_manifest)
+        if args.dry_run:
+            fc = localization_forecast(selection_manifest, args.source)
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(json.dumps(fc, indent=2, ensure_ascii=False), encoding="utf-8")
+            print(json.dumps(fc, sort_keys=True))
+            return 0
+        import config
+
+        model = args.model or config.OLLAMA_MODEL
+        try:
+            localization = build_selected_localization(
+                corpus_path=args.source, selection_manifest=selection_manifest,
+                translate_fn=ollama_translator(model), model=model, model_version=args.model_version,
+            )
+            verify_selected_localization(localization, args.source, selection_manifest)
+        except LocalizationError as exc:
+            print(json.dumps({"event": "localization_error", "detail": str(exc)}), flush=True)
+            return 4
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(
+            json.dumps(localization, indent=2, ensure_ascii=False, sort_keys=True), encoding="utf-8"
+        )
+        print(json.dumps({"localization_sha256": localization["localization_sha256"],
+                          "output": str(args.output)}, sort_keys=True))
+        return 0
+    if args.command == "dual-finalize":
+        from benchmarks.euri_memory.dual_channel_pipeline import build_dual_final_manifest
+        from benchmarks.euri_memory.heldout_localization import LocalizationError
+
+        selection_manifest = json.loads(args.selection_manifest.read_text(encoding="utf-8"))
+        localization = json.loads(args.localization.read_text(encoding="utf-8"))
+        try:
+            final = build_dual_final_manifest(selection_manifest, localization, corpus_path=args.source)
+        except LocalizationError as exc:
+            print(json.dumps({"event": "finalize_error", "detail": str(exc)}), flush=True)
+            return 4
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(
+            json.dumps(final, indent=2, ensure_ascii=False, sort_keys=True), encoding="utf-8"
+        )
+        print(json.dumps({"manifest_sha256": final["manifest_sha256"], "stage": final["stage"],
+                          "output": str(args.output)}, sort_keys=True))
+        return 0
+    if args.command == "dual-run":
+        from benchmarks.euri_memory.dual_channel_pipeline import DualPipelineError, run_all
+        from benchmarks.euri_memory.integrity import IntegrityError
+
+        try:
+            result = run_all(
+                manifest_path=args.manifest, localization_path=args.localization,
+                output_dir=args.output_dir, corpus_path=args.source, dry_run=args.dry_run,
+            )
+        except (DualPipelineError, IntegrityError) as exc:
+            print(json.dumps({"event": "dual_run_error", "detail": str(exc)}), flush=True)
+            return 4
+        if args.dry_run:
+            print(json.dumps(result["forecast"]["estimated_llm_calls"], sort_keys=True))
+        else:
+            print(json.dumps({"pairs_completed": result["pairs_completed"],
+                              "pairs_planned": result["pairs_planned"]}, sort_keys=True))
+        return 0
+    if args.command == "dual-analyze":
+        from benchmarks.euri_memory.dual_channel_pipeline import DualPipelineError, analyze
+
+        try:
+            report = analyze(args.results_dir, args.manifest)
+        except DualPipelineError as exc:
+            print(json.dumps({"event": "dual_analysis_error", "detail": str(exc)}), flush=True)
+            return 4
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(
+            json.dumps(report, indent=2, ensure_ascii=False, sort_keys=True), encoding="utf-8"
+        )
+        print(json.dumps({"n_conversations": report["n_conversations"],
+                          "underpowered": report["power"]["underpowered"],
+                          "output": str(args.output)}, sort_keys=True))
         return 0
     return 2
 
