@@ -669,3 +669,78 @@ def build_dual_channel_context(
         turn_ids=list(composition.final_turn_ids),
         diagnostics=diagnostics,
     )
+
+
+def build_runtime_rag_context(
+    text: str,
+    memory,
+    turn_store,
+    *,
+    mode: str = "chat",
+    recent_history: list[dict] | None = None,
+    dual_mode: str | None = None,
+) -> RagContext:
+    """Unico dispatcher RAG per voce, mobile e Silent Chat."""
+    selected = (
+        dual_mode
+        if dual_mode is not None
+        else getattr(config, "RAG_DUAL_CHANNEL_MODE", "off")
+    )
+    if selected in {"on", "selective"}:
+        try:
+            return build_dual_channel_context(
+                text,
+                memory,
+                turn_store,
+                mode=mode,
+                recent_history=recent_history,
+                presentation=(
+                    "selective" if selected == "selective" else "append"
+                ),
+                observe_selective=selected == "selective",
+            )
+        except Exception as exc:
+            logger.error(
+                "RAG dual-channel fallito: fallback alla sola base protetta ({})",
+                exc,
+            )
+            return build_rag_context(
+                text,
+                memory,
+                mode=mode,
+                recent_history=recent_history,
+                excluded_sources={"passive"},
+            )
+
+    rag = build_rag_context(
+        text,
+        memory,
+        mode=mode,
+        recent_history=recent_history,
+    )
+    if selected == "shadow":
+        try:
+            shadow = build_dual_channel_context(
+                text,
+                memory,
+                turn_store,
+                mode=mode,
+                recent_history=recent_history,
+                touch=False,
+                presentation="selective",
+                observe_selective=True,
+            )
+            gate = shadow.diagnostics.get("selective_gate") or {}
+            logger.info(
+                "RAG dual shadow: legacy_chars={} dual_chars={} "
+                "aggiunti={} promossi={} presentazione={} base_sha={}",
+                len(rag.text),
+                len(shadow.text),
+                len(shadow.diagnostics.get("added_turn_ids") or []),
+                len(gate.get("promoted_turn_ids") or []),
+                shadow.diagnostics.get("presentation_applied"),
+                str(shadow.diagnostics.get("base_sha256") or "")[:12],
+            )
+        except Exception as exc:
+            logger.warning(f"RAG dual shadow non disponibile ({exc})")
+    return rag

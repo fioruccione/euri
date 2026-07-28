@@ -15,6 +15,14 @@
   serve ora come development set; la validazione indipendente passa al
   benchmark successivo e, nel frattempo, alle osservazioni qualitative sulle
   memorie reali di Euri.
+- Prova live UBQ del 28 luglio: la falsa premessa `1400 MPa` è stata respinta,
+  ma la successiva richiesta dei valori salvati non recuperava la memoria
+  corretta in Silent Chat. Diagnosi: il canale Streamlit usava ancora il RAG
+  legacy e non collegava il `Brain` all'archivio turni. Ora
+  `build_runtime_rag_context` è il dispatcher unico di voce, mobile e Silent
+  Chat; la chat usa la history con `turn_ref` e salva i nuovi turni verbatim.
+  Al riavvio riprovare `trova i dati salvati sul Compound UBQ 2026` e verificare
+  nel log sia `RAG dual-channel` sia il nodo user UBQ nella base protetta.
 - Correzione epistemica del 26 luglio: la convergenza non basta più a promuovere
   un sogno. `premise_fidelity=1.0` e `bridge_validity=supported` sono gate
   fail-closed; `hypothesis` produce un evento `hypothesis_formed` sul Pulse ma

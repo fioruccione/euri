@@ -2,6 +2,16 @@
 
 ## 2026-07-28 — Gate selettivo: il turno originale guadagna il primo piano
 
+- Corretto un drift scoperto nella prova reale su `Compound UBQ 2026`: la voce
+  usava il dual-channel selettivo, mentre la Silent Chat chiamava ancora il
+  builder RAG legacy. Un nuovo dispatcher runtime unico applica ora la stessa
+  modalità `off|shadow|on|selective` a voce, mobile e chat testuale, incluso il
+  fallback fail-closed alla base senza memorie passive.
+- La Silent Chat collega ora il `Brain` allo stesso archivio durevole
+  `euri:turn:*` e usa la history interna provvista di `turn_ref`. Le nuove
+  memorie passive estratte dalla chat possono quindi localizzare e idratare i
+  turni originali; non vengono più generate senza riferimenti sorgente solo
+  perché la conversazione è avvenuta da tastiera.
 - L'ablation generativa preregistrata sul census LoCoMo già aperto ha isolato
   l'effetto della posizione: sui 43 casi domanda×replica in cui il canale
   passivo recuperava evidenza assente dal RAG, il prepend semplice ha portato il

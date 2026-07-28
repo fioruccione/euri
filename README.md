@@ -88,9 +88,12 @@ Il rollout è reversibile con
 `EURI_RAG_DUAL_CHANNEL_MODE=off|shadow|on|selective`: `on` conserva l'append
 validato, `shadow` calcola il gate senza cambiare la risposta e `selective`
 applica la promozione condizionale. Il default generico di `config.py` resta
-`off`; il launcher della workstation personale abilita `selective` per la
-valutazione live sulle memorie reali. L'archivio dei turni viene popolato in
-ogni modalità.
+spento, mentre il launcher personale abilita la prova `selective`. Voce,
+mobile e Silent Chat passano dallo stesso dispatcher runtime: condividono
+policy, fallback protetto e diagnostica. Anche la chat testuale archivia i
+turni verbatim con `turn_ref`, così una nota passiva nata in chat può restare
+un locator verificabile invece di perdere la propria fonte. L'archivio dei
+turni viene popolato in ogni modalità.
 
 ### 3. Dream Engine (Cicli cognitivi in idle)
 Quando non gli parli per un po', Euri entra in cicli cognitivi offline. Non è più un blocco "notturno": l'orchestratore separa pass leggeri, sogni creativi e manutenzione lenta.

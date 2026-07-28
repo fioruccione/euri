@@ -2114,64 +2114,16 @@ class VoiceDaemon:
 
     def _build_context(self, text: str, *, mode: str = "chat") -> str:
         """Cerca in Redis contenuto rilevante da iniettare come contesto nella risposta."""
-        from core.rag_context import build_dual_channel_context, build_rag_context
+        from core.rag_context import build_runtime_rag_context
         with self.brain.history_lock:
             recent_history = list(self.brain._conversation_history)
-        dual_mode = getattr(config, "RAG_DUAL_CHANNEL_MODE", "off")
-        if dual_mode in {"on", "selective"}:
-            try:
-                rag = build_dual_channel_context(
-                    text,
-                    self.memory,
-                    self.turn_store,
-                    mode=mode,
-                    recent_history=recent_history,
-                    presentation=(
-                        "selective" if dual_mode == "selective" else "append"
-                    ),
-                    observe_selective=dual_mode == "selective",
-                )
-            except Exception as exc:
-                logger.error(
-                    "RAG dual-channel fallito: fallback alla sola base protetta ({})",
-                    exc,
-                )
-                rag = build_rag_context(
-                    text,
-                    self.memory,
-                    mode=mode,
-                    recent_history=recent_history,
-                    excluded_sources={"passive"},
-                )
-        else:
-            rag = build_rag_context(
-                text, self.memory, mode=mode, recent_history=recent_history
-            )
-            if dual_mode == "shadow":
-                try:
-                    shadow = build_dual_channel_context(
-                        text,
-                        self.memory,
-                        self.turn_store,
-                        mode=mode,
-                        recent_history=recent_history,
-                        touch=False,
-                        presentation="selective",
-                        observe_selective=True,
-                    )
-                    gate = shadow.diagnostics.get("selective_gate") or {}
-                    logger.info(
-                        "RAG dual shadow: legacy_chars={} dual_chars={} "
-                        "aggiunti={} promossi={} presentazione={} base_sha={}",
-                        len(rag.text),
-                        len(shadow.text),
-                        len(shadow.diagnostics.get("added_turn_ids") or []),
-                        len(gate.get("promoted_turn_ids") or []),
-                        shadow.diagnostics.get("presentation_applied"),
-                        str(shadow.diagnostics.get("base_sha256") or "")[:12],
-                    )
-                except Exception as exc:
-                    logger.warning(f"RAG dual shadow non disponibile ({exc})")
+        rag = build_runtime_rag_context(
+            text,
+            self.memory,
+            self.turn_store,
+            mode=mode,
+            recent_history=recent_history,
+        )
         # Thread-local: voce e mobile possono costruire contesti in parallelo.
         # La struttura serve soltanto alla lineage shadow e non entra nel prompt.
         local = getattr(self, "_response_rag_local", None)

@@ -7,7 +7,10 @@ import numpy as np
 from core.brain import Brain
 from core.conversation_turns import ConversationTurnStore, make_turn_ref
 from core.memory_manager import MemoryManager
-from core.rag_context import build_dual_channel_context
+from core.rag_context import (
+    build_dual_channel_context,
+    build_runtime_rag_context,
+)
 from core.temporal_context import derive_passive_memory_metadata
 
 
@@ -249,6 +252,52 @@ def test_selective_runtime_prepends_only_high_confidence_original_turn():
     assert hydrated["selective_gate_decision"] == "prepend"
 
 
+def test_shared_runtime_dispatcher_applies_selective_mode_for_all_channels():
+    redis = FakeRedis()
+    store = ConversationTurnStore(redis)
+    turn_ref = make_turn_ref("silent-chat-test", 1)
+    store.persist(
+        {
+            "turn_ref": turn_ref,
+            "conversation_id": "silent-chat-test",
+            "seq": 1,
+            "role": "user",
+            "content": "Il valore IZOD misurato è 3,8.",
+            "trusted": True,
+            "observed_at": 125.0,
+            "segment_id": 1,
+        }
+    )
+    base = {
+        "id": "base-1",
+        "content": "Il progetto UBQ riguarda una prova sul compound.",
+        "source": "user",
+        "domain": "chimica polimeri",
+    }
+    passive = {
+        "id": "passive-1",
+        "content": "Il valore IZOD del compound è 3,8.",
+        "source": "passive",
+        "domain": "chimica polimeri",
+        "temporal_context": {"source_turn_refs": [turn_ref]},
+    }
+    redis.docs["euri:memory:passive-1"] = passive
+
+    rag = build_runtime_rag_context(
+        "Qual è il valore IZOD del compound?",
+        FakeMemory(redis, base, passive, embedder=FakeEmbedder()),
+        store,
+        mode="search",
+        recent_history=[],
+        dual_mode="selective",
+    )
+
+    assert rag.diagnostics["presentation_applied"] == "selective_prepend"
+    assert rag.text.index("Il valore IZOD misurato è 3,8.") < rag.text.index(
+        base["content"]
+    )
+
+
 def test_passive_exclusion_is_a_redis_prefilter_not_a_post_cut_filter():
     assert MemoryManager._source_prefix(None, ["passive"]) == (
         "-@source:{passive}"
@@ -263,5 +312,6 @@ if __name__ == "__main__":
     test_dual_channel_protects_base_and_injects_only_original_turn()
     test_unhydrated_historical_passive_note_is_not_used_as_evidence()
     test_selective_runtime_prepends_only_high_confidence_original_turn()
+    test_shared_runtime_dispatcher_applies_selective_mode_for_all_channels()
     test_passive_exclusion_is_a_redis_prefilter_not_a_post_cut_filter()
     print("test_dual_channel_runtime: OK")

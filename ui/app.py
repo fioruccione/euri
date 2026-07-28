@@ -179,9 +179,13 @@ r = get_redis()
 embedder = get_embedder()
 brain = get_brain()
 memory_manager = MemoryManager(r, embedder)
+from core.conversation_turns import ConversationTurnStore
+turn_store = ConversationTurnStore(r)
 executor = get_executor()
 executor.brain = brain
 executor.memory = memory_manager
+if brain._turn_callback is None:
+    brain._turn_callback = turn_store.persist
 if brain._episode_callback is None:
     brain._episode_callback = lambda summary, temporal_context: memory_manager.save_memory(
         summary,
@@ -901,18 +905,21 @@ with main_col:
 
             # Ricerca veloce su Redis per iniettare contesto — stesso builder della voce.
             with st.spinner("Cerco nella memoria..."):
-                from core.rag_context import build_rag_context, infer_context_mode
+                from core.rag_context import (
+                    build_runtime_rag_context,
+                    infer_context_mode,
+                )
                 _context_mode = infer_context_mode(prompt, default="chat")
-                _recent_hist = [
-                    {
-                        "role": m["role"],
-                        "content": m["content"],
-                        "observed_at": m.get("observed_at"),
-                    }
-                    for m in st.session_state.messages[:-1]
-                ]
-                _rag = build_rag_context(
-                    prompt, memory_manager, mode=_context_mode, recent_history=_recent_hist
+                # La history del Brain porta i turn_ref durevoli; la lista UI
+                # serve solo alla presentazione e non deve perdere provenienza.
+                with brain.history_lock:
+                    _recent_hist = list(brain._conversation_history)
+                _rag = build_runtime_rag_context(
+                    prompt,
+                    memory_manager,
+                    turn_store,
+                    mode=_context_mode,
+                    recent_history=_recent_hist,
                 )
                 context = _rag.text
                 ctx_ids_now = list(_rag.ids)
@@ -1036,7 +1043,11 @@ with main_col:
                         )
                         try:
                             response = scrub_unbacked_save_claim(
-                                brain.respond(prompt, context=context_full)
+                                brain.respond(
+                                    prompt,
+                                    context=context_full,
+                                    trusted=True,
+                                )
                             )
                         except Exception:
                             finish_response_turn(
@@ -1070,7 +1081,11 @@ with main_col:
                     full_log = memory_manager.get_today_conversation()
                     st.session_state.chat_log_offset = len(full_log)
                     # extract_passive_memories vuole list[dict] con role/content
-                    recent_msgs = st.session_state.messages[-6:]
+                    with brain.history_lock:
+                        recent_msgs = [
+                            dict(message)
+                            for message in brain._conversation_history[-6:]
+                        ]
                     if recent_msgs:
                         facts = brain.extract_passive_memories(recent_msgs)
                         saved = 0
