@@ -18,11 +18,13 @@ Nessun modello di linguaggio, da solo, fa questo. Euri lo fa perché sotto non c
 
 *Quello che segue è* come *Euri fa tutto questo. Non è il contorno — è la prova.*
 
-## Architettura Cognitiva (V2.20)
+## Architettura Cognitiva (V2.21)
 
 > **Principio di separazione:** Euri può collegare due esperienze senza
 > confonderle. La somiglianza crea una relazione; solo l'identità autorizza
 > aggiornamento, consolidamento o supersessione.
+>
+> **Fotografia della release:** [Euri V2.21 — Memoria fondata sulla fonte](docs/EURI_V2.21_STATE_2026-07-28.md)
 
 ### 1. Intent Classification — Pipeline a Due Layer
 La classificazione dell'intent è a cascata: il layer veloce esaurisce la maggior parte dei casi, il layer lento interviene solo quando necessario.
@@ -45,7 +47,7 @@ Il recupero avviene a tre livelli in cascata:
 2. **Domain-boosted KNN** *(V2.19)* — ricerca vettoriale sull'intero DB con un *boost* per le memorie nel dominio della query: il dominio è una **preferenza, non un filtro**. Un fatto molto pertinente ma archiviato in un dominio diverso da quello (non-deterministico) della domanda riemerge comunque. *(Prima della V2.19 era un gate rigido che filtrava per dominio e faceva fallback solo con <2 risultati → falsi negativi: Euri rispondeva "non ho niente in memoria" su fatti presenti in decine di memorie.)*
 3. **Hybrid fill** — se i risultati sono ancora sotto il limite, `_search_hybrid` (semantic + safe_keywords) riempie i posti rimanenti.
 
-**Dual-channel passivo (V2.20, rollout controllato)** — il census LoCoMo
+**Dual-channel passivo (V2.21, rollout controllato)** — il census LoCoMo
 italiano ha mostrato che far competere le parafrasi passive con il dialogo
 originale peggiora il substrato di risposta. La policy validata
 `dual-channel-q2r1-v1` separa quindi i ruoli:
@@ -167,7 +169,7 @@ Quando non gli parli per un po', Euri entra in cicli cognitivi offline. Non è p
 > **Nota tecnica:** Il timer di idle usa `time.time()` (wall-clock) per contare correttamente anche le ore in cui il PC è in sospensione.
 
 ### Euri Pulse — Bus Afferente + Iniziativa
-Euri ha già dei *sensi* — presenza (VisualGate), file del Vault, orologio dei reminder, e l'**interocezione** dei propri loop (sogni, insight, consolidamenti) — ma finora ognuno era un arco riflesso privato: sentiva *e reagiva* nello stesso gesto. **Euri Pulse** dà loro un sensorio condiviso: i sensi emettono eventi tipizzati su uno stream Redis `euri:pulse`, con un envelope volutamente generico `{sense, source (extero|intero), kind, payload, salience, ts}` — così qualsiasi stimolo futuro entra senza toccare il bus. Dal V2.20 esiste anche un consumer prudente: l'**Initiative Controller** rilegge il JSON reale collegato all'evento, valuta tensione/idle/cooldown e chiede al modello se vale una domanda breve. Oggi consuma solo insight promossi e memorie passive incerte: non parla "per riempire", parla solo se può nominare l'evento che l'ha attivata. `pulse_watch.py` resta lo strumento di osservazione (tail / `--replay` / `--stats`). Kill-switch `PULSE_ENABLED` + `INITIATIVE_ENABLED`.
+Euri ha già dei *sensi* — presenza (VisualGate), file del Vault, orologio dei reminder, e l'**interocezione** dei propri loop (sogni, insight, consolidamenti) — ma finora ognuno era un arco riflesso privato: sentiva *e reagiva* nello stesso gesto. **Euri Pulse** dà loro un sensorio condiviso: i sensi emettono eventi tipizzati su uno stream Redis `euri:pulse`, con un envelope volutamente generico `{sense, source (extero|intero), kind, payload, salience, ts}` — così qualsiasi stimolo futuro entra senza toccare il bus. Dal V2.20 esiste anche un consumer prudente: l'**Initiative Controller** rilegge il JSON reale collegato all'evento, valuta tensione/idle/cooldown e chiede al modello se vale una domanda breve. Oggi consuma soltanto insight promossi, memorie passive incerte e tensioni ancora vive della mappa del pensiero: non parla "per riempire", parla solo se può nominare l'evento che l'ha attivata. `pulse_watch.py` resta lo strumento di osservazione (tail / `--replay` / `--stats`). Kill-switch `PULSE_ENABLED` + `INITIATIVE_ENABLED`.
 
 Gli eventi cognitivi `memory_relation/comparison_noted` dichiarano una
 somiglianza tra memorie distinte senza creare una nuova memoria e senza
@@ -364,9 +366,15 @@ salvataggio, registrando l'intervento nel `temporal_context`.
 
 ## Changelog
 
-Versione corrente: **V2.20**. Lo storico completo delle modifiche è in [CHANGELOG.md](CHANGELOG.md).
+Versione corrente: **V2.21 — Memoria fondata sulla fonte** (28/07/2026).
+La fotografia completa della release è in
+[docs/EURI_V2.21_STATE_2026-07-28.md](docs/EURI_V2.21_STATE_2026-07-28.md);
+lo storico integrale delle modifiche è in [CHANGELOG.md](CHANGELOG.md).
 
 Novità recenti:
+- V2.21 (28/07/2026) — Benchmark LoCoMo italiano, memoria passiva dual-channel
+  usata come locator verso i turni originali, base RAG protetta, gate selettivo
+  e dispatcher condiviso da voce, mobile e Silent Chat
 - V2.20 (continua, 15/06/2026) — Propagazione di provenienza (invariante A): le correzioni si propagano ai nodi consolidati, il marcio non riemerge più; strip degli header `# Memoria (data)` nelle fusioni
 - V2.20 (continua, 13/06/2026) — Euri Pulse (Fase 0): bus afferente `euri:pulse`, i sensi osservano senza ancora agire
 - V2.20 (continua, 13/06/2026) — Àncora temporale in italiano: Euri non sbaglia più il giorno della settimana

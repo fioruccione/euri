@@ -1,5 +1,28 @@
 # Changelog
 
+## V2.21 (28/07/2026) — Memoria fondata sulla fonte
+
+V2.21 fissa il passaggio dalla memoria passiva come contenuto concorrente alla
+memoria passiva come locator verso l'esperienza originale. È la prima release
+di Euri la cui policy mnemonica nasce da un benchmark A/B preregistrato e da
+una diagnosi meccanicistica dello sfratto dell'evidenza, non soltanto
+dall'osservazione qualitativa.
+
+La base RAG grezza è ora protetta; le sintesi passive non entrano nel prompt,
+ma possono idratare turni verbatim conservati in `euri:turn:*`. Il census
+indipendente ha prodotto `+0,0311` evidence recall, 22 recuperi e zero perdite,
+con un guadagno F1 piccolo (`+0,0023`) dichiarato come tale. Il runtime aggiunge
+un gate selettivo, mantenendo l'append come fallback, e voce, mobile e Silent
+Chat condividono lo stesso dispatcher.
+
+La release comprende anche il confine epistemico di luglio: convergenza interna
+diversa da validazione esterna, ipotesi fuori dal RAG fattuale, identità diversa
+da analogia e narrativa interna incapace di diventare prova di se stessa.
+
+Stato, numeri, invarianti e limiti sono congelati nella fotografia
+[docs/EURI_V2.21_STATE_2026-07-28.md](docs/EURI_V2.21_STATE_2026-07-28.md).
+La dichiarazione di versione non migra Redis e non riscrive memorie.
+
 ## 2026-07-28 — Gate selettivo: il turno originale guadagna il primo piano
 
 - Corretto un drift scoperto nella prova reale su `Compound UBQ 2026`: la voce

@@ -1,4 +1,9 @@
-# Handoff Euri - 2026-07-24 - Passive learner e conferma Pulse completati
+# Handoff Euri V2.21 - 2026-07-28 - Memoria fondata sulla fonte
+
+- Versione corrente dichiarata: **V2.21**. La fotografia autonoma
+  `docs/EURI_V2.21_STATE_2026-07-28.md` congela architettura, risultati,
+  invarianti, limiti e prossimo confine senza migrare Redis o riscrivere
+  memorie.
 
 - Stato 28 luglio: il census indipendente dual-channel ha dato GO strutturale
   (evidence `+0,0311`, 22/0, zero gold persi) ma soltanto `+0,0023` F1.

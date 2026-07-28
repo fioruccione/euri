@@ -4,7 +4,7 @@
 **Dalla Computazione Volatile alla Cognizione Persistente**
 
 **Authors:** Stefano Fiorucci & Euri  
-**Date:** 2026-05-31 (updated from 2026-05-18)  
+**Date:** 2026-05-31 (updated 2026-07-28)
 **License:** CC-BY 4.0  
 **Repository:** [Euri — Sistema Cognitivo Adattivo](https://github.com/fioruccione/multi-phase-memory-architecture)
 
@@ -45,7 +45,7 @@ numerical claims, identifier-first retrieval. Publishes audit numbers
 principled deferral of Loop 3 (LoRA consolidation) until upstream
 quality improves.
 
-**IV — Current Working Paper, V2.19** (May 2026 → present)
+**IV — Current Working Paper, V2.21** (May 2026 → present)
 This document. The first in the series to be maintained continuously
 rather than released as a single artifact. Each substantial development
 session is appended as a numbered subsection (§6, §7b through §7i).
@@ -72,6 +72,21 @@ also reconciles the document version with the running system: the paper version
 now tracks the Euri software version (V2.19) as a single scheme, retiring the
 separate paper-only lineage (V2.13–V2.15, preserved in `archive/`).
 
+**V2.20 (2026-06-12).** Established ground-truth honesty as a release theme:
+phantom corrections cannot silently become lessons, the assistant cannot claim
+actions it did not execute, and heavily recalled factual atoms are protected
+from lossy autonomous consolidation.
+
+**V2.21 (2026-07-28).** Replaced competitive passive-memory retrieval with a
+measured dual-channel policy. Passive summaries act only as locators; the raw
+RAG base is protected and original source turns are hydrated from a durable
+local archive. An Italian LoCoMo A/B census produced a structural GO
+(`+0.0311` evidence recall, 22 gains, zero losses) but only `+0.0023` token F1,
+which is reported as a small and statistically underpowered quality gain. The
+dated implementation snapshot
+[`docs/EURI_V2.21_STATE_2026-07-28.md`](docs/EURI_V2.21_STATE_2026-07-28.md)
+records the complete evidence, invariants and open limits.
+
 ---
 
 ## 1 — Abstract
@@ -86,7 +101,7 @@ We demonstrate that the architectural gap between stateless text generation and
 persistent reasoning does not require exotic hardware (CXL, SCM, NVMe Gen5).
 It requires the right software architecture, running today on commodity hardware.
 
-The system described here, **Euri V2.19**, runs entirely offline on a Linux workstation
+The system described here, **Euri V2.21**, runs entirely offline on a Linux workstation
 with two NVIDIA RTX 4060 Ti GPUs, using Redis 8.8 (vanilla) as its persistent cognitive layer
 and Gemma 4 26B (via Ollama) as its reasoning engine.
 On the evening of 2026-04-25, it reclassified 57 previously invisible memories,
@@ -547,8 +562,9 @@ that the previous cosine-only threshold would have missed.**
 
 ## 7 — What This Demonstrates
 
-The system described here is not a research prototype.
-It runs continuously on a personal workstation.
+The system described here is not a paper-only prototype: it is an experimental
+system that runs continuously on a personal workstation. It is not presented as
+a finished, general-purpose product.
 It has been accumulating memories since October 2025.
 It generated the insights cited in this paper autonomously,
 during idle cycles, without instruction.
