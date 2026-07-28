@@ -444,16 +444,22 @@ def _worker_main() -> int:
         answers = {}
         for arm in order:
             phase = "answer_rag" if arm == "rag_only" else "answer_dual"
+            options = {"temperature": 0, "num_predict": 160, "seed": args.answer_seed}
+            messages = [
+                {"role": "system", "content": _ANSWER_SYSTEM_IT},
+                {"role": "user", "content": _user_prompt(case, prompt, contexts[arm])},
+            ]
+            # Cattura opt-in (hardening per esperimenti futuri): nel punto ESATTO
+            # prima della chiamata al modello. Testi completi in dir gitignored;
+            # nel report tracciabile entrano solo hash/metadati/path relativi.
+            _capture_generation(
+                arm=arm, prompt=prompt, base_text=b["text"],
+                final_text=comp.final_context_text, context_text=contexts[arm],
+                system=_ANSWER_SYSTEM_IT, messages=messages, options=options, think=False,
+                base_nodes=b["nodes"], locator_nodes=locator_records[prompt.question_id]["nodes"],
+            )
             with tracker.phase(phase):
-                resp = tracker.chat(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": _ANSWER_SYSTEM_IT},
-                        {"role": "user", "content": _user_prompt(case, prompt, contexts[arm])},
-                    ],
-                    options={"temperature": 0, "num_predict": 160, "seed": args.answer_seed},
-                    think=False,
-                )
+                resp = tracker.chat(model=model, messages=messages, options=options, think=False)
             answers[arm] = _response_content(resp)
         rag_results.append(QuestionResult(
             question_id=prompt.question_id, answer=answers["rag_only"],
@@ -525,6 +531,48 @@ def _user_prompt(case, prompt, context_text: str) -> str:
         f"Partecipanti: {case.speakers[0]} e {case.speakers[1]}.\n\n"
         f"Contesto di memoria:\n{context_text or '(nessuna memoria rilevante)'}\n\n"
         f"Domanda: {prompt.text}"
+    )
+
+
+def _capture_generation(*, arm, prompt, base_text, final_text, context_text, system,
+                        messages, options, think, base_nodes, locator_nodes) -> None:
+    """Cattura opt-in dei contesti/messaggi PRIMA della chiamata al modello.
+
+    Attiva solo se ``EURI_DUAL_CAPTURE_DIR`` è impostato. Persiste i testi completi
+    in quella directory (che deve stare sotto audit_output/ gitignored). Non altera
+    il comportamento di default del worker.
+    """
+
+    capture_dir = os.environ.get("EURI_DUAL_CAPTURE_DIR")
+    if not capture_dir:
+        return
+    canonical = json.dumps(messages, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    record = {
+        "question_id": prompt.question_id,
+        "arm": arm,
+        "base_context_text": base_text,
+        "final_context_text": final_text,
+        "context_text": context_text,
+        "system_prompt": system,
+        "question": prompt.text,
+        "messages": messages,
+        "options": options,
+        "answer_seed": options.get("seed"),
+        "think": think,
+        "base_nodes": base_nodes,
+        "locator_nodes": locator_nodes,
+        "sha256": {
+            "base_context_text": hashlib.sha256(base_text.encode()).hexdigest(),
+            "final_context_text": hashlib.sha256(final_text.encode()).hexdigest(),
+            "context_text": hashlib.sha256(context_text.encode()).hexdigest(),
+            "system_prompt": hashlib.sha256(system.encode()).hexdigest(),
+            "messages_payload": hashlib.sha256(canonical.encode()).hexdigest(),
+        },
+    }
+    out = Path(capture_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / f"{prompt.question_id}__{arm}.json").write_text(
+        json.dumps(record, ensure_ascii=False, sort_keys=True), encoding="utf-8"
     )
 
 
