@@ -369,6 +369,12 @@ RAG_DUAL_SELECTIVE_THINKING = (
 RAG_DUAL_THINKING_NUM_PREDICT = int(
     os.environ.get("EURI_RAG_DUAL_THINKING_NUM_PREDICT", "2000")
 )
+# Finestra minima prima che un turno verbatim NON referenziato possa anche solo
+# essere proposto come orfano. Il lifecycle v1 è audit-only: nessuna cancellazione
+# automatica usa ancora questo valore.
+VERBATIM_UNREFERENCED_GRACE_DAYS = int(
+    os.environ.get("EURI_VERBATIM_UNREFERENCED_GRACE_DAYS", "180")
+)
 
 # Episodic Compression (Layer 0 — memoria di sessione)
 # Ogni EPISODE_COMPRESSION_THRESHOLD messaggi, i più vecchi vengono compressi in un episodio.

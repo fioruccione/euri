@@ -98,7 +98,10 @@ def test_brain_persists_stable_turn_refs_and_metadata_reuses_them():
     archived = store.get(message["turn_ref"])
     assert archived is not None
     assert archived.content == message["content"]
-    assert archived.render().startswith("Stefano:")
+    assert archived.render().startswith("[Turno originale del ")
+    assert archived.render().endswith(
+        "Stefano: Il modulo rilevato è 1250 MPa."
+    )
 
     metadata = derive_passive_memory_metadata(
         {
@@ -156,6 +159,10 @@ def test_dual_channel_protects_base_and_injects_only_original_turn():
     assert "Il valore IZOD misurato è 3,8." in rag.text
     assert passive["content"] not in rag.text
     assert rag.diagnostics["added_turn_ids"] == [turn_ref]
+    assert (
+        rag.diagnostics["verbatim_render_version"]
+        == "absolute-time-auth-channel-v1"
+    )
     assert all(node.get("source") != "passive" for node in rag.nodes)
     assert any(
         node.get("retrieval_path") == "passive_locator_hydrated"

@@ -59,6 +59,19 @@ I turni originali vivono nell'archivio durevole `euri:turn:*`, con
 `source_turn_refs`; le memorie storiche prive della fonte rimangono auditabili,
 ma non vengono promosse a evidenza.
 
+Ogni fonte verbatim idratata è ora resa con il formato versionato
+`absolute-time-auth-channel-v1`: data e ora assolute in italiano, stato del
+canale autenticato, parlante e contenuto immutato. Il timestamp era già
+persistito, ma prima non compariva nel prompt; una frase storica poteva quindi
+sembrare uno stato presente.
+
+Il lifecycle iniziale è deliberatamente non distruttivo.
+`audit_verbatim_lifecycle()` ricostruisce la raggiungibilità fra memorie e fonti
+e classifica turni referenziati, recenti non referenziati, candidati orfani
+oltre 180 giorni e riferimenti a fonti mancanti. Il primo audit reale ha
+contato 10 turni, 1 referenziato, 9 recenti, 0 orfani e 0 riferimenti mancanti.
+Nessun TTL o pruning automatico è attivo.
+
 ### 3. Risultato indipendente e limite del risultato
 
 Sul census preregistrato di cinque conversazioni LoCoMo allora intatte, due
@@ -212,9 +225,11 @@ generazione e di sottoporre il meccanismo a una prova ripetibile.
 1. validare il dual-channel e il gate selettivo su un benchmark nuovo;
 2. osservare per alcune settimane il dual-channel e il thinking selettivo sulle
    memorie reali, misurando frequenza di attivazione, latenza e fallback;
-3. misurare separatamente `recalled` e `used_in_response`;
-4. continuare a unificare i percorsi dei diversi canali;
-5. progettare dal Pulse un quadro situazionale effimero, senza trasformare
+3. osservare il lifecycle verbatim e definire soltanto dopo dati sufficienti
+   una policy cold/pinned/orphan, con cancellazione esplicita e reversibile;
+4. misurare separatamente `recalled` e `used_in_response`;
+5. continuare a unificare i percorsi dei diversi canali;
+6. progettare dal Pulse un quadro situazionale effimero, senza trasformare
    telemetria e interpretazioni interne in memoria durevole.
 
 ## Traccia implementativa

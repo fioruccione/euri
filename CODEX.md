@@ -31,6 +31,15 @@
   retry fail-safe diretto su errore o risposta vuota. Voce/mobile usano lo
   stato RAG thread-local; Silent Chat passa la stessa decisione direttamente.
   Nessuna regex testuale e nessun flag globale concorrente.
+- Verbatim lifecycle v1 avviato prima della crescita dell'archivio. Il renderer
+  `absolute-time-auth-channel-v1` porta nel prompt data/ora assoluta italiana e
+  canale autenticato insieme al testo originale: `observed_at` e `trusted` non
+  restano più metadati invisibili. `audit_verbatim_lifecycle()` esegue un
+  mark-and-sweep read-only sulle relazioni memoria→`source_turn_refs`, calcola
+  l'inverso turno→memorie e segnala orfani oltre il grace period senza
+  cancellare o impostare TTL. Audit reale iniziale: 10 turni, 1 referenziato,
+  9 recenti, 0 orfani, 0 riferimenti mancanti. Script:
+  `./venv/bin/python scripts/audit_verbatim_lifecycle.py --json`.
 - Prova live UBQ del 28 luglio: la falsa premessa `1400 MPa` è stata respinta,
   ma la successiva richiesta dei valori salvati non recuperava la memoria
   corretta in Silent Chat. Diagnosi: il canale Streamlit usava ancora il RAG
@@ -62,7 +71,7 @@
   dedup conservativo di `MemoryManager`: errore = conserva, soltanto
   `DUPLICATO` esplicito scarta.
 - Verifica finale: compilazione e diff-check puliti; dopo il rollout del
-  thinking selettivo il manifest unitario è verde 57/57. Il primo passaggio
+  lifecycle verbatim il manifest unitario è verde 58/58. Il primo passaggio
   aveva esposto un timestamp
   assoluto marcescente in `test_correction_quarantine.py`, sostituito con un
   riferimento relativo.

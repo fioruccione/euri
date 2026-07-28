@@ -63,6 +63,19 @@ originale peggiora il substrato di risposta. La policy validata
   usa la parafrasi come prova. Le vecchie memorie restano nello storico e non
   vengono cancellate.
 
+Il verbatim è una **fonte storica**, non una verità eternamente presente.
+Quando viene idratato, Euri vede data e ora assolute italiane, stato del canale
+autenticato e parlante insieme al testo originale. Il renderer è versionato
+`absolute-time-auth-channel-v1`, così una frase come “martedì farò la prova”
+non perde il momento in cui fu pronunciata.
+
+La crescita è sorvegliata da un lifecycle audit-only:
+`scripts/audit_verbatim_lifecycle.py` ricostruisce la raggiungibilità
+memoria→fonte e fonte→memorie, segnala riferimenti spezzati e propone come
+orfani soltanto turni non referenziati oltre un grace period di 180 giorni.
+Non esiste ancora pruning automatico: nessun TTL indiscriminato può eliminare
+la fonte di una memoria viva.
+
 Nel census cieco appaiato (5 conversazioni × 2 repliche, 989 domande) il canale
 duale ha chiuso con verdetto preregistrato **GO**: evidence recall `+0,0311`,
 22 recuperi esclusivi e 0 evidenze perse; token F1 `+0,0023` (piccolo, intervallo

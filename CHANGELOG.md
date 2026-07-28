@@ -49,6 +49,26 @@ La dichiarazione di versione non migra Redis e non riscrive memorie.
   diretto `think=False`, senza perdere la conversazione. I log dichiarano
   attivazione, motivo, turni promossi, tempo e modalità realmente usata.
 
+### V2.21 (continua, 28/07/2026) — Il verbatim diventa fonte storica datata
+
+- Chiuso in anticipo il rischio di trattare una frase originale vecchia come
+  stato corrente. Il documento Redis conservava già `observed_at` e `trusted`,
+  ma il renderer mostrava al modello soltanto `speaker: contenuto`. Ogni fonte
+  idratata usa ora il formato versionato
+  `absolute-time-auth-channel-v1`: data e ora assolute italiane, canale
+  autenticato/non autenticato, parlante e testo originale immutato.
+- Aggiunto `audit_verbatim_lifecycle`: mark-and-sweep conservativo che costruisce
+  in lettura la relazione inversa turno→memorie, distingue fonti referenziate,
+  non referenziate recenti, candidati orfani oltre 180 giorni e riferimenti
+  spezzati. Il lifecycle è **audit-only**: non applica TTL e non cancella nulla.
+- Primo audit reale: 10 turni, 1 referenziato, 9 recenti non referenziati,
+  0 candidati orfani, 0 riferimenti mancanti, 0 documenti malformati. La soglia
+  `EURI_VERBATIM_UNREFERENCED_GRACE_DAYS` prepara il futuro sweep ma non è ancora
+  collegata ad alcuna azione distruttiva.
+- Lo strumento read-only è disponibile con
+  `./venv/bin/python scripts/audit_verbatim_lifecycle.py [--json]`. Qualunque
+  pruning futuro richiederà una policy separata, misurata e reversibile.
+
 ## 2026-07-28 — Gate selettivo: il turno originale guadagna il primo piano
 
 - Corretto un drift scoperto nella prova reale su `Compound UBQ 2026`: la voce

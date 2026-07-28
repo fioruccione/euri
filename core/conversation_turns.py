@@ -8,14 +8,17 @@ come substrato di risposta.
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 
 import config
 from loguru import logger
+from utils.date_utils import format_datetime_full, from_timestamp
 
 
 TURN_KEY_PREFIX = "euri:turn:"
 TURN_SCHEMA_VERSION = 1
+TURN_RENDER_VERSION = "absolute-time-auth-channel-v1"
 _TURN_REF_RE = re.compile(r"^(?P<conversation>[^:\s]+):(?P<seq>[1-9]\d*)$")
 
 
@@ -49,7 +52,15 @@ class ArchivedTurn:
     segment_id: int | None
 
     def render(self) -> str:
-        return f"{self.speaker}: {self.content}"
+        # Il verbatim prova che la frase è stata pronunciata in quel momento,
+        # non che descriva ancora lo stato presente. Data assoluta e canale
+        # restano accanto alla fonte quando entra nel prompt.
+        observed = format_datetime_full(from_timestamp(self.observed_at))
+        channel = "canale autenticato" if self.trusted else "canale non autenticato"
+        return (
+            f"[Turno originale del {observed}; {channel}] "
+            f"{self.speaker}: {self.content}"
+        )
 
 
 class ConversationTurnStore:
@@ -136,3 +147,118 @@ class ConversationTurnStore:
     def render(self, turn_ref: str) -> str:
         turn = self.get(turn_ref)
         return turn.render() if turn else ""
+
+
+def _decode_key(value) -> str:
+    return value.decode("utf-8") if isinstance(value, bytes) else str(value)
+
+
+def _json_doc(redis_client, key: str) -> dict:
+    try:
+        raw = redis_client.json().get(key, "$")
+    except Exception:
+        return {}
+    if not raw:
+        return {}
+    doc = raw[0] if isinstance(raw, list) else raw
+    return dict(doc) if isinstance(doc, dict) else {}
+
+
+def audit_verbatim_lifecycle(
+    redis_client,
+    *,
+    reference_at: float | None = None,
+    grace_days: int | None = None,
+) -> dict:
+    """Mark-and-sweep audit-only dell'archivio verbatim.
+
+    Marca come raggiungibile ogni turno referenziato da una memoria Redis
+    esistente. Lo sweep produce soltanto candidati: non modifica TTL, memorie o
+    turni. È deliberatamente conservativo anche verso memorie superseded, che
+    restano parte dell'audit storico finché il loro documento esiste.
+    """
+    now_ts = time.time() if reference_at is None else float(reference_at)
+    grace = int(
+        getattr(config, "VERBATIM_UNREFERENCED_GRACE_DAYS", 180)
+        if grace_days is None else grace_days
+    )
+    if grace < 1:
+        raise ValueError("grace_days deve essere positivo")
+
+    reverse_refs: dict[str, set[str]] = {}
+    memory_docs = malformed_memories = 0
+    for raw_key in redis_client.scan_iter(match="euri:memory:*"):
+        key = _decode_key(raw_key)
+        doc = _json_doc(redis_client, key)
+        if not doc:
+            malformed_memories += 1
+            continue
+        memory_docs += 1
+        memory_id = str(doc.get("id") or key.removeprefix("euri:memory:"))
+        temporal = doc.get("temporal_context") or {}
+        for raw_ref in temporal.get("source_turn_refs") or []:
+            ref = str(raw_ref or "").strip()
+            if ref:
+                reverse_refs.setdefault(ref, set()).add(memory_id)
+
+    turns = []
+    malformed_turns = 0
+    for raw_key in redis_client.scan_iter(match=f"{TURN_KEY_PREFIX}*"):
+        key = _decode_key(raw_key)
+        ref = key.removeprefix(TURN_KEY_PREFIX)
+        try:
+            turn = ConversationTurnStore(redis_client).get(ref)
+        except Exception:
+            turn = None
+        if turn is None:
+            malformed_turns += 1
+            continue
+        age_days = max(0.0, (now_ts - turn.observed_at) / 86400)
+        referenced_by = sorted(reverse_refs.get(ref, set()))
+        turns.append(
+            {
+                "turn_ref": ref,
+                "role": turn.role,
+                "observed_at": turn.observed_at,
+                "age_days": round(age_days, 3),
+                "referenced_by": referenced_by,
+                "referenced": bool(referenced_by),
+            }
+        )
+
+    known_refs = {item["turn_ref"] for item in turns}
+    missing_source_refs = [
+        {
+            "turn_ref": ref,
+            "referenced_by": sorted(memory_ids),
+        }
+        for ref, memory_ids in sorted(reverse_refs.items())
+        if ref not in known_refs
+    ]
+    orphan_candidates = [
+        item for item in turns
+        if not item["referenced"] and item["age_days"] >= grace
+    ]
+    recent_unreferenced = [
+        item for item in turns
+        if not item["referenced"] and item["age_days"] < grace
+    ]
+    referenced = [item for item in turns if item["referenced"]]
+    return {
+        "schema_version": 1,
+        "mode": "audit_only",
+        "reference_at": now_ts,
+        "grace_days": grace,
+        "counts": {
+            "turns": len(turns),
+            "referenced": len(referenced),
+            "recent_unreferenced": len(recent_unreferenced),
+            "orphan_candidates": len(orphan_candidates),
+            "missing_source_refs": len(missing_source_refs),
+            "memory_documents_scanned": memory_docs,
+            "malformed_turns": malformed_turns,
+            "non_json_memory_keys_skipped": malformed_memories,
+        },
+        "orphan_candidates": orphan_candidates,
+        "missing_source_refs": missing_source_refs,
+    }

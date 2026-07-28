@@ -52,6 +52,7 @@ test_stt_gpu_selection.py
 test_tension.py
 test_temporal_context.py
 test_utterance_pragmatics.py
+test_verbatim_lifecycle.py
 test_visual_presence_bridge.py
 test_wake_guard.py
 test_worker_supervisor.py

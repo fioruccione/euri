@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from loguru import logger
 
 import config
+from core.conversation_turns import TURN_RENDER_VERSION
 from core.memory_risk import is_document_summary, memory_verification_suffix
 from core.temporal_context import memory_time_label, temporal_prompt_contract, turn_time_label
 from utils.date_utils import now
@@ -665,6 +666,7 @@ def build_dual_channel_context(
     diagnostics.update(
         {
             "mode": "dual_channel",
+            "verbatim_render_version": TURN_RENDER_VERSION,
             "presentation_requested": presentation,
             "presentation_applied": (
                 gate.get("presentation", "append")
