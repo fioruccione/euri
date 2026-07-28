@@ -202,21 +202,31 @@ def parse_selector_strict(raw: str, n_fragments: int) -> dict | None:
 # --------------------------------------------------------------------------- #
 # Messaggi — firma SENZA gold/evidence (punto 9)
 # --------------------------------------------------------------------------- #
-def build_messages(family: str, *, context_text: str, question: str,
+def build_messages(family: str, *, context_text: str, question: str, speakers: tuple[str, str],
                    stage: str = "single", selected_fragments: str | None = None) -> list[dict]:
-    def user(ctx):
-        return f"Contesto di memoria:\n{ctx}\n\nDomanda: {question}"
+    """Messaggi per il modello. Accetta gli speaker (mai gold/evidence) e usa
+    ESATTAMENTE il wrapper originale di ``dual_channel_worker._user_prompt``, così
+    A0/A1/A2 e B0/B1/B2 sono byte-identici al prompt census. Anche C0 riceve
+    coerentemente i partecipanti.
+    """
+
+    s0, s1 = speakers[0], speakers[1]
+
+    def wrap(label: str, body: str) -> str:
+        return (f"Partecipanti: {s0} e {s1}.\n\n"
+                f"{label}:\n{body or '(nessuna memoria rilevante)'}\n\n"
+                f"Domanda: {question}")
 
     if family in _SYSTEM_BY_FAMILY:
         return [{"role": "system", "content": _SYSTEM_BY_FAMILY[family]},
-                {"role": "user", "content": user(context_text)}]
+                {"role": "user", "content": wrap("Contesto di memoria", context_text)}]
     if family == "two_stage":
         if stage == "selector":
             return [{"role": "system", "content": PROMPT_SELECTOR},
-                    {"role": "user", "content": user(numbered_context(context_text))}]
+                    {"role": "user", "content": wrap("Contesto di memoria", numbered_context(context_text))}]
         if stage == "answer":
             return [{"role": "system", "content": PROMPT_TWO_STAGE_ANSWER},
-                    {"role": "user", "content": f"Frammenti:\n{selected_fragments or ''}\n\nDomanda: {question}"}]
+                    {"role": "user", "content": wrap("Frammenti", selected_fragments or "")}]
     raise AblationError(f"famiglia/stage non valido: {family}/{stage}")
 
 
@@ -344,12 +354,15 @@ def build_case_manifest(*, validation_runs_dir: Path) -> dict:
 
 def build_execution_manifest(case_manifest: dict, *, experimental_code_commit: str,
                              corpus_path: Path, localization_path: Path,
-                             validation_runs_dir: Path) -> dict:
+                             validation_runs_dir: Path, model: str, model_digest: str) -> dict:
     """Manifest di ESECUZIONE (non tracciato, in audit_output): firma con l'HEAD
-    corrente e lega corpus, localizzazione e gli SHA dei 10 report census.
+    corrente e lega corpus, localizzazione, SHA dei 10 report census e
+    **modello + digest congelati** (blocker 2).
     """
 
     verify_manifest(case_manifest)
+    if not model or not model_digest:
+        raise AblationError("modello e digest sono obbligatori nell'execution manifest")
     report_sha = {p.name: sha256_file(p)
                   for p in sorted(Path(validation_runs_dir).glob("*.json"))}
     if len(report_sha) != 10:
@@ -359,6 +372,7 @@ def build_execution_manifest(case_manifest: dict, *, experimental_code_commit: s
         "case_manifest_sha256": case_manifest["manifest_sha256"],
         "production_baseline_commit": PRODUCTION_BASELINE_COMMIT,
         "git_commit": experimental_code_commit,
+        "model": model, "model_digest": model_digest,
         "corpus": {"path": str(Path(corpus_path).resolve()), "sha256": sha256_file(corpus_path)},
         "localization": {"path": str(Path(localization_path).resolve()),
                          "sha256": sha256_file(localization_path)},
@@ -368,6 +382,15 @@ def build_execution_manifest(case_manifest: dict, *, experimental_code_commit: s
     }
     execution["manifest_sha256"] = manifest_digest(execution)
     return execution
+
+
+def ablation_identity(manifest: dict) -> dict:
+    """Identità completa dell'ablation: include modello e digest congelati."""
+
+    ident = dict(run_identity(manifest))
+    ident["model"] = manifest.get("model")
+    ident["model_digest"] = manifest.get("model_digest")
+    return ident
 
 
 def forecast(case_manifest: dict) -> dict:
@@ -540,12 +563,23 @@ def dry_run_materialize(*, case_manifest: dict, validation_root: Path) -> dict:
 # --------------------------------------------------------------------------- #
 def run_ablation(*, execution_manifest: dict, validation_root: Path, output_dir: Path,
                  capture_dir: Path, execute: bool = False, chat_fn: Callable | None = None,
-                 model: str = "gemma4:26b", model_digest: str | None = None) -> dict:
+                 model: str | None = None, model_digest: str | None = None) -> dict:
     verify_manifest(execution_manifest)
     if execution_manifest.get("stage") != "execution":
         raise AblationError("run richiede il manifest di ESECUZIONE")
     assert_no_personal_redis()
     assert_capture_dir_under_audit(capture_dir)
+
+    # Modello e digest sono CONGELATI nel manifest (blocker 2): sono la verità.
+    mani_model = execution_manifest.get("model")
+    mani_digest = execution_manifest.get("model_digest")
+    if not mani_model or not mani_digest:
+        raise AblationError("execution manifest senza model/digest congelati")
+    if model is not None and model != mani_model:
+        raise AblationError(f"model {model!r} diverso dal manifest {mani_model!r}: fail-closed")
+    if model_digest is not None and model_digest != mani_digest:
+        raise AblationError(f"model_digest diverso dal manifest congelato: fail-closed")
+    model, model_digest = mani_model, mani_digest
 
     # Integrità (punto 6)
     assert_corpus_matches(execution_manifest, _corpus_path())
@@ -557,10 +591,8 @@ def run_ablation(*, execution_manifest: dict, validation_root: Path, output_dir:
             raise AblationError(f"report census {name} diverso dallo SHA registrato")
     assert_head_matches_manifest(execution_manifest, REPO_ROOT)
     assert_worktree_clean(REPO_ROOT)
-    if execute and (not model or not model_digest):
-        raise AblationError("modello e digest devono essere non nulli per l'esecuzione")
 
-    identity = run_identity(execution_manifest)
+    identity = ablation_identity(execution_manifest)
     output_dir = Path(output_dir); output_dir.mkdir(parents=True, exist_ok=True)
     existing = output_dir / "manifest.json"
     if existing.exists():
@@ -607,14 +639,38 @@ def run_ablation(*, execution_manifest: dict, validation_root: Path, output_dir:
                 arm = ARM_BY_NAME[arm_name]
                 rec = _run_arm(arm, ctx, qtext, cid, c["question_id"], seed,
                                execution_manifest["localization"]["sha256"], execute, chat_fn,
-                               model, model_digest, capture_dir, c["replica"], ctx_ref)
+                               model, model_digest, capture_dir, c["replica"], ctx_ref, loaded.speakers)
                 arm_records.append(rec)
                 planned += 1 + arm.selector_calls
+            case_report = {
+                "case_id": cid,
+                "question_id": c["question_id"],
+                "replica": c["replica"],
+                "conversation": conv,
+                "stratum": c.get("stratum"),
+                "arm_order": c["arm_order"],
+                "manifest_sha256": execution_manifest["manifest_sha256"],
+                "model": model,
+                "model_digest": model_digest,
+                "context_sha256": _sha(ctx),
+                "context_reference_at": ctx_ref,
+                "speakers": list(loaded.speakers),
+                "arms": arm_records,
+            }
+            # Validazione ESATTA subito dopo la generazione, PRIMA del checkpoint
+            # (blocker 3): metadati e context_sha256 byte-esatti contro il contesto ricostruito.
+            if execute:
+                problems = validate_case_report(case_report, c, execution_manifest,
+                                                require_answers=True,
+                                                dual_context_text=ctx,
+                                                expected_context_reference_at=ctx_ref,
+                                                question_text=qtext,
+                                                speakers=loaded.speakers)
+                if problems:
+                    raise AblationError(f"report {cid} non valido subito dopo la generazione: "
+                                        f"{'; '.join(problems)}")
             (runs_dir / f"{cid}.json").write_text(json.dumps(
-                {"case_id": cid, "question_id": c["question_id"], "replica": c["replica"],
-                 "conversation": conv, "stratum": c.get("stratum"),
-                 "arm_order": c["arm_order"], "arms": arm_records},
-                indent=2, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+                case_report, indent=2, ensure_ascii=False, sort_keys=True), encoding="utf-8")
             done.add(cid)
             checkpoint_path.write_text(json.dumps(
                 {"identity": identity, "done": sorted(done)}, ensure_ascii=False), encoding="utf-8")
@@ -623,9 +679,38 @@ def run_ablation(*, execution_manifest: dict, validation_root: Path, output_dir:
             "cases": len(_cases(execution_manifest)), "planned_calls": planned}
 
 
+def _expected_system_sha(arm: "Arm", stage: str) -> str:
+    if stage == "selector":
+        return _sha(PROMPT_SELECTOR)
+    if stage == "answer":
+        return _sha(PROMPT_TWO_STAGE_ANSWER)
+    return _sha(_SYSTEM_BY_FAMILY[arm.family])
+
+
+def _expected_num_predict(arm: "Arm", stage: str) -> int:
+    return NUM_PREDICT_SELECTOR if stage == "selector" else arm.num_predict
+
+
+def _expected_context_sha(arm: "Arm", stage: str, rec_arm: dict, dual_context_text: str) -> str:
+    if stage == "selector":
+        return _sha(numbered_context(dual_context_text))
+    if stage == "answer":
+        return _sha(select_by_indices(dual_context_text, rec_arm.get("selected_indices") or []))
+    return _sha(dual_context_text)
+
+
 def validate_case_report(rec: dict, case: dict, execution_manifest: dict, *,
-                         require_answers: bool = True) -> list[str]:
-    """Valida un report per-caso contro il manifest (punto 3). Lista vuota = ok."""
+                         require_answers: bool = True,
+                         dual_context_text: str | None = None,
+                         expected_context_reference_at: str | None = None,
+                         question_text: str | None = None,
+                         speakers: tuple[str, str] | None = None) -> list[str]:
+    """Valida un report per-caso contro il manifest (punto 3): verifica i VALORI
+    ESATTI di ogni metadato (case_id/question_id/arm/stage, seed, think,
+    num_predict, model/digest, context_reference_at, system_prompt_sha256) e, se
+    fornito ``dual_context_text``, anche il ``context_sha256`` byte-esatto per
+    ogni stadio. Lista vuota = ok.
+    """
 
     p: list[str] = []
     for field in ("case_id", "question_id", "conversation", "replica"):
@@ -635,30 +720,123 @@ def validate_case_report(rec: dict, case: dict, execution_manifest: dict, *,
         p.append("stratum diverso")
     if rec.get("arm_order") != case.get("arm_order"):
         p.append("arm_order diverso")
+    if require_answers and rec.get("manifest_sha256") != execution_manifest.get("manifest_sha256"):
+        p.append("manifest_sha256 diverso")
+    exp_model = execution_manifest.get("model")
+    exp_digest = execution_manifest.get("model_digest")
+    if require_answers:
+        if rec.get("model") != exp_model:
+            p.append("model top-level diverso")
+        if rec.get("model_digest") != exp_digest:
+            p.append("model_digest top-level diverso")
+    if dual_context_text is not None:
+        if rec.get("context_sha256") != _sha(dual_context_text):
+            p.append("context_sha256 top-level diverso")
+    elif require_answers and not rec.get("context_sha256"):
+        p.append("context_sha256 top-level assente")
+    if expected_context_reference_at is not None:
+        if rec.get("context_reference_at") != expected_context_reference_at:
+            p.append("context_reference_at top-level diverso")
+    elif require_answers and not rec.get("context_reference_at"):
+        p.append("context_reference_at top-level assente")
+    if speakers is not None:
+        if rec.get("speakers") != list(speakers):
+            p.append("speakers top-level diversi")
+    elif require_answers:
+        recorded_speakers = rec.get("speakers")
+        if not isinstance(recorded_speakers, list) or len(recorded_speakers) != 2:
+            p.append("speakers top-level assenti")
     names = sorted(a.get("arm") for a in rec.get("arms", []))
     if names != sorted(ARM_NAMES):
         p.append(f"arm != 7 esatti ({names})")
         return p
     loc_sha = execution_manifest["localization"]["sha256"]
     for a in rec["arms"]:
-        arm = ARM_BY_NAME.get(a.get("arm"))
-        metas = [a["metadata"]] if "metadata" in a else [a.get("selector_metadata"), a.get("answer_metadata")]
-        for meta in [m for m in metas if m]:
+        name = a.get("arm")
+        arm = ARM_BY_NAME.get(name)
+        if arm is None:
+            p.append(f"{name} arm sconosciuto")
+            continue
+        if arm.family == "two_stage":
+            staged = [(a.get("selector_metadata"), "selector")]
+            if a.get("answer_metadata"):
+                staged.append((a.get("answer_metadata"), "answer"))
+        else:
+            staged = [(a.get("metadata"), "single")]
+        for meta, stage in staged:
+            if not meta:
+                p.append(f"{name}/{stage} metadata assente")
+                continue
+            if meta.get("case_id") != case.get("case_id"):
+                p.append(f"{name}/{stage} case_id")
+            if meta.get("question_id") != case.get("question_id"):
+                p.append(f"{name}/{stage} question_id")
+            if meta.get("arm") != name:
+                p.append(f"{name}/{stage} arm")
+            if meta.get("stage") != stage:
+                p.append(f"{name}/{stage} stage")
             if meta.get("localization_sha256") != loc_sha:
-                p.append(f"{a['arm']} localization_sha")
+                p.append(f"{name}/{stage} localization_sha")
             if int(meta.get("answer_seed", -1)) != int(case["answer_seed"]):
-                p.append(f"{a['arm']} answer_seed")
-            if arm is not None and meta.get("think") != arm.think:
-                p.append(f"{a['arm']} think")
-            for k in ("context_sha256", "system_prompt_sha256", "messages_payload_sha256"):
-                if not meta.get(k):
-                    p.append(f"{a['arm']} manca {k}")
+                p.append(f"{name}/{stage} answer_seed")
+            if meta.get("think") != arm.think:
+                p.append(f"{name}/{stage} think")
             if meta.get("temperature") != 0:
-                p.append(f"{a['arm']} temperature")
-            if require_answers and (not meta.get("model") or not meta.get("model_digest")):
-                p.append(f"{a['arm']} model/digest nullo")
+                p.append(f"{name}/{stage} temperature")
+            if meta.get("num_predict") != _expected_num_predict(arm, stage):
+                p.append(f"{name}/{stage} num_predict")
+            if not meta.get("context_reference_at"):
+                p.append(f"{name}/{stage} context_reference_at assente")
+            elif (
+                expected_context_reference_at is not None
+                and meta.get("context_reference_at") != expected_context_reference_at
+            ):
+                p.append(f"{name}/{stage} context_reference_at diverso")
+            if meta.get("system_prompt_sha256") != _expected_system_sha(arm, stage):
+                p.append(f"{name}/{stage} system_prompt_sha256")
+            if not meta.get("messages_payload_sha256"):
+                p.append(f"{name}/{stage} manca messages_payload_sha256")
+            elif dual_context_text is not None and question_text is not None and speakers is not None:
+                selected = select_by_indices(
+                    dual_context_text, a.get("selected_indices") or []
+                )
+                expected_messages = build_messages(
+                    arm.family,
+                    context_text=dual_context_text,
+                    question=question_text,
+                    speakers=speakers,
+                    stage=stage,
+                    selected_fragments=selected if stage == "answer" else None,
+                )
+                if meta.get("messages_payload_sha256") != messages_payload_sha256(
+                    expected_messages
+                ):
+                    p.append(f"{name}/{stage} messages_payload_sha256")
+            if dual_context_text is not None:
+                if meta.get("context_sha256") != _expected_context_sha(arm, stage, a, dual_context_text):
+                    p.append(f"{name}/{stage} context_sha256 non byte-esatto")
+            elif not meta.get("context_sha256"):
+                p.append(f"{name}/{stage} manca context_sha256")
+            if require_answers:
+                if not meta.get("model") or meta.get("model") != exp_model:
+                    p.append(f"{name}/{stage} model != manifest")
+                if not meta.get("model_digest") or meta.get("model_digest") != exp_digest:
+                    p.append(f"{name}/{stage} model_digest != manifest")
         if require_answers and a.get("answer") is None:
-            p.append(f"{a['arm']} risposta assente")
+            p.append(f"{name} risposta assente")
+        if require_answers:
+            expected_calls = (
+                2 if arm.family == "two_stage" and a.get("answer_metadata")
+                else 1
+            )
+            if int(a.get("calls", -1)) != expected_calls:
+                p.append(f"{name} calls != {expected_calls}")
+            try:
+                latency = float(a.get("latency_s"))
+            except (TypeError, ValueError):
+                latency = -1.0
+            if latency < 0:
+                p.append(f"{name} latency_s invalida")
     return p
 
 
@@ -667,9 +845,13 @@ def _load_and_revalidate_checkpoint(path: Path, manifest: dict, identity: dict, 
         return {"done": []}
     cp = json.loads(path.read_text(encoding="utf-8"))
     rec = cp.get("identity") or {}
-    if any(rec.get(k) is None for k in ("manifest_sha256", "corpus_sha256", "git_commit")):
-        raise AblationError("checkpoint senza identity completa")
+    if any(rec.get(k) is None for k in ("manifest_sha256", "corpus_sha256", "git_commit",
+                                        "model", "model_digest")):
+        raise AblationError("checkpoint senza identity completa (incl. model/digest)")
     assert_same_identity(rec, identity, context="resume ablation")
+    for field in ("model", "model_digest"):
+        if rec.get(field) != identity.get(field):
+            raise AblationError(f"resume ablation: {field} del checkpoint diverso dal manifest")
     cases = {c["case_id"]: c for c in _cases(manifest)}
     seen = set()
     revalidated = []
@@ -694,11 +876,11 @@ def _load_and_revalidate_checkpoint(path: Path, manifest: dict, identity: dict, 
 
 
 def _run_arm(arm, ctx, question, cid, qid, seed, loc_sha, execute, chat_fn,
-             model, model_digest, capture_dir, replica, ctx_ref) -> dict:
+             model, model_digest, capture_dir, replica, ctx_ref, speakers) -> dict:
     if arm.family == "two_stage":
         return _run_two_stage(arm, ctx, question, cid, qid, seed, loc_sha, execute,
-                              chat_fn, model, model_digest, capture_dir, replica, ctx_ref)
-    msgs = build_messages(arm.family, context_text=ctx, question=question)
+                              chat_fn, model, model_digest, capture_dir, replica, ctx_ref, speakers)
+    msgs = build_messages(arm.family, context_text=ctx, question=question, speakers=speakers)
     meta = call_metadata(arm=arm, stage="single", context_text=ctx, cid=cid, question_id=qid,
                          localization_sha256=loc_sha, messages=msgs, num_predict=arm.num_predict,
                          seed=seed, model=model, model_digest=model_digest, context_reference_at=ctx_ref)
@@ -715,9 +897,9 @@ def _run_arm(arm, ctx, question, cid, qid, seed, loc_sha, execute, chat_fn,
 
 
 def _run_two_stage(arm, ctx, question, cid, qid, seed, loc_sha, execute, chat_fn,
-                   model, model_digest, capture_dir, replica, ctx_ref) -> dict:
+                   model, model_digest, capture_dir, replica, ctx_ref, speakers) -> dict:
     n_frag = len(fragments(ctx))
-    sel_msgs = build_messages("two_stage", context_text=ctx, question=question, stage="selector")
+    sel_msgs = build_messages("two_stage", context_text=ctx, question=question, speakers=speakers, stage="selector")
     sel_meta = call_metadata(arm=arm, stage="selector", context_text=numbered_context(ctx),
                              cid=cid, question_id=qid, localization_sha256=loc_sha, messages=sel_msgs,
                              num_predict=NUM_PREDICT_SELECTOR, seed=seed, model=model,
@@ -736,7 +918,7 @@ def _run_two_stage(arm, ctx, question, cid, qid, seed, loc_sha, execute, chat_fn
             indices = parsed["supporting_fragments"]
             selected = select_by_indices(ctx, indices)
             ans_msgs = build_messages("two_stage", context_text=ctx, question=question,
-                                      stage="answer", selected_fragments=selected)
+                                      speakers=speakers, stage="answer", selected_fragments=selected)
             ans_meta = call_metadata(arm=arm, stage="answer", context_text=selected, cid=cid,
                                      question_id=qid, localization_sha256=loc_sha, messages=ans_msgs,
                                      num_predict=arm.num_predict, seed=seed, model=model,
@@ -840,6 +1022,14 @@ def _assert_exact_coverage(output_runs: Path, manifest: dict) -> dict[str, dict]
 def analyze(*, output_runs: Path, gold_lookup: dict, validation_root: Path, execution_manifest: dict) -> dict:
     meta = case_meta_map(execution_manifest)
     reports = _assert_exact_coverage(output_runs, execution_manifest)  # 129 esatti, 7 arm
+
+    # Blocker 4: valida i VALORI ESATTI di tutti i 129 report (non solo il conteggio).
+    cases_by_id = {c["case_id"]: c for c in _cases(execution_manifest)}
+    for cid, rec in reports.items():
+        problems = validate_case_report(rec, cases_by_id[cid], execution_manifest,
+                                        require_answers=True)
+        if problems:
+            raise AblationError(f"analyze: report {cid} non valido: {'; '.join(problems)}")
 
     per = defaultdict(lambda: defaultdict(list))       # (stratum,arm)->metric
     glob = defaultdict(lambda: defaultdict(list))      # arm->metric (globale)

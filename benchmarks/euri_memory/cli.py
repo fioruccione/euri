@@ -131,6 +131,8 @@ def main() -> int:
     aem.add_argument("--corpus", type=Path, default=DEFAULT_SOURCE)
     aem.add_argument("--localization", type=Path, default=_VAL / "localization_it.json")
     aem.add_argument("--validation-root", type=Path, default=_VAL / "run")
+    aem.add_argument("--model", required=True)
+    aem.add_argument("--model-digest", required=True)
     aem.add_argument("--output", type=Path, required=True)
 
     arn = subparsers.add_parser("ablation-run")
@@ -139,7 +141,7 @@ def main() -> int:
     arn.add_argument("--output-dir", type=Path, required=True)
     arn.add_argument("--capture-dir", type=Path, required=True)
     arn.add_argument("--execute", action="store_true")
-    arn.add_argument("--model", default="gemma4:26b")
+    arn.add_argument("--model", default=None)
     arn.add_argument("--model-digest", default=None)
 
     aan = subparsers.add_parser("ablation-analyze")
@@ -576,10 +578,12 @@ def main() -> int:
             head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
             ex = PA.build_execution_manifest(m, experimental_code_commit=head, corpus_path=args.corpus,
                                              localization_path=args.localization,
-                                             validation_runs_dir=args.validation_root / "runs")
+                                             validation_runs_dir=args.validation_root / "runs",
+                                             model=args.model, model_digest=args.model_digest)
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(ex, indent=2, ensure_ascii=False, sort_keys=True), encoding="utf-8")
             print(json.dumps({"manifest_sha256": ex["manifest_sha256"], "git_commit": ex["git_commit"],
+                              "model": ex["model"], "model_digest": ex["model_digest"],
                               "output": str(args.output)}, sort_keys=True))
             return 0
         if args.command == "ablation-run":

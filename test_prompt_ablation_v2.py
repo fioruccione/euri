@@ -104,14 +104,53 @@ def test_selector_fail_closed():
 
 def test_build_messages_has_no_gold_param_and_is_reconstructible():
     ctx = "OwnerUser: uno\nAssistant: due"
-    msgs = P.build_messages("strict", context_text=ctx, question="Q?")
-    # nessun parametro gold/evidence nella firma
+    sp = ("Caroline", "Melanie")
+    msgs = P.build_messages("strict", context_text=ctx, question="Q?", speakers=sp)
+    # nessun parametro gold/evidence nella firma; gli speaker NON sono gold/evidence
     import inspect
     params = set(inspect.signature(P.build_messages).parameters)
     assert not (params & {"gold", "evidence", "expected_answer", "answer"})
+    assert "speakers" in params
     # ricostruibile dagli hash (payload deterministico)
     assert P.messages_payload_sha256(msgs) == P.messages_payload_sha256(
-        P.build_messages("strict", context_text=ctx, question="Q?"))
+        P.build_messages("strict", context_text=ctx, question="Q?", speakers=sp))
+
+
+def test_a0_user_message_is_byte_identical_to_census_wrapper():
+    """Blocker 1: il messaggio user degli arm risposta è byte-per-byte quello di
+    dual_channel_worker._user_prompt (stesso wrapper 'Partecipanti: …')."""
+
+    from benchmarks.euri_memory.dual_channel_worker import _user_prompt
+
+    class _Case:
+        speakers = ("Caroline", "Melanie")
+
+    class _Prompt:
+        text = "Dove sono andati in vacanza?"
+
+    ctx = "Caroline: siamo stati a Roma\nMelanie: bellissimo"
+    expected = _user_prompt(_Case(), _Prompt(), ctx)
+    for family in ("strict", "balanced"):
+        msgs = P.build_messages(family, context_text=ctx, question=_Prompt.text,
+                                speakers=_Case.speakers)
+        assert msgs[1]["content"] == expected, family
+    # anche il payload SHA coincide col wrapper originale ricostruito
+    a0_msgs = P.build_messages("strict", context_text=ctx, question=_Prompt.text,
+                               speakers=_Case.speakers)
+    assert P.messages_payload_sha256(a0_msgs) == P.messages_payload_sha256(
+        [{"role": "system", "content": a0_msgs[0]["content"]},
+         {"role": "user", "content": expected}])
+    # fallback '(nessuna memoria rilevante)' identico quando il contesto è vuoto
+    assert P.build_messages("strict", context_text="", question=_Prompt.text,
+                            speakers=_Case.speakers)[1]["content"] == \
+        _user_prompt(_Case(), _Prompt(), "")
+    # C0 riceve coerentemente i partecipanti in entrambi gli stadi
+    sel = P.build_messages("two_stage", context_text=ctx, question=_Prompt.text,
+                           speakers=_Case.speakers, stage="selector")
+    ans = P.build_messages("two_stage", context_text=ctx, question=_Prompt.text,
+                           speakers=_Case.speakers, stage="answer", selected_fragments="frag")
+    assert sel[1]["content"].startswith("Partecipanti: Caroline e Melanie.")
+    assert ans[1]["content"].startswith("Partecipanti: Caroline e Melanie.")
 
 
 def test_guards_redis_capture_context():
@@ -155,7 +194,8 @@ def test_execution_manifest_binds_baseline_and_sources():
         return
     m = _manifest()
     ex = P.build_execution_manifest(m, experimental_code_commit="deadbeef", corpus_path=CORPUS,
-                                    localization_path=LOC, validation_runs_dir=VAL_RUNS)
+                                    localization_path=LOC, validation_runs_dir=VAL_RUNS,
+                                    model="gemma4:26b", model_digest="sha256:abc")
     P.verify_manifest(ex)
     assert ex["stage"] == "execution"
     assert ex["case_manifest_sha256"] == m["manifest_sha256"]
@@ -163,6 +203,19 @@ def test_execution_manifest_binds_baseline_and_sources():
     assert ex["git_commit"] == "deadbeef"  # commit sperimentale, non baseline
     assert len(ex["census_report_sha256"]) == 10
     assert len(ex["cases"]) == 129
+    # blocker 2: modello e digest congelati nel manifest ed entrano nell'identità
+    assert ex["model"] == "gemma4:26b" and ex["model_digest"] == "sha256:abc"
+    ident = P.ablation_identity(ex)
+    assert ident["model"] == "gemma4:26b" and ident["model_digest"] == "sha256:abc"
+    # model/digest obbligatori
+    try:
+        P.build_execution_manifest(m, experimental_code_commit="deadbeef", corpus_path=CORPUS,
+                                   localization_path=LOC, validation_runs_dir=VAL_RUNS,
+                                   model="", model_digest="")
+    except P.AblationError:
+        pass
+    else:
+        raise AssertionError("execution manifest senza model/digest accettato")
 
 
 def _sign(manifest):
@@ -172,8 +225,9 @@ def _sign(manifest):
 
 def test_checkpoint_revalidation():
     m = _sign({"stage": "execution", "corpus": {"sha256": "c"}, "git_commit": "g",
+               "model": "gemma4:26b", "model_digest": "d",
                "cases": [{"case_id": "x__r0__q1"}]})
-    identity = P.run_identity(m)
+    identity = P.ablation_identity(m)
     with tempfile.TemporaryDirectory() as d:
         out = Path(d)
         runs = out / "runs"; runs.mkdir()
@@ -206,13 +260,61 @@ def test_checkpoint_revalidation():
             raise AssertionError("report mancante accettato")
 
 
-def _synthetic_runs(dirpath, cases):
+def _synthetic_runs(dirpath, cases, manifest):
     """cases: list of (case_id, qid, replica, stratum, {arm: answer})."""
+    context = "Caroline: contesto sintetico"
+    speakers = ("Caroline", "Melanie")
+    reference = "2026-07-27T18:00:00+02:00"
     for cid, qid, rep, stratum, arms in cases:
+        arm_records = []
+        for arm_name, answer in arms.items():
+            arm = P.ARM_BY_NAME[arm_name]
+            if arm.family == "two_stage":
+                messages = P.build_messages(
+                    "two_stage", context_text=context, question="domanda?",
+                    speakers=speakers, stage="selector",
+                )
+                metadata = P.call_metadata(
+                    arm=arm, stage="selector",
+                    context_text=P.numbered_context(context), cid=cid,
+                    question_id=qid,
+                    localization_sha256=manifest["localization"]["sha256"],
+                    messages=messages, num_predict=P.NUM_PREDICT_SELECTOR,
+                    seed=19960177, model=manifest["model"],
+                    model_digest=manifest["model_digest"],
+                    context_reference_at=reference,
+                )
+                arm_records.append({
+                    "arm": arm_name, "selector_metadata": metadata,
+                    "answer_metadata": None, "answer": answer,
+                    "latency_s": 0.1, "calls": 1,
+                })
+            else:
+                messages = P.build_messages(
+                    arm.family, context_text=context, question="domanda?",
+                    speakers=speakers,
+                )
+                metadata = P.call_metadata(
+                    arm=arm, stage="single", context_text=context, cid=cid,
+                    question_id=qid,
+                    localization_sha256=manifest["localization"]["sha256"],
+                    messages=messages, num_predict=arm.num_predict,
+                    seed=19960177, model=manifest["model"],
+                    model_digest=manifest["model_digest"],
+                    context_reference_at=reference,
+                )
+                arm_records.append({
+                    "arm": arm_name, "metadata": metadata, "answer": answer,
+                    "latency_s": 0.1, "calls": 1,
+                })
         (dirpath / f"{cid}.json").write_text(json.dumps({
             "case_id": cid, "question_id": qid, "replica": rep, "stratum": stratum,
             "conversation": cid.split("__")[0], "arm_order": list(P.ARM_NAMES),
-            "arms": [{"arm": a, "answer": ans} for a, ans in arms.items()],
+            "manifest_sha256": manifest["manifest_sha256"],
+            "model": manifest["model"], "model_digest": manifest["model_digest"],
+            "context_sha256": P._sha(context),
+            "context_reference_at": reference, "speakers": list(speakers),
+            "arms": arm_records,
         }), encoding="utf-8")
 
 
@@ -221,21 +323,23 @@ def test_analyze_and_blind_audit_synthetic():
         runs = Path(d) / "runs"; runs.mkdir()
         gold = {"q1": {"answer": "roma", "answerable": True, "question": "dove?", "category": "single_hop"},
                 "q2": {"answer": None, "answerable": False, "question": "quando?", "category": "adversarial"}}
-        _synthetic_runs(runs, [
-            ("conv-41__r0__q1", "q1", "0", "A_evidence_flip",
-             {a: ("roma" if a in ("B0", "B1") else "Non lo so.") for a in P.ARM_NAMES}),
-            ("conv-41__r0__q2", "q2", "0", "C_adversarial",
-             {a: "Non lo so." for a in P.ARM_NAMES}),
-        ])
         # execution manifest minimale con quei casi
         ex = _sign({"stage": "execution", "manifest_sha256": None, "corpus": {"sha256": "c"},
-                    "git_commit": "g", "localization": {"sha256": "L"}, "cases": [
+                    "git_commit": "g", "localization": {"sha256": "L"},
+                    "model": "gemma4:26b", "model_digest": "digest-test",
+                    "cases": [
                         {"case_id": "conv-41__r0__q1", "conversation": "conv-41", "replica": "0",
                          "question_id": "q1", "stratum": "A_evidence_flip", "answer_seed": 19960177,
                          "arm_order": list(P.ARM_NAMES)},
                         {"case_id": "conv-41__r0__q2", "conversation": "conv-41", "replica": "0",
                          "question_id": "q2", "stratum": "C_adversarial", "answer_seed": 19960177,
                          "arm_order": list(P.ARM_NAMES)}]})
+        _synthetic_runs(runs, [
+            ("conv-41__r0__q1", "q1", "0", "A_evidence_flip",
+             {a: ("roma" if a in ("B0", "B1") else "Non lo so.") for a in P.ARM_NAMES}),
+            ("conv-41__r0__q2", "q2", "0", "C_adversarial",
+             {a: "Non lo so." for a in P.ARM_NAMES}),
+        ], ex)
         # census report finto per a0_stability (stesso seed → old A0 = dual answer)
         vroot = Path(d) / "vroot"; (vroot / "runs").mkdir(parents=True)
         (vroot / "runs" / "conv-41__r0.json").write_text(json.dumps({
@@ -277,29 +381,151 @@ def test_validate_case_report_catches_mismatches():
     case = {"case_id": "conv-41__r0__q1", "question_id": "conv-41:q1", "conversation": "conv-41",
             "replica": "0", "stratum": "A_evidence_flip", "answer_seed": 19960177,
             "arm_order": list(P.ARM_NAMES)}
-    ex = {"localization": {"sha256": "L"}}
+    ex = _sign({
+        "stage": "execution", "corpus": {"sha256": "c"}, "git_commit": "g",
+        "localization": {"sha256": "L"}, "model": "gemma4:26b",
+        "model_digest": "d", "cases": [case],
+    })
+    with tempfile.TemporaryDirectory() as d:
+        runs = Path(d)
+        _synthetic_runs(
+            runs,
+            [("conv-41__r0__q1", "conv-41:q1", "0", "A_evidence_flip",
+              {a: "x" for a in P.ARM_NAMES})],
+            ex,
+        )
+        good = json.loads((runs / "conv-41__r0__q1.json").read_text())
+        assert P.validate_case_report(good, case, ex) == []
+        for mut in (
+            lambda r: r.__setitem__("question_id", "conv-41:q9"),
+            lambda r: r.__setitem__("arm_order", list(reversed(P.ARM_NAMES))),
+            lambda r: r["arms"][0]["metadata"].__setitem__("answer_seed", 1),
+            lambda r: r["arms"][0]["metadata"].__setitem__("localization_sha256", "X"),
+            lambda r: r["arms"][0]["metadata"].__setitem__("num_predict", 999),
+            lambda r: r["arms"][0]["metadata"].__setitem__("model_digest", "altro"),
+            lambda r: r["arms"][0].__setitem__("answer", None),
+            lambda r: r["arms"].pop(),
+        ):
+            import json as _j
+            bad = _j.loads(_j.dumps(good))
+            mut(bad)
+            assert P.validate_case_report(bad, case, ex), mut
 
-    def meta(arm):
-        return {"localization_sha256": "L", "answer_seed": 19960177, "think": P.ARM_BY_NAME[arm].think,
-                "context_sha256": "c", "system_prompt_sha256": "s", "messages_payload_sha256": "m",
-                "temperature": 0, "model": "gemma4:26b", "model_digest": "d"}
 
-    good = {"case_id": "conv-41__r0__q1", "question_id": "conv-41:q1", "conversation": "conv-41",
-            "replica": "0", "stratum": "A_evidence_flip", "arm_order": list(P.ARM_NAMES),
-            "arms": [{"arm": a, "metadata": meta(a), "answer": "x"} for a in P.ARM_NAMES]}
-    assert P.validate_case_report(good, case, ex) == []
-    for mut in (
-        lambda r: r.__setitem__("question_id", "conv-41:q9"),
-        lambda r: r.__setitem__("arm_order", list(reversed(P.ARM_NAMES))),
-        lambda r: r["arms"][0]["metadata"].__setitem__("answer_seed", 1),
-        lambda r: r["arms"][0]["metadata"].__setitem__("localization_sha256", "X"),
-        lambda r: r["arms"].__setitem__(0, {"arm": "A0", "metadata": meta("A0"), "answer": None}),
-        lambda r: r["arms"].pop(),
-    ):
-        import json as _j
-        bad = _j.loads(_j.dumps(good))
-        mut(bad)
-        assert P.validate_case_report(bad, case, ex), mut
+def test_all_arms_end_to_end_with_fake_chat():
+    """Mini E2E senza modello: costruzione prompt, 7 arm, C0 a due stadi,
+    cattura e validazione byte-esatta del report completo.
+    """
+
+    context = "Caroline: siamo stati a Roma\nMelanie: è stato bellissimo"
+    question = "Dove sono andati?"
+    speakers = ("Caroline", "Melanie")
+    reference = "2026-07-27T18:00:00+02:00"
+    case = {
+        "case_id": "conv-41__r0__q1",
+        "question_id": "conv-41:q1",
+        "conversation": "conv-41",
+        "replica": "0",
+        "stratum": "A_evidence_flip",
+        "answer_seed": 19960177,
+        "arm_order": list(P.ARM_NAMES),
+    }
+    execution = _sign({
+        "stage": "execution",
+        "corpus": {"sha256": "corpus-test"},
+        "git_commit": "commit-test",
+        "localization": {"sha256": "localization-test"},
+        "model": "gemma4:26b",
+        "model_digest": "digest-test",
+        "cases": [case],
+    })
+    calls = []
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        if kwargs.get("format") == "json":
+            content = '{"answerable": true, "supporting_fragments": [1]}'
+        else:
+            content = "Roma"
+        return {"message": {"content": content}}
+
+    P.AUDIT_ROOT.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="prompt-ablation-v2-fake-", dir=P.AUDIT_ROOT) as d:
+        capture_dir = Path(d)
+        arms = [
+            P._run_arm(
+                P.ARM_BY_NAME[name],
+                context,
+                question,
+                case["case_id"],
+                case["question_id"],
+                case["answer_seed"],
+                execution["localization"]["sha256"],
+                True,
+                fake_chat,
+                execution["model"],
+                execution["model_digest"],
+                capture_dir,
+                case["replica"],
+                reference,
+                speakers,
+            )
+            for name in P.ARM_NAMES
+        ]
+        report = {
+            "case_id": case["case_id"],
+            "question_id": case["question_id"],
+            "conversation": case["conversation"],
+            "replica": case["replica"],
+            "stratum": case["stratum"],
+            "arm_order": case["arm_order"],
+            "manifest_sha256": execution["manifest_sha256"],
+            "model": execution["model"],
+            "model_digest": execution["model_digest"],
+            "context_sha256": P._sha(context),
+            "context_reference_at": reference,
+            "speakers": list(speakers),
+            "arms": arms,
+        }
+        assert P.validate_case_report(
+            report,
+            case,
+            execution,
+            dual_context_text=context,
+            expected_context_reference_at=reference,
+            question_text=question,
+            speakers=speakers,
+        ) == []
+        assert len(calls) == 8  # sei arm diretti + due chiamate per C0
+        c0 = next(a for a in arms if a["arm"] == "C0")
+        assert c0["calls"] == 2 and c0["answer"] == "Roma"
+        assert c0["selected_indices"] == [1]
+        assert len(list(capture_dir.glob("*.json"))) == 7
+
+        # Anche il percorso C0 invalido deve fermarsi al selettore e astenersi.
+        def malformed_selector(**_kwargs):
+            return {"message": {"content": "non-json"}}
+
+        failed_closed = P._run_arm(
+            P.ARM_BY_NAME["C0"],
+            context,
+            question,
+            case["case_id"],
+            case["question_id"],
+            case["answer_seed"],
+            execution["localization"]["sha256"],
+            True,
+            malformed_selector,
+            execution["model"],
+            execution["model_digest"],
+            capture_dir,
+            case["replica"],
+            reference,
+            speakers,
+        )
+        assert failed_closed["answer"] == "Non lo so."
+        assert failed_closed["calls"] == 1
+        assert failed_closed["answer_metadata"] is None
 
 
 def test_frozen_clock_regression():

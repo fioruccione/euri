@@ -5,7 +5,7 @@
 indipendente.
 **Stato:** preparato, **non eseguito**. Attende audit prima della generazione.
 **Manifest congelato:** `benchmarks/euri_memory/prompt_ablation_v2_manifest.json`
-(`manifest_sha256 = fd93bb17…`).
+(`manifest_sha256 = 6dc6a5fb…`).
 
 > Regola: qualunque modifica a prompt, manifest, arm o metriche dopo aver visto i
 > risultati produce una nuova versione. Questo file resta v2.
@@ -66,10 +66,12 @@ Per attribuire davvero un effetto al *solo* thinking servono i controlli di budg
 | B1 | balanced | sì | 2000 | think isolato (vs B2) |
 | C0 | two-stage | no | 160 | selettore JSON fail-closed → risposta sui soli frammenti |
 
-**A0 rigenerata, non riusata.** Modello e contesto identici alla vecchia A0, ma
-usa il **seed originale del census** (`run.answer_seed`, uguale su tutti gli arm
-di quella replica); la vecchia A0 diventa **controllo di stabilità generativa** a
-parità di seed (differenze = pura instabilità nel tempo).
+**A0 rigenerata, non riusata.** Usa il contesto byte-esatto e il **seed originale
+del census** (`run.answer_seed`, uguale su tutti gli arm di quella replica).
+Il modello e il suo digest sono congelati nell'execution-manifest prima del run.
+La vecchia A0 diventa un controllo di stabilità a contesto e seed bloccati; le
+differenze residue possono includere runtime e non sono chiamate «pura
+instabilità».
 
 **SHA-256 dei prompt congelati:**
 - strict `ac23ae63…` · balanced `4e9b3fae…` · two_stage_selector `6905b251…` ·
@@ -80,20 +82,10 @@ indici interi unici e in-range; qualsiasi violazione → astensione). Ordine deg
 arm **controbilanciato deterministicamente per caso** e congelato nel manifest.
 `case_id` canonico `conv-41__r0__q123` usato ovunque; `question_id` resta separato.
 
-**A0 rigenerata, non riusata.** Modello e contesto sono identici alla vecchia A0,
-ma una risposta prodotta giorni prima introdurrebbe un confondente temporale/runtime.
-La vecchia A0 diventa un **controllo di stabilità generativa**: % risposte
-identiche, delta F1, delta astensione, divergenze per domanda.
-
-**SHA-256 dei prompt congelati:**
-- strict `ac23ae63…`
-- balanced `4e9b3fae…`
-- two_stage_selector `6905b251…`
-- two_stage_answer `84dc5be4…`
-
 Il selettore C0 restituisce **indici di frammento ricostruibili**, validati
 in-range sul contesto; non vede mai gold, evidence ID o risposte attese.
-`answer_seed = 42` congelato, unico su tutti gli arm/casi: varia solo prompt × think.
+Ogni caso usa il seed della propria replica del census; all'interno del caso il
+seed è identico per tutti e sette gli arm.
 
 ## 5. Forecast (nessuna nuova ingestion)
 
@@ -109,7 +101,8 @@ in-range sul contesto; non vede mai gold, evidence ID o risposte attese.
   **baseline di produzione `bac00a0`**, non il commit sperimentale (niente
   autoreferenza); l'*execution-manifest* — non tracciato, in `audit_output/` —
   è firmato con l'HEAD corrente e lega corpus, localizzazione e gli **SHA dei 10
-  report census**.
+  report census. Congela inoltre **nome e digest del modello**; run, resume e
+  analisi rifiutano valori differenti.
 - **Integrità riusata dall'held-out** (punto 6): verifica corpus, artefatto di
   localizzazione, worktree tracciata pulita, HEAD == commit, modello e digest non
   nulli, output-dir e checkpoint legati all'identità completa, ogni report
@@ -126,6 +119,13 @@ in-range sul contesto; non vede mai gold, evidence ID o risposte attese.
   (129 `case_id`, **nessuna collisione**, **17 `question_id` in due repliche**)
   ricostruendo i contesti byte-esatti PER-DOMANDA, **senza modello**. CLI completa
   `ablation-dry-run/exec-manifest/run/analyze/audit`.
+- **Prompt A0 byte-esatto**: il messaggio user conserva il wrapper originale
+  `Partecipanti: …` di `dual_channel_worker._user_prompt`; SHA del payload,
+  speaker, domanda, contesto e riferimento temporale sono verificati prima di
+  salvare ciascun report.
+- **Mini end-to-end senza modello**: un backend finto attraversa tutti i sette
+  arm, inclusi i due stadi di C0, la cattura e la validazione completa. Un
+  selettore C0 malformato viene verificato separatamente come fail-closed.
 
 ### Clock congelato → 129/129 byte-esatti (quarta soluzione)
 
