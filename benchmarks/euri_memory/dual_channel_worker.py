@@ -550,7 +550,9 @@ def _capture_generation(*, arm, prompt, run_label, base_text, final_text, contex
     if not str(Path(capture_dir).resolve()).startswith(str(audit_root.resolve()) + os.sep):
         raise RuntimeError(f"EURI_DUAL_CAPTURE_DIR deve stare sotto audit_output/: {capture_dir}")
     replica = str(run_label).rsplit("__r", 1)[-1] if run_label else None
-    cid = f"{run_label}__{prompt.question_id}" if run_label else prompt.question_id
+    # case_id canonico: la conversazione NON va duplicata (run_label la contiene già).
+    short_qid = str(prompt.question_id).split(":")[-1]
+    cid = f"{run_label}__{short_qid}" if run_label else prompt.question_id
     canonical = json.dumps(messages, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     record = {
         "case_id": cid,

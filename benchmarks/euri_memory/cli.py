@@ -567,8 +567,10 @@ def main() -> int:
             res = PA.dry_run_materialize(case_manifest=m, validation_root=args.validation_root)
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(res, indent=2, ensure_ascii=False, sort_keys=True), encoding="utf-8")
-            print(json.dumps(res, sort_keys=True))
-            return 0
+            print(json.dumps({"materialized": res["materialized_and_verified"],
+                              "non_reconstructible": res["non_reconstructible_count"],
+                              "byte_exact_ok": res["byte_exact_ok"]}, sort_keys=True))
+            return 0 if res["byte_exact_ok"] else 5  # non-zero se non tutti byte-esatti
         if args.command == "ablation-exec-manifest":
             m = json.loads(args.case_manifest.read_text(encoding="utf-8"))
             head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()

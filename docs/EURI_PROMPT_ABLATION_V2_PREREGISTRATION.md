@@ -127,29 +127,22 @@ in-range sul contesto; non vede mai gold, evidence ID o risposte attese.
   ricostruendo i contesti byte-esatti PER-DOMANDA, **senza modello**. CLI completa
   `ablation-dry-run/exec-manifest/run/analyze/audit`.
 
-### Esito del dry-run: 126/129 byte-esatti, 3 NON ricostruibili
+### Clock congelato → 129/129 byte-esatti (quarta soluzione)
 
-Il dry-run ha fatto il suo lavoro di gate e ha trovato un limite reale:
-**126/129 casi ricostruiscono byte-per-byte; 3 no** — `conv-49:q33` (r0 e r1) e
-`conv-49:q101` (r0). La causa probabile è che `build_rag_context` produce testo
-**dipendente dal tempo** (etichette di recency/ordinamento), quindi qualche base
-diverge se ricostruita in un giorno diverso da quello del census. Nota di metodo:
-`_reconstruct_contexts` di Codex processa l'intero report e aborta alla prima
-divergenza (`conv-49:q2`, non un caso target) → la ricostruzione va fatta
-**per-domanda** (fatto qui), altrimenti una domanda estranea blocca l'intera
-conversazione (era il falso 27/129).
+Il primo dry-run aveva trovato **3/129 non ricostruibili** (`conv-49:q33` r0/r1,
+`conv-49:q101` r0): `build_rag_context` produce etichette di recency
+**dipendenti dal tempo**, che divergono in un giorno diverso dal census.
 
-**Conseguenza (decisione dell'audit, non eseguita):** il percorso 3 (ricostruzione
-byte-esatta) regge per 126/129 ma non per tutti. Le opzioni, tutte da approvare:
-1. **cattura** (percorso 2, strumentazione già pronta): una nuova run del
-   dual-channel cattura i contesti al momento della generazione → 129 byte-fedeli
-   senza fragilità di ricostruzione;
-2. **quarantena dichiarata** dei 3 casi (esecuzione su 126, ma rompe il 43/43/43
-   e l'appaiamento per strato);
-3. **ricostruzione time-independent** (congelare il tempo di `build_rag_context`).
+Soluzione adottata (senza produzione, ingestion o cattura): un **context manager
+locale all'harness** (`frozen_clock`) congela `core.rag_context.now` a
+`datetime.fromtimestamp(report["created_at"], tz=config.TIMEZONE)` durante la
+ricostruzione. Con questo, **tutti i 129/129 tornano byte-esatti**. Il tempo di
+riferimento è registrato nei metadati come `context_reference_at`.
 
-L'esecuzione resta **bloccata** finché non si sceglie. Il dry-run che cattura il
-problema è, di per sé, il deliverable che funziona.
+Nota di metodo: la ricostruzione è **per-domanda** (`reconstruct_one`), non
+sull'intero report — così una domanda estranea (`conv-49:q2`) non blocca la
+conversazione (era il falso 27/129). Regressione: **clock corrente 126/129, clock
+census 129/129**. Il dry-run integrale esce **non-zero** se `byte_exact_ok=false`.
 
 ## 6. Metriche
 

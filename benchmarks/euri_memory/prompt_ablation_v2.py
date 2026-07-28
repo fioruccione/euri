@@ -133,7 +133,15 @@ REUSE_PREVIOUS_A0 = False
 
 
 def case_id(conversation: str, replica: str, question_id: str) -> str:
-    return f"{conversation}__r{replica}__{question_id}"
+    """Canonico come documentato: conv-41__r0__q123 (la conversazione UNA volta).
+
+    Il ``question_id`` LoCoMo è "conv-41:q123": nel case_id si usa la sola parte
+    dopo i due punti, così la conversazione non è duplicata. Il ``question_id``
+    pieno resta nella mappa del manifest (mai ricavato con split del case_id).
+    """
+
+    short = str(question_id).split(":")[-1]
+    return f"{conversation}__r{replica}__{short}"
 
 
 def counterbalanced_order(case_index: int) -> list[str]:
@@ -185,6 +193,9 @@ def parse_selector_strict(raw: str, n_fragments: int) -> dict | None:
         if x in seen or not (1 <= x <= n_fragments):
             return None
         seen.append(x)
+    # answerable=false DEVE avere frammenti vuoti (coerenza, fail-closed).
+    if not ans and seen:
+        return None
     return {"answerable": ans, "supporting_fragments": seen}
 
 
@@ -215,12 +226,14 @@ def messages_payload_sha256(messages: list[dict]) -> str:
 
 def call_metadata(*, arm: Arm, stage: str, context_text: str, cid: str, question_id: str,
                   localization_sha256: str, messages: list[dict], num_predict: int,
-                  seed: int, model: str, model_digest: str | None) -> dict:
+                  seed: int, model: str, model_digest: str | None,
+                  context_reference_at: str | None = None) -> dict:
     system = messages[0]["content"] if messages else ""
     return {
         "case_id": cid, "arm": arm.name, "stage": stage, "question_id": question_id,
         "localization_sha256": localization_sha256,
         "context_sha256": _sha(context_text),
+        "context_reference_at": context_reference_at,
         "system_prompt_sha256": _sha(system),
         "messages_payload_sha256": messages_payload_sha256(messages),
         "answer_seed": seed, "model": model, "model_digest": model_digest,
@@ -396,13 +409,39 @@ def _cases(manifest: dict) -> list[dict]:
     return [row for rows in manifest["strata"].values() for row in rows]
 
 
-def reconstruct_one(report: dict, case, question_id: str) -> str:
-    """Ricostruisce SOLO il contesto dual (APPEND) di UNA domanda, byte-esatto.
+import contextlib
 
-    Diversamente da ``_reconstruct_contexts`` (che processa l'intero report e
-    aborta alla prima divergenza), qui isoliamo la singola domanda target: una
-    divergenza su una domanda NON target non deve bloccare le altre. Solleva
-    ``AblationError`` se la base o il final non combaciano con lo SHA salvato.
+
+@contextlib.contextmanager
+def frozen_clock(created_at: float):
+    """Congela ``core.rag_context.now`` al ``created_at`` del report census.
+
+    build_rag_context produce etichette di recency dipendenti dal tempo: senza
+    congelare il clock, la ricostruzione diverge in un giorno diverso dal census.
+    Patch LOCALE all'harness; nessuna modifica di produzione persistita.
+    """
+
+    import config
+    import core.rag_context as rc
+    from datetime import datetime
+
+    reference = datetime.fromtimestamp(float(created_at), tz=config.TIMEZONE)
+    original = rc.now
+    rc.now = lambda: reference
+    try:
+        yield reference
+    finally:
+        rc.now = original
+
+
+def reconstruct_one(report: dict, case, question_id: str, *, freeze: bool = True) -> tuple[str, str]:
+    """Ricostruisce il contesto dual (APPEND) di UNA domanda, byte-esatto.
+
+    Con ``freeze=True`` (default) usa il clock congelato al ``created_at`` del
+    report → byte-esatto. Con ``freeze=False`` usa il clock corrente (per la
+    regressione: alcuni contesti divergono). Ritorna (final_text, reference_at_iso).
+    Isola la singola domanda: una divergenza su una domanda NON target non blocca
+    le altre. Solleva ``AblationError`` se base o final non combaciano con lo SHA.
     """
 
     from benchmarks.euri_memory.prompt_ablation import _FrozenBaseMemory, _raw_turn_document
@@ -423,8 +462,13 @@ def reconstruct_one(report: dict, case, question_id: str) -> str:
         if not tid or tid not in turns:
             raise AblationError(f"{question_id}: nodo base senza turno ({tid})")
         docs.append(_raw_turn_document(case.corpus(), turns[tid], []))
-    base = build_rag_context(questions[question_id].text, _FrozenBaseMemory(docs),
-                             mode="search", touch=False).text
+
+    ctx_manager = frozen_clock(report["created_at"]) if freeze else contextlib.nullcontext()
+    with ctx_manager as reference:
+        base = build_rag_context(questions[question_id].text, _FrozenBaseMemory(docs),
+                                 mode="search", touch=False).text
+    reference_iso = reference.isoformat() if freeze and reference is not None else None
+
     expected_base = rag[question_id]["metadata"]["base_sha256"]
     if _sha(base) != expected_base:
         raise AblationError(f"{question_id}: base non byte-esatta ({_sha(base)} != {expected_base})")
@@ -434,11 +478,11 @@ def reconstruct_one(report: dict, case, question_id: str) -> str:
     final = base + render_additions_block(rendered)
     if _sha(final) != comp["final_sha256"]:
         raise AblationError(f"{question_id}: final non byte-esatto")
-    return final
+    return final, reference_iso
 
 
-def load_reconstructed_context(report: dict, case, question_id: str) -> str:
-    return reconstruct_one(report, case, question_id)
+def load_reconstructed_context(report: dict, case, question_id: str) -> tuple[str, str]:
+    return reconstruct_one(report, case, question_id, freeze=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -470,7 +514,7 @@ def dry_run_materialize(*, case_manifest: dict, validation_root: Path) -> dict:
         for c in rows:
             assert sorted(c["arm_order"]) == sorted(ARM_NAMES), c["case_id"]
             try:
-                ctx = reconstruct_one(report, loaded, c["question_id"])  # SHA verificato per-domanda
+                ctx, _ref = reconstruct_one(report, loaded, c["question_id"], freeze=True)
                 assert ctx
                 materialized += 1
             except AblationError as exc:
@@ -521,8 +565,13 @@ def run_ablation(*, execution_manifest: dict, validation_root: Path, output_dir:
     existing = output_dir / "manifest.json"
     if existing.exists():
         prev = json.loads(existing.read_text(encoding="utf-8"))
-        if run_identity(prev) != identity:
-            raise AblationError("output-dir legata a un'altra identità: fail-closed")
+        try:
+            verify_manifest(prev)
+        except AblationError as exc:
+            raise AblationError(f"manifest preesistente non integro: {exc}") from exc
+        # Uguaglianza canonica COMPLETA, non solo run_identity (punto 2).
+        if _canonical(prev) != _canonical(execution_manifest):
+            raise AblationError("output-dir con manifest diverso (canonico): fail-closed")
     else:
         existing.write_text(json.dumps(execution_manifest, indent=2, ensure_ascii=False, sort_keys=True), encoding="utf-8")
 
@@ -550,7 +599,7 @@ def run_ablation(*, execution_manifest: dict, validation_root: Path, output_dir:
             cid = c["case_id"]
             if cid in done:
                 continue
-            ctx = load_reconstructed_context(report, loaded, c["question_id"])
+            ctx, ctx_ref = load_reconstructed_context(report, loaded, c["question_id"])
             qtext = questions[c["question_id"]].text
             seed = int(c["answer_seed"])
             arm_records = []
@@ -558,7 +607,7 @@ def run_ablation(*, execution_manifest: dict, validation_root: Path, output_dir:
                 arm = ARM_BY_NAME[arm_name]
                 rec = _run_arm(arm, ctx, qtext, cid, c["question_id"], seed,
                                execution_manifest["localization"]["sha256"], execute, chat_fn,
-                               model, model_digest, capture_dir, c["replica"])
+                               model, model_digest, capture_dir, c["replica"], ctx_ref)
                 arm_records.append(rec)
                 planned += 1 + arm.selector_calls
             (runs_dir / f"{cid}.json").write_text(json.dumps(
@@ -574,6 +623,45 @@ def run_ablation(*, execution_manifest: dict, validation_root: Path, output_dir:
             "cases": len(_cases(execution_manifest)), "planned_calls": planned}
 
 
+def validate_case_report(rec: dict, case: dict, execution_manifest: dict, *,
+                         require_answers: bool = True) -> list[str]:
+    """Valida un report per-caso contro il manifest (punto 3). Lista vuota = ok."""
+
+    p: list[str] = []
+    for field in ("case_id", "question_id", "conversation", "replica"):
+        if rec.get(field) != case.get(field):
+            p.append(f"{field} diverso")
+    if rec.get("stratum") != case.get("stratum"):
+        p.append("stratum diverso")
+    if rec.get("arm_order") != case.get("arm_order"):
+        p.append("arm_order diverso")
+    names = sorted(a.get("arm") for a in rec.get("arms", []))
+    if names != sorted(ARM_NAMES):
+        p.append(f"arm != 7 esatti ({names})")
+        return p
+    loc_sha = execution_manifest["localization"]["sha256"]
+    for a in rec["arms"]:
+        arm = ARM_BY_NAME.get(a.get("arm"))
+        metas = [a["metadata"]] if "metadata" in a else [a.get("selector_metadata"), a.get("answer_metadata")]
+        for meta in [m for m in metas if m]:
+            if meta.get("localization_sha256") != loc_sha:
+                p.append(f"{a['arm']} localization_sha")
+            if int(meta.get("answer_seed", -1)) != int(case["answer_seed"]):
+                p.append(f"{a['arm']} answer_seed")
+            if arm is not None and meta.get("think") != arm.think:
+                p.append(f"{a['arm']} think")
+            for k in ("context_sha256", "system_prompt_sha256", "messages_payload_sha256"):
+                if not meta.get(k):
+                    p.append(f"{a['arm']} manca {k}")
+            if meta.get("temperature") != 0:
+                p.append(f"{a['arm']} temperature")
+            if require_answers and (not meta.get("model") or not meta.get("model_digest")):
+                p.append(f"{a['arm']} model/digest nullo")
+        if require_answers and a.get("answer") is None:
+            p.append(f"{a['arm']} risposta assente")
+    return p
+
+
 def _load_and_revalidate_checkpoint(path: Path, manifest: dict, identity: dict, runs_dir: Path) -> dict:
     if not path.is_file():
         return {"done": []}
@@ -582,11 +670,15 @@ def _load_and_revalidate_checkpoint(path: Path, manifest: dict, identity: dict, 
     if any(rec.get(k) is None for k in ("manifest_sha256", "corpus_sha256", "git_commit")):
         raise AblationError("checkpoint senza identity completa")
     assert_same_identity(rec, identity, context="resume ablation")
-    expected_ids = {c["case_id"] for c in _cases(manifest)}
+    cases = {c["case_id"]: c for c in _cases(manifest)}
+    seen = set()
     revalidated = []
     for cid in cp.get("done", []):
-        if cid not in expected_ids:
+        if cid not in cases:
             raise AblationError(f"checkpoint con case_id estraneo: {cid}")
+        if cid in seen:
+            raise AblationError(f"case_id duplicato nel checkpoint: {cid}")
+        seen.add(cid)
         rp = runs_dir / f"{cid}.json"
         if not rp.is_file():
             raise AblationError(f"report mancante per {cid}")
@@ -594,21 +686,22 @@ def _load_and_revalidate_checkpoint(path: Path, manifest: dict, identity: dict, 
             rr = json.loads(rp.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
             raise AblationError(f"report corrotto per {cid}: {exc}") from exc
-        if rr.get("case_id") != cid or sorted(a["arm"] for a in rr["arms"]) != sorted(ARM_NAMES):
-            raise AblationError(f"report {cid} non valido")
+        problems = validate_case_report(rr, cases[cid], manifest, require_answers=True)
+        if problems:
+            raise AblationError(f"report {cid} non valido: {'; '.join(problems)}")
         revalidated.append(cid)
     return {"done": revalidated}
 
 
 def _run_arm(arm, ctx, question, cid, qid, seed, loc_sha, execute, chat_fn,
-             model, model_digest, capture_dir, replica) -> dict:
+             model, model_digest, capture_dir, replica, ctx_ref) -> dict:
     if arm.family == "two_stage":
         return _run_two_stage(arm, ctx, question, cid, qid, seed, loc_sha, execute,
-                              chat_fn, model, model_digest, capture_dir, replica)
+                              chat_fn, model, model_digest, capture_dir, replica, ctx_ref)
     msgs = build_messages(arm.family, context_text=ctx, question=question)
     meta = call_metadata(arm=arm, stage="single", context_text=ctx, cid=cid, question_id=qid,
                          localization_sha256=loc_sha, messages=msgs, num_predict=arm.num_predict,
-                         seed=seed, model=model, model_digest=model_digest)
+                         seed=seed, model=model, model_digest=model_digest, context_reference_at=ctx_ref)
     answer, latency, calls = None, None, 0
     if execute:
         import time
@@ -622,14 +715,15 @@ def _run_arm(arm, ctx, question, cid, qid, seed, loc_sha, execute, chat_fn,
 
 
 def _run_two_stage(arm, ctx, question, cid, qid, seed, loc_sha, execute, chat_fn,
-                   model, model_digest, capture_dir, replica) -> dict:
+                   model, model_digest, capture_dir, replica, ctx_ref) -> dict:
     n_frag = len(fragments(ctx))
     sel_msgs = build_messages("two_stage", context_text=ctx, question=question, stage="selector")
     sel_meta = call_metadata(arm=arm, stage="selector", context_text=numbered_context(ctx),
                              cid=cid, question_id=qid, localization_sha256=loc_sha, messages=sel_msgs,
-                             num_predict=NUM_PREDICT_SELECTOR, seed=seed, model=model, model_digest=model_digest)
+                             num_predict=NUM_PREDICT_SELECTOR, seed=seed, model=model,
+                             model_digest=model_digest, context_reference_at=ctx_ref)
     raw, parsed, indices, selected, answer = None, None, [], "", None
-    ans_meta, latency, calls = None, 0.0, 0
+    ans_meta, ans_msgs, latency, calls = None, None, 0.0, 0
     if execute:
         import time
         t = time.perf_counter()
@@ -645,7 +739,8 @@ def _run_two_stage(arm, ctx, question, cid, qid, seed, loc_sha, execute, chat_fn
                                       stage="answer", selected_fragments=selected)
             ans_meta = call_metadata(arm=arm, stage="answer", context_text=selected, cid=cid,
                                      question_id=qid, localization_sha256=loc_sha, messages=ans_msgs,
-                                     num_predict=arm.num_predict, seed=seed, model=model, model_digest=model_digest)
+                                     num_predict=arm.num_predict, seed=seed, model=model,
+                                     model_digest=model_digest, context_reference_at=ctx_ref)
             answer = _content(chat_fn(model=model, messages=ans_msgs,
                                       options={"temperature": 0, "num_predict": arm.num_predict, "seed": seed},
                                       think=False))
@@ -653,7 +748,12 @@ def _run_two_stage(arm, ctx, question, cid, qid, seed, loc_sha, execute, chat_fn
         else:
             answer = "Non lo so."  # fail-closed
         latency = round(time.perf_counter() - t, 3)
-    _capture(capture_dir, cid, arm.name, replica, {"selector_messages": sel_msgs, "context": ctx})
+    # Cattura C0: entrambi gli stadi (punto 6).
+    _capture(capture_dir, cid, arm.name, replica, {
+        "selector_messages": sel_msgs, "answer_messages": ans_msgs, "context": ctx,
+        "selector_raw": raw, "selector_parsed": parsed,
+        "selected_indices": indices, "selected_fragments": selected,
+        "selector_metadata": sel_meta, "answer_metadata": ans_meta})
     return {"arm": arm.name, "selector_metadata": sel_meta, "answer_metadata": ans_meta,
             "selector_raw": raw, "selector_parsed": parsed, "selected_indices": indices,
             "selected_fragments_sha256": _sha(selected) if selected else None,
@@ -707,67 +807,122 @@ def is_abstention(a):
     return (not _norm(a)) or bool(_ABST.search(a or ""))
 
 
-def analyze(*, output_runs: Path, gold_lookup: dict, validation_root: Path, execution_manifest: dict) -> dict:
-    per = defaultdict(lambda: defaultdict(list))     # (stratum,arm)->metric->[]
-    by_cat = defaultdict(lambda: defaultdict(list))  # (category,arm)->f1
-    by_conv = defaultdict(lambda: defaultdict(list))
-    answers = defaultdict(dict)                        # arm -> case_id -> answer
-    a0 = {}
+def case_meta_map(manifest: dict) -> dict[str, dict]:
+    """case_id -> {question_id, conversation, replica, stratum}. MAI split del cid."""
+
+    out = {}
+    for c in _cases(manifest):
+        out[c["case_id"]] = {"question_id": c["question_id"], "conversation": c["conversation"],
+                             "replica": c["replica"], "stratum": c.get("stratum")}
+    return out
+
+
+def _assert_exact_coverage(output_runs: Path, manifest: dict) -> dict[str, dict]:
+    meta = case_meta_map(manifest)
+    seen = {}
     for f in sorted(Path(output_runs).glob("*.json")):
         rec = json.loads(f.read_text(encoding="utf-8"))
-        cid, qid = rec["case_id"], rec["question_id"]
-        g = gold_lookup.get(qid, {})
-        stratum = rec.get("stratum", "unknown")
+        cid = rec.get("case_id")
+        if cid not in meta:
+            raise AblationError(f"report estraneo: {cid}")
+        if cid in seen:
+            raise AblationError(f"report duplicato: {cid}")
+        names = sorted(a.get("arm") for a in rec.get("arms", []))
+        if names != sorted(ARM_NAMES):
+            raise AblationError(f"{cid}: arm != 7 esatti ({names})")
+        seen[cid] = rec
+    missing = set(meta) - set(seen)
+    if missing:
+        raise AblationError(f"report mancanti: {sorted(missing)[:5]}… ({len(missing)})")
+    return seen
+
+
+def analyze(*, output_runs: Path, gold_lookup: dict, validation_root: Path, execution_manifest: dict) -> dict:
+    meta = case_meta_map(execution_manifest)
+    reports = _assert_exact_coverage(output_runs, execution_manifest)  # 129 esatti, 7 arm
+
+    per = defaultdict(lambda: defaultdict(list))       # (stratum,arm)->metric
+    glob = defaultdict(lambda: defaultdict(list))      # arm->metric (globale)
+    by_cat = defaultdict(lambda: defaultdict(list))
+    by_conv = defaultdict(lambda: defaultdict(list))
+    cost = defaultdict(lambda: {"latency_s": 0.0, "calls": 0})
+    answers = defaultdict(dict)                          # arm -> case_id -> answer
+    for cid, rec in reports.items():
+        m = meta[cid]
+        g = gold_lookup.get(m["question_id"], {})
+        stratum = m["stratum"]
         for ar in rec["arms"]:
             arm, a = ar["arm"], ar.get("answer")
             answers[arm][cid] = a
-            if arm == "A0":
-                a0[cid] = a
+            cost[arm]["latency_s"] += float(ar.get("latency_s") or 0.0)
+            cost[arm]["calls"] += int(ar.get("calls") or 0)
             if a is None:
                 continue
             if g.get("answerable"):
                 f1 = token_f1(g.get("answer"), a)
-                per[(stratum, arm)]["token_f1"].append(f1)
-                per[(stratum, arm)]["exact_match"].append(exact_match(g.get("answer"), a))
-                per[(stratum, arm)]["false_abstention"].append(1.0 if is_abstention(a) else 0.0)
+                for bucket in (per[(stratum, arm)], glob[arm]):
+                    bucket["token_f1"].append(f1)
+                    bucket["exact_match"].append(exact_match(g.get("answer"), a))
+                    bucket["false_abstention"].append(1.0 if is_abstention(a) else 0.0)
                 by_cat[(g.get("category"), arm)]["token_f1"].append(f1)
-                by_conv[(cid.split("__")[0], arm)]["token_f1"].append(f1)
+                by_conv[(m["conversation"], arm)]["token_f1"].append(f1)
             else:
                 per[(stratum, arm)]["adversarial_correct"].append(1.0 if is_abstention(a) else 0.0)
+                glob[arm]["adversarial_correct"].append(1.0 if is_abstention(a) else 0.0)
 
     def mean(xs):
         return round(sum(xs) / len(xs), 4) if xs else None
 
-    metrics = defaultdict(dict)
-    for (stratum, arm), m in per.items():
-        metrics[stratum][arm] = {k: mean(v) for k, v in m.items()}
+    def gmean(arm, metric):
+        return mean(glob[arm][metric])
 
-    # confronti appaiati per caso (arm vs A0) + changed/improved/worsened
+    # changed/improved/worsened vs A0 (appaiato per caso)
     paired = {}
     for arm in ARM_NAMES:
         if arm == "A0":
             continue
         ch = imp = wor = 0
         for cid, a in answers[arm].items():
-            a0a = a0.get(cid)
+            a0a = answers["A0"].get(cid)
             if a is None or a0a is None:
                 continue
-            g = gold_lookup.get(cid.split("__", 2)[-1], {})
             if _norm(a) != _norm(a0a):
                 ch += 1
+                g = gold_lookup.get(meta[cid]["question_id"], {})
                 if g.get("answerable"):
                     d = token_f1(g.get("answer"), a) - token_f1(g.get("answer"), a0a)
-                    imp += 1 if d > 1e-9 else 0
-                    wor += 1 if d < -1e-9 else 0
+                    imp += int(d > 1e-9)
+                    wor += int(d < -1e-9)
         paired[arm] = {"changed_vs_a0": ch, "improved": imp, "worsened": wor}
 
+    def contrast(hi, lo):
+        return {"delta_token_f1": None if gmean(hi, "token_f1") is None or gmean(lo, "token_f1") is None
+                else round(gmean(hi, "token_f1") - gmean(lo, "token_f1"), 4),
+                "delta_adversarial": None if gmean(hi, "adversarial_correct") is None or gmean(lo, "adversarial_correct") is None
+                else round(gmean(hi, "adversarial_correct") - gmean(lo, "adversarial_correct"), 4)}
+
+    contrasts = {
+        "budget_A2_minus_A0": contrast("A2", "A0"), "budget_B2_minus_B0": contrast("B2", "B0"),
+        "thinking_A1_minus_A2": contrast("A1", "A2"), "thinking_B1_minus_B2": contrast("B1", "B2"),
+        "prompt_B0_minus_A0": contrast("B0", "A0"),
+        "two_stage_C0_minus_A0": contrast("C0", "A0"), "two_stage_C0_minus_B0": contrast("C0", "B0"),
+    }
+
+    metrics = defaultdict(dict)
+    for (stratum, arm), mm in per.items():
+        metrics[stratum][arm] = {k: mean(v) for k, v in mm.items()}
+
     return {
-        "experiment": EXPERIMENT_ID, "kind": "development",
+        "experiment": EXPERIMENT_ID, "kind": "development", "cases": len(reports),
         "manifest_sha256": execution_manifest.get("manifest_sha256"),
+        "global_by_arm": {a: {k: gmean(a, k) for k in ("token_f1", "exact_match",
+                          "false_abstention", "adversarial_correct")} for a in ARM_NAMES},
         "per_stratum_arm": {k: dict(v) for k, v in metrics.items()},
-        "by_category_arm": {f"{c}|{a}": {"token_f1": mean(m["token_f1"])} for (c, a), m in by_cat.items()},
-        "by_conversation_arm": {f"{c}|{a}": {"token_f1": mean(m["token_f1"])} for (c, a), m in by_conv.items()},
+        "by_category_arm": {f"{c}|{a}": mean(mm["token_f1"]) for (c, a), mm in by_cat.items()},
+        "by_conversation_arm": {f"{c}|{a}": mean(mm["token_f1"]) for (c, a), mm in by_conv.items()},
         "paired_vs_a0": paired,
+        "preregistered_contrasts": contrasts,
+        "cost_by_arm": {a: {"latency_s": round(cost[a]["latency_s"], 2), "calls": cost[a]["calls"]} for a in ARM_NAMES},
         "a0_stability": a0_stability(fresh_a0=answers.get("A0", {}), validation_root=validation_root,
                                      execution_manifest=execution_manifest, gold_lookup=gold_lookup),
         "note": "token-F1 non è l'unico verdetto: vedi audit cieco. Development, N piccolo.",
@@ -775,29 +930,43 @@ def analyze(*, output_runs: Path, gold_lookup: dict, validation_root: Path, exec
 
 
 def a0_stability(*, fresh_a0: dict, validation_root: Path, execution_manifest: dict, gold_lookup: dict) -> dict:
-    """Vecchia A0 (dual del census, stesso seed) vs A0 fresca."""
+    """Vecchia A0 (dual del census, stesso seed) vs A0 fresca. Contesto e seed
+    bloccati: le differenze misurano la stabilità generativa a parità di input."""
 
+    meta = case_meta_map(execution_manifest)
     old = {}
-    for (conv, rep) in {(c["conversation"], c["replica"]) for c in _cases(execution_manifest)}:
+    reps = {(c["conversation"], c["replica"]) for c in _cases(execution_manifest)}
+    dual_by_rep = {}
+    for (conv, rep) in reps:
         r = _census_report(validation_root / "runs", conv, rep)
-        dual = {x["question_id"]: x for x in {a["arm"]: a for a in r["arms"]}["dual_channel"]["results"]}
-        for c in _cases(execution_manifest):
-            if c["conversation"] == conv and c["replica"] == rep:
-                old[c["case_id"]] = dual.get(c["question_id"], {}).get("answer")
-    ids = [c for c in fresh_a0 if c in old]
+        dual_by_rep[(conv, rep)] = {x["question_id"]: x.get("answer")
+                                    for x in {a["arm"]: a for a in r["arms"]}["dual_channel"]["results"]}
+    for cid, m in meta.items():
+        old[cid] = dual_by_rep.get((m["conversation"], m["replica"]), {}).get(m["question_id"])
+
+    ids = [c for c in fresh_a0 if c in old and old[c] is not None]
     identical = sum(1 for c in ids if _norm(fresh_a0[c]) == _norm(old[c]))
-    df1 = da = []
+    df1: list[float] = []
+    da: list[float] = []
     for c in ids:
-        qid = c.split("__", 2)[-1]
-        g = gold_lookup.get(qid, {})
+        g = gold_lookup.get(meta[c]["question_id"], {})
         if g.get("answerable"):
             df1.append(token_f1(g.get("answer"), fresh_a0[c]) - token_f1(g.get("answer"), old[c]))
+        else:
+            da.append((1.0 if is_abstention(fresh_a0[c]) else 0.0) - (1.0 if is_abstention(old[c]) else 0.0))
+
+    def mean(xs):
+        return round(sum(xs) / len(xs), 4) if xs else None
+
     return {
-        "n": len(ids), "same_seed": True,
+        "n": len(ids), "context_and_seed_frozen": True,
         "identical_pct": round(100 * identical / len(ids), 1) if ids else None,
-        "mean_delta_f1_fresh_minus_old": round(sum(df1) / len(df1), 4) if df1 else None,
+        "mean_delta_f1_fresh_minus_old": mean(df1),
+        "mean_delta_abstention_fresh_minus_old": mean(da),
         "divergent_case_ids": sorted(c for c in ids if _norm(fresh_a0[c]) != _norm(old[c])),
-        "note": "stesso seed per-caso: differenze = pura instabilità generativa nel tempo.",
+        "note": "contesto e seed bloccati; se il digest storico del modello non è "
+        "dimostrabile, le differenze sono stabilità generativa a parità di input, "
+        "non necessariamente 'pura' instabilità.",
     }
 
 

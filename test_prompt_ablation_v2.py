@@ -229,9 +229,13 @@ def test_analyze_and_blind_audit_synthetic():
         ])
         # execution manifest minimale con quei casi
         ex = _sign({"stage": "execution", "manifest_sha256": None, "corpus": {"sha256": "c"},
-                    "git_commit": "g", "cases": [
-                        {"case_id": "conv-41__r0__q1", "conversation": "conv-41", "replica": "0", "question_id": "q1"},
-                        {"case_id": "conv-41__r0__q2", "conversation": "conv-41", "replica": "0", "question_id": "q2"}]})
+                    "git_commit": "g", "localization": {"sha256": "L"}, "cases": [
+                        {"case_id": "conv-41__r0__q1", "conversation": "conv-41", "replica": "0",
+                         "question_id": "q1", "stratum": "A_evidence_flip", "answer_seed": 19960177,
+                         "arm_order": list(P.ARM_NAMES)},
+                        {"case_id": "conv-41__r0__q2", "conversation": "conv-41", "replica": "0",
+                         "question_id": "q2", "stratum": "C_adversarial", "answer_seed": 19960177,
+                         "arm_order": list(P.ARM_NAMES)}]})
         # census report finto per a0_stability (stesso seed → old A0 = dual answer)
         vroot = Path(d) / "vroot"; (vroot / "runs").mkdir(parents=True)
         (vroot / "runs" / "conv-41__r0.json").write_text(json.dumps({
@@ -244,8 +248,14 @@ def test_analyze_and_blind_audit_synthetic():
         assert rep["per_stratum_arm"]["A_evidence_flip"]["A0"]["false_abstention"] == 1.0
         # paired vs A0: B0 cambia e migliora
         assert rep["paired_vs_a0"]["B0"]["improved"] == 1
-        # a0 stability: fresh A0 astiene = old A0 astiene → identiche
-        assert rep["a0_stability"]["same_seed"] is True
+        # contrasti preregistrati presenti (punto 4)
+        assert set(rep["preregistered_contrasts"]) >= {
+            "budget_A2_minus_A0", "thinking_A1_minus_A2", "prompt_B0_minus_A0", "two_stage_C0_minus_A0"}
+        assert rep["preregistered_contrasts"]["prompt_B0_minus_A0"]["delta_token_f1"] == 1.0  # B0=roma, A0=astiene
+        assert "global_by_arm" in rep and "cost_by_arm" in rep and rep["cases"] == 2
+        # a0 stability: contesto+seed bloccati, delta astensione calcolato (punto 5)
+        assert rep["a0_stability"]["context_and_seed_frozen"] is True
+        assert rep["a0_stability"]["mean_delta_abstention_fresh_minus_old"] is not None
 
         # audit cieco: codici non riconducibili all'arm, chiave separata
         au = P.blind_audit_export(output_runs=runs, gold_lookup=gold)
@@ -254,6 +264,69 @@ def test_analyze_and_blind_audit_synthetic():
             assert r["code"] in au["key"]
             assert not any(arm in r["code"] for arm in P.ARM_NAMES)  # non reversibile dal nome
         assert all("arm" not in r for r in au["rows"])  # arm solo nella key
+
+
+def test_selector_answerable_false_requires_empty_fragments():
+    # answerable=false con frammenti → fail-closed (punto 6)
+    assert P.parse_selector_strict('{"answerable": false, "supporting_fragments": [2]}', 5) is None
+    assert P.parse_selector_strict('{"answerable": false, "supporting_fragments": []}', 5) == {
+        "answerable": False, "supporting_fragments": []}
+
+
+def test_validate_case_report_catches_mismatches():
+    case = {"case_id": "conv-41__r0__q1", "question_id": "conv-41:q1", "conversation": "conv-41",
+            "replica": "0", "stratum": "A_evidence_flip", "answer_seed": 19960177,
+            "arm_order": list(P.ARM_NAMES)}
+    ex = {"localization": {"sha256": "L"}}
+
+    def meta(arm):
+        return {"localization_sha256": "L", "answer_seed": 19960177, "think": P.ARM_BY_NAME[arm].think,
+                "context_sha256": "c", "system_prompt_sha256": "s", "messages_payload_sha256": "m",
+                "temperature": 0, "model": "gemma4:26b", "model_digest": "d"}
+
+    good = {"case_id": "conv-41__r0__q1", "question_id": "conv-41:q1", "conversation": "conv-41",
+            "replica": "0", "stratum": "A_evidence_flip", "arm_order": list(P.ARM_NAMES),
+            "arms": [{"arm": a, "metadata": meta(a), "answer": "x"} for a in P.ARM_NAMES]}
+    assert P.validate_case_report(good, case, ex) == []
+    for mut in (
+        lambda r: r.__setitem__("question_id", "conv-41:q9"),
+        lambda r: r.__setitem__("arm_order", list(reversed(P.ARM_NAMES))),
+        lambda r: r["arms"][0]["metadata"].__setitem__("answer_seed", 1),
+        lambda r: r["arms"][0]["metadata"].__setitem__("localization_sha256", "X"),
+        lambda r: r["arms"].__setitem__(0, {"arm": "A0", "metadata": meta("A0"), "answer": None}),
+        lambda r: r["arms"].pop(),
+    ):
+        import json as _j
+        bad = _j.loads(_j.dumps(good))
+        mut(bad)
+        assert P.validate_case_report(bad, case, ex), mut
+
+
+def test_frozen_clock_regression():
+    """Clock corrente: alcuni contesti divergono; clock census: byte-esatti."""
+    if not _available():
+        return
+    try:
+        from benchmarks.euri_memory.prompt_ablation import _load_case  # noqa: F401
+    except Exception:
+        return
+    import json as _j
+    conv, rep, qid = "conv-49", "0", "conv-49:q33"
+    report = _j.loads((VAL_RUNS / f"{conv}__r{rep}.json").read_text())
+    try:
+        case = _load_case(VAL / "run", conv, CORPUS)
+    except Exception:
+        return
+    # clock CENSUS congelato → byte-esatto
+    text, ref = P.reconstruct_one(report, case, qid, freeze=True)
+    assert text and ref  # context_reference_at registrato
+    # clock CORRENTE → diverge (questo caso è uno dei 3 noti)
+    try:
+        P.reconstruct_one(report, case, qid, freeze=False)
+    except P.AblationError:
+        pass
+    else:
+        raise AssertionError("con clock corrente conv-49:q33 dovrebbe divergere")
 
 
 if __name__ == "__main__":
