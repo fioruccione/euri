@@ -1,24 +1,11 @@
-"""Ablation DEVELOPMENT v2: strict vs balanced vs two-stage (percorso 3).
+"""Ablation DEVELOPMENT v2: strict/balanced × (160 no-think, 2000 no-think,
+2000 think) + two-stage. Percorso 3: ricostruzione byte-esatta, cattura futura.
 
-Separa quattro possibili confondenti, trattati simmetricamente: prompt di
-astensione, distrattori, thinking, sottostima del token-F1.
+Separa QUATTRO confondenti trattati simmetricamente: prompt di astensione,
+distrattori, thinking (isolato dal budget 2000), sottostima del token-F1.
 
-Percorso 3 (ricostruzione byte-esatta ORA, cattura per il futuro):
-- riusa i contesti dual RICOSTRUITI byte-per-byte dagli artefatti del census
-  (``prompt_ablation._reconstruct_contexts`` → build_rag_context + memoria-stub);
-- verifica lo SHA-256 del contesto contro l'originale per OGNI caso (già dentro la
-  ricostruzione: solleva se diverge);
-- nessuna nuova ingestion, nessun nuovo retrieval, nessun Redis personale;
-- rigenera A0 fresco insieme agli altri arm per la primaria; la vecchia A0 è solo
-  un CONTROLLO di stabilità generativa nel tempo;
-- gold, expected_answer ed evidence ID non entrano MAI nei messaggi al modello.
-
-Cinque arm: A0 strict/no-think, A1 strict/think, B0 balanced/no-think,
-B1 balanced/think, C0 two-stage/no-think. Budget max 774 chiamate
-(645 risposte + 129 selettore C0).
-
-Questo modulo NON esegue modelli in fase di preparazione: la generazione reale è
-gated da ``execute=True`` e non viene invocata prima dell'audit.
+Nessun modello viene invocato in preparazione: la generazione è gated da
+``execute=True``. Nessun Redis personale, nessun retrieval nuovo.
 """
 
 from __future__ import annotations
@@ -26,17 +13,32 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 import re
-from collections import defaultdict
+import unicodedata
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+
+from benchmarks.euri_memory.integrity import (
+    IntegrityError,
+    assert_corpus_matches,
+    assert_head_matches_manifest,
+    assert_same_identity,
+    assert_worktree_clean,
+    run_identity,
+    sha256_file,
+)
 
 
 ROOT = Path(__file__).resolve().parent
 REPO_ROOT = ROOT.parents[1]
 EXPERIMENT_ID = "euri_prompt_ablation_v2"
-ANSWER_SEED = 42  # congelato: unico su tutti gli arm/casi, così varia solo prompt×think
+# Baseline di produzione da cui derivano census e casi (NON il commit sperimentale).
+PRODUCTION_BASELINE_COMMIT = "bac00a0"
+SOURCE_VALIDATION = "dual_channel_validation_v1_seed396895560"
+AUDIT_ROOT = REPO_ROOT / "audit_output"
 
 
 class AblationError(RuntimeError):
@@ -67,10 +69,10 @@ Rispondi in italiano, in modo conciso e senza spiegazioni."""
 PROMPT_SELECTOR = """\
 Sei un selettore di evidenza per un benchmark di memoria. Ricevi un contesto in
 cui ogni frammento è numerato come [N]. NON rispondere alla domanda.
-Restituisci SOLTANTO un oggetto JSON con:
-- "answerable": true oppure false — true se il contesto contiene, direttamente o
-  tramite una chiara parafrasi, l'informazione necessaria alla domanda;
-- "supporting_fragments": lista degli indici interi N dei soli frammenti che
+Restituisci SOLTANTO un oggetto JSON valido con esattamente:
+- "answerable": un booleano true oppure false — true se il contesto contiene,
+  direttamente o tramite una chiara parafrasi, l'informazione necessaria;
+- "supporting_fragments": lista di indici interi UNICI dei soli frammenti che
   supportano direttamente la risposta (lista vuota se answerable è false).
 Non usare conoscenze esterne e non dedurre dalla domanda. Nessun testo fuori dal JSON."""
 
@@ -97,28 +99,52 @@ def prompt_sha256() -> dict[str, str]:
 _SYSTEM_BY_FAMILY = {"strict": PROMPT_STRICT, "balanced": PROMPT_BALANCED}
 
 
+# --------------------------------------------------------------------------- #
+# Sette arm: strict/balanced × {160 no-think, 2000 no-think, 2000 think} + C0
+# --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
 class Arm:
     name: str
-    family: str      # strict | balanced | two_stage
+    family: str          # strict | balanced | two_stage
     think: bool
-    answer_calls: int          # generazioni di RISPOSTA per caso
-    selector_calls: int = 0    # chiamate extra del selettore
+    num_predict: int
+    selector_calls: int = 0
+
+    @property
+    def factor(self) -> str:
+        if self.family == "two_stage":
+            return "two_stage/no-think"
+        return f"{self.family}/{'think' if self.think else 'no-think'}/{self.num_predict}"
 
 
-ARMS: tuple[Arm, ...] = (
-    Arm("A0", "strict", False, 1),
-    Arm("A1", "strict", True, 1),
-    Arm("B0", "balanced", False, 1),
-    Arm("B1", "balanced", True, 1),
-    Arm("C0", "two_stage", False, 1, selector_calls=1),
+ANSWER_ARMS: tuple[Arm, ...] = (
+    Arm("A0", "strict", False, 160),
+    Arm("A2", "strict", False, 2000),   # controllo budget (isola il budget)
+    Arm("A1", "strict", True, 2000),    # think (isolato: vs A2 stesso budget)
+    Arm("B0", "balanced", False, 160),
+    Arm("B2", "balanced", False, 2000),
+    Arm("B1", "balanced", True, 2000),
+    Arm("C0", "two_stage", False, 160, selector_calls=1),
 )
-# La primaria rigenera TUTTI gli arm (A0 incluso): niente riuso della vecchia A0.
+ARM_NAMES = tuple(a.name for a in ANSWER_ARMS)
+ARM_BY_NAME = {a.name: a for a in ANSWER_ARMS}
+NUM_PREDICT_SELECTOR = 400
 REUSE_PREVIOUS_A0 = False
 
 
+def case_id(conversation: str, replica: str, question_id: str) -> str:
+    return f"{conversation}__r{replica}__{question_id}"
+
+
+def counterbalanced_order(case_index: int) -> list[str]:
+    """Rotazione deterministica: ogni arm è primo lo stesso numero di volte."""
+
+    k = case_index % len(ARM_NAMES)
+    return list(ARM_NAMES[k:] + ARM_NAMES[:k])
+
+
 # --------------------------------------------------------------------------- #
-# Frammentazione deterministica (two-stage): indici ricostruibili
+# Frammentazione + selettore FAIL-CLOSED (punto 5)
 # --------------------------------------------------------------------------- #
 def fragments(context_text: str) -> list[str]:
     return [line for line in context_text.split("\n") if line.strip()]
@@ -128,28 +154,42 @@ def numbered_context(context_text: str) -> str:
     return "\n".join(f"[{i}] {frag}" for i, frag in enumerate(fragments(context_text), 1))
 
 
-def select_by_indices(context_text: str, indices: list[int]) -> tuple[str, list[int]]:
-    """Frammenti selezionati + indici VALIDATI in-range (ricostruibili)."""
-
+def select_by_indices(context_text: str, indices: list[int]) -> str:
     frags = fragments(context_text)
-    valid = [i for i in indices if 1 <= i <= len(frags)]
-    return "\n".join(frags[i - 1] for i in valid), valid
+    return "\n".join(frags[i - 1] for i in indices if 1 <= i <= len(frags))
 
 
-def parse_selector(raw: str) -> dict:
-    match = re.search(r"\{.*\}", raw or "", re.DOTALL)
-    if not match:
-        return {"answerable": False, "supporting_fragments": []}
+def parse_selector_strict(raw: str, n_fragments: int) -> dict | None:
+    """JSON stretto e fail-closed. None => astensione (nessuna evidenza valida).
+
+    Richiede: answerable booleano REALE; supporting_fragments lista di interi
+    UNICI e IN-RANGE. Qualsiasi violazione → None (fail-closed).
+    """
+
     try:
-        data = json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return {"answerable": False, "supporting_fragments": []}
-    idx = [int(x) for x in (data.get("supporting_fragments") or []) if str(x).lstrip("-").isdigit()]
-    return {"answerable": bool(data.get("answerable")), "supporting_fragments": idx}
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    ans = data.get("answerable")
+    if not isinstance(ans, bool):
+        return None
+    frags = data.get("supporting_fragments", [])
+    if not isinstance(frags, list):
+        return None
+    seen: list[int] = []
+    for x in frags:
+        if not isinstance(x, int) or isinstance(x, bool):
+            return None
+        if x in seen or not (1 <= x <= n_fragments):
+            return None
+        seen.append(x)
+    return {"answerable": ans, "supporting_fragments": seen}
 
 
 # --------------------------------------------------------------------------- #
-# Costruzione messaggi — firma SENZA gold/evidence: non possono entrare
+# Messaggi — firma SENZA gold/evidence (punto 9)
 # --------------------------------------------------------------------------- #
 def build_messages(family: str, *, context_text: str, question: str,
                    stage: str = "single", selected_fragments: str | None = None) -> list[dict]:
@@ -169,17 +209,27 @@ def build_messages(family: str, *, context_text: str, question: str,
     raise AblationError(f"famiglia/stage non valido: {family}/{stage}")
 
 
-def messages_forbidden_hits(messages: list[dict], forbidden: list[str]) -> list[str]:
-    blob = "\n".join(str(m.get("content") or "") for m in messages)
-    return [s for s in forbidden if s and s in blob]
-
-
 def messages_payload_sha256(messages: list[dict]) -> str:
     return _sha(json.dumps(messages, sort_keys=True, ensure_ascii=False, separators=(",", ":")))
 
 
+def call_metadata(*, arm: Arm, stage: str, context_text: str, cid: str, question_id: str,
+                  localization_sha256: str, messages: list[dict], num_predict: int,
+                  seed: int, model: str, model_digest: str | None) -> dict:
+    system = messages[0]["content"] if messages else ""
+    return {
+        "case_id": cid, "arm": arm.name, "stage": stage, "question_id": question_id,
+        "localization_sha256": localization_sha256,
+        "context_sha256": _sha(context_text),
+        "system_prompt_sha256": _sha(system),
+        "messages_payload_sha256": messages_payload_sha256(messages),
+        "answer_seed": seed, "model": model, "model_digest": model_digest,
+        "temperature": 0, "num_predict": num_predict, "think": arm.think,
+    }
+
+
 # --------------------------------------------------------------------------- #
-# Manifest CONGELATO dei casi (43/43/43) — solo ID, nessun gold
+# Manifest
 # --------------------------------------------------------------------------- #
 def _canonical(payload: Any) -> str:
     return json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
@@ -196,15 +246,25 @@ def verify_manifest(manifest: dict) -> None:
         raise AblationError("manifest_sha256 non corrisponde")
 
 
-def build_case_manifest(*, validation_runs_dir: Path, git_commit: str,
-                        corpus_sha256: str, localization_sha256: str) -> dict:
+def _census_report(validation_runs_dir: Path, conv: str, rep: str) -> dict:
+    return json.loads((Path(validation_runs_dir) / f"{conv}__r{rep}.json").read_text(encoding="utf-8"))
+
+
+def build_case_manifest(*, validation_runs_dir: Path) -> dict:
+    """Case-manifest CONGELATO (committabile): case_id, seed per-caso dal census,
+    ordine controbilanciato. Baseline = bac00a0. NESSUN commit sperimentale
+    autoreferenziale, nessun gold. Firma con manifest_sha256 (hash di contenuto).
+    """
+
     flip: list[tuple] = []
     ans_pool: dict = defaultdict(list)
     adv_pool: dict = defaultdict(list)
+    seed_by_rep: dict = {}
     for f in sorted(Path(validation_runs_dir).glob("*.json")):
         r = json.loads(f.read_text(encoding="utf-8"))
         conv = r["dataset"]["sample_id"]
         rep = r["run"]["run_label"].split("__r")[-1]
+        seed_by_rep[(conv, rep)] = int(r["run"]["answer_seed"])
         by = {a["arm"]: a for a in r["arms"]}
         ri = {i["question_id"]: i for i in by["rag_only"]["scoring"]["items"]}
         di = {i["question_id"]: i for i in by["dual_channel"]["scoring"]["items"]}
@@ -224,55 +284,88 @@ def build_case_manifest(*, validation_runs_dir: Path, git_commit: str,
             for cand in sorted(pool.get(key_fn(conv, rep, cat), [])):
                 if cand not in used:
                     used.add(cand)
-                    out.append({"conversation": conv, "replica": rep, "question_id": cand})
+                    out.append((conv, rep, cat, cand))
                     break
         return out
 
-    stratum_a = [{"conversation": c, "replica": r, "category": cat, "question_id": q}
-                 for c, r, cat, q in sorted(flip)]
-    manifest = {
-        "schema_version": 1,
-        "experiment": EXPERIMENT_ID,
-        "experiment_version": "v2",
-        "stage": "cases_frozen",
-        "kind": "development",
-        "note": "Development su LoCoMo ormai interamente aperto; non validazione indipendente.",
-        "context_source": "reconstructed_byte_exact_from_census_artifacts",
-        "context_verification": "sha256_per_case_vs_original_final_sha256",
-        "git_commit": git_commit,
-        "corpus_sha256": corpus_sha256,
-        "localization_sha256": localization_sha256,
-        "source_validation": "dual_channel_validation_v1_seed396895560",
-        "arms": [a.name for a in ARMS],
-        "prompt_sha256": prompt_sha256(),
-        "answer_seed": ANSWER_SEED,
-        "reuse_previous_a0": REUSE_PREVIOUS_A0,
-        "a0_stability_control": "vecchia A0 = controllo di stabilità generativa, non baseline",
-        "strata": {
-            "A_evidence_flip": stratum_a,
-            "B_answerable_control": pair(lambda c, r, cat: (c, r, cat), ans_pool),
-            "C_adversarial": pair(lambda c, r, cat: (c, r), adv_pool),
-        },
+    raw = {
+        "A_evidence_flip": sorted(flip),
+        "B_answerable_control": pair(lambda c, r, cat: (c, r, cat), ans_pool),
+        "C_adversarial": pair(lambda c, r, cat: (c, r), adv_pool),
     }
-    counts = {k: len(v) for k, v in manifest["strata"].items()}
+    # Assegna case_id + seed + ordine su TUTTI i casi, in ordine deterministico.
+    all_rows = [(stratum, c, r, cat, q) for stratum, rows in raw.items() for (c, r, cat, q) in rows]
+    all_rows.sort(key=lambda x: (x[1], x[2], x[4]))  # conv, replica, qid
+    strata: dict = {k: [] for k in raw}
+    for idx, (stratum, c, r, cat, q) in enumerate(all_rows):
+        cid = case_id(c, r, q)
+        strata[stratum].append({
+            "case_id": cid, "stratum": stratum, "conversation": c, "replica": r,
+            "question_id": q, "category": cat, "answer_seed": seed_by_rep[(c, r)],
+            "arm_order": counterbalanced_order(idx),
+        })
+
+    manifest = {
+        "schema_version": 2,
+        "experiment": EXPERIMENT_ID, "experiment_version": "v2",
+        "stage": "cases_frozen", "kind": "development",
+        "note": "Development su LoCoMo interamente aperto; non validazione indipendente.",
+        "production_baseline_commit": PRODUCTION_BASELINE_COMMIT,
+        "source_validation": SOURCE_VALIDATION,
+        "context_source": "reconstructed_byte_exact_from_census_artifacts",
+        "arms": list(ARM_NAMES),
+        "arm_factors": {a.name: a.factor for a in ANSWER_ARMS},
+        "prompt_sha256": prompt_sha256(),
+        "reuse_previous_a0": REUSE_PREVIOUS_A0,
+        "seed_policy": "per-caso = run.answer_seed del report census della replica",
+        "strata": strata,
+    }
+    counts = {k: len(v) for k, v in strata.items()}
     counts["total"] = sum(counts.values())
+    counts["distinct_case_ids"] = len({row["case_id"] for rows in strata.values() for row in rows})
+    counts["distinct_question_ids"] = len({row["question_id"] for rows in strata.values() for row in rows})
     manifest["strata_counts"] = counts
     manifest["manifest_sha256"] = manifest_digest(manifest)
     return manifest
 
 
-def forecast(manifest: dict) -> dict:
-    total = manifest["strata_counts"]["total"]
-    answers = len(ARMS) * total                         # 5 risposte/caso
-    selectors = sum(a.selector_calls for a in ARMS) * total  # C0 selettore
+def build_execution_manifest(case_manifest: dict, *, experimental_code_commit: str,
+                             corpus_path: Path, localization_path: Path,
+                             validation_runs_dir: Path) -> dict:
+    """Manifest di ESECUZIONE (non tracciato, in audit_output): firma con l'HEAD
+    corrente e lega corpus, localizzazione e gli SHA dei 10 report census.
+    """
+
+    verify_manifest(case_manifest)
+    report_sha = {p.name: sha256_file(p)
+                  for p in sorted(Path(validation_runs_dir).glob("*.json"))}
+    if len(report_sha) != 10:
+        raise AblationError(f"attesi 10 report census, trovati {len(report_sha)}")
+    execution = {
+        "schema_version": 2, "experiment": EXPERIMENT_ID, "stage": "execution",
+        "case_manifest_sha256": case_manifest["manifest_sha256"],
+        "production_baseline_commit": PRODUCTION_BASELINE_COMMIT,
+        "git_commit": experimental_code_commit,
+        "corpus": {"path": str(Path(corpus_path).resolve()), "sha256": sha256_file(corpus_path)},
+        "localization": {"path": str(Path(localization_path).resolve()),
+                         "sha256": sha256_file(localization_path)},
+        "census_report_sha256": report_sha,
+        "arms": list(ARM_NAMES),
+        "cases": [row for rows in case_manifest["strata"].values() for row in rows],
+    }
+    execution["manifest_sha256"] = manifest_digest(execution)
+    return execution
+
+
+def forecast(case_manifest: dict) -> dict:
+    total = case_manifest["strata_counts"]["total"]
+    answers = len(ANSWER_ARMS) * total
+    selectors = sum(a.selector_calls for a in ANSWER_ARMS) * total
     return {
-        "cases_total": total,
-        "answer_generations_five_arms": answers,
-        "selector_calls_C0": selectors,
-        "total_max_calls": answers + selectors,
-        "cap_max_calls": 774,
-        "note": "Nessuna nuova ingestion/retrieval: contesti ricostruiti byte-esatti "
-        "dagli artefatti. Costo = sola generazione risposte + selettore C0.",
+        "cases_total": total, "answer_arms": len(ANSWER_ARMS),
+        "answer_generations": answers, "selector_calls_C0": selectors,
+        "total_max_calls": answers + selectors, "cap_max_calls": 1032,
+        "note": "129×7 arm + 129 selettori. Nessuna nuova ingestion/retrieval.",
     }
 
 
@@ -280,201 +373,297 @@ def forecast(manifest: dict) -> dict:
 # Guardie
 # --------------------------------------------------------------------------- #
 def assert_no_personal_redis() -> None:
-    # L'ablation NON usa Redis. Se l'ambiente punta esplicitamente al Redis
-    # personale (porta 6379), rifiuta di partire per non toccarlo mai.
     if os.environ.get("EURI_REDIS_PORT") == "6379":
         raise AblationError("Redis personale (porta 6379): l'ablation non deve usarlo")
 
 
 def assert_context_matches(context_text: str, expected_sha256: str) -> None:
-    """Contesto assente o corrotto → l'ablation si ferma chiusa."""
-
     if not context_text:
         raise AblationError("contesto assente: ablation impedita")
     if _sha(context_text) != expected_sha256:
-        raise AblationError(
-            f"contesto corrotto: sha {_sha(context_text)} != atteso {expected_sha256}"
-        )
+        raise AblationError(f"contesto corrotto: {_sha(context_text)} != {expected_sha256}")
+
+
+def assert_capture_dir_under_audit(capture_dir: Path) -> None:
+    resolved = Path(capture_dir).resolve()
+    if not str(resolved).startswith(str(AUDIT_ROOT.resolve()) + os.sep):
+        raise AblationError(f"capture_dir deve stare sotto audit_output/: {resolved}")
+
+
+def _cases(manifest: dict) -> list[dict]:
+    if manifest.get("stage") == "execution":
+        return list(manifest["cases"])
+    return [row for rows in manifest["strata"].values() for row in rows]
+
+
+def reconstruct_one(report: dict, case, question_id: str) -> str:
+    """Ricostruisce SOLO il contesto dual (APPEND) di UNA domanda, byte-esatto.
+
+    Diversamente da ``_reconstruct_contexts`` (che processa l'intero report e
+    aborta alla prima divergenza), qui isoliamo la singola domanda target: una
+    divergenza su una domanda NON target non deve bloccare le altre. Solleva
+    ``AblationError`` se la base o il final non combaciano con lo SHA salvato.
+    """
+
+    from benchmarks.euri_memory.prompt_ablation import _FrozenBaseMemory, _raw_turn_document
+    from benchmarks.euri_memory.dual_channel import render_additions_block
+    from benchmarks.euri_memory.dual_channel_worker import build_turn_renderer
+    from core.rag_context import build_rag_context
+
+    by = {a["arm"]: a for a in report["arms"]}
+    rag = {x["question_id"]: x for x in by["rag_only"]["results"]}
+    dual = {x["question_id"]: x for x in by["dual_channel"]["results"]}
+    turns = {t.turn_id: t for t in case.turns}
+    questions = {q.question_id: q for q in case.questions}
+    if question_id not in report["base_nodes_by_question"]:
+        raise AblationError(f"contesto assente per {question_id}")
+    docs = []
+    for node in report["base_nodes_by_question"][question_id]:
+        tid = node.get("benchmark_turn_id")
+        if not tid or tid not in turns:
+            raise AblationError(f"{question_id}: nodo base senza turno ({tid})")
+        docs.append(_raw_turn_document(case.corpus(), turns[tid], []))
+    base = build_rag_context(questions[question_id].text, _FrozenBaseMemory(docs),
+                             mode="search", touch=False).text
+    expected_base = rag[question_id]["metadata"]["base_sha256"]
+    if _sha(base) != expected_base:
+        raise AblationError(f"{question_id}: base non byte-esatta ({_sha(base)} != {expected_base})")
+    comp = dual[question_id]["metadata"]["composition"]
+    render_turn = build_turn_renderer(case)
+    rendered = [render_turn(str(t)) for t in (comp.get("added_turn_ids") or [])]
+    final = base + render_additions_block(rendered)
+    if _sha(final) != comp["final_sha256"]:
+        raise AblationError(f"{question_id}: final non byte-esatto")
+    return final
 
 
 def load_reconstructed_context(report: dict, case, question_id: str) -> str:
-    """Contesto dual byte-esatto (APPEND) verificato via SHA dalla ricostruzione."""
-
-    from benchmarks.euri_memory.prompt_ablation import _reconstruct_contexts, APPEND
-
-    contexts = _reconstruct_contexts(report, case)  # solleva se lo SHA diverge
-    if question_id not in contexts:
-        raise AblationError(f"contesto assente per {question_id}")
-    return contexts[question_id][APPEND]
+    return reconstruct_one(report, case, question_id)
 
 
 # --------------------------------------------------------------------------- #
-# Metadati di provenienza registrati PRIMA di ogni generazione
+# Dry-run integrale: materializza e rivalida TUTTI i 129 casi (nessun modello)
 # --------------------------------------------------------------------------- #
-def call_metadata(*, arm: Arm, stage: str, context_text: str, question_id: str,
-                  localization_sha256: str, messages: list[dict],
-                  num_predict: int, model: str, model_digest: str | None) -> dict:
-    system = messages[0]["content"] if messages else ""
+def _corpus_path() -> Path:
+    return ROOT / "data" / "locomo10.json"
+
+
+def dry_run_materialize(*, case_manifest: dict, validation_root: Path) -> dict:
+    from benchmarks.euri_memory.prompt_ablation import _load_case
+    verify_manifest(case_manifest)
+    cases = _cases(case_manifest)
+    seen_cid: set[str] = set()
+    per_conv = defaultdict(list)
+    for c in cases:
+        if c["case_id"] in seen_cid:
+            raise AblationError(f"collisione case_id: {c['case_id']}")
+        seen_cid.add(c["case_id"])
+        per_conv[(c["conversation"], c["replica"])].append(c)
+
+    materialized = 0
+    non_reconstructible: list[dict] = []
+    for (conv, rep), rows in sorted(per_conv.items()):
+        report = _census_report(validation_root / "runs", conv, rep)
+        loaded = _load_case(validation_root, conv, _corpus_path())
+        if int(report["run"]["answer_seed"]) != rows[0]["answer_seed"]:
+            raise AblationError(f"seed {conv}__r{rep} != census")
+        for c in rows:
+            assert sorted(c["arm_order"]) == sorted(ARM_NAMES), c["case_id"]
+            try:
+                ctx = reconstruct_one(report, loaded, c["question_id"])  # SHA verificato per-domanda
+                assert ctx
+                materialized += 1
+            except AblationError as exc:
+                non_reconstructible.append({"case_id": c["case_id"], "reason": str(exc)[:80]})
+
     return {
-        "arm": arm.name,
-        "stage": stage,
-        "question_id": question_id,
-        "localization_sha256": localization_sha256,
-        "context_sha256": _sha(context_text),
-        "system_prompt_sha256": _sha(system),
-        "messages_payload_sha256": messages_payload_sha256(messages),
-        "answer_seed": ANSWER_SEED,
-        "model": model,
-        "model_digest": model_digest,
-        "temperature": 0,
-        "num_predict": num_predict,
-        "think": arm.think,
+        "mode": "dry_run_materialize", "no_model": True,
+        "distinct_case_ids": len(seen_cid),
+        "reports_expected": len(seen_cid),
+        "materialized_and_verified": materialized,
+        "non_reconstructible_count": len(non_reconstructible),
+        "non_reconstructible": non_reconstructible,
+        "distinct_question_ids": case_manifest["strata_counts"]["distinct_question_ids"],
+        "duplicate_question_ids_across_replicas":
+            case_manifest["strata_counts"]["total"] - case_manifest["strata_counts"]["distinct_question_ids"],
+        "collisions": 0,
+        "byte_exact_ok": len(non_reconstructible) == 0,
     }
 
 
-NUM_PREDICT_ANSWER = 160
-NUM_PREDICT_THINK = 2000
-NUM_PREDICT_SELECTOR = 400
-
-
 # --------------------------------------------------------------------------- #
-# Runner (gated da execute=True; NON invocato prima dell'audit)
+# Runner reale (gated execute=True; NON invocato in preparazione)
 # --------------------------------------------------------------------------- #
-def _all_cases(manifest: dict) -> list[dict]:
-    out = []
-    for stratum, rows in manifest["strata"].items():
-        for row in rows:
-            out.append({**row, "stratum": stratum})
-    return out
-
-
-def _forbidden_strings(gold_answer: Any, evidence_ids: list) -> list[str]:
-    forbidden = []
-    if gold_answer:
-        forbidden.append(str(gold_answer))
-    forbidden.extend(str(e) for e in (evidence_ids or []))
-    return forbidden
-
-
-def run_ablation(*, manifest: dict, validation_root: Path, output_dir: Path,
-                 capture_dir: Path, execute: bool = False,
-                 chat_fn: Callable | None = None, model: str = "gemma4:26b",
-                 model_digest: str | None = None) -> dict:
-    """Esegue (se execute=True) i 5 arm sui contesti ricostruiti byte-esatti.
-
-    In preparazione execute=False: valida binding, ricostruisce/verifica i
-    contesti e prepara metadati/messaggi SENZA chiamare il modello. I testi
-    completi vanno in ``capture_dir`` (gitignored); i report tracciabili portano
-    solo hash, metadati e path relativi.
-    """
-
-    verify_manifest(manifest)
+def run_ablation(*, execution_manifest: dict, validation_root: Path, output_dir: Path,
+                 capture_dir: Path, execute: bool = False, chat_fn: Callable | None = None,
+                 model: str = "gemma4:26b", model_digest: str | None = None) -> dict:
+    verify_manifest(execution_manifest)
+    if execution_manifest.get("stage") != "execution":
+        raise AblationError("run richiede il manifest di ESECUZIONE")
     assert_no_personal_redis()
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    assert_capture_dir_under_audit(capture_dir)
+
+    # Integrità (punto 6)
+    assert_corpus_matches(execution_manifest, _corpus_path())
+    loc = execution_manifest["localization"]
+    if sha256_file(loc["path"]) != loc["sha256"]:
+        raise AblationError("artefatto di localizzazione diverso dal manifest")
+    for name, sha in execution_manifest["census_report_sha256"].items():
+        if sha256_file(validation_root / "runs" / name) != sha:
+            raise AblationError(f"report census {name} diverso dallo SHA registrato")
+    assert_head_matches_manifest(execution_manifest, REPO_ROOT)
+    assert_worktree_clean(REPO_ROOT)
+    if execute and (not model or not model_digest):
+        raise AblationError("modello e digest devono essere non nulli per l'esecuzione")
+
+    identity = run_identity(execution_manifest)
+    output_dir = Path(output_dir); output_dir.mkdir(parents=True, exist_ok=True)
     existing = output_dir / "manifest.json"
     if existing.exists():
         prev = json.loads(existing.read_text(encoding="utf-8"))
-        if prev.get("manifest_sha256") != manifest["manifest_sha256"]:
-            raise AblationError("output-dir con manifest diverso: fail-closed")
+        if run_identity(prev) != identity:
+            raise AblationError("output-dir legata a un'altra identità: fail-closed")
     else:
-        existing.write_text(json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+        existing.write_text(json.dumps(execution_manifest, indent=2, ensure_ascii=False, sort_keys=True), encoding="utf-8")
 
     if execute and chat_fn is None:
         from core.ollama_client import chat_client
         chat_fn = lambda **kw: chat_client.chat(**kw)  # noqa: E731
 
     from benchmarks.euri_memory.prompt_ablation import _load_case
-
-    checkpoint_path = output_dir / "checkpoint.json"
-    done = set(json.loads(checkpoint_path.read_text()).get("done", [])) if checkpoint_path.is_file() else set()
-    capture_dir = Path(capture_dir); capture_dir.mkdir(parents=True, exist_ok=True)
     runs_dir = output_dir / "runs"; runs_dir.mkdir(exist_ok=True)
+    checkpoint_path = output_dir / "checkpoint.json"
+    checkpoint = _load_and_revalidate_checkpoint(checkpoint_path, execution_manifest, identity, runs_dir)
+    done = set(checkpoint["done"])
+    Path(capture_dir).mkdir(parents=True, exist_ok=True)
 
-    # raggruppa per conversazione (una ricostruzione per report)
-    by_conv = defaultdict(list)
-    for case in _all_cases(manifest):
-        by_conv[(case["conversation"], case["replica"])].append(case)
+    per_conv = defaultdict(list)
+    for c in _cases(execution_manifest):
+        per_conv[(c["conversation"], c["replica"])].append(c)
 
     planned = 0
-    for (conv, rep), cases in sorted(by_conv.items()):
-        report = json.loads((validation_root / "runs" / f"{conv}__r{rep}.json").read_text(encoding="utf-8"))
+    for (conv, rep), rows in sorted(per_conv.items()):
+        report = _census_report(validation_root / "runs", conv, rep)
         loaded = _load_case(validation_root, conv, _corpus_path())
         questions = {q.question_id: q for q in loaded.questions}
-        gold_by_q = {q.question_id: q for q in loaded.questions}
-        for case in cases:
-            qid = case["question_id"]
-            key = f"{qid}"
-            if key in done:
+        for c in rows:
+            cid = c["case_id"]
+            if cid in done:
                 continue
-            ctx = load_reconstructed_context(report, loaded, qid)  # SHA verificato
-            question = questions[qid].text
-            forbidden = _forbidden_strings(
-                gold_by_q[qid].expected_answer, list(gold_by_q[qid].evidence_turn_ids)
-            )
+            ctx = load_reconstructed_context(report, loaded, c["question_id"])
+            qtext = questions[c["question_id"]].text
+            seed = int(c["answer_seed"])
             arm_records = []
-            for arm in ARMS:
-                rec = _run_arm(arm, ctx, question, qid, manifest, forbidden,
-                               execute, chat_fn, model, model_digest, capture_dir)
+            for arm_name in c["arm_order"]:
+                arm = ARM_BY_NAME[arm_name]
+                rec = _run_arm(arm, ctx, qtext, cid, c["question_id"], seed,
+                               execution_manifest["localization"]["sha256"], execute, chat_fn,
+                               model, model_digest, capture_dir, c["replica"])
                 arm_records.append(rec)
-                planned += arm.answer_calls + arm.selector_calls
-            (runs_dir / f"{qid}.json").write_text(
-                json.dumps({"question_id": qid, "stratum": case["stratum"], "arms": arm_records},
-                           indent=2, ensure_ascii=False, sort_keys=True), encoding="utf-8")
-            done.add(key)
-            checkpoint_path.write_text(json.dumps({"done": sorted(done)}, ensure_ascii=False), encoding="utf-8")
+                planned += 1 + arm.selector_calls
+            (runs_dir / f"{cid}.json").write_text(json.dumps(
+                {"case_id": cid, "question_id": c["question_id"], "replica": c["replica"],
+                 "conversation": conv, "stratum": c.get("stratum"),
+                 "arm_order": c["arm_order"], "arms": arm_records},
+                indent=2, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+            done.add(cid)
+            checkpoint_path.write_text(json.dumps(
+                {"identity": identity, "done": sorted(done)}, ensure_ascii=False), encoding="utf-8")
 
     return {"mode": "run" if execute else "prepared_no_model",
-            "cases": len(_all_cases(manifest)), "planned_calls": planned}
+            "cases": len(_cases(execution_manifest)), "planned_calls": planned}
 
 
-def _run_arm(arm, ctx, question, qid, manifest, forbidden, execute, chat_fn,
-             model, model_digest, capture_dir) -> dict:
-    loc_sha = manifest["localization_sha256"]
+def _load_and_revalidate_checkpoint(path: Path, manifest: dict, identity: dict, runs_dir: Path) -> dict:
+    if not path.is_file():
+        return {"done": []}
+    cp = json.loads(path.read_text(encoding="utf-8"))
+    rec = cp.get("identity") or {}
+    if any(rec.get(k) is None for k in ("manifest_sha256", "corpus_sha256", "git_commit")):
+        raise AblationError("checkpoint senza identity completa")
+    assert_same_identity(rec, identity, context="resume ablation")
+    expected_ids = {c["case_id"] for c in _cases(manifest)}
+    revalidated = []
+    for cid in cp.get("done", []):
+        if cid not in expected_ids:
+            raise AblationError(f"checkpoint con case_id estraneo: {cid}")
+        rp = runs_dir / f"{cid}.json"
+        if not rp.is_file():
+            raise AblationError(f"report mancante per {cid}")
+        try:
+            rr = json.loads(rp.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise AblationError(f"report corrotto per {cid}: {exc}") from exc
+        if rr.get("case_id") != cid or sorted(a["arm"] for a in rr["arms"]) != sorted(ARM_NAMES):
+            raise AblationError(f"report {cid} non valido")
+        revalidated.append(cid)
+    return {"done": revalidated}
+
+
+def _run_arm(arm, ctx, question, cid, qid, seed, loc_sha, execute, chat_fn,
+             model, model_digest, capture_dir, replica) -> dict:
     if arm.family == "two_stage":
-        sel_msgs = build_messages("two_stage", context_text=ctx, question=question, stage="selector")
-        hits = messages_forbidden_hits(sel_msgs, forbidden)
-        # Nota: il gold può comparire nel contesto come dialogo legittimo; qui
-        # verifichiamo solo che NON iniettiamo evidence ID (non contenuti nel ctx).
-        sel_meta = call_metadata(arm=arm, stage="selector", context_text=numbered_context(ctx),
-                                 question_id=qid, localization_sha256=loc_sha, messages=sel_msgs,
-                                 num_predict=NUM_PREDICT_SELECTOR, model=model, model_digest=model_digest)
-        selected, sel_idx, answer = "", [], None
-        if execute:
-            raw = _content(chat_fn(model=model, messages=sel_msgs,
-                                   options={"temperature": 0, "num_predict": NUM_PREDICT_SELECTOR, "seed": ANSWER_SEED},
-                                   think=False))
-            parsed = parse_selector(raw)
-            if parsed["answerable"] and parsed["supporting_fragments"]:
-                selected, sel_idx = select_by_indices(ctx, parsed["supporting_fragments"])
-                ans_msgs = build_messages("two_stage", context_text=ctx, question=question,
-                                          stage="answer", selected_fragments=selected)
-                answer = _content(chat_fn(model=model, messages=ans_msgs,
-                                          options={"temperature": 0, "num_predict": NUM_PREDICT_ANSWER, "seed": ANSWER_SEED},
-                                          think=False))
-            else:
-                answer = "Non lo so."
-        _persist_texts(capture_dir, qid, arm.name, {"selector_messages": sel_msgs, "context": ctx})
-        return {"arm": arm.name, "selector_metadata": sel_meta, "selected_indices": sel_idx,
-                "answer": answer, "forbidden_evidence_hits": [h for h in hits if h in str(forbidden)]}
-    # single-prompt arm
-    num_predict = NUM_PREDICT_THINK if arm.think else NUM_PREDICT_ANSWER
+        return _run_two_stage(arm, ctx, question, cid, qid, seed, loc_sha, execute,
+                              chat_fn, model, model_digest, capture_dir, replica)
     msgs = build_messages(arm.family, context_text=ctx, question=question)
-    meta = call_metadata(arm=arm, stage="single", context_text=ctx, question_id=qid,
-                         localization_sha256=loc_sha, messages=msgs, num_predict=num_predict,
-                         model=model, model_digest=model_digest)
-    answer = None
+    meta = call_metadata(arm=arm, stage="single", context_text=ctx, cid=cid, question_id=qid,
+                         localization_sha256=loc_sha, messages=msgs, num_predict=arm.num_predict,
+                         seed=seed, model=model, model_digest=model_digest)
+    answer, latency, calls = None, None, 0
     if execute:
+        import time
+        t = time.perf_counter()
         answer = _content(chat_fn(model=model, messages=msgs,
-                                  options={"temperature": 0, "num_predict": num_predict, "seed": ANSWER_SEED},
+                                  options={"temperature": 0, "num_predict": arm.num_predict, "seed": seed},
                                   think=arm.think))
-    _persist_texts(capture_dir, qid, arm.name, {"messages": msgs, "context": ctx})
-    return {"arm": arm.name, "metadata": meta, "answer": answer}
+        latency, calls = round(time.perf_counter() - t, 3), 1
+    _capture(capture_dir, cid, arm.name, replica, {"messages": msgs, "context": ctx})
+    return {"arm": arm.name, "metadata": meta, "answer": answer, "latency_s": latency, "calls": calls}
 
 
-def _persist_texts(capture_dir: Path, qid: str, arm: str, payload: dict) -> None:
-    (capture_dir / f"{qid}__{arm}.json").write_text(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+def _run_two_stage(arm, ctx, question, cid, qid, seed, loc_sha, execute, chat_fn,
+                   model, model_digest, capture_dir, replica) -> dict:
+    n_frag = len(fragments(ctx))
+    sel_msgs = build_messages("two_stage", context_text=ctx, question=question, stage="selector")
+    sel_meta = call_metadata(arm=arm, stage="selector", context_text=numbered_context(ctx),
+                             cid=cid, question_id=qid, localization_sha256=loc_sha, messages=sel_msgs,
+                             num_predict=NUM_PREDICT_SELECTOR, seed=seed, model=model, model_digest=model_digest)
+    raw, parsed, indices, selected, answer = None, None, [], "", None
+    ans_meta, latency, calls = None, 0.0, 0
+    if execute:
+        import time
+        t = time.perf_counter()
+        raw = _content(chat_fn(model=model, messages=sel_msgs, format="json",
+                               options={"temperature": 0, "num_predict": NUM_PREDICT_SELECTOR, "seed": seed},
+                               think=False))
+        calls += 1
+        parsed = parse_selector_strict(raw, n_frag)  # None => fail-closed
+        if parsed and parsed["answerable"] and parsed["supporting_fragments"]:
+            indices = parsed["supporting_fragments"]
+            selected = select_by_indices(ctx, indices)
+            ans_msgs = build_messages("two_stage", context_text=ctx, question=question,
+                                      stage="answer", selected_fragments=selected)
+            ans_meta = call_metadata(arm=arm, stage="answer", context_text=selected, cid=cid,
+                                     question_id=qid, localization_sha256=loc_sha, messages=ans_msgs,
+                                     num_predict=arm.num_predict, seed=seed, model=model, model_digest=model_digest)
+            answer = _content(chat_fn(model=model, messages=ans_msgs,
+                                      options={"temperature": 0, "num_predict": arm.num_predict, "seed": seed},
+                                      think=False))
+            calls += 1
+        else:
+            answer = "Non lo so."  # fail-closed
+        latency = round(time.perf_counter() - t, 3)
+    _capture(capture_dir, cid, arm.name, replica, {"selector_messages": sel_msgs, "context": ctx})
+    return {"arm": arm.name, "selector_metadata": sel_meta, "answer_metadata": ans_meta,
+            "selector_raw": raw, "selector_parsed": parsed, "selected_indices": indices,
+            "selected_fragments_sha256": _sha(selected) if selected else None,
+            "answer": answer, "latency_s": latency, "calls": calls}
+
+
+def _capture(capture_dir: Path, cid: str, arm: str, replica: str, payload: dict) -> None:
+    (Path(capture_dir) / f"{cid}__{arm}.json").write_text(
+        json.dumps({"case_id": cid, "arm": arm, "replica": replica, "run_label": cid.rsplit("__", 1)[0], **payload},
+                   ensure_ascii=False, sort_keys=True), encoding="utf-8")
 
 
 def _content(resp: Any) -> str:
@@ -487,44 +676,15 @@ def _content(resp: Any) -> str:
     return str(c or "").strip()
 
 
-def _corpus_path() -> Path:
-    return ROOT / "data" / "locomo10.json"
-
-
 # --------------------------------------------------------------------------- #
-# Controllo stabilità A0 (vecchia vs fresca) — solo in analisi
+# Metriche + scoring (punto 10)
 # --------------------------------------------------------------------------- #
-def a0_stability(*, fresh_a0: dict[str, str], validation_root: Path, manifest: dict) -> dict:
-    """Confronta la vecchia A0 (risposta dual del census) con la A0 fresca."""
-
-    old = {}
-    for (conv, rep) in {(c["conversation"], c["replica"]) for c in _all_cases(manifest)}:
-        r = json.loads((validation_root / "runs" / f"{conv}__r{rep}.json").read_text(encoding="utf-8"))
-        dual = {x["question_id"]: x for x in {a["arm"]: a for a in r["arms"]}["dual_channel"]["results"]}
-        for qid, x in dual.items():
-            old[qid] = x.get("answer")
-    ids = [q for q in fresh_a0 if q in old]
-    identical = sum(1 for q in ids if _norm(fresh_a0[q]) == _norm(old[q]))
-    return {
-        "n": len(ids),
-        "identical_pct": round(100 * identical / len(ids), 1) if ids else None,
-        "divergent_question_ids": sorted(q for q in ids if _norm(fresh_a0[q]) != _norm(old[q])),
-        "note": "delta F1 e delta astensione richiedono lo scoring dei due set (calcolati in analyze).",
-    }
-
-
-def _norm(s: Any) -> str:
-    return " ".join(str(s or "").lower().split())
-
-
-# --------------------------------------------------------------------------- #
-# Analisi per strato + audit cieco (post-esecuzione)
-# --------------------------------------------------------------------------- #
-import random
-import unicodedata
-
 _TOK = re.compile(r"\w+", re.UNICODE)
 _ABST = re.compile(r"non lo so|non ci sono|non (?:è|e) (?:indicato|menzionato|specificato)|sconosciuto", re.I)
+
+
+def _norm(s):
+    return " ".join(str(s or "").lower().split())
 
 
 def _norm_tok(s):
@@ -532,7 +692,6 @@ def _norm_tok(s):
 
 
 def token_f1(gold, pred):
-    from collections import Counter
     g, p = _norm_tok(gold), _norm_tok(pred)
     if not g or not p:
         return float(g == p)
@@ -540,77 +699,155 @@ def token_f1(gold, pred):
     return 0.0 if not ov else 2 * (ov / len(p)) * (ov / len(g)) / ((ov / len(p)) + (ov / len(g)))
 
 
+def exact_match(gold, pred):
+    return 1.0 if _norm_tok(gold) == _norm_tok(pred) else 0.0
+
+
 def is_abstention(a):
     return (not _norm(a)) or bool(_ABST.search(a or ""))
 
 
-def analyze(*, output_runs: Path, validation_root: Path, manifest: dict, gold_lookup: dict) -> dict:
-    """Metriche di sviluppo per strato/arm. gold_lookup: qid -> {answer, answerable}.
-
-    gold_lookup è costruito dal chiamante dal corpus localizzato (NON entra nei
-    prompt); qui rientra soltanto per lo scoring, dopo la generazione.
-    """
-
-    per = defaultdict(lambda: defaultdict(list))  # (stratum,arm) -> metric -> []
-    answers = defaultdict(dict)                     # arm -> qid -> answer
+def analyze(*, output_runs: Path, gold_lookup: dict, validation_root: Path, execution_manifest: dict) -> dict:
+    per = defaultdict(lambda: defaultdict(list))     # (stratum,arm)->metric->[]
+    by_cat = defaultdict(lambda: defaultdict(list))  # (category,arm)->f1
+    by_conv = defaultdict(lambda: defaultdict(list))
+    answers = defaultdict(dict)                        # arm -> case_id -> answer
+    a0 = {}
     for f in sorted(Path(output_runs).glob("*.json")):
         rec = json.loads(f.read_text(encoding="utf-8"))
-        qid, stratum = rec["question_id"], rec["stratum"]
+        cid, qid = rec["case_id"], rec["question_id"]
         g = gold_lookup.get(qid, {})
-        for arm_rec in rec["arms"]:
-            arm = arm_rec["arm"]
-            a = arm_rec.get("answer")
-            answers[arm][qid] = a
+        stratum = rec.get("stratum", "unknown")
+        for ar in rec["arms"]:
+            arm, a = ar["arm"], ar.get("answer")
+            answers[arm][cid] = a
+            if arm == "A0":
+                a0[cid] = a
             if a is None:
                 continue
             if g.get("answerable"):
-                per[(stratum, arm)]["token_f1"].append(token_f1(g.get("answer"), a))
+                f1 = token_f1(g.get("answer"), a)
+                per[(stratum, arm)]["token_f1"].append(f1)
+                per[(stratum, arm)]["exact_match"].append(exact_match(g.get("answer"), a))
                 per[(stratum, arm)]["false_abstention"].append(1.0 if is_abstention(a) else 0.0)
+                by_cat[(g.get("category"), arm)]["token_f1"].append(f1)
+                by_conv[(cid.split("__")[0], arm)]["token_f1"].append(f1)
             else:
                 per[(stratum, arm)]["adversarial_correct"].append(1.0 if is_abstention(a) else 0.0)
 
     def mean(xs):
         return round(sum(xs) / len(xs), 4) if xs else None
 
-    metrics = {}
-    for (stratum, arm), m in sorted(per.items()):
-        metrics.setdefault(stratum, {})[arm] = {k: mean(v) for k, v in m.items()}
+    metrics = defaultdict(dict)
+    for (stratum, arm), m in per.items():
+        metrics[stratum][arm] = {k: mean(v) for k, v in m.items()}
+
+    # confronti appaiati per caso (arm vs A0) + changed/improved/worsened
+    paired = {}
+    for arm in ARM_NAMES:
+        if arm == "A0":
+            continue
+        ch = imp = wor = 0
+        for cid, a in answers[arm].items():
+            a0a = a0.get(cid)
+            if a is None or a0a is None:
+                continue
+            g = gold_lookup.get(cid.split("__", 2)[-1], {})
+            if _norm(a) != _norm(a0a):
+                ch += 1
+                if g.get("answerable"):
+                    d = token_f1(g.get("answer"), a) - token_f1(g.get("answer"), a0a)
+                    imp += 1 if d > 1e-9 else 0
+                    wor += 1 if d < -1e-9 else 0
+        paired[arm] = {"changed_vs_a0": ch, "improved": imp, "worsened": wor}
+
     return {
-        "experiment": EXPERIMENT_ID,
-        "kind": "development",
-        "manifest_sha256": manifest.get("manifest_sha256"),
-        "per_stratum_arm": metrics,
-        "a0_stability": a0_stability(fresh_a0=answers.get("A0", {}),
-                                     validation_root=validation_root, manifest=manifest),
+        "experiment": EXPERIMENT_ID, "kind": "development",
+        "manifest_sha256": execution_manifest.get("manifest_sha256"),
+        "per_stratum_arm": {k: dict(v) for k, v in metrics.items()},
+        "by_category_arm": {f"{c}|{a}": {"token_f1": mean(m["token_f1"])} for (c, a), m in by_cat.items()},
+        "by_conversation_arm": {f"{c}|{a}": {"token_f1": mean(m["token_f1"])} for (c, a), m in by_conv.items()},
+        "paired_vs_a0": paired,
+        "a0_stability": a0_stability(fresh_a0=answers.get("A0", {}), validation_root=validation_root,
+                                     execution_manifest=execution_manifest, gold_lookup=gold_lookup),
         "note": "token-F1 non è l'unico verdetto: vedi audit cieco. Development, N piccolo.",
     }
 
 
-def blind_audit_export(*, output_runs: Path, gold_lookup: dict, seed: int = 20260728) -> list[dict]:
-    """Righe per l'audit umano cieco: arm anonimizzato, ordine randomizzato.
+def a0_stability(*, fresh_a0: dict, validation_root: Path, execution_manifest: dict, gold_lookup: dict) -> dict:
+    """Vecchia A0 (dual del census, stesso seed) vs A0 fresca."""
 
-    Solo risposte CAMBIATE rispetto ad A0. Nessuna indicazione dell'arm.
-    Etichette umane attese: corretta/parzialmente/errata/astensione corretta/falsa astensione.
+    old = {}
+    for (conv, rep) in {(c["conversation"], c["replica"]) for c in _cases(execution_manifest)}:
+        r = _census_report(validation_root / "runs", conv, rep)
+        dual = {x["question_id"]: x for x in {a["arm"]: a for a in r["arms"]}["dual_channel"]["results"]}
+        for c in _cases(execution_manifest):
+            if c["conversation"] == conv and c["replica"] == rep:
+                old[c["case_id"]] = dual.get(c["question_id"], {}).get("answer")
+    ids = [c for c in fresh_a0 if c in old]
+    identical = sum(1 for c in ids if _norm(fresh_a0[c]) == _norm(old[c]))
+    df1 = da = []
+    for c in ids:
+        qid = c.split("__", 2)[-1]
+        g = gold_lookup.get(qid, {})
+        if g.get("answerable"):
+            df1.append(token_f1(g.get("answer"), fresh_a0[c]) - token_f1(g.get("answer"), old[c]))
+    return {
+        "n": len(ids), "same_seed": True,
+        "identical_pct": round(100 * identical / len(ids), 1) if ids else None,
+        "mean_delta_f1_fresh_minus_old": round(sum(df1) / len(df1), 4) if df1 else None,
+        "divergent_case_ids": sorted(c for c in ids if _norm(fresh_a0[c]) != _norm(old[c])),
+        "note": "stesso seed per-caso: differenze = pura instabilità generativa nel tempo.",
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Audit cieco con chiave arm↔codice SEPARATA (punto 11)
+# --------------------------------------------------------------------------- #
+def build_gold_lookup(localization_path: Path, corpus_path: Path) -> dict:
+    """qid -> {answer, answerable, question, category}. Solo per scoring/audit,
+    NON entra nei prompt di generazione o selezione."""
+
+    from benchmarks.euri_memory.adapters import LoCoMoAdapter
+    cat = {}
+    for c in LoCoMoAdapter().load(Path(corpus_path)):
+        for q in c.questions:
+            cat[q.question_id] = q.category
+    loc = json.loads(Path(localization_path).read_text(encoding="utf-8"))["conversations"]
+    out = {}
+    for sid, conv in loc.items():
+        for qid, item in (conv.get("questions") or {}).items():
+            out[qid] = {"answer": item.get("answer"),
+                        "answerable": item.get("answer") is not None,
+                        "question": item.get("text"), "category": cat.get(qid)}
+    return out
+
+
+def blind_audit_export(*, output_runs: Path, gold_lookup: dict, audit_seed: int = 20260728) -> dict:
+    """Righe cieche (domanda, gold, risposta, replica) + chiave separata.
+
+    Il codice NON deriva dal nome dell'arm (che sono pochi e indovinabili): è
+    casuale, e la mappa codice→arm è restituita a parte, da conservare separata.
     """
 
-    rng = random.Random(seed)
-    rows = []
+    rng = random.Random(audit_seed)
+    rows, key = [], {}
     for f in sorted(Path(output_runs).glob("*.json")):
         rec = json.loads(f.read_text(encoding="utf-8"))
-        qid = rec["question_id"]
+        cid, qid, replica = rec["case_id"], rec["question_id"], rec["replica"]
         a0 = next((x.get("answer") for x in rec["arms"] if x["arm"] == "A0"), None)
         g = gold_lookup.get(qid, {})
-        for arm_rec in rec["arms"]:
-            a = arm_rec.get("answer")
+        for ar in rec["arms"]:
+            a = ar.get("answer")
             if a is None or _norm(a) == _norm(a0):
                 continue
-            rows.append({
-                "audit_id": _sha(f"{qid}:{arm_rec['arm']}:{seed}")[:12],  # arm nascosto
-                "question_id": qid,
-                "gold": g.get("answer"),
-                "answer": a,
-                "human_label": None,  # da compilare: corretta/parziale/errata/astensione corretta/falsa astensione
-            })
+            code = f"{rng.randrange(16**8):08x}"
+            key[code] = {"case_id": cid, "arm": ar["arm"]}
+            rows.append({"code": code, "question_id": qid, "replica": replica,
+                         "question": g.get("question"), "gold": g.get("answer"),
+                         "answer": a, "human_label": None})
     rng.shuffle(rows)
-    return rows
-
+    return {"rows": rows, "key": key,
+            "labels": ["corretta", "parzialmente corretta", "errata",
+                       "astensione corretta", "falsa astensione"],
+            "note": "key va salvata SEPARATA dalle rows; nessun judge LLM come metrica ufficiale."}

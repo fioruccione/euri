@@ -453,7 +453,7 @@ def _worker_main() -> int:
             # prima della chiamata al modello. Testi completi in dir gitignored;
             # nel report tracciabile entrano solo hash/metadati/path relativi.
             _capture_generation(
-                arm=arm, prompt=prompt, base_text=b["text"],
+                arm=arm, prompt=prompt, run_label=args.run_label, base_text=b["text"],
                 final_text=comp.final_context_text, context_text=contexts[arm],
                 system=_ANSWER_SYSTEM_IT, messages=messages, options=options, think=False,
                 base_nodes=b["nodes"], locator_nodes=locator_records[prompt.question_id]["nodes"],
@@ -534,20 +534,28 @@ def _user_prompt(case, prompt, context_text: str) -> str:
     )
 
 
-def _capture_generation(*, arm, prompt, base_text, final_text, context_text, system,
+def _capture_generation(*, arm, prompt, run_label, base_text, final_text, context_text, system,
                         messages, options, think, base_nodes, locator_nodes) -> None:
     """Cattura opt-in dei contesti/messaggi PRIMA della chiamata al modello.
 
-    Attiva solo se ``EURI_DUAL_CAPTURE_DIR`` è impostato. Persiste i testi completi
-    in quella directory (che deve stare sotto audit_output/ gitignored). Non altera
-    il comportamento di default del worker.
+    Attiva solo se ``EURI_DUAL_CAPTURE_DIR`` è impostato e la directory sta sotto
+    ``audit_output/`` (gitignored). Filename e record includono run_label, replica
+    e case_id. Non altera il comportamento di default del worker.
     """
 
     capture_dir = os.environ.get("EURI_DUAL_CAPTURE_DIR")
     if not capture_dir:
         return
+    audit_root = Path(__file__).resolve().parents[2] / "audit_output"
+    if not str(Path(capture_dir).resolve()).startswith(str(audit_root.resolve()) + os.sep):
+        raise RuntimeError(f"EURI_DUAL_CAPTURE_DIR deve stare sotto audit_output/: {capture_dir}")
+    replica = str(run_label).rsplit("__r", 1)[-1] if run_label else None
+    cid = f"{run_label}__{prompt.question_id}" if run_label else prompt.question_id
     canonical = json.dumps(messages, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     record = {
+        "case_id": cid,
+        "run_label": run_label,
+        "replica": replica,
         "question_id": prompt.question_id,
         "arm": arm,
         "base_context_text": base_text,
@@ -571,7 +579,7 @@ def _capture_generation(*, arm, prompt, base_text, final_text, context_text, sys
     }
     out = Path(capture_dir)
     out.mkdir(parents=True, exist_ok=True)
-    (out / f"{prompt.question_id}__{arm}.json").write_text(
+    (out / f"{cid}__{arm}.json").write_text(
         json.dumps(record, ensure_ascii=False, sort_keys=True), encoding="utf-8"
     )
 

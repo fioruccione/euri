@@ -51,15 +51,34 @@ ID congelati prima dei risultati, **nessun gold**:
 
 Tutti e tre gli strati si riempiono esattamente a 43 (nessuna carenza).
 
-## 4. Cinque arm
+## 4. Sette arm (thinking isolato dal budget)
 
-| arm | famiglia | think | note |
-|---|---|---|---|
-| A0 | strict | no | prompt originale del benchmark, **rigenerato fresco** |
-| A1 | strict | sì | identico ad A0, cambia solo il thinking |
-| B0 | balanced | no | calibrazione bilaterale (rispondi se il fatto è nel contesto anche con distrattori) |
-| B1 | balanced | sì | identico a B0, cambia solo il thinking |
-| C0 | two-stage | no | stadio 1 selettore (JSON: answerable + indici frammenti, nessuna risposta) → stadio 2 risposta sui soli frammenti |
+Per attribuire davvero un effetto al *solo* thinking servono i controlli di budget
+(`no-think/2000`): altrimenti il fattore sarebbe "thinking operativo + budget 2000".
+
+| arm | famiglia | think | num_predict | note |
+|---|---|---|---:|---|
+| A0 | strict | no | 160 | prompt originale del benchmark, **rigenerato fresco** |
+| A2 | strict | no | 2000 | controllo budget (isola il budget da A0) |
+| A1 | strict | sì | 2000 | think isolato (vs A2, stesso budget) |
+| B0 | balanced | no | 160 | calibrazione bilaterale |
+| B2 | balanced | no | 2000 | controllo budget |
+| B1 | balanced | sì | 2000 | think isolato (vs B2) |
+| C0 | two-stage | no | 160 | selettore JSON fail-closed → risposta sui soli frammenti |
+
+**A0 rigenerata, non riusata.** Modello e contesto identici alla vecchia A0, ma
+usa il **seed originale del census** (`run.answer_seed`, uguale su tutti gli arm
+di quella replica); la vecchia A0 diventa **controllo di stabilità generativa** a
+parità di seed (differenze = pura instabilità nel tempo).
+
+**SHA-256 dei prompt congelati:**
+- strict `ac23ae63…` · balanced `4e9b3fae…` · two_stage_selector `6905b251…` ·
+  two_stage_answer `84dc5be4…`
+
+Il selettore C0 è **fail-closed** (`format="json"`, `answerable` booleano reale,
+indici interi unici e in-range; qualsiasi violazione → astensione). Ordine degli
+arm **controbilanciato deterministicamente per caso** e congelato nel manifest.
+`case_id` canonico `conv-41__r0__q123` usato ovunque; `question_id` resta separato.
 
 **A0 rigenerata, non riusata.** Modello e contesto sono identici alla vecchia A0,
 ma una risposta prodotta giorni prima introdurrebbe un confondente temporale/runtime.
@@ -78,11 +97,59 @@ in-range sul contesto; non vede mai gold, evidence ID o risposte attese.
 
 ## 5. Forecast (nessuna nuova ingestion)
 
-- 129 casi × 5 arm = **645 generazioni di risposta**;
+- 129 casi × 7 arm = **903 generazioni di risposta**;
 - 129 chiamate extra del **selettore C0**;
-- **totale massimo 774** (cap tecnico). Costo solo di generazione: i contesti sono
-  ricostruiti byte-esatti dagli artefatti. La cattura futura, se attivata, aggiunge
-  il costo di una nuova run del dual-channel — fuori da questa preparazione.
+- **totale massimo 1.032** (cap tecnico). Costo solo di generazione: i contesti
+  sono ricostruiti byte-esatti dagli artefatti. La cattura futura, se attivata,
+  aggiunge il costo di una nuova run del dual-channel — fuori da questa preparazione.
+
+## 5-bis. Hardening pre-risultati (audit Codex)
+
+- **Manifest a due livelli** (punto 7): il *case-manifest* committato registra la
+  **baseline di produzione `bac00a0`**, non il commit sperimentale (niente
+  autoreferenza); l'*execution-manifest* — non tracciato, in `audit_output/` —
+  è firmato con l'HEAD corrente e lega corpus, localizzazione e gli **SHA dei 10
+  report census**.
+- **Integrità riusata dall'held-out** (punto 6): verifica corpus, artefatto di
+  localizzazione, worktree tracciata pulita, HEAD == commit, modello e digest non
+  nulli, output-dir e checkpoint legati all'identità completa, ogni report
+  completato **rivalidato** prima dello skip; estranei/mancanti/corrotti rifiutati.
+- **Nessun `forbidden_evidence_hits`** (punto 9): il gold può comparire
+  legittimamente nel contesto; la garanzia è che gold/evidence **non sono
+  parametri** dei builder e che messaggi/contesti sono ricostruibili dagli hash.
+- **Cattura** (punto 8): filename e record includono `run_label`/`replica`/
+  `case_id`; directory obbligatoriamente sotto `audit_output/` gitignored.
+- **Audit cieco** (punto 11): codici casuali non riconducibili al nome dell'arm,
+  mappa arm↔codice conservata **separata**; righe con domanda, gold, risposta e
+  replica.
+- **Dry-run integrale** (punto 12): materializza e rivalida tutti i **129 casi**
+  (129 `case_id`, **nessuna collisione**, **17 `question_id` in due repliche**)
+  ricostruendo i contesti byte-esatti PER-DOMANDA, **senza modello**. CLI completa
+  `ablation-dry-run/exec-manifest/run/analyze/audit`.
+
+### Esito del dry-run: 126/129 byte-esatti, 3 NON ricostruibili
+
+Il dry-run ha fatto il suo lavoro di gate e ha trovato un limite reale:
+**126/129 casi ricostruiscono byte-per-byte; 3 no** — `conv-49:q33` (r0 e r1) e
+`conv-49:q101` (r0). La causa probabile è che `build_rag_context` produce testo
+**dipendente dal tempo** (etichette di recency/ordinamento), quindi qualche base
+diverge se ricostruita in un giorno diverso da quello del census. Nota di metodo:
+`_reconstruct_contexts` di Codex processa l'intero report e aborta alla prima
+divergenza (`conv-49:q2`, non un caso target) → la ricostruzione va fatta
+**per-domanda** (fatto qui), altrimenti una domanda estranea blocca l'intera
+conversazione (era il falso 27/129).
+
+**Conseguenza (decisione dell'audit, non eseguita):** il percorso 3 (ricostruzione
+byte-esatta) regge per 126/129 ma non per tutti. Le opzioni, tutte da approvare:
+1. **cattura** (percorso 2, strumentazione già pronta): una nuova run del
+   dual-channel cattura i contesti al momento della generazione → 129 byte-fedeli
+   senza fragilità di ricostruzione;
+2. **quarantena dichiarata** dei 3 casi (esecuzione su 126, ma rompe il 43/43/43
+   e l'appaiamento per strato);
+3. **ricostruzione time-independent** (congelare il tempo di `build_rag_context`).
+
+L'esecuzione resta **bloccata** finché non si sceglie. Il dry-run che cattura il
+problema è, di per sé, il deliverable che funziona.
 
 ## 6. Metriche
 

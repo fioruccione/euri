@@ -1,726 +1,2367 @@
 {
-  "a0_stability_control": "vecchia A0 = controllo di stabilità generativa, non baseline",
-  "answer_seed": 42,
+  "arm_factors": {
+    "A0": "strict/no-think/160",
+    "A1": "strict/think/2000",
+    "A2": "strict/no-think/2000",
+    "B0": "balanced/no-think/160",
+    "B1": "balanced/think/2000",
+    "B2": "balanced/no-think/2000",
+    "C0": "two_stage/no-think"
+  },
   "arms": [
     "A0",
+    "A2",
     "A1",
     "B0",
+    "B2",
     "B1",
     "C0"
   ],
   "context_source": "reconstructed_byte_exact_from_census_artifacts",
-  "context_verification": "sha256_per_case_vs_original_final_sha256",
-  "corpus_sha256": "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4",
   "experiment": "euri_prompt_ablation_v2",
   "experiment_version": "v2",
-  "git_commit": "bac00a060b9f25e5cd97cce718617f92c9201154",
   "kind": "development",
-  "localization_sha256": "84485f43b6f4018950c7915293ca10517ac0cb7cb2ed217d95aa9da8e265e2a6",
-  "manifest_sha256": "fd93bb17e910213be41626611a59e95b7398d8c0513b776c7e7c9f67890ad8f3",
-  "note": "Development su LoCoMo ormai interamente aperto; non validazione indipendente.",
+  "manifest_sha256": "993bca45f120a78015804a41a4aa5ac8fe6def9a5114aaa6d6c8ae7b8a539c60",
+  "note": "Development su LoCoMo interamente aperto; non validazione indipendente.",
+  "production_baseline_commit": "bac00a0",
   "prompt_sha256": {
     "balanced": "4e9b3fae5f85f05ded7b24d5d84693183466aa7dd580275f9421c50f75cdd17d",
     "strict": "ac23ae63b129780419837f6829e20976b39147b2f6b7665eefd942a4353e8260",
     "two_stage_answer": "84dc5be4191fdf35bc29b56366dac8bdd828ca43b35e2deaeca3652ec425df2a",
-    "two_stage_selector": "6905b2518fa497d814b9fbc12fde08fe61e0c79154d54dc3dcf816033609bdb3"
+    "two_stage_selector": "0ac653d358189c1309f3e62c6d8c67ebc489e8cce60cccb8e53a2df850ae36a7"
   },
   "reuse_previous_a0": false,
-  "schema_version": 1,
+  "schema_version": 2,
+  "seed_policy": "per-caso = run.answer_seed del report census della replica",
   "source_validation": "dual_channel_validation_v1_seed396895560",
   "stage": "cases_frozen",
   "strata": {
     "A_evidence_flip": [
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2"
+        ],
+        "case_id": "conv-41__r0__conv-41:q123",
         "category": "open_domain",
         "conversation": "conv-41",
         "question_id": "conv-41:q123",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "A_evidence_flip"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1"
+        ],
+        "case_id": "conv-41__r0__conv-41:q132",
         "category": "open_domain",
         "conversation": "conv-41",
         "question_id": "conv-41:q132",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "A_evidence_flip"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0"
+        ],
+        "case_id": "conv-41__r0__conv-41:q134",
         "category": "open_domain",
         "conversation": "conv-41",
         "question_id": "conv-41:q134",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "A_evidence_flip"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1"
+        ],
+        "case_id": "conv-41__r0__conv-41:q17",
+        "category": "temporal",
+        "conversation": "conv-41",
+        "question_id": "conv-41:q17",
+        "replica": "0",
+        "stratum": "A_evidence_flip"
+      },
+      {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0"
+        ],
+        "case_id": "conv-41__r0__conv-41:q33",
         "category": "single_hop",
         "conversation": "conv-41",
         "question_id": "conv-41:q33",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "A_evidence_flip"
       },
       {
-        "category": "temporal",
-        "conversation": "conv-41",
-        "question_id": "conv-41:q17",
-        "replica": "0"
-      },
-      {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2"
+        ],
+        "case_id": "conv-41__r1__conv-41:q123",
         "category": "open_domain",
         "conversation": "conv-41",
         "question_id": "conv-41:q123",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "A_evidence_flip"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1"
+        ],
+        "case_id": "conv-41__r1__conv-41:q132",
         "category": "open_domain",
         "conversation": "conv-41",
         "question_id": "conv-41:q132",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "A_evidence_flip"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0"
+        ],
+        "case_id": "conv-41__r1__conv-41:q134",
         "category": "open_domain",
         "conversation": "conv-41",
         "question_id": "conv-41:q134",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "A_evidence_flip"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2"
+        ],
+        "case_id": "conv-41__r1__conv-41:q17",
         "category": "temporal",
         "conversation": "conv-41",
         "question_id": "conv-41:q17",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "A_evidence_flip"
       },
       {
-        "category": "open_domain",
-        "conversation": "conv-44",
-        "question_id": "conv-44:q95",
-        "replica": "0"
-      },
-      {
-        "category": "single_hop",
-        "conversation": "conv-44",
-        "question_id": "conv-44:q29",
-        "replica": "0"
-      },
-      {
-        "category": "single_hop",
-        "conversation": "conv-44",
-        "question_id": "conv-44:q43",
-        "replica": "0"
-      },
-      {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2"
+        ],
+        "case_id": "conv-44__r0__conv-44:q11",
         "category": "temporal",
         "conversation": "conv-44",
         "question_id": "conv-44:q11",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "A_evidence_flip"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0"
+        ],
+        "case_id": "conv-44__r0__conv-44:q29",
+        "category": "single_hop",
+        "conversation": "conv-44",
+        "question_id": "conv-44:q29",
+        "replica": "0",
+        "stratum": "A_evidence_flip"
+      },
+      {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2"
+        ],
+        "case_id": "conv-44__r0__conv-44:q43",
+        "category": "single_hop",
+        "conversation": "conv-44",
+        "question_id": "conv-44:q43",
+        "replica": "0",
+        "stratum": "A_evidence_flip"
+      },
+      {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1"
+        ],
+        "case_id": "conv-44__r0__conv-44:q95",
+        "category": "open_domain",
+        "conversation": "conv-44",
+        "question_id": "conv-44:q95",
+        "replica": "0",
+        "stratum": "A_evidence_flip"
+      },
+      {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1"
+        ],
+        "case_id": "conv-44__r1__conv-44:q11",
+        "category": "temporal",
+        "conversation": "conv-44",
+        "question_id": "conv-44:q11",
+        "replica": "1",
+        "stratum": "A_evidence_flip"
+      },
+      {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0"
+        ],
+        "case_id": "conv-44__r1__conv-44:q29",
+        "category": "single_hop",
+        "conversation": "conv-44",
+        "question_id": "conv-44:q29",
+        "replica": "1",
+        "stratum": "A_evidence_flip"
+      },
+      {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2"
+        ],
+        "case_id": "conv-44__r1__conv-44:q43",
+        "category": "single_hop",
+        "conversation": "conv-44",
+        "question_id": "conv-44:q43",
+        "replica": "1",
+        "stratum": "A_evidence_flip"
+      },
+      {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1"
+        ],
+        "case_id": "conv-44__r1__conv-44:q81",
         "category": "open_domain",
         "conversation": "conv-44",
         "question_id": "conv-44:q81",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "A_evidence_flip"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0"
+        ],
+        "case_id": "conv-44__r1__conv-44:q95",
         "category": "open_domain",
         "conversation": "conv-44",
         "question_id": "conv-44:q95",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "A_evidence_flip"
       },
       {
-        "category": "single_hop",
-        "conversation": "conv-44",
-        "question_id": "conv-44:q29",
-        "replica": "1"
-      },
-      {
-        "category": "single_hop",
-        "conversation": "conv-44",
-        "question_id": "conv-44:q43",
-        "replica": "1"
-      },
-      {
-        "category": "temporal",
-        "conversation": "conv-44",
-        "question_id": "conv-44:q11",
-        "replica": "1"
-      },
-      {
-        "category": "open_domain",
-        "conversation": "conv-48",
-        "question_id": "conv-48:q117",
-        "replica": "0"
-      },
-      {
-        "category": "open_domain",
-        "conversation": "conv-48",
-        "question_id": "conv-48:q183",
-        "replica": "0"
-      },
-      {
-        "category": "single_hop",
-        "conversation": "conv-48",
-        "question_id": "conv-48:q88",
-        "replica": "0"
-      },
-      {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2"
+        ],
+        "case_id": "conv-48__r0__conv-48:q1",
         "category": "temporal",
         "conversation": "conv-48",
         "question_id": "conv-48:q1",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "A_evidence_flip"
       },
       {
-        "category": "temporal",
-        "conversation": "conv-48",
-        "question_id": "conv-48:q45",
-        "replica": "0"
-      },
-      {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1"
+        ],
+        "case_id": "conv-48__r0__conv-48:q117",
         "category": "open_domain",
         "conversation": "conv-48",
         "question_id": "conv-48:q117",
-        "replica": "1"
+        "replica": "0",
+        "stratum": "A_evidence_flip"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2"
+        ],
+        "case_id": "conv-48__r0__conv-48:q183",
         "category": "open_domain",
         "conversation": "conv-48",
         "question_id": "conv-48:q183",
-        "replica": "1"
+        "replica": "0",
+        "stratum": "A_evidence_flip"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0"
+        ],
+        "case_id": "conv-48__r0__conv-48:q45",
+        "category": "temporal",
+        "conversation": "conv-48",
+        "question_id": "conv-48:q45",
+        "replica": "0",
+        "stratum": "A_evidence_flip"
+      },
+      {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2"
+        ],
+        "case_id": "conv-48__r0__conv-48:q88",
         "category": "single_hop",
         "conversation": "conv-48",
-        "question_id": "conv-48:q87",
-        "replica": "1"
+        "question_id": "conv-48:q88",
+        "replica": "0",
+        "stratum": "A_evidence_flip"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2"
+        ],
+        "case_id": "conv-48__r1__conv-48:q117",
+        "category": "open_domain",
+        "conversation": "conv-48",
+        "question_id": "conv-48:q117",
+        "replica": "1",
+        "stratum": "A_evidence_flip"
+      },
+      {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0"
+        ],
+        "case_id": "conv-48__r1__conv-48:q183",
+        "category": "open_domain",
+        "conversation": "conv-48",
+        "question_id": "conv-48:q183",
+        "replica": "1",
+        "stratum": "A_evidence_flip"
+      },
+      {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2"
+        ],
+        "case_id": "conv-48__r1__conv-48:q66",
         "category": "temporal",
         "conversation": "conv-48",
         "question_id": "conv-48:q66",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "A_evidence_flip"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1"
+        ],
+        "case_id": "conv-48__r1__conv-48:q87",
+        "category": "single_hop",
+        "conversation": "conv-48",
+        "question_id": "conv-48:q87",
+        "replica": "1",
+        "stratum": "A_evidence_flip"
+      },
+      {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0"
+        ],
+        "case_id": "conv-49__r0__conv-49:q115",
         "category": "open_domain",
         "conversation": "conv-49",
         "question_id": "conv-49:q115",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "A_evidence_flip"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2"
+        ],
+        "case_id": "conv-49__r0__conv-49:q131",
         "category": "open_domain",
         "conversation": "conv-49",
         "question_id": "conv-49:q131",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "A_evidence_flip"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0"
+        ],
+        "case_id": "conv-49__r0__conv-49:q33",
         "category": "single_hop",
         "conversation": "conv-49",
         "question_id": "conv-49:q33",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "A_evidence_flip"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0"
+        ],
+        "case_id": "conv-49__r0__conv-49:q73",
         "category": "single_hop",
         "conversation": "conv-49",
         "question_id": "conv-49:q73",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "A_evidence_flip"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0"
+        ],
+        "case_id": "conv-49__r1__conv-49:q131",
+        "category": "open_domain",
+        "conversation": "conv-49",
+        "question_id": "conv-49:q131",
+        "replica": "1",
+        "stratum": "A_evidence_flip"
+      },
+      {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1"
+        ],
+        "case_id": "conv-49__r1__conv-49:q33",
+        "category": "single_hop",
+        "conversation": "conv-49",
+        "question_id": "conv-49:q33",
+        "replica": "1",
+        "stratum": "A_evidence_flip"
+      },
+      {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0"
+        ],
+        "case_id": "conv-49__r1__conv-49:q52",
         "category": "multi_hop",
         "conversation": "conv-49",
         "question_id": "conv-49:q52",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "A_evidence_flip"
       },
       {
-        "category": "open_domain",
-        "conversation": "conv-49",
-        "question_id": "conv-49:q131",
-        "replica": "1"
-      },
-      {
-        "category": "single_hop",
-        "conversation": "conv-49",
-        "question_id": "conv-49:q33",
-        "replica": "1"
-      },
-      {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0"
+        ],
+        "case_id": "conv-49__r1__conv-49:q7",
         "category": "single_hop",
         "conversation": "conv-49",
         "question_id": "conv-49:q7",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "A_evidence_flip"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2"
+        ],
+        "case_id": "conv-49__r1__conv-49:q73",
         "category": "single_hop",
         "conversation": "conv-49",
         "question_id": "conv-49:q73",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "A_evidence_flip"
       },
       {
-        "category": "multi_hop",
-        "conversation": "conv-50",
-        "question_id": "conv-50:q38",
-        "replica": "0"
-      },
-      {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1"
+        ],
+        "case_id": "conv-50__r0__conv-50:q112",
         "category": "open_domain",
         "conversation": "conv-50",
         "question_id": "conv-50:q112",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "A_evidence_flip"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0"
+        ],
+        "case_id": "conv-50__r0__conv-50:q129",
         "category": "open_domain",
         "conversation": "conv-50",
         "question_id": "conv-50:q129",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "A_evidence_flip"
       },
       {
-        "category": "temporal",
-        "conversation": "conv-50",
-        "question_id": "conv-50:q44",
-        "replica": "0"
-      },
-      {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1"
+        ],
+        "case_id": "conv-50__r0__conv-50:q38",
         "category": "multi_hop",
         "conversation": "conv-50",
         "question_id": "conv-50:q38",
-        "replica": "1"
+        "replica": "0",
+        "stratum": "A_evidence_flip"
       },
       {
-        "category": "open_domain",
-        "conversation": "conv-50",
-        "question_id": "conv-50:q112",
-        "replica": "1"
-      },
-      {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0"
+        ],
+        "case_id": "conv-50__r0__conv-50:q44",
         "category": "temporal",
         "conversation": "conv-50",
         "question_id": "conv-50:q44",
-        "replica": "1"
+        "replica": "0",
+        "stratum": "A_evidence_flip"
+      },
+      {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1"
+        ],
+        "case_id": "conv-50__r1__conv-50:q112",
+        "category": "open_domain",
+        "conversation": "conv-50",
+        "question_id": "conv-50:q112",
+        "replica": "1",
+        "stratum": "A_evidence_flip"
+      },
+      {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0"
+        ],
+        "case_id": "conv-50__r1__conv-50:q38",
+        "category": "multi_hop",
+        "conversation": "conv-50",
+        "question_id": "conv-50:q38",
+        "replica": "1",
+        "stratum": "A_evidence_flip"
+      },
+      {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2"
+        ],
+        "case_id": "conv-50__r1__conv-50:q44",
+        "category": "temporal",
+        "conversation": "conv-50",
+        "question_id": "conv-50:q44",
+        "replica": "1",
+        "stratum": "A_evidence_flip"
       }
     ],
     "B_answerable_control": [
       {
-        "conversation": "conv-41",
-        "question_id": "conv-41:q100",
-        "replica": "0"
-      },
-      {
-        "conversation": "conv-41",
-        "question_id": "conv-41:q101",
-        "replica": "0"
-      },
-      {
-        "conversation": "conv-41",
-        "question_id": "conv-41:q102",
-        "replica": "0"
-      },
-      {
-        "conversation": "conv-41",
-        "question_id": "conv-41:q10",
-        "replica": "0"
-      },
-      {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0"
+        ],
+        "case_id": "conv-41__r0__conv-41:q1",
+        "category": "temporal",
         "conversation": "conv-41",
         "question_id": "conv-41:q1",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "B_answerable_control"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0"
+        ],
+        "case_id": "conv-41__r0__conv-41:q10",
+        "category": "single_hop",
+        "conversation": "conv-41",
+        "question_id": "conv-41:q10",
+        "replica": "0",
+        "stratum": "B_answerable_control"
+      },
+      {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2"
+        ],
+        "case_id": "conv-41__r0__conv-41:q100",
+        "category": "open_domain",
+        "conversation": "conv-41",
+        "question_id": "conv-41:q100",
+        "replica": "0",
+        "stratum": "B_answerable_control"
+      },
+      {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1"
+        ],
+        "case_id": "conv-41__r0__conv-41:q101",
+        "category": "open_domain",
+        "conversation": "conv-41",
+        "question_id": "conv-41:q101",
+        "replica": "0",
+        "stratum": "B_answerable_control"
+      },
+      {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0"
+        ],
+        "case_id": "conv-41__r0__conv-41:q102",
+        "category": "open_domain",
+        "conversation": "conv-41",
+        "question_id": "conv-41:q102",
+        "replica": "0",
+        "stratum": "B_answerable_control"
+      },
+      {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0"
+        ],
+        "case_id": "conv-41__r1__conv-41:q103",
+        "category": "open_domain",
         "conversation": "conv-41",
         "question_id": "conv-41:q103",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "B_answerable_control"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2"
+        ],
+        "case_id": "conv-41__r1__conv-41:q104",
+        "category": "open_domain",
         "conversation": "conv-41",
         "question_id": "conv-41:q104",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "B_answerable_control"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1"
+        ],
+        "case_id": "conv-41__r1__conv-41:q105",
+        "category": "open_domain",
         "conversation": "conv-41",
         "question_id": "conv-41:q105",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "B_answerable_control"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0"
+        ],
+        "case_id": "conv-41__r1__conv-41:q11",
+        "category": "temporal",
         "conversation": "conv-41",
         "question_id": "conv-41:q11",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "B_answerable_control"
       },
       {
-        "conversation": "conv-44",
-        "question_id": "conv-44:q100",
-        "replica": "0"
-      },
-      {
-        "conversation": "conv-44",
-        "question_id": "conv-44:q10",
-        "replica": "0"
-      },
-      {
-        "conversation": "conv-44",
-        "question_id": "conv-44:q13",
-        "replica": "0"
-      },
-      {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1"
+        ],
+        "case_id": "conv-44__r0__conv-44:q1",
+        "category": "temporal",
         "conversation": "conv-44",
         "question_id": "conv-44:q1",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "B_answerable_control"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0"
+        ],
+        "case_id": "conv-44__r0__conv-44:q10",
+        "category": "single_hop",
+        "conversation": "conv-44",
+        "question_id": "conv-44:q10",
+        "replica": "0",
+        "stratum": "B_answerable_control"
+      },
+      {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0"
+        ],
+        "case_id": "conv-44__r0__conv-44:q100",
+        "category": "open_domain",
+        "conversation": "conv-44",
+        "question_id": "conv-44:q100",
+        "replica": "0",
+        "stratum": "B_answerable_control"
+      },
+      {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0"
+        ],
+        "case_id": "conv-44__r0__conv-44:q13",
+        "category": "single_hop",
+        "conversation": "conv-44",
+        "question_id": "conv-44:q13",
+        "replica": "0",
+        "stratum": "B_answerable_control"
+      },
+      {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0"
+        ],
+        "case_id": "conv-44__r1__conv-44:q101",
+        "category": "open_domain",
         "conversation": "conv-44",
         "question_id": "conv-44:q101",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "B_answerable_control"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2"
+        ],
+        "case_id": "conv-44__r1__conv-44:q102",
+        "category": "open_domain",
         "conversation": "conv-44",
         "question_id": "conv-44:q102",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "B_answerable_control"
       },
       {
-        "conversation": "conv-44",
-        "question_id": "conv-44:q15",
-        "replica": "1"
-      },
-      {
-        "conversation": "conv-44",
-        "question_id": "conv-44:q16",
-        "replica": "1"
-      },
-      {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0"
+        ],
+        "case_id": "conv-44__r1__conv-44:q12",
+        "category": "temporal",
         "conversation": "conv-44",
         "question_id": "conv-44:q12",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "B_answerable_control"
       },
       {
-        "conversation": "conv-48",
-        "question_id": "conv-48:q100",
-        "replica": "0"
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1"
+        ],
+        "case_id": "conv-44__r1__conv-44:q15",
+        "category": "single_hop",
+        "conversation": "conv-44",
+        "question_id": "conv-44:q15",
+        "replica": "1",
+        "stratum": "B_answerable_control"
       },
       {
-        "conversation": "conv-48",
-        "question_id": "conv-48:q101",
-        "replica": "0"
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0"
+        ],
+        "case_id": "conv-44__r1__conv-44:q16",
+        "category": "single_hop",
+        "conversation": "conv-44",
+        "question_id": "conv-44:q16",
+        "replica": "1",
+        "stratum": "B_answerable_control"
       },
       {
-        "conversation": "conv-48",
-        "question_id": "conv-48:q14",
-        "replica": "0"
-      },
-      {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1"
+        ],
+        "case_id": "conv-48__r0__conv-48:q10",
+        "category": "temporal",
         "conversation": "conv-48",
         "question_id": "conv-48:q10",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "B_answerable_control"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0"
+        ],
+        "case_id": "conv-48__r0__conv-48:q100",
+        "category": "open_domain",
+        "conversation": "conv-48",
+        "question_id": "conv-48:q100",
+        "replica": "0",
+        "stratum": "B_answerable_control"
+      },
+      {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0"
+        ],
+        "case_id": "conv-48__r0__conv-48:q101",
+        "category": "open_domain",
+        "conversation": "conv-48",
+        "question_id": "conv-48:q101",
+        "replica": "0",
+        "stratum": "B_answerable_control"
+      },
+      {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2"
+        ],
+        "case_id": "conv-48__r0__conv-48:q11",
+        "category": "temporal",
         "conversation": "conv-48",
         "question_id": "conv-48:q11",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "B_answerable_control"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0"
+        ],
+        "case_id": "conv-48__r0__conv-48:q14",
+        "category": "single_hop",
         "conversation": "conv-48",
-        "question_id": "conv-48:q102",
-        "replica": "1"
+        "question_id": "conv-48:q14",
+        "replica": "0",
+        "stratum": "B_answerable_control"
       },
       {
-        "conversation": "conv-48",
-        "question_id": "conv-48:q103",
-        "replica": "1"
-      },
-      {
-        "conversation": "conv-48",
-        "question_id": "conv-48:q15",
-        "replica": "1"
-      },
-      {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1"
+        ],
+        "case_id": "conv-48__r1__conv-48:q1",
+        "category": "temporal",
         "conversation": "conv-48",
         "question_id": "conv-48:q1",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "B_answerable_control"
       },
       {
-        "conversation": "conv-49",
-        "question_id": "conv-49:q100",
-        "replica": "0"
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0"
+        ],
+        "case_id": "conv-48__r1__conv-48:q102",
+        "category": "open_domain",
+        "conversation": "conv-48",
+        "question_id": "conv-48:q102",
+        "replica": "1",
+        "stratum": "B_answerable_control"
       },
       {
-        "conversation": "conv-49",
-        "question_id": "conv-49:q101",
-        "replica": "0"
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0"
+        ],
+        "case_id": "conv-48__r1__conv-48:q103",
+        "category": "open_domain",
+        "conversation": "conv-48",
+        "question_id": "conv-48:q103",
+        "replica": "1",
+        "stratum": "B_answerable_control"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1"
+        ],
+        "case_id": "conv-48__r1__conv-48:q15",
+        "category": "single_hop",
+        "conversation": "conv-48",
+        "question_id": "conv-48:q15",
+        "replica": "1",
+        "stratum": "B_answerable_control"
+      },
+      {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0"
+        ],
+        "case_id": "conv-49__r0__conv-49:q1",
+        "category": "single_hop",
         "conversation": "conv-49",
         "question_id": "conv-49:q1",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "B_answerable_control"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2"
+        ],
+        "case_id": "conv-49__r0__conv-49:q100",
+        "category": "open_domain",
+        "conversation": "conv-49",
+        "question_id": "conv-49:q100",
+        "replica": "0",
+        "stratum": "B_answerable_control"
+      },
+      {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1"
+        ],
+        "case_id": "conv-49__r0__conv-49:q101",
+        "category": "open_domain",
+        "conversation": "conv-49",
+        "question_id": "conv-49:q101",
+        "replica": "0",
+        "stratum": "B_answerable_control"
+      },
+      {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0"
+        ],
+        "case_id": "conv-49__r0__conv-49:q12",
+        "category": "single_hop",
         "conversation": "conv-49",
         "question_id": "conv-49:q12",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "B_answerable_control"
       },
       {
-        "conversation": "conv-49",
-        "question_id": "conv-49:q11",
-        "replica": "1"
-      },
-      {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2"
+        ],
+        "case_id": "conv-49__r1__conv-49:q102",
+        "category": "open_domain",
         "conversation": "conv-49",
         "question_id": "conv-49:q102",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "B_answerable_control"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1"
+        ],
+        "case_id": "conv-49__r1__conv-49:q11",
+        "category": "multi_hop",
+        "conversation": "conv-49",
+        "question_id": "conv-49:q11",
+        "replica": "1",
+        "stratum": "B_answerable_control"
+      },
+      {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2"
+        ],
+        "case_id": "conv-49__r1__conv-49:q15",
+        "category": "single_hop",
         "conversation": "conv-49",
         "question_id": "conv-49:q15",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "B_answerable_control"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1"
+        ],
+        "case_id": "conv-49__r1__conv-49:q16",
+        "category": "single_hop",
         "conversation": "conv-49",
         "question_id": "conv-49:q16",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "B_answerable_control"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2"
+        ],
+        "case_id": "conv-49__r1__conv-49:q17",
+        "category": "single_hop",
         "conversation": "conv-49",
         "question_id": "conv-49:q17",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "B_answerable_control"
       },
       {
-        "conversation": "conv-50",
-        "question_id": "conv-50:q14",
-        "replica": "0"
-      },
-      {
-        "conversation": "conv-50",
-        "question_id": "conv-50:q100",
-        "replica": "0"
-      },
-      {
-        "conversation": "conv-50",
-        "question_id": "conv-50:q101",
-        "replica": "0"
-      },
-      {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1"
+        ],
+        "case_id": "conv-50__r0__conv-50:q1",
+        "category": "temporal",
         "conversation": "conv-50",
         "question_id": "conv-50:q1",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "B_answerable_control"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0"
+        ],
+        "case_id": "conv-50__r0__conv-50:q100",
+        "category": "open_domain",
         "conversation": "conv-50",
-        "question_id": "conv-50:q22",
-        "replica": "1"
+        "question_id": "conv-50:q100",
+        "replica": "0",
+        "stratum": "B_answerable_control"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2"
+        ],
+        "case_id": "conv-50__r0__conv-50:q101",
+        "category": "open_domain",
         "conversation": "conv-50",
-        "question_id": "conv-50:q102",
-        "replica": "1"
+        "question_id": "conv-50:q101",
+        "replica": "0",
+        "stratum": "B_answerable_control"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0"
+        ],
+        "case_id": "conv-50__r0__conv-50:q14",
+        "category": "multi_hop",
+        "conversation": "conv-50",
+        "question_id": "conv-50:q14",
+        "replica": "0",
+        "stratum": "B_answerable_control"
+      },
+      {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0"
+        ],
+        "case_id": "conv-50__r1__conv-50:q10",
+        "category": "temporal",
         "conversation": "conv-50",
         "question_id": "conv-50:q10",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "B_answerable_control"
+      },
+      {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2"
+        ],
+        "case_id": "conv-50__r1__conv-50:q102",
+        "category": "open_domain",
+        "conversation": "conv-50",
+        "question_id": "conv-50:q102",
+        "replica": "1",
+        "stratum": "B_answerable_control"
+      },
+      {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0"
+        ],
+        "case_id": "conv-50__r1__conv-50:q22",
+        "category": "multi_hop",
+        "conversation": "conv-50",
+        "question_id": "conv-50:q22",
+        "replica": "1",
+        "stratum": "B_answerable_control"
       }
     ],
     "C_adversarial": [
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0"
+        ],
+        "case_id": "conv-41__r0__conv-41:q153",
+        "category": "open_domain",
         "conversation": "conv-41",
         "question_id": "conv-41:q153",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2"
+        ],
+        "case_id": "conv-41__r0__conv-41:q154",
+        "category": "open_domain",
         "conversation": "conv-41",
         "question_id": "conv-41:q154",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1"
+        ],
+        "case_id": "conv-41__r0__conv-41:q155",
+        "category": "open_domain",
         "conversation": "conv-41",
         "question_id": "conv-41:q155",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0"
+        ],
+        "case_id": "conv-41__r0__conv-41:q156",
+        "category": "single_hop",
         "conversation": "conv-41",
         "question_id": "conv-41:q156",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2"
+        ],
+        "case_id": "conv-41__r0__conv-41:q157",
+        "category": "temporal",
         "conversation": "conv-41",
         "question_id": "conv-41:q157",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0"
+        ],
+        "case_id": "conv-41__r1__conv-41:q158",
+        "category": "open_domain",
         "conversation": "conv-41",
         "question_id": "conv-41:q158",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2"
+        ],
+        "case_id": "conv-41__r1__conv-41:q159",
+        "category": "open_domain",
         "conversation": "conv-41",
         "question_id": "conv-41:q159",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1"
+        ],
+        "case_id": "conv-41__r1__conv-41:q160",
+        "category": "open_domain",
         "conversation": "conv-41",
         "question_id": "conv-41:q160",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0"
+        ],
+        "case_id": "conv-41__r1__conv-41:q161",
+        "category": "temporal",
         "conversation": "conv-41",
         "question_id": "conv-41:q161",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1"
+        ],
+        "case_id": "conv-44__r0__conv-44:q124",
+        "category": "open_domain",
         "conversation": "conv-44",
         "question_id": "conv-44:q124",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0"
+        ],
+        "case_id": "conv-44__r0__conv-44:q125",
+        "category": "single_hop",
         "conversation": "conv-44",
         "question_id": "conv-44:q125",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2"
+        ],
+        "case_id": "conv-44__r0__conv-44:q126",
+        "category": "single_hop",
         "conversation": "conv-44",
         "question_id": "conv-44:q126",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1"
+        ],
+        "case_id": "conv-44__r0__conv-44:q127",
+        "category": "temporal",
         "conversation": "conv-44",
         "question_id": "conv-44:q127",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0"
+        ],
+        "case_id": "conv-44__r1__conv-44:q128",
+        "category": "open_domain",
         "conversation": "conv-44",
         "question_id": "conv-44:q128",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2"
+        ],
+        "case_id": "conv-44__r1__conv-44:q129",
+        "category": "open_domain",
         "conversation": "conv-44",
         "question_id": "conv-44:q129",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1"
+        ],
+        "case_id": "conv-44__r1__conv-44:q130",
+        "category": "single_hop",
         "conversation": "conv-44",
         "question_id": "conv-44:q130",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0"
+        ],
+        "case_id": "conv-44__r1__conv-44:q131",
+        "category": "single_hop",
         "conversation": "conv-44",
         "question_id": "conv-44:q131",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2"
+        ],
+        "case_id": "conv-44__r1__conv-44:q132",
+        "category": "temporal",
         "conversation": "conv-44",
         "question_id": "conv-44:q132",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1"
+        ],
+        "case_id": "conv-48__r0__conv-48:q192",
+        "category": "open_domain",
         "conversation": "conv-48",
         "question_id": "conv-48:q192",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0"
+        ],
+        "case_id": "conv-48__r0__conv-48:q193",
+        "category": "open_domain",
         "conversation": "conv-48",
         "question_id": "conv-48:q193",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0"
+        ],
+        "case_id": "conv-48__r0__conv-48:q194",
+        "category": "single_hop",
         "conversation": "conv-48",
         "question_id": "conv-48:q194",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2"
+        ],
+        "case_id": "conv-48__r0__conv-48:q195",
+        "category": "temporal",
         "conversation": "conv-48",
         "question_id": "conv-48:q195",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1"
+        ],
+        "case_id": "conv-48__r0__conv-48:q196",
+        "category": "temporal",
         "conversation": "conv-48",
         "question_id": "conv-48:q196",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2"
+        ],
+        "case_id": "conv-48__r1__conv-48:q197",
+        "category": "open_domain",
         "conversation": "conv-48",
         "question_id": "conv-48:q197",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1"
+        ],
+        "case_id": "conv-48__r1__conv-48:q198",
+        "category": "open_domain",
         "conversation": "conv-48",
         "question_id": "conv-48:q198",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0"
+        ],
+        "case_id": "conv-48__r1__conv-48:q199",
+        "category": "single_hop",
         "conversation": "conv-48",
         "question_id": "conv-48:q199",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0"
+        ],
+        "case_id": "conv-48__r1__conv-48:q200",
+        "category": "temporal",
         "conversation": "conv-48",
         "question_id": "conv-48:q200",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1"
+        ],
+        "case_id": "conv-49__r0__conv-49:q157",
+        "category": "open_domain",
         "conversation": "conv-49",
         "question_id": "conv-49:q157",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0"
+        ],
+        "case_id": "conv-49__r0__conv-49:q158",
+        "category": "open_domain",
         "conversation": "conv-49",
         "question_id": "conv-49:q158",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2"
+        ],
+        "case_id": "conv-49__r0__conv-49:q159",
+        "category": "single_hop",
         "conversation": "conv-49",
         "question_id": "conv-49:q159",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1"
+        ],
+        "case_id": "conv-49__r0__conv-49:q160",
+        "category": "single_hop",
         "conversation": "conv-49",
         "question_id": "conv-49:q160",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0"
+        ],
+        "case_id": "conv-49__r1__conv-49:q161",
+        "category": "multi_hop",
         "conversation": "conv-49",
         "question_id": "conv-49:q161",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0"
+        ],
+        "case_id": "conv-49__r1__conv-49:q162",
+        "category": "open_domain",
         "conversation": "conv-49",
         "question_id": "conv-49:q162",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2"
+        ],
+        "case_id": "conv-49__r1__conv-49:q163",
+        "category": "single_hop",
         "conversation": "conv-49",
         "question_id": "conv-49:q163",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1"
+        ],
+        "case_id": "conv-49__r1__conv-49:q164",
+        "category": "single_hop",
         "conversation": "conv-49",
         "question_id": "conv-49:q164",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0"
+        ],
+        "case_id": "conv-49__r1__conv-49:q165",
+        "category": "single_hop",
         "conversation": "conv-49",
         "question_id": "conv-49:q165",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "A1",
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2"
+        ],
+        "case_id": "conv-50__r0__conv-50:q159",
+        "category": "multi_hop",
         "conversation": "conv-50",
         "question_id": "conv-50:q159",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B0",
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1"
+        ],
+        "case_id": "conv-50__r0__conv-50:q160",
+        "category": "open_domain",
         "conversation": "conv-50",
         "question_id": "conv-50:q160",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0"
+        ],
+        "case_id": "conv-50__r0__conv-50:q161",
+        "category": "open_domain",
         "conversation": "conv-50",
         "question_id": "conv-50:q161",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 19960177,
+        "arm_order": [
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2"
+        ],
+        "case_id": "conv-50__r0__conv-50:q162",
+        "category": "temporal",
         "conversation": "conv-50",
         "question_id": "conv-50:q162",
-        "replica": "0"
+        "replica": "0",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B2",
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0"
+        ],
+        "case_id": "conv-50__r1__conv-50:q163",
+        "category": "multi_hop",
         "conversation": "conv-50",
         "question_id": "conv-50:q163",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "B1",
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2"
+        ],
+        "case_id": "conv-50__r1__conv-50:q164",
+        "category": "open_domain",
         "conversation": "conv-50",
         "question_id": "conv-50:q164",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "C_adversarial"
       },
       {
+        "answer_seed": 1395183426,
+        "arm_order": [
+          "C0",
+          "A0",
+          "A2",
+          "A1",
+          "B0",
+          "B2",
+          "B1"
+        ],
+        "case_id": "conv-50__r1__conv-50:q165",
+        "category": "temporal",
         "conversation": "conv-50",
         "question_id": "conv-50:q165",
-        "replica": "1"
+        "replica": "1",
+        "stratum": "C_adversarial"
       }
     ]
   },
@@ -728,6 +2369,8 @@
     "A_evidence_flip": 43,
     "B_answerable_control": 43,
     "C_adversarial": 43,
+    "distinct_case_ids": 129,
+    "distinct_question_ids": 112,
     "total": 129
   }
 }

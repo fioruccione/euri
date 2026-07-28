@@ -118,6 +118,45 @@ def main() -> int:
     da.add_argument("--manifest", type=Path, required=True)
     da.add_argument("--output", type=Path, required=True)
 
+    # --- Prompt ablation v2 (development) ---
+    _VAL = ROOT.parents[1] / "audit_output" / "dual_channel_validation_v1_seed396895560"
+    _CASE_MANIFEST = ROOT / "prompt_ablation_v2_manifest.json"
+    adr = subparsers.add_parser("ablation-dry-run")
+    adr.add_argument("--case-manifest", type=Path, default=_CASE_MANIFEST)
+    adr.add_argument("--validation-root", type=Path, default=_VAL / "run")
+    adr.add_argument("--output", type=Path, required=True)
+
+    aem = subparsers.add_parser("ablation-exec-manifest")
+    aem.add_argument("--case-manifest", type=Path, default=_CASE_MANIFEST)
+    aem.add_argument("--corpus", type=Path, default=DEFAULT_SOURCE)
+    aem.add_argument("--localization", type=Path, default=_VAL / "localization_it.json")
+    aem.add_argument("--validation-root", type=Path, default=_VAL / "run")
+    aem.add_argument("--output", type=Path, required=True)
+
+    arn = subparsers.add_parser("ablation-run")
+    arn.add_argument("--execution-manifest", type=Path, required=True)
+    arn.add_argument("--validation-root", type=Path, default=_VAL / "run")
+    arn.add_argument("--output-dir", type=Path, required=True)
+    arn.add_argument("--capture-dir", type=Path, required=True)
+    arn.add_argument("--execute", action="store_true")
+    arn.add_argument("--model", default="gemma4:26b")
+    arn.add_argument("--model-digest", default=None)
+
+    aan = subparsers.add_parser("ablation-analyze")
+    aan.add_argument("--output-runs", type=Path, required=True)
+    aan.add_argument("--execution-manifest", type=Path, required=True)
+    aan.add_argument("--localization", type=Path, default=_VAL / "localization_it.json")
+    aan.add_argument("--corpus", type=Path, default=DEFAULT_SOURCE)
+    aan.add_argument("--validation-root", type=Path, default=_VAL / "run")
+    aan.add_argument("--output", type=Path, required=True)
+
+    aau = subparsers.add_parser("ablation-audit")
+    aau.add_argument("--output-runs", type=Path, required=True)
+    aau.add_argument("--localization", type=Path, default=_VAL / "localization_it.json")
+    aau.add_argument("--corpus", type=Path, default=DEFAULT_SOURCE)
+    aau.add_argument("--output-rows", type=Path, required=True)
+    aau.add_argument("--output-key", type=Path, required=True)
+
     args = parser.parse_args()
 
     if args.command == "smoke":
@@ -519,6 +558,57 @@ def main() -> int:
                           "underpowered": report["power"]["underpowered"],
                           "output": str(args.output)}, sort_keys=True))
         return 0
+    if args.command in {"ablation-dry-run", "ablation-exec-manifest", "ablation-run",
+                        "ablation-analyze", "ablation-audit"}:
+        from benchmarks.euri_memory import prompt_ablation_v2 as PA
+
+        if args.command == "ablation-dry-run":
+            m = json.loads(args.case_manifest.read_text(encoding="utf-8"))
+            res = PA.dry_run_materialize(case_manifest=m, validation_root=args.validation_root)
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(json.dumps(res, indent=2, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+            print(json.dumps(res, sort_keys=True))
+            return 0
+        if args.command == "ablation-exec-manifest":
+            m = json.loads(args.case_manifest.read_text(encoding="utf-8"))
+            head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+            ex = PA.build_execution_manifest(m, experimental_code_commit=head, corpus_path=args.corpus,
+                                             localization_path=args.localization,
+                                             validation_runs_dir=args.validation_root / "runs")
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(json.dumps(ex, indent=2, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+            print(json.dumps({"manifest_sha256": ex["manifest_sha256"], "git_commit": ex["git_commit"],
+                              "output": str(args.output)}, sort_keys=True))
+            return 0
+        if args.command == "ablation-run":
+            ex = json.loads(args.execution_manifest.read_text(encoding="utf-8"))
+            try:
+                res = PA.run_ablation(execution_manifest=ex, validation_root=args.validation_root,
+                                      output_dir=args.output_dir, capture_dir=args.capture_dir,
+                                      execute=args.execute, model=args.model, model_digest=args.model_digest)
+            except PA.AblationError as exc:
+                print(json.dumps({"event": "ablation_error", "detail": str(exc)}), flush=True)
+                return 4
+            print(json.dumps(res, sort_keys=True))
+            return 0
+        if args.command == "ablation-analyze":
+            ex = json.loads(args.execution_manifest.read_text(encoding="utf-8"))
+            gold = PA.build_gold_lookup(args.localization, args.corpus)
+            rep = PA.analyze(output_runs=args.output_runs, gold_lookup=gold,
+                             validation_root=args.validation_root, execution_manifest=ex)
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(json.dumps(rep, indent=2, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+            print(json.dumps({"output": str(args.output)}, sort_keys=True))
+            return 0
+        if args.command == "ablation-audit":
+            gold = PA.build_gold_lookup(args.localization, args.corpus)
+            au = PA.blind_audit_export(output_runs=args.output_runs, gold_lookup=gold)
+            args.output_rows.parent.mkdir(parents=True, exist_ok=True)
+            args.output_rows.write_text(json.dumps(au["rows"], indent=2, ensure_ascii=False), encoding="utf-8")
+            args.output_key.write_text(json.dumps(au["key"], indent=2, ensure_ascii=False), encoding="utf-8")
+            print(json.dumps({"rows": len(au["rows"]), "rows_out": str(args.output_rows),
+                              "key_out": str(args.output_key)}, sort_keys=True))
+            return 0
     return 2
 
 
