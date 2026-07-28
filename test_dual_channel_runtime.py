@@ -2,6 +2,8 @@
 """Regressioni runtime della memoria dual-channel (nessun LLM/Redis reale)."""
 from __future__ import annotations
 
+import numpy as np
+
 from core.brain import Brain
 from core.conversation_turns import ConversationTurnStore, make_turn_ref
 from core.memory_manager import MemoryManager
@@ -34,10 +36,11 @@ class FakeRedis:
 
 
 class FakeMemory:
-    def __init__(self, redis_client, base, passive):
+    def __init__(self, redis_client, base, passive, embedder=None):
         self.r = redis_client
         self.base = base
         self.passive = passive
+        self._embedder = embedder
 
     def get_recent_reflections(self, **_kwargs):
         return []
@@ -58,6 +61,20 @@ class FakeMemory:
 
     def search_insights(self, *_args, **_kwargs):
         return []
+
+
+class FakeEmbedder:
+    available = True
+
+    def encode(self, text, mode="passage"):
+        if mode == "query":
+            return np.asarray([1.0, 0.0], dtype=np.float32)
+        if "IZOD" in text:
+            return np.asarray([1.0, 0.0], dtype=np.float32)
+        return np.asarray([0.8, 0.6], dtype=np.float32)
+
+    def encode_many(self, texts, mode="passage"):
+        return np.asarray([self.encode(text, mode=mode) for text in texts])
 
 
 def test_brain_persists_stable_turn_refs_and_metadata_reuses_them():
@@ -177,6 +194,61 @@ def test_unhydrated_historical_passive_note_is_not_used_as_evidence():
     )
 
 
+def test_selective_runtime_prepends_only_high_confidence_original_turn():
+    redis = FakeRedis()
+    store = ConversationTurnStore(redis)
+    turn_ref = make_turn_ref("conversation-test", 8)
+    store.persist(
+        {
+            "turn_ref": turn_ref,
+            "conversation_id": "conversation-test",
+            "seq": 8,
+            "role": "user",
+            "content": "Il valore IZOD misurato è 3,8.",
+            "trusted": True,
+            "observed_at": 124.0,
+            "segment_id": 1,
+        }
+    )
+    base = {
+        "id": "base-1",
+        "content": "Il progetto UBQ riguarda una prova sul compound.",
+        "source": "user",
+        "domain": "chimica polimeri",
+    }
+    passive = {
+        "id": "passive-1",
+        "content": "Il valore IZOD del compound è 3,8.",
+        "source": "passive",
+        "domain": "chimica polimeri",
+        "temporal_context": {"source_turn_refs": [turn_ref]},
+    }
+    redis.docs["euri:memory:passive-1"] = passive
+    memory = FakeMemory(redis, base, passive, embedder=FakeEmbedder())
+
+    rag = build_dual_channel_context(
+        "Qual è il valore IZOD del compound?",
+        memory,
+        store,
+        mode="search",
+        presentation="selective",
+        observe_selective=True,
+    )
+
+    assert rag.text.index("Il valore IZOD misurato è 3,8.") < rag.text.index(
+        base["content"]
+    )
+    assert rag.diagnostics["presentation_applied"] == "selective_prepend"
+    assert rag.diagnostics["selective_gate"]["promoted_turn_ids"] == [turn_ref]
+    hydrated = next(
+        node
+        for node in rag.nodes
+        if node.get("retrieval_path") == "passive_locator_hydrated"
+    )
+    assert hydrated["prompt_region"] == "prepend"
+    assert hydrated["selective_gate_decision"] == "prepend"
+
+
 def test_passive_exclusion_is_a_redis_prefilter_not_a_post_cut_filter():
     assert MemoryManager._source_prefix(None, ["passive"]) == (
         "-@source:{passive}"
@@ -190,5 +262,6 @@ if __name__ == "__main__":
     test_brain_persists_stable_turn_refs_and_metadata_reuses_them()
     test_dual_channel_protects_base_and_injects_only_original_turn()
     test_unhydrated_historical_passive_note_is_not_used_as_evidence()
+    test_selective_runtime_prepends_only_high_confidence_original_turn()
     test_passive_exclusion_is_a_redis_prefilter_not_a_post_cut_filter()
     print("test_dual_channel_runtime: OK")

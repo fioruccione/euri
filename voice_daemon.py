@@ -345,8 +345,12 @@ class VoiceDaemon:
             logger.warning("Audio output: Jabra non trovato — uso device di sistema")
         logger.info("Euri pronto. In ascolto...")
         logger.info(
-            "Memoria dual-channel: mode={} (archivio turni durevole attivo)",
+            "Memoria dual-channel: mode={} (archivio turni durevole attivo; "
+            "gate q_src>={} margin>={} redundancy<={})",
             config.RAG_DUAL_CHANNEL_MODE,
+            config.RAG_DUAL_SELECTIVE_MIN_QUERY_SOURCE,
+            config.RAG_DUAL_SELECTIVE_MIN_MARGIN,
+            config.RAG_DUAL_SELECTIVE_MAX_REDUNDANCY,
         )
 
     def _handle_social_snapshot(self, snapshot: SocialSnapshot) -> None:
@@ -2114,7 +2118,7 @@ class VoiceDaemon:
         with self.brain.history_lock:
             recent_history = list(self.brain._conversation_history)
         dual_mode = getattr(config, "RAG_DUAL_CHANNEL_MODE", "off")
-        if dual_mode == "on":
+        if dual_mode in {"on", "selective"}:
             try:
                 rag = build_dual_channel_context(
                     text,
@@ -2122,6 +2126,10 @@ class VoiceDaemon:
                     self.turn_store,
                     mode=mode,
                     recent_history=recent_history,
+                    presentation=(
+                        "selective" if dual_mode == "selective" else "append"
+                    ),
+                    observe_selective=dual_mode == "selective",
                 )
             except Exception as exc:
                 logger.error(
@@ -2148,13 +2156,18 @@ class VoiceDaemon:
                         mode=mode,
                         recent_history=recent_history,
                         touch=False,
+                        presentation="selective",
+                        observe_selective=True,
                     )
+                    gate = shadow.diagnostics.get("selective_gate") or {}
                     logger.info(
                         "RAG dual shadow: legacy_chars={} dual_chars={} "
-                        "aggiunti={} base_sha={}",
+                        "aggiunti={} promossi={} presentazione={} base_sha={}",
                         len(rag.text),
                         len(shadow.text),
                         len(shadow.diagnostics.get("added_turn_ids") or []),
+                        len(gate.get("promoted_turn_ids") or []),
+                        shadow.diagnostics.get("presentation_applied"),
                         str(shadow.diagnostics.get("base_sha256") or "")[:12],
                     )
                 except Exception as exc:

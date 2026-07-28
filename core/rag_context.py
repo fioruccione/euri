@@ -381,12 +381,24 @@ def build_rag_context(
         if not node_id or not content or key in seen_nodes:
             return
         seen_nodes.add(key)
+        raw_score = doc.get("score")
+        if raw_score is None:
+            raw_score = doc.get("_vec_score")
+        try:
+            retrieval_score = (
+                round(float(raw_score), 6) if raw_score is not None else None
+            )
+        except (TypeError, ValueError):
+            retrieval_score = None
         nodes.append({
             "kind": kind,
             "id": node_id,
             "content": content,
             "position": position,
             "retrieval_path": path,
+            # Distanza cosine RediSearch: più bassa = semanticamente più vicina.
+            # Può essere None per risultati keyword/recency.
+            "retrieval_score": retrieval_score,
             "source": str(doc.get("source") or ""),
             "domain": str(
                 doc.get("domain")
@@ -474,9 +486,19 @@ def build_dual_channel_context(
     mode: str = "chat",
     recent_history: list[dict] | None = None,
     touch: bool = True,
+    presentation: str = "append",
+    observe_selective: bool = False,
 ) -> RagContext:
     """Base senza passive + note passive come locator verso turni originali."""
     from core.dual_channel import FROZEN_POLICY, POLICY_ID, compose_dual_channel
+    from core.dual_channel_gate import (
+        SelectiveThresholds,
+        compose_selective_presentation,
+        evaluate_selective_gate,
+    )
+
+    if presentation not in {"append", "selective"}:
+        raise ValueError(f"presentazione dual-channel non valida: {presentation}")
 
     base = build_rag_context(
         text,
@@ -512,10 +534,22 @@ def build_dual_channel_context(
     )
 
     added_nodes = []
+    addition_gate_inputs = []
+    addition_by_turn = {
+        item["turn_id"]: item for item in composition.additions
+    }
     for position, turn_ref in enumerate(composition.added_turn_ids(), 1):
         turn = turn_store.get(turn_ref)
         if not turn:
             continue
+        addition = addition_by_turn[turn_ref]
+        addition_gate_inputs.append(
+            {
+                "turn_id": turn_ref,
+                "content": turn.content,
+                "from_note_index": addition["from_note_index"],
+            }
+        )
         added_nodes.append(
             {
                 "kind": "turn",
@@ -528,29 +562,107 @@ def build_dual_channel_context(
             }
         )
 
+    gate = {
+        "policy_id": "dual-channel-selective-prepend-v0",
+        "presentation": "append",
+        "candidates": [],
+        "promoted_turn_ids": [],
+        "fallback_reason": "not_evaluated",
+    }
+    final_text = composition.final_context_text
+    prompt_regions = {
+        item["turn_id"]: "append" for item in composition.additions
+    }
+    if observe_selective or presentation == "selective":
+        thresholds = SelectiveThresholds(
+            min_query_source_similarity=getattr(
+                config, "RAG_DUAL_SELECTIVE_MIN_QUERY_SOURCE", 0.92
+            ),
+            min_relevance_margin=getattr(
+                config, "RAG_DUAL_SELECTIVE_MIN_MARGIN", -0.01
+            ),
+            max_source_base_similarity=getattr(
+                config, "RAG_DUAL_SELECTIVE_MAX_REDUNDANCY", 0.985
+            ),
+        )
+        gate = evaluate_selective_gate(
+            query=text,
+            base_nodes=base.nodes,
+            additions=addition_gate_inputs,
+            locator_nodes=passive_nodes,
+            embedder=getattr(memory, "_embedder", None),
+            thresholds=thresholds,
+        )
+        if presentation == "selective":
+            final_text, prompt_regions = compose_selective_presentation(
+                composition,
+                gate["promoted_turn_ids"],
+            )
+
+    gate_by_turn = {
+        candidate["turn_id"]: candidate for candidate in gate.get("candidates", [])
+    }
+    for node in added_nodes:
+        candidate = gate_by_turn.get(node["id"], {})
+        node.update(
+            {
+                "prompt_region": prompt_regions.get(node["id"], "append"),
+                "selective_gate_decision": candidate.get("decision", "append"),
+                "query_source_similarity": candidate.get(
+                    "query_source_similarity"
+                ),
+                "relevance_margin": candidate.get("relevance_margin"),
+                "source_base_max_similarity": candidate.get(
+                    "source_base_max_similarity"
+                ),
+                "locator_memory_id": candidate.get("locator_memory_id", ""),
+            }
+        )
+
     diagnostics = composition.to_record()
     diagnostics.update(
         {
             "mode": "dual_channel",
+            "presentation_requested": presentation,
+            "presentation_applied": (
+                gate.get("presentation", "append")
+                if presentation == "selective" else "append"
+            ),
             "locator_memory_ids": [node["id"] for node in passive_nodes],
             "locator_notes_considered": len(passive_nodes),
+            "selective_gate": gate,
         }
     )
     logger.info(
-        "RAG dual-channel [{}]: base={} locator={} aggiunti={} "
-        "non_disponibili={} budget_scartati={}",
+        "RAG dual-channel [{}]: base={} locator={} aggiunti={} presentazione={} "
+        "promossi={} non_disponibili={} budget_scartati={}",
         POLICY_ID,
         len(base.nodes),
         len(passive_nodes),
         len(composition.additions),
+        diagnostics["presentation_applied"],
+        len(gate.get("promoted_turn_ids") or []),
         sum(
             item.get("decision") == "source_unavailable"
             for item in composition.candidates_considered
         ),
         composition.discarded_budget,
     )
+    for candidate in gate.get("candidates", []):
+        logger.info(
+            "RAG dual gate: turn={} decision={} q_src={} base_best={} "
+            "margin={} redundancy={} locator_dist={} reasons={}",
+            candidate.get("turn_id"),
+            candidate.get("decision"),
+            candidate.get("query_source_similarity"),
+            candidate.get("query_base_best_similarity"),
+            candidate.get("relevance_margin"),
+            candidate.get("source_base_max_similarity"),
+            candidate.get("locator_distance"),
+            ",".join(candidate.get("reasons") or []) or "high_confidence",
+        )
     return RagContext(
-        text=composition.final_context_text,
+        text=final_text,
         ids=list(base.ids),
         mode=mode,
         nodes=list(base.nodes) + added_nodes,

@@ -1,5 +1,20 @@
 # Handoff Euri - 2026-07-24 - Passive learner e conferma Pulse completati
 
+- Stato 28 luglio: il census indipendente dual-channel ha dato GO strutturale
+  (evidence `+0,0311`, 22/0, zero gold persi) ma soltanto `+0,0023` F1.
+  L'ablation di presentazione sul corpus ormai aperto ha mostrato che il prepend
+  semplice aiuta fortemente i soli evidence-flip (`0,111→0,238`) e disturba il
+  resto (`-0,0018` globale); evidence-first esplicito è nocivo. Append resta la
+  baseline sicura.
+- Implementato il gate live `dual-channel-selective-prepend-v0`: valuta il
+  turno verbatim idratato per rilevanza, margine sulla base e anti-ridondanza;
+  la sintesi passiva resta solo locator. Il launcher personale usa
+  `EURI_RAG_DUAL_CHANNEL_MODE=selective`, con fallback append fail-closed e
+  override immediati `on|shadow|off`. La lineage registra decisione e segnali.
+  Le soglie sono deliberatamente provvisorie: LoCoMo è interamente aperto e
+  serve ora come development set; la validazione indipendente passa al
+  benchmark successivo e, nel frattempo, alle osservazioni qualitative sulle
+  memorie reali di Euri.
 - Correzione epistemica del 26 luglio: la convergenza non basta più a promuovere
   un sogno. `premise_fidelity=1.0` e `bridge_validity=supported` sono gate
   fail-closed; `hypothesis` produce un evento `hypothesis_formed` sul Pulse ma

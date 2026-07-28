@@ -12,6 +12,7 @@ test_cross_episode_hypothesis.py
 test_dream_schedule.py
 test_dream_seed_gate.py
 test_dual_channel.py
+test_dual_channel_gate.py
 test_dual_channel_runtime.py
 test_dual_channel_pipeline.py
 test_dream_timeout.py

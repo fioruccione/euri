@@ -42,6 +42,27 @@ class Embedder:
             logger.error(f"Errore embedding: {e}")
             return None
 
+    def encode_many(
+        self,
+        texts: list[str],
+        mode: str = "passage",
+    ) -> np.ndarray | None:
+        """Batch normalizzato per scorer locali che devono confrontare più testi."""
+        if self._model is None:
+            return None
+        if not texts:
+            return np.empty((0, DIM), dtype=np.float32)
+        try:
+            prefix = _PREFIX.get(mode, "")
+            return self._model.encode(
+                [prefix + text for text in texts],
+                convert_to_numpy=True,
+                normalize_embeddings=True,
+            ).astype(np.float32)
+        except Exception as e:
+            logger.error(f"Errore embedding batch: {e}")
+            return None
+
     @property
     def available(self) -> bool:
         return self._model is not None

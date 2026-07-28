@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-07-28 — Gate selettivo: il turno originale guadagna il primo piano
+
+- L'ablation generativa preregistrata sul census LoCoMo già aperto ha isolato
+  l'effetto della posizione: sui 43 casi domanda×replica in cui il canale
+  passivo recuperava evidenza assente dal RAG, il prepend semplice ha portato il
+  token F1 da `0,111` a `0,238`. Applicato indiscriminatamente alle 1.468
+  istanze con aggiunte, però, ha chiuso a `-0,0018` F1 globale e
+  `-0,0119` di prudenza rispetto all'append. Il contratto evidence-first
+  esplicito è risultato nettamente peggiore (`-0,0111` F1 globale). Entrambe le
+  varianti hanno quindi rispettato il verdetto congelato `NO_GO_DEV`.
+- Aggiunta la modalità sperimentale live
+  `EURI_RAG_DUAL_CHANNEL_MODE=selective`: la base RAG resta protetta e l'append
+  validato resta il fallback; un turno verbatim idratato viene portato davanti
+  soltanto se supera congiuntamente rilevanza domanda→fonte, margine rispetto
+  alla base e anti-ridondanza semantica. La parafrasi passiva continua a essere
+  soltanto un locator e non entra mai nel prompt.
+- Il gate è osservabile e fail-closed. Registra rango/distanza del locator,
+  similarità domanda→turno originale, miglior similarità della base, margine,
+  ridondanza fonte→base, decisione e motivi. Embedder o segnali mancanti
+  mantengono l'append; nessuna memoria esistente viene riscritta.
+- La lineage delle risposte conserva regione del prompt e segnali del gate per
+  distinguere in seguito `recalled` da `used_in_response`. L'embedder supporta
+  inoltre il batch locale per valutare base e fonti senza chiamate cloud o LLM.
+- Il launcher personale `start_euri.sh` abilita `selective` per la prova sulle
+  memorie reali; l'override `on|shadow|off` resta immediato e reversibile.
+  LoCoMo è ormai development set interamente aperto: le soglie sono provvisorie
+  e la loro utilità generale dovrà essere validata su un benchmark diverso.
+
 ## 2026-07-27 — Memoria passiva dual-channel: dalla sintesi al locator
 
 - Il census held-out italiano preregistrato (5 conversazioni LoCoMo mai usate,

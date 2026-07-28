@@ -66,8 +66,31 @@ duale ha chiuso con verdetto preregistrato **GO**: evidence recall `+0,0311`,
 22 recuperi esclusivi e 0 evidenze perse; token F1 `+0,0023` (piccolo, intervallo
 clusterizzato compatibile con zero) e prudenza avversariale `+0,0080`. Il
 compositore usato dal runtime è lo stesso modulo importato dal benchmark.
-Il rollout è reversibile con `EURI_RAG_DUAL_CHANNEL_MODE=off|shadow|on`;
-il default è `off`, mentre l'archivio dei turni viene popolato in ogni modalità.
+
+La successiva ablation di presentazione ha chiarito *quando* il verbatim aiuta:
+nei 43 casi domanda×replica con evidenza nuova il prepend semplice ha più che
+raddoppiato l'F1 (`0,111→0,238`), ma applicarlo a tutte le 1.468 istanze con
+aggiunte ha disperso il vantaggio e peggiorato leggermente risultato globale e
+prudenza. Per questo Euri non usa un prepend indiscriminato. La modalità
+sperimentale `selective` valuta il **turno originale**, non la sintesi passiva,
+su tre segnali locali e osservabili:
+
+1. rilevanza diretta per la domanda;
+2. margine rispetto al miglior contenuto già presente nella base;
+3. assenza di ridondanza semantica con la base.
+
+Soltanto un turno ad alta confidenza viene portato davanti; gli altri restano
+nell'append validato. Se il calcolo non è disponibile, il fallback è sempre
+append. Le decisioni compaiono nei log come `RAG dual gate` e nella lineage
+`recalled`, con regione del prompt e punteggi; nessuna memoria viene modificata.
+
+Il rollout è reversibile con
+`EURI_RAG_DUAL_CHANNEL_MODE=off|shadow|on|selective`: `on` conserva l'append
+validato, `shadow` calcola il gate senza cambiare la risposta e `selective`
+applica la promozione condizionale. Il default generico di `config.py` resta
+`off`; il launcher della workstation personale abilita `selective` per la
+valutazione live sulle memorie reali. L'archivio dei turni viene popolato in
+ogni modalità.
 
 ### 3. Dream Engine (Cicli cognitivi in idle)
 Quando non gli parli per un po', Euri entra in cicli cognitivi offline. Non è più un blocco "notturno": l'orchestratore separa pass leggeri, sogni creativi e manutenzione lenta.

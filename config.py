@@ -338,16 +338,27 @@ RAG_MEM_CAP = 6              # slot totali mostrati su query non-temporale
 RAG_MEM_CAP_TEMPORAL = 10    # slot su query con riferimento di tempo (diario più ampio)
 
 # Memoria passiva dual-channel (validazione census 27/07/2026: GO).
-# off    = retrieval storico invariato;
-# shadow = calcola anche il dual-channel ma risponde col retrieval storico;
-# on     = base senza source=passive, note passive solo come locator di turni originali.
+# off       = retrieval storico invariato;
+# shadow    = calcola anche gate+dual-channel ma risponde col retrieval storico;
+# on        = dual-channel validato, turni originali aggiunti in coda;
+# selective = append sicuro, salvo prepend dei soli turni originali che superano
+#             il gate di rilevanza incrementale (sperimentazione live locale).
 # Il default resta off per un rollout reversibile: l'archivio durevole dei turni
 # viene comunque popolato, preparando evidenza idratabile per l'attivazione.
 RAG_DUAL_CHANNEL_MODE = os.environ.get(
     "EURI_RAG_DUAL_CHANNEL_MODE", "off"
 ).strip().lower()
-if RAG_DUAL_CHANNEL_MODE not in {"off", "shadow", "on"}:
+if RAG_DUAL_CHANNEL_MODE not in {"off", "shadow", "on", "selective"}:
     RAG_DUAL_CHANNEL_MODE = "off"
+RAG_DUAL_SELECTIVE_MIN_QUERY_SOURCE = float(
+    os.environ.get("EURI_RAG_DUAL_SELECTIVE_MIN_QUERY_SOURCE", "0.92")
+)
+RAG_DUAL_SELECTIVE_MIN_MARGIN = float(
+    os.environ.get("EURI_RAG_DUAL_SELECTIVE_MIN_MARGIN", "-0.01")
+)
+RAG_DUAL_SELECTIVE_MAX_REDUNDANCY = float(
+    os.environ.get("EURI_RAG_DUAL_SELECTIVE_MAX_REDUNDANCY", "0.985")
+)
 
 # Episodic Compression (Layer 0 — memoria di sessione)
 # Ogni EPISODE_COMPRESSION_THRESHOLD messaggi, i più vecchi vengono compressi in un episodio.

@@ -168,8 +168,23 @@ def start_response_turn(
                     "mode": mode,
                     "position": int(node.get("position") or 0),
                     "retrieval_path": str(node.get("retrieval_path") or ""),
+                    "retrieval_score": node.get("retrieval_score"),
                     "source": str(node.get("source") or ""),
                     "domain": str(node.get("domain") or ""),
+                    "prompt_region": str(node.get("prompt_region") or ""),
+                    "selective_gate_decision": str(
+                        node.get("selective_gate_decision") or ""
+                    ),
+                    "query_source_similarity": node.get(
+                        "query_source_similarity"
+                    ),
+                    "relevance_margin": node.get("relevance_margin"),
+                    "source_base_max_similarity": node.get(
+                        "source_base_max_similarity"
+                    ),
+                    "locator_memory_id": str(
+                        node.get("locator_memory_id") or ""
+                    ),
                     "query_sha256": _digest(query),
                 },
                 salience=0.25,

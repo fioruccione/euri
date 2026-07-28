@@ -7,6 +7,10 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
 
 export LD_LIBRARY_PATH="$PWD/venv/lib/python3.12/site-packages/nvidia/cublas/lib:$PWD/venv/lib/python3.12/site-packages/nvidia/cudnn/lib:${LD_LIBRARY_PATH:-}"
+# Questa installazione è il banco di prova live della policy selettiva. Il
+# chiamante può sempre tornare a `on`, `shadow` o `off` esportando esplicitamente
+# la variabile prima dell'avvio.
+export EURI_RAG_DUAL_CHANNEL_MODE="${EURI_RAG_DUAL_CHANNEL_MODE:-selective}"
 
 UI_PID=""
 cleanup() {
