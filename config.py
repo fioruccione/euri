@@ -370,8 +370,8 @@ RAG_DUAL_THINKING_NUM_PREDICT = int(
     os.environ.get("EURI_RAG_DUAL_THINKING_NUM_PREDICT", "2000")
 )
 # Finestra minima prima che un turno verbatim NON referenziato possa anche solo
-# essere proposto come orfano. Il lifecycle v1 è audit-only: nessuna cancellazione
-# automatica usa ancora questo valore.
+# essere proposto come orfano. La manutenzione giornaliera esegue e persiste
+# l'audit, ma nessuna cancellazione automatica usa questo valore.
 VERBATIM_UNREFERENCED_GRACE_DAYS = int(
     os.environ.get("EURI_VERBATIM_UNREFERENCED_GRACE_DAYS", "180")
 )

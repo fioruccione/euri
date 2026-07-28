@@ -37,8 +37,12 @@
   restano più metadati invisibili. `audit_verbatim_lifecycle()` esegue un
   mark-and-sweep read-only sulle relazioni memoria→`source_turn_refs`, calcola
   l'inverso turno→memorie e segnala orfani oltre il grace period senza
-  cancellare o impostare TTL. Audit reale iniziale: 10 turni, 1 referenziato,
-  9 recenti, 0 orfani, 0 riferimenti mancanti. Script:
+  cancellare o impostare TTL. Il Dream Engine lo esegue nella manutenzione
+  giornaliera e persiste rapporto e avviso in
+  `euri:verbatim:lifecycle:{latest,review_pending}`. L'avviso non si perde:
+  ricompare al boot e nello status memorie; il Pulse viene emesso solo quando
+  cambia l'insieme dei problemi. Audit reale iniziale: 10 turni, 1 referenziato,
+  9 recenti, 0 orfani, 0 riferimenti mancanti. Script manuale:
   `./venv/bin/python scripts/audit_verbatim_lifecycle.py --json`.
 - Prova live UBQ del 28 luglio: la falsa premessa `1400 MPa` è stata respinta,
   ma la successiva richiesta dei valori salvati non recuperava la memoria

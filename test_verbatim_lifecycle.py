@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from core.conversation_turns import (
     ConversationTurnStore,
+    VERBATIM_LIFECYCLE_PENDING_KEY,
+    VERBATIM_LIFECYCLE_REPORT_KEY,
     audit_verbatim_lifecycle,
+    get_verbatim_lifecycle_pending,
+    run_verbatim_lifecycle_maintenance,
 )
 
 
@@ -25,6 +29,8 @@ class FakeJson:
 class FakeRedis:
     def __init__(self):
         self.docs = {}
+        self.values = {}
+        self.events = []
         self._json = FakeJson(self.docs)
 
     def json(self):
@@ -33,6 +39,19 @@ class FakeRedis:
     def scan_iter(self, match):
         prefix = match.removesuffix("*")
         return iter(sorted(key for key in self.docs if key.startswith(prefix)))
+
+    def set(self, key, value):
+        self.values[key] = value
+
+    def get(self, key):
+        return self.values.get(key)
+
+    def delete(self, key):
+        return int(self.values.pop(key, None) is not None)
+
+    def xadd(self, stream, fields, **kwargs):
+        self.events.append((stream, fields))
+        return "1-0"
 
 
 def _turn(ref, observed_at, *, trusted=True):
@@ -90,7 +109,51 @@ def test_lifecycle_marks_referenced_and_only_old_unreferenced_as_orphan():
     assert len(redis.docs) == 4
 
 
+def test_maintenance_persists_pending_without_deleting_and_clears_when_clean():
+    redis = FakeRedis()
+    store = ConversationTurnStore(redis)
+    reference_at = 200 * 86400.0
+    store.persist(_turn("conv:1", 0.0))
+
+    report = run_verbatim_lifecycle_maintenance(
+        redis,
+        reference_at=reference_at,
+        grace_days=180,
+    )
+
+    assert report["review_required"] is True
+    assert VERBATIM_LIFECYCLE_REPORT_KEY in redis.values
+    pending = get_verbatim_lifecycle_pending(redis)
+    assert pending["status"] == "review_pending"
+    assert pending["counts"]["orphan_candidates"] == 1
+    assert pending["automatic_deletion"] is False
+    assert "euri:turn:conv:1" in redis.docs
+    assert len(redis.events) == 1
+
+    # Lo stesso problema non genera un Pulse duplicato al pass giornaliero.
+    run_verbatim_lifecycle_maintenance(
+        redis,
+        reference_at=reference_at + 86400,
+        grace_days=180,
+    )
+    assert len(redis.events) == 1
+
+    redis.docs["euri:memory:m1"] = {
+        "id": "m1",
+        "temporal_context": {"source_turn_refs": ["conv:1"]},
+    }
+    clean = run_verbatim_lifecycle_maintenance(
+        redis,
+        reference_at=reference_at + 2 * 86400,
+        grace_days=180,
+    )
+    assert clean["review_required"] is False
+    assert VERBATIM_LIFECYCLE_PENDING_KEY not in redis.values
+    assert "euri:turn:conv:1" in redis.docs
+
+
 if __name__ == "__main__":
     test_render_keeps_absolute_time_and_channel_with_verbatim()
     test_lifecycle_marks_referenced_and_only_old_unreferenced_as_orphan()
+    test_maintenance_persists_pending_without_deleting_and_clears_when_clean()
     print("test_verbatim_lifecycle: OK")

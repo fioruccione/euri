@@ -73,6 +73,10 @@ La crescita è sorvegliata da un lifecycle audit-only:
 `scripts/audit_verbatim_lifecycle.py` ricostruisce la raggiungibilità
 memoria→fonte e fonte→memorie, segnala riferimenti spezzati e propone come
 orfani soltanto turni non referenziati oltre un grace period di 180 giorni.
+Lo stesso controllo viene eseguito automaticamente dal ciclo manutentivo
+giornaliero: l'ultimo rapporto e l'eventuale revisione pendente restano in
+Redis; un problema riappare nei log a ogni avvio e nello stato delle memorie
+finché un audit successivo non torna pulito.
 Non esiste ancora pruning automatico: nessun TTL indiscriminato può eliminare
 la fonte di una memoria viva.
 

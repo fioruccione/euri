@@ -70,7 +70,10 @@ Il lifecycle iniziale è deliberatamente non distruttivo.
 e classifica turni referenziati, recenti non referenziati, candidati orfani
 oltre 180 giorni e riferimenti a fonti mancanti. Il primo audit reale ha
 contato 10 turni, 1 referenziato, 9 recenti, 0 orfani e 0 riferimenti mancanti.
-Nessun TTL o pruning automatico è attivo.
+Il controllo gira automaticamente nella manutenzione giornaliera e persiste
+sia l'ultimo rapporto sia un avviso di revisione. Se l'avviso è presente,
+ricompare al boot e quando si chiede lo stato delle memorie; un Pulse segnala
+soltanto problemi nuovi o cambiati. Nessun TTL o pruning automatico è attivo.
 
 ### 3. Risultato indipendente e limite del risultato
 
@@ -225,8 +228,9 @@ generazione e di sottoporre il meccanismo a una prova ripetibile.
 1. validare il dual-channel e il gate selettivo su un benchmark nuovo;
 2. osservare per alcune settimane il dual-channel e il thinking selettivo sulle
    memorie reali, misurando frequenza di attivazione, latenza e fallback;
-3. osservare il lifecycle verbatim e definire soltanto dopo dati sufficienti
-   una policy cold/pinned/orphan, con cancellazione esplicita e reversibile;
+3. osservare i rapporti automatici del lifecycle verbatim e definire soltanto
+   dopo dati sufficienti una policy cold/pinned/orphan, con cancellazione
+   esplicita e reversibile;
 4. misurare separatamente `recalled` e `used_in_response`;
 5. continuare a unificare i percorsi dei diversi canali;
 6. progettare dal Pulse un quadro situazionale effimero, senza trasformare

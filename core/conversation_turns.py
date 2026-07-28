@@ -7,6 +7,8 @@ come substrato di risposta.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import time
 from dataclasses import dataclass
@@ -19,6 +21,8 @@ from utils.date_utils import format_datetime_full, from_timestamp
 TURN_KEY_PREFIX = "euri:turn:"
 TURN_SCHEMA_VERSION = 1
 TURN_RENDER_VERSION = "absolute-time-auth-channel-v1"
+VERBATIM_LIFECYCLE_REPORT_KEY = "euri:verbatim:lifecycle:latest"
+VERBATIM_LIFECYCLE_PENDING_KEY = "euri:verbatim:lifecycle:review_pending"
 _TURN_REF_RE = re.compile(r"^(?P<conversation>[^:\s]+):(?P<seq>[1-9]\d*)$")
 
 
@@ -262,3 +266,131 @@ def audit_verbatim_lifecycle(
         "orphan_candidates": orphan_candidates,
         "missing_source_refs": missing_source_refs,
     }
+
+
+def _decode_json_value(value) -> dict:
+    if isinstance(value, bytes):
+        value = value.decode("utf-8")
+    if not value:
+        return {}
+    try:
+        decoded = json.loads(value)
+    except (TypeError, ValueError):
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def get_verbatim_lifecycle_pending(redis_client) -> dict:
+    """Restituisce l'avviso durevole di revisione, se presente."""
+    try:
+        return _decode_json_value(redis_client.get(VERBATIM_LIFECYCLE_PENDING_KEY))
+    except Exception:
+        return {}
+
+
+def run_verbatim_lifecycle_maintenance(
+    redis_client,
+    *,
+    reference_at: float | None = None,
+    grace_days: int | None = None,
+    emit_pulse: bool = True,
+) -> dict:
+    """Esegue e persiste l'audit, senza modificare né cancellare i turni.
+
+    Un problema crea un avviso durevole. L'avviso viene rimosso soltanto quando
+    un audit successivo torna pulito; il Pulse è emesso solo quando cambia
+    l'insieme dei problemi, per non produrre lo stesso evento ogni giorno.
+    """
+    report = audit_verbatim_lifecycle(
+        redis_client,
+        reference_at=reference_at,
+        grace_days=grace_days,
+    )
+    counts = report["counts"]
+    needs_review = bool(
+        counts["orphan_candidates"]
+        or counts["missing_source_refs"]
+        or counts["malformed_turns"]
+    )
+    report["review_required"] = needs_review
+    report["persisted_at"] = time.time()
+    redis_client.set(
+        VERBATIM_LIFECYCLE_REPORT_KEY,
+        json.dumps(report, ensure_ascii=False, sort_keys=True),
+    )
+
+    if not needs_review:
+        redis_client.delete(VERBATIM_LIFECYCLE_PENDING_KEY)
+        logger.info(
+            "Lifecycle verbatim: audit automatico pulito — {} turni, "
+            "{} referenziati, {} recenti non referenziati",
+            counts["turns"],
+            counts["referenced"],
+            counts["recent_unreferenced"],
+        )
+        return report
+
+    fingerprint_payload = {
+        "orphan_candidates": [
+            item["turn_ref"] for item in report["orphan_candidates"]
+        ],
+        "missing_source_refs": [
+            item["turn_ref"] for item in report["missing_source_refs"]
+        ],
+        "malformed_turns": counts["malformed_turns"],
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            fingerprint_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    previous = get_verbatim_lifecycle_pending(redis_client)
+    pending = {
+        "schema_version": 1,
+        "status": "review_pending",
+        "fingerprint": fingerprint,
+        "first_detected_at": (
+            previous.get("first_detected_at")
+            if previous.get("fingerprint") == fingerprint
+            else report["reference_at"]
+        ),
+        "last_detected_at": report["reference_at"],
+        "grace_days": report["grace_days"],
+        "counts": {
+            "orphan_candidates": counts["orphan_candidates"],
+            "missing_source_refs": counts["missing_source_refs"],
+            "malformed_turns": counts["malformed_turns"],
+        },
+        "report_key": VERBATIM_LIFECYCLE_REPORT_KEY,
+        "automatic_deletion": False,
+    }
+    redis_client.set(
+        VERBATIM_LIFECYCLE_PENDING_KEY,
+        json.dumps(pending, ensure_ascii=False, sort_keys=True),
+    )
+    logger.warning(
+        "Lifecycle verbatim: REVISIONE PENDENTE — {} candidati orfani, "
+        "{} riferimenti mancanti, {} turni malformati; nessuna cancellazione",
+        counts["orphan_candidates"],
+        counts["missing_source_refs"],
+        counts["malformed_turns"],
+    )
+
+    if emit_pulse and previous.get("fingerprint") != fingerprint:
+        from core.pulse import pulse_emit
+
+        pulse_emit(
+            redis_client,
+            "memory",
+            "intero",
+            "verbatim_lifecycle_review_needed",
+            payload=pending,
+            salience=0.75,
+            producer="conversation_turns.lifecycle",
+            logical_event_id=f"verbatim-lifecycle:{fingerprint}",
+            experiment_version="verbatim-lifecycle-v1",
+        )
+    return report

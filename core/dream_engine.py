@@ -31,6 +31,7 @@ from core.memory_attention import (
     update_loop2e_candidate_index,
     zset_loop2e_candidates,
 )
+from core.conversation_turns import run_verbatim_lifecycle_maintenance
 
 
 CROSS_EPISODE_SEEN_KEY = "euri:cross_episode:seen"
@@ -464,6 +465,11 @@ class DreamEngine:
 
     def _maintenance_cycle(self):
         """Manutenzione lenta: pulizia, contraddizioni, consolidamento, self-observation."""
+        try:
+            run_verbatim_lifecycle_maintenance(self._r)
+        except Exception as e:
+            # L'audit non deve mai fermare gli altri loop manutentivi.
+            logger.error(f"Lifecycle verbatim: audit automatico fallito ({e})")
         self._contradiction_resolution_pass()
         if config.PLAUSIBILITY_GATE_ENABLED:
             self._plausibility_gate_pass()
@@ -485,6 +491,13 @@ class DreamEngine:
         logger.info("Dream Engine: inizio ciclo cognitivo completo")
         pulse_emit(self._r, "dream", "intero", "cycle_start", salience=0.25)
         try:
+            # Il ciclo completo forzato include lo stesso audit non distruttivo
+            # della manutenzione schedulata.
+            try:
+                run_verbatim_lifecycle_maintenance(self._r)
+            except Exception as e:
+                logger.error(f"Lifecycle verbatim: audit automatico fallito ({e})")
+
             # 1. Loop 2b/2c: sogno creativo + valutazione insight
             self._creative_cycle()
                 

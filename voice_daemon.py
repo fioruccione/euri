@@ -355,6 +355,17 @@ class VoiceDaemon:
             config.RAG_DUAL_SELECTIVE_THINKING,
             config.RAG_DUAL_THINKING_NUM_PREDICT,
         )
+        from core.conversation_turns import get_verbatim_lifecycle_pending
+        lifecycle_pending = get_verbatim_lifecycle_pending(self.r)
+        if lifecycle_pending:
+            counts = lifecycle_pending.get("counts") or {}
+            logger.warning(
+                "Lifecycle verbatim: revisione ancora pendente — {} orfani, "
+                "{} riferimenti mancanti, {} malformati; nessuna cancellazione automatica",
+                counts.get("orphan_candidates", 0),
+                counts.get("missing_source_refs", 0),
+                counts.get("malformed_turns", 0),
+            )
 
     def _handle_social_snapshot(self, snapshot: SocialSnapshot) -> None:
         """Persist Phase-0 numbers and transitions, without changing behavior."""
@@ -1774,6 +1785,17 @@ class VoiceDaemon:
             reply = f"Ho {total} memorie in totale"
             if details:
                 reply += f": {details}"
+            from core.conversation_turns import get_verbatim_lifecycle_pending
+            lifecycle_pending = get_verbatim_lifecycle_pending(self.memory.r)
+            if lifecycle_pending:
+                counts = lifecycle_pending.get("counts") or {}
+                reply += (
+                    ". Ho anche una revisione dell'archivio originale pendente: "
+                    f"{counts.get('orphan_candidates', 0)} candidati orfani, "
+                    f"{counts.get('missing_source_refs', 0)} riferimenti mancanti "
+                    f"e {counts.get('malformed_turns', 0)} turni malformati. "
+                    "Non ho cancellato nulla"
+                )
             self._speak(reply + ".")
             return
         todos = self.memory.get_pending_todos()

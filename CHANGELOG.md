@@ -63,8 +63,13 @@ La dichiarazione di versione non migra Redis e non riscrive memorie.
   spezzati. Il lifecycle è **audit-only**: non applica TTL e non cancella nulla.
 - Primo audit reale: 10 turni, 1 referenziato, 9 recenti non referenziati,
   0 candidati orfani, 0 riferimenti mancanti, 0 documenti malformati. La soglia
-  `EURI_VERBATIM_UNREFERENCED_GRACE_DAYS` prepara il futuro sweep ma non è ancora
-  collegata ad alcuna azione distruttiva.
+  `EURI_VERBATIM_UNREFERENCED_GRACE_DAYS` è valutata automaticamente nella
+  manutenzione giornaliera ma non è collegata ad alcuna azione distruttiva.
+- L'audit automatico persiste l'ultimo rapporto e un eventuale
+  `review_pending`. Un problema resta visibile a ogni boot e nello status
+  memorie finché il controllo non torna pulito; il Pulse viene emesso soltanto
+  quando cambia l'insieme dei problemi. È quindi Euri a ricordare la scadenza,
+  non l'utente, senza introdurre cancellazioni silenziose.
 - Lo strumento read-only è disponibile con
   `./venv/bin/python scripts/audit_verbatim_lifecycle.py [--json]`. Qualunque
   pruning futuro richiederà una policy separata, misurata e reversibile.
