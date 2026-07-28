@@ -86,6 +86,17 @@ nell'append validato. Se il calcolo non è disponibile, il fallback è sempre
 append. Le decisioni compaiono nei log come `RAG dual gate` e nella lineage
 `recalled`, con regione del prompt e punteggi; nessuna memoria viene modificata.
 
+**Thinking selettivo sul recupero fondato.** Un A/B successivo ha tenuto il
+thinking attivo in entrambi i bracci e ha variato soltanto il contesto: il
+dual-channel ha migliorato il token F1 da `0,1604` a `0,2123` (`+0,0519`),
+con avversariali invariati a `0,9535`. Euri non abilita quindi il thinking su
+ogni frase: lo usa soltanto quando il gate sopra ha promosso almeno un turno
+verbatim. Negli scambi ordinari Gemma resta nel percorso rapido; se il thinking
+fallisce o consuma il budget senza produrre risposta, il turno viene ritentato
+automaticamente in modalità diretta. Il risultato resta un pilot su LoCoMo
+ormai aperto e viene osservato sulle memorie reali, non presentato come misura
+generale definitiva.
+
 Il rollout è reversibile con
 `EURI_RAG_DUAL_CHANNEL_MODE=off|shadow|on|selective`: `on` conserva l'append
 validato, `shadow` calcola il gate senza cambiare la risposta e `selective`

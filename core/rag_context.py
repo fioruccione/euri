@@ -63,6 +63,48 @@ class RagContext:
     diagnostics: dict = field(default_factory=dict)
 
 
+def selective_thinking_decision(rag: RagContext | None) -> dict:
+    """Decide localmente se il turno merita il thinking della chat.
+
+    Il segnale è strutturale e fail-closed: non interpreta il testo e non basta
+    che il dual-channel abbia trovato una nota. Serve almeno un turno originale
+    promosso dal gate selettivo. Il chiamante passa poi questa decisione alla
+    singola invocazione LLM, senza side-channel condivisi.
+    """
+    decision = {
+        "enabled": False,
+        "reason": "disabled",
+        "promoted_turn_ids": [],
+    }
+    if not getattr(config, "RAG_DUAL_SELECTIVE_THINKING", False):
+        return decision
+    if rag is None:
+        decision["reason"] = "rag_unavailable"
+        return decision
+
+    diagnostics = rag.diagnostics or {}
+    if diagnostics.get("mode") != "dual_channel":
+        decision["reason"] = "not_dual_channel"
+        return decision
+    gate = diagnostics.get("selective_gate") or {}
+    promoted = list(dict.fromkeys(
+        str(turn_id)
+        for turn_id in (gate.get("promoted_turn_ids") or [])
+        if turn_id
+    ))
+    decision["promoted_turn_ids"] = promoted
+    if (
+        diagnostics.get("presentation_applied") != "selective_prepend"
+        or not promoted
+    ):
+        decision["reason"] = "no_promoted_verbatim"
+        return decision
+
+    decision["enabled"] = True
+    decision["reason"] = "promoted_verbatim"
+    return decision
+
+
 def insight_requires_external_validation(insight: dict) -> bool:
     """La convergenza interna fa emergere un insight, ma non lo valida nel mondo."""
     external = insight.get("external_reaction") or {}

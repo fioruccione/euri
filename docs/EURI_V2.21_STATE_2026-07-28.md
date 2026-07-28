@@ -95,6 +95,32 @@ quando supera insieme:
 Segnali mancanti o errore dell'embedder mantengono l'append validato. Le soglie
 sono provvisorie e osservabili nei log e nella response lineage.
 
+### 4.1 Thinking selettivo dopo evidenza promossa
+
+Due prove di sviluppo successive hanno separato generazione e memoria:
+
+- a contesto invariato, strict thinking ha ottenuto F1 `0,2171` contro
+  `0,1592` del controllo strict no-thinking con lo stesso budget di 2.000
+  token; l'accuratezza avversariale è rimasta `0,9535`;
+- con thinking attivo e identico in entrambi i bracci, il dual-channel ha
+  ottenuto F1 `0,2123` contro `0,1604` del RAG puro: delta `+0,0519`,
+  `+0,0942` sull'evidence-flip, false astensioni ridotte da `0,5814` a
+  `0,5000`, avversariali ancora `0,9535`.
+
+Il secondo esperimento ha soddisfatto il verdetto preregistrato `GO`, con
+quattro conversazioni su cinque non negative e bootstrap clusterizzato
+`[0,0060; 0,1101]`. Poiché LoCoMo è interamente aperto e `N=5`, il risultato
+giustifica un rollout locale osservabile, non una rivendicazione generale.
+
+Nel runtime il thinking non dipende dalla presenza generica di memoria. Si
+attiva soltanto quando il gate selettivo promuove almeno un turno verbatim:
+
+1. la decisione è derivata dalla diagnostica strutturata del `RagContext`;
+2. è locale alla singola risposta e non usa side-channel condivisi;
+3. voce, mobile e Silent Chat applicano la stessa regola;
+4. errore o risposta vuota causano un retry `think=False`;
+5. gli scambi senza fonte promossa restano sul percorso rapido.
+
 ### 5. Un solo percorso per voce, mobile e Silent Chat
 
 La prova reale su `Compound UBQ 2026` ha scoperto che la Silent Chat usava ancora
@@ -184,7 +210,8 @@ generazione e di sottoporre il meccanismo a una prova ripetibile.
 ## Prossimo confine
 
 1. validare il dual-channel e il gate selettivo su un benchmark nuovo;
-2. osservare per alcune settimane l'uso sulle memorie reali;
+2. osservare per alcune settimane il dual-channel e il thinking selettivo sulle
+   memorie reali, misurando frequenza di attivazione, latenza e fallback;
 3. misurare separatamente `recalled` e `used_in_response`;
 4. continuare a unificare i percorsi dei diversi canali;
 5. progettare dal Pulse un quadro situazionale effimero, senza trasformare
@@ -198,6 +225,7 @@ I passaggi principali che delimitano questa versione sono:
 - `9e515c2` — ablation sull'utilizzo del prompt;
 - `4e464ac` — gate selettivo live;
 - `68af3a6` — parità dual-channel della Silent Chat.
+- `a5b418c` — A/B RAG+thinking contro dual+thinking preregistrato.
 
 La dichiarazione V2.21 è documentale: non migra Redis, non riscrive memorie e non
 modifica da sola il comportamento runtime.

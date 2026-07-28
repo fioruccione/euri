@@ -23,6 +23,32 @@ Stato, numeri, invarianti e limiti sono congelati nella fotografia
 [docs/EURI_V2.21_STATE_2026-07-28.md](docs/EURI_V2.21_STATE_2026-07-28.md).
 La dichiarazione di versione non migra Redis e non riscrive memorie.
 
+### V2.21 (continua, 28/07/2026) — Thinking selettivo fondato sul verbatim
+
+- La prompt-ablation controllata ha separato l'effetto del budget dall'effetto
+  del thinking: con prompt strict e `num_predict=2000`, il thinking ha portato
+  il token F1 da `0,1592` a `0,2171`, mantenendo invariata a `0,9535`
+  l'accuratezza avversariale. Il prompt balanced, invece, ha eroso la prudenza:
+  non è stato promosso nel runtime.
+- Un secondo A/B preregistrato ha confrontato, con thinking attivo in entrambi
+  i bracci, RAG puro e memoria dual-channel sugli stessi 129 casi. Il dual ha
+  chiuso con verdetto `GO`: F1 `0,1604 → 0,2123` (`+0,0519`), delta
+  `+0,0942` sull'evidence-flip, false astensioni `0,5814 → 0,5000`,
+  avversariali invariati a `0,9535`, 16 casi migliorati e 6 peggiorati.
+  Quattro conversazioni su cinque sono non negative; il bootstrap
+  clusterizzato è `[0,0060; 0,1101]`. Resta sviluppo su LoCoMo aperto, non
+  validazione indipendente.
+- Il runtime usa ora il thinking di Gemma in modo selettivo: si attiva soltanto
+  quando `dual-channel-selective-prepend-v0` promuove almeno un turno originale
+  pertinente. La semplice presenza di una nota passiva o di un'aggiunta in
+  coda non basta. La decisione usa la diagnostica strutturata del gate, senza
+  regex sul testo e senza stato globale condiviso.
+- Voce, mobile e Silent Chat applicano la stessa policy per-turno. I turni
+  ordinari restano `think=False`; quelli promossi usano un budget di 2.000
+  token. Errore o risposta vuota nel percorso thinking provocano un retry
+  diretto `think=False`, senza perdere la conversazione. I log dichiarano
+  attivazione, motivo, turni promossi, tempo e modalità realmente usata.
+
 ## 2026-07-28 — Gate selettivo: il turno originale guadagna il primo piano
 
 - Corretto un drift scoperto nella prova reale su `Compound UBQ 2026`: la voce

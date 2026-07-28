@@ -129,6 +129,8 @@ class Brain:
         *,
         trusted: bool = False,
         observed_at: float | None = None,
+        thinking: bool = False,
+        thinking_reason: str = "",
     ) -> str:
         """
         Genera una risposta per voce: breve, diretta, italiana.
@@ -199,16 +201,45 @@ class Brain:
 
         try:
             _t = time.perf_counter()
-            response = chat_client.chat(
-                model=config.OLLAMA_MODEL,
-                messages=messages,
-                # num_predict alto: Gemma 4 consuma token di thinking prima della risposta;
-                # il modello si ferma da solo quando finisce — il cap è solo sicurezza.
-                options={"temperature": 0.7, "num_predict": 1500},
-                think=False,
+            actual_thinking = bool(thinking)
+            options = {
+                "temperature": 0.7,
+                "num_predict": (
+                    getattr(config, "RAG_DUAL_THINKING_NUM_PREDICT", 2000)
+                    if actual_thinking else 1500
+                ),
+            }
+            try:
+                response = chat_client.chat(
+                    model=config.OLLAMA_MODEL,
+                    messages=messages,
+                    options=options,
+                    think=actual_thinking,
+                )
+                reply = self._clean(response.message.content or "")
+                if actual_thinking and not reply:
+                    raise RuntimeError("risposta vuota con thinking selettivo")
+            except Exception as thinking_error:
+                if not actual_thinking:
+                    raise
+                logger.warning(
+                    "Thinking selettivo fallito ({}): retry diretto fail-safe",
+                    thinking_error,
+                )
+                actual_thinking = False
+                response = chat_client.chat(
+                    model=config.OLLAMA_MODEL,
+                    messages=messages,
+                    options={"temperature": 0.7, "num_predict": 1500},
+                    think=False,
+                )
+                reply = self._clean(response.message.content or "")
+            logger.info(
+                "[TIMING] brain.respond() Ollama: {:.0f}ms | think={} reason={}",
+                (time.perf_counter() - _t) * 1000,
+                actual_thinking,
+                thinking_reason or ("requested" if thinking else "direct"),
             )
-            logger.info(f"[TIMING] brain.respond() Ollama: {(time.perf_counter()-_t)*1000:.0f}ms")
-            reply = self._clean(response.message.content or "")
 
             # La provenienza appartiene a QUESTO turno: parametro locale, non
             # side-channel globale condiviso tra voce e mobile.

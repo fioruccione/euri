@@ -20,6 +20,17 @@
   serve ora come development set; la validazione indipendente passa al
   benchmark successivo e, nel frattempo, alle osservazioni qualitative sulle
   memorie reali di Euri.
+- Thinking selettivo implementato dopo due controlli sul development set.
+  L'ablation budget-controllata ha misurato strict thinking `0,2171` contro
+  strict no-think/2000 `0,1592`, senza perdita avversariale. L'A/B decisivo,
+  con thinking in entrambi i bracci, ha dato `dual_think 0,2123` contro
+  `rag_think 0,1604` (`+0,0519`; evidence-flip `+0,0942`; avversariali
+  invariati `0,9535`; bootstrap clusterizzato `[0,0060; 0,1101]`).
+  `Brain.respond()` riceve ora la decisione per singolo turno: thinking solo
+  se il gate ha davvero promosso verbatim (`promoted_verbatim`), budget 2.000,
+  retry fail-safe diretto su errore o risposta vuota. Voce/mobile usano lo
+  stato RAG thread-local; Silent Chat passa la stessa decisione direttamente.
+  Nessuna regex testuale e nessun flag globale concorrente.
 - Prova live UBQ del 28 luglio: la falsa premessa `1400 MPa` è stata respinta,
   ma la successiva richiesta dei valori salvati non recuperava la memoria
   corretta in Silent Chat. Diagnosi: il canale Streamlit usava ancora il RAG
@@ -50,8 +61,9 @@
   applicative non presenti nelle fonti. Prima di salvare una nota esegue il
   dedup conservativo di `MemoryManager`: errore = conserva, soltanto
   `DUPLICATO` esplicito scarta.
-- Verifica finale: compilazione e diff-check puliti, inventario 59 file e
-  manifest unitario 49/49. Il primo passaggio aveva esposto un timestamp
+- Verifica finale: compilazione e diff-check puliti; dopo il rollout del
+  thinking selettivo il manifest unitario è verde 57/57. Il primo passaggio
+  aveva esposto un timestamp
   assoluto marcescente in `test_correction_quarantine.py`, sostituito con un
   riferimento relativo.
 - Bonifica Redis live completata con backup recuperabili per 30 giorni:

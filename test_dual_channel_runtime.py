@@ -10,6 +10,7 @@ from core.memory_manager import MemoryManager
 from core.rag_context import (
     build_dual_channel_context,
     build_runtime_rag_context,
+    selective_thinking_decision,
 )
 from core.temporal_context import derive_passive_memory_metadata
 
@@ -250,6 +251,11 @@ def test_selective_runtime_prepends_only_high_confidence_original_turn():
     )
     assert hydrated["prompt_region"] == "prepend"
     assert hydrated["selective_gate_decision"] == "prepend"
+    assert selective_thinking_decision(rag) == {
+        "enabled": True,
+        "reason": "promoted_verbatim",
+        "promoted_turn_ids": [turn_ref],
+    }
 
 
 def test_shared_runtime_dispatcher_applies_selective_mode_for_all_channels():
@@ -296,6 +302,36 @@ def test_shared_runtime_dispatcher_applies_selective_mode_for_all_channels():
     assert rag.text.index("Il valore IZOD misurato è 3,8.") < rag.text.index(
         base["content"]
     )
+    assert selective_thinking_decision(rag)["enabled"] is True
+
+
+def test_selective_thinking_stays_off_without_promoted_verbatim():
+    rag = build_runtime_rag_context(
+        "Ciao, come stai?",
+        FakeMemory(
+            FakeRedis(),
+            {
+                "id": "base-1",
+                "content": "Una memoria ambientale.",
+                "source": "user",
+                "domain": "generale",
+            },
+            {
+                "id": "passive-1",
+                "content": "Nota senza fonte idratabile.",
+                "source": "passive",
+                "domain": "generale",
+                "temporal_context": {},
+            },
+            embedder=FakeEmbedder(),
+        ),
+        ConversationTurnStore(FakeRedis()),
+        dual_mode="selective",
+    )
+
+    decision = selective_thinking_decision(rag)
+    assert decision["enabled"] is False
+    assert decision["reason"] == "no_promoted_verbatim"
 
 
 def test_passive_exclusion_is_a_redis_prefilter_not_a_post_cut_filter():
@@ -313,5 +349,6 @@ if __name__ == "__main__":
     test_unhydrated_historical_passive_note_is_not_used_as_evidence()
     test_selective_runtime_prepends_only_high_confidence_original_turn()
     test_shared_runtime_dispatcher_applies_selective_mode_for_all_channels()
+    test_selective_thinking_stays_off_without_promoted_verbatim()
     test_passive_exclusion_is_a_redis_prefilter_not_a_post_cut_filter()
     print("test_dual_channel_runtime: OK")

@@ -346,11 +346,14 @@ class VoiceDaemon:
         logger.info("Euri pronto. In ascolto...")
         logger.info(
             "Memoria dual-channel: mode={} (archivio turni durevole attivo; "
-            "gate q_src>={} margin>={} redundancy<={})",
+            "gate q_src>={} margin>={} redundancy<={}; thinking_selettivo={} "
+            "budget={})",
             config.RAG_DUAL_CHANNEL_MODE,
             config.RAG_DUAL_SELECTIVE_MIN_QUERY_SOURCE,
             config.RAG_DUAL_SELECTIVE_MIN_MARGIN,
             config.RAG_DUAL_SELECTIVE_MAX_REDUNDANCY,
+            config.RAG_DUAL_SELECTIVE_THINKING,
+            config.RAG_DUAL_THINKING_NUM_PREDICT,
         )
 
     def _handle_social_snapshot(self, snapshot: SocialSnapshot) -> None:
@@ -1042,7 +1045,11 @@ class VoiceDaemon:
         try:
             with self._brain_lock:
                 reply = self.brain.respond(
-                    text, context=context, trusted=trusted, observed_at=observed_at
+                    text,
+                    context=context,
+                    trusted=trusted,
+                    observed_at=observed_at,
+                    **self._memory_thinking_kwargs(),
                 )
         except Exception:
             self._finish_response_lineage(
@@ -1289,7 +1296,11 @@ class VoiceDaemon:
         context = (context + "\n\n" if context else "") + action_note
         with self._brain_lock:
             reply = self.brain.respond(
-                text, context=context, trusted=trusted, observed_at=observed_at
+                text,
+                context=context,
+                trusted=trusted,
+                observed_at=observed_at,
+                **self._memory_thinking_kwargs(),
             )
         if action_effect == ActionEffect.READ_ONLY:
             reply = scrub_unbacked_save_claim(reply)
@@ -2161,6 +2172,24 @@ class VoiceDaemon:
             logger.debug(f"strategy augment fallito: {e}")
         return context
 
+    def _memory_thinking_kwargs(self) -> dict:
+        """Policy per-turno dal RAG thread-local; nessuno stato globale."""
+        from core.rag_context import selective_thinking_decision
+
+        local = getattr(self, "_response_rag_local", None)
+        rag = getattr(local, "rag", None) if local is not None else None
+        decision = selective_thinking_decision(rag)
+        if decision["enabled"]:
+            logger.info(
+                "Thinking selettivo attivato: reason={} turni={}",
+                decision["reason"],
+                ",".join(decision["promoted_turn_ids"]),
+            )
+        return {
+            "thinking": decision["enabled"],
+            "thinking_reason": decision["reason"],
+        }
+
     def _start_response_lineage(self, text: str, *, channel: str, mode: str):
         """Apre la trace shadow del turno senza influire sul percorso conversazionale."""
         try:
@@ -2423,7 +2452,11 @@ class VoiceDaemon:
         try:
             with self._brain_lock:
                 reply = self.brain.respond(
-                    text, context=context, trusted=trusted, observed_at=observed_at
+                    text,
+                    context=context,
+                    trusted=trusted,
+                    observed_at=observed_at,
+                    **self._memory_thinking_kwargs(),
                 )
         except Exception:
             self._finish_response_lineage(
@@ -4254,7 +4287,11 @@ class VoiceDaemon:
                         )
                         try:
                             with self._brain_lock:
-                                response = self.brain.respond(text, context=context)
+                                response = self.brain.respond(
+                                    text,
+                                    context=context,
+                                    **self._memory_thinking_kwargs(),
+                                )
                         except Exception:
                             self._finish_response_lineage(
                                 lineage, "", outcome="failed", attribute_usage=False

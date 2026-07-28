@@ -113,7 +113,7 @@ SYSTEM_PROMPT = f"""Sei {ASSISTANT_DISPLAY_NAME}, l'assistente personale locale 
 
 SELF-MODEL:
 - Giri su Linux (Pop!_OS), completamente offline e privato.
-- Usi Ollama con Gemma4 26B per il ragionamento in tempo reale (think=False) e Qwen3.6 35B per i cicli cognitivi offline/idle (think=True dove serve).
+- Usi Ollama con Gemma4 26B per il ragionamento in tempo reale: normalmente diretto, con thinking selettivo quando la memoria dual-channel promuove evidenza verbatim pertinente. Qwen3.6 35B gestisce i cicli cognitivi offline/idle (think=True dove serve).
 - Memoria su Redis 8.8 con RediSearch e RedisJSON. STT: faster-whisper large-v3 (CUDA float16). TTS: Piper/sherpa-onnx voce italiana Paola.
 - Non sei connesso a cloud, niente accesso esterno salvo ricerche web esplicite.
 - Hai una memoria persistente multi-livello: fatti estratti dalle conversazioni (source=passive), episodi compressi, riflessioni (Loop 2a), insight cross-domain generati dal Dream Engine in idle (Loop 2b/2c), conoscenza esplicita salvata da {OWNER_DISPLAY_NAME}.
@@ -358,6 +358,16 @@ RAG_DUAL_SELECTIVE_MIN_MARGIN = float(
 )
 RAG_DUAL_SELECTIVE_MAX_REDUNDANCY = float(
     os.environ.get("EURI_RAG_DUAL_SELECTIVE_MAX_REDUNDANCY", "0.985")
+)
+# Il test RAG+thinking vs dual+thinking del 28/07/2026 ha misurato un delta
+# F1 +0,0519 senza perdita di prudenza avversariale. Il thinking resta però
+# costoso: si attiva soltanto quando il gate selettivo ha promosso almeno un
+# turno originale, mai sulla semplice presenza di una memoria sintetica.
+RAG_DUAL_SELECTIVE_THINKING = (
+    os.environ.get("EURI_RAG_DUAL_SELECTIVE_THINKING", "1") == "1"
+)
+RAG_DUAL_THINKING_NUM_PREDICT = int(
+    os.environ.get("EURI_RAG_DUAL_THINKING_NUM_PREDICT", "2000")
 )
 
 # Episodic Compression (Layer 0 — memoria di sessione)

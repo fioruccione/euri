@@ -3,7 +3,7 @@
 **Esperimento:** `euri_thinking_memory_ab_v1`  
 **Tipo:** DEVELOPMENT — LoCoMo è interamente aperto, quindi non è validazione
 indipendente.  
-**Stato:** preparato, non eseguito.  
+**Stato:** eseguito il 28/07/2026; protocollo congelato prima dei risultati.
 
 ## Domanda
 
@@ -63,3 +63,21 @@ cambiate resta necessario perché il token-F1 penalizza alcune parafrasi corrett
 - NO-GO: non attribuire alla memoria il miglioramento osservato nella v2.
 
 Nessuna modifica alla produzione prima del risultato.
+
+## Esito post-esecuzione
+
+Verdetto preregistrato: **GO**.
+
+| metrica | `rag_think` | `dual_think` | delta dual−rag |
+|---|---:|---:|---:|
+| token F1 answerable | 0,1604 | 0,2123 | +0,0519 |
+| evidence-flip F1 | — | — | +0,0942 |
+| false astensioni | 0,5814 | 0,5000 | −0,0814 |
+| accuratezza avversariale | 0,9535 | 0,9535 | 0 |
+
+Sedici casi sono migliorati e sei peggiorati; quattro conversazioni su cinque
+sono non negative. L'intervallo bootstrap clusterizzato del delta F1 è
+`[0,005995; 0,110144]`. Il risultato dimostra, nel development set aperto, che
+il vantaggio non appartiene soltanto al thinking generale: a thinking
+controllato, il contesto dual-channel resta migliore del RAG puro. Non
+costituisce validazione indipendente sull'intero LoCoMo o su altri benchmark.

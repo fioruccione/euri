@@ -1042,11 +1042,15 @@ with main_col:
                             scrub_unbacked_action_claim,
                         )
                         try:
+                            from core.rag_context import selective_thinking_decision
+                            _thinking = selective_thinking_decision(_rag)
                             response = scrub_unbacked_save_claim(
                                 brain.respond(
                                     prompt,
                                     context=context_full,
                                     trusted=True,
+                                    thinking=_thinking["enabled"],
+                                    thinking_reason=_thinking["reason"],
                                 )
                             )
                         except Exception:

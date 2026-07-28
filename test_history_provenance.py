@@ -52,7 +52,28 @@ def test_compression_does_not_invalidate_passive_journal():
     assert [row["seq"] for row in brain.passive_messages_after(40)] == [41, 42]
 
 
+def test_selective_thinking_retries_direct_on_failure():
+    brain = Brain()
+    with patch(
+        "core.brain.chat_client.chat",
+        side_effect=[RuntimeError("thinking unavailable"), _Response("fallback")],
+    ) as chat:
+        reply = brain.respond(
+            "Ricordi il valore?",
+            thinking=True,
+            thinking_reason="promoted_verbatim",
+        )
+
+    assert reply == "fallback"
+    assert chat.call_count == 2
+    assert chat.call_args_list[0].kwargs["think"] is True
+    assert chat.call_args_list[0].kwargs["options"]["num_predict"] == 2000
+    assert chat.call_args_list[1].kwargs["think"] is False
+    assert chat.call_args_list[1].kwargs["options"]["num_predict"] == 1500
+
+
 if __name__ == "__main__":
     test_trusted_is_local_to_one_turn()
     test_compression_does_not_invalidate_passive_journal()
+    test_selective_thinking_retries_direct_on_failure()
     print("test_history_provenance: OK")
