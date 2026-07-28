@@ -39,6 +39,7 @@ test_named_save.py
 test_passive_provenance.py
 test_prompt_ablation.py
 test_prompt_ablation_v2.py
+test_thinking_memory_ab_v1.py
 test_reaction_briefing.py
 test_reaction_verdict.py
 test_response_lineage.py

@@ -1,0 +1,29 @@
+{
+  "arms": [
+    "rag_think",
+    "dual_think"
+  ],
+  "cases": 129,
+  "decision_rule": {
+    "GO": "delta_f1>0, delta_flip>0, >=4/5 conversazioni non-negative, delta_adv>=-0.02",
+    "INCONCLUSIVE": "altrimenti",
+    "NO_GO": "delta_f1<=0 oppure delta_flip<=0 oppure delta_adv<-0.02"
+  },
+  "experiment": "euri_thinking_memory_ab_v1",
+  "kind": "development",
+  "manifest_sha256": "a44be8c257ec7c3dbe2defd36a1f05bd5f1042bc81dedfc9127d53f81efd9c25",
+  "max_calls": 258,
+  "note": "LoCoMo interamente aperto: sviluppo causale, non validazione indipendente.",
+  "num_predict": 2000,
+  "order_policy": "alternanza deterministica per caso",
+  "primary_contrast": "dual_think_minus_rag_think",
+  "prompt_sha256": "ac23ae63b129780419837f6829e20976b39147b2f6b7665eefd942a4353e8260",
+  "schema_version": 1,
+  "seed_policy": "seed originale del census, identico nei due arm",
+  "source_case_manifest": "/home/fio/Euri/benchmarks/euri_memory/prompt_ablation_v2_manifest.json",
+  "source_case_manifest_sha256": "6dc6a5fbb2c5f50561956be9e78e3e2581a2307fe75c6e7c223b32b550bfdb5a",
+  "source_validation": "dual_channel_validation_v1_seed396895560",
+  "stage": "protocol",
+  "temperature": 0,
+  "thinking": true
+}
