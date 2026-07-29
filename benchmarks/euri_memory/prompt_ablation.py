@@ -13,6 +13,7 @@ mostrato al generatore. Il runner salva un checkpoint dopo ogni risposta.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import random
@@ -62,6 +63,29 @@ def _sha256(text: str) -> str:
 
 def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@contextlib.contextmanager
+def _frozen_report_clock(created_at: float):
+    """Riproduce le etichette temporali rispetto all'istante del census.
+
+    ``build_rag_context`` rende nel testo anche informazioni di recency. Un
+    replay eseguito in un giorno successivo deve quindi usare il clock del
+    report originale, altrimenti il contenuto cambia pur partendo dagli stessi
+    nodi. Il patch resta confinato all'harness e viene sempre ripristinato.
+    """
+
+    import config
+    import core.rag_context as rag_context
+    from datetime import datetime
+
+    reference = datetime.fromtimestamp(float(created_at), tz=config.TIMEZONE)
+    original_now = rag_context.now
+    rag_context.now = lambda: reference
+    try:
+        yield
+    finally:
+        rag_context.now = original_now
 
 
 def _atomic_json(path: Path, payload: dict) -> None:
@@ -131,57 +155,58 @@ def _reconstruct_contexts(
     questions = {question.question_id: question for question in case.questions}
     contexts: dict[str, dict[str, str]] = {}
 
-    for question_id in report["selection"]["question_ids"]:
-        nodes = report["base_nodes_by_question"][question_id]
-        docs = []
-        for node in nodes:
-            turn_id = node.get("benchmark_turn_id")
-            if not turn_id or turn_id not in turns:
+    with _frozen_report_clock(report["created_at"]):
+        for question_id in report["selection"]["question_ids"]:
+            nodes = report["base_nodes_by_question"][question_id]
+            docs = []
+            for node in nodes:
+                turn_id = node.get("benchmark_turn_id")
+                if not turn_id or turn_id not in turns:
+                    raise RuntimeError(
+                        f"{question_id}: nodo base privo di turno localizzato ({turn_id})"
+                    )
+                docs.append(_raw_turn_document(case.corpus(), turns[turn_id], []))
+
+            base = build_rag_context(
+                questions[question_id].text,
+                _FrozenBaseMemory(docs),
+                mode="search",
+                touch=False,
+            ).text
+            expected_base = rag_results[question_id]["metadata"]["base_sha256"]
+            if _sha256(base) != expected_base:
                 raise RuntimeError(
-                    f"{question_id}: nodo base privo di turno localizzato ({turn_id})"
+                    f"{question_id}: base non ricostruibile byte-per-byte "
+                    f"({_sha256(base)} != {expected_base})"
                 )
-            docs.append(_raw_turn_document(case.corpus(), turns[turn_id], []))
 
-        base = build_rag_context(
-            questions[question_id].text,
-            _FrozenBaseMemory(docs),
-            mode="search",
-            touch=False,
-        ).text
-        expected_base = rag_results[question_id]["metadata"]["base_sha256"]
-        if _sha256(base) != expected_base:
-            raise RuntimeError(
-                f"{question_id}: base non ricostruibile byte-per-byte "
-                f"({_sha256(base)} != {expected_base})"
-            )
+            composition = dual_results[question_id]["metadata"]["composition"]
+            added_ids = [str(turn) for turn in composition.get("added_turn_ids") or []]
+            rendered = [render_turn(turn_id) for turn_id in added_ids]
+            additions = render_additions_block(rendered)
+            append = base + additions
+            if _sha256(append) != composition["final_sha256"]:
+                raise RuntimeError(f"{question_id}: append_v1 diverge dal report")
 
-        composition = dual_results[question_id]["metadata"]["composition"]
-        added_ids = [str(turn) for turn in composition.get("added_turn_ids") or []]
-        rendered = [render_turn(turn_id) for turn_id in added_ids]
-        additions = render_additions_block(rendered)
-        append = base + additions
-        if _sha256(append) != composition["final_sha256"]:
-            raise RuntimeError(f"{question_id}: append_v1 diverge dal report")
-
-        if additions:
-            prepend = additions.lstrip("\n") + "\n\n" + base
-            evidence_first = (
-                EVIDENCE_FIRST_HEADER
-                + "\n"
-                + "\n".join(rendered)
-                + "\n\n"
-                + BASE_HEADER
-                + "\n"
-                + base
-            )
-        else:
-            prepend = append
-            evidence_first = append
-        contexts[question_id] = {
-            APPEND: append,
-            PREPEND: prepend,
-            EVIDENCE_FIRST: evidence_first,
-        }
+            if additions:
+                prepend = additions.lstrip("\n") + "\n\n" + base
+                evidence_first = (
+                    EVIDENCE_FIRST_HEADER
+                    + "\n"
+                    + "\n".join(rendered)
+                    + "\n\n"
+                    + BASE_HEADER
+                    + "\n"
+                    + base
+                )
+            else:
+                prepend = append
+                evidence_first = append
+            contexts[question_id] = {
+                APPEND: append,
+                PREPEND: prepend,
+                EVIDENCE_FIRST: evidence_first,
+            }
     return contexts
 
 

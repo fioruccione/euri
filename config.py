@@ -375,6 +375,28 @@ RAG_DUAL_THINKING_NUM_PREDICT = int(
 VERBATIM_UNREFERENCED_GRACE_DAYS = int(
     os.environ.get("EURI_VERBATIM_UNREFERENCED_GRACE_DAYS", "180")
 )
+# La lineage RAG esiste già in shadow. La sua utilità viene riesaminata dopo
+# almeno due settimane e 100 risposte; anche con uso scarso, dopo 30 giorni
+# nasce comunque un promemoria persistente. La revisione non ritocca da sola
+# i parametri applicativi definiti subito sotto.
+MEMORY_UTILITY_REVIEW_MIN_DAYS = int(
+    os.environ.get("EURI_MEMORY_UTILITY_REVIEW_MIN_DAYS", "14")
+)
+MEMORY_UTILITY_REVIEW_MIN_RESPONDED_TURNS = int(
+    os.environ.get("EURI_MEMORY_UTILITY_REVIEW_MIN_RESPONDED_TURNS", "100")
+)
+MEMORY_UTILITY_REVIEW_MAX_DAYS = int(
+    os.environ.get("EURI_MEMORY_UTILITY_REVIEW_MAX_DAYS", "30")
+)
+# Applicazione immediata ma confinata: l'uso lessicale sostenuto riordina
+# soltanto l'attenzione dei candidati Loop 2e già eleggibili. Non apre il gate,
+# non promuove insight e non estende TTL. Cap e peso limitano il popularity bias.
+MEMORY_ATTENTION_SUPPORTED_USE_WEIGHT = float(
+    os.environ.get("EURI_MEMORY_ATTENTION_SUPPORTED_USE_WEIGHT", "2.0")
+)
+MEMORY_ATTENTION_SUPPORTED_USE_CAP = int(
+    os.environ.get("EURI_MEMORY_ATTENTION_SUPPORTED_USE_CAP", "5")
+)
 
 # Episodic Compression (Layer 0 — memoria di sessione)
 # Ogni EPISODE_COMPRESSION_THRESHOLD messaggi, i più vecchi vengono compressi in un episodio.

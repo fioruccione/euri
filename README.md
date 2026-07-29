@@ -125,6 +125,25 @@ turni verbatim con `turn_ref`, così una nota passiva nata in chat può restare
 un locator verificabile invece di perdere la propria fonte. L'archivio dei
 turni viene popolato in ogni modalità.
 
+**Utilità osservata, non presunta.** La lineage `response_lineage_shadow_v1`
+registra già, senza testo delle domande o delle risposte, quali nodi entrano
+nel prompt e per quali esiste evidenza lessicale distintiva nella risposta.
+Il Dream Engine aggrega questi eventi già al boot e poi nel ciclo manutentivo,
+materializzando `supported_use_count` sui documenti. Il segnale produce
+soltanto un rinforzo limitato e con cap nell'ordine di attenzione del Loop 2e:
+non rende eleggibile una memoria, non prova che sia vera, non modifica TTL e
+non apre i gate di promozione.
+
+La valutazione non può essere dimenticata: dopo almeno 14 giorni e 100 risposte,
+oppure comunque dopo 30 giorni, nasce un `review_pending` persistente, visibile
+al boot e nello stato memorie. Nessuna soglia viene cambiata automaticamente.
+Gli strumenti read-only sono:
+
+```bash
+./venv/bin/python scripts/audit_memory_utility_shadow.py
+./venv/bin/python scripts/explain_insight_promotion.py <insight-id>
+```
+
 ### 3. Dream Engine (Cicli cognitivi in idle)
 Quando non gli parli per un po', Euri entra in cicli cognitivi offline. Non è più un blocco "notturno": l'orchestratore separa pass leggeri, sogni creativi e manutenzione lenta.
 - **Ciclo leggero** (~20 min di cadenza mentre è idle): valuta insight candidati, metabolizza correzioni pending, genera ipotesi trasversali da episodi ripetuti e propaga la provenienza.

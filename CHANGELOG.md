@@ -23,6 +23,33 @@ Stato, numeri, invarianti e limiti sono congelati nella fotografia
 [docs/EURI_V2.21_STATE_2026-07-28.md](docs/EURI_V2.21_STATE_2026-07-28.md).
 La dichiarazione di versione non migra Redis e non riscrive memorie.
 
+### V2.21 (continua, 29/07/2026) — Il richiamo diventa utilità osservata
+
+- Riscoperta e chiusa una funzione rimasta senza consumer:
+  `response_lineage_shadow_v1` distingueva già `recalled` da
+  `used_in_response`, con attribuzione lessicale conservativa e senza
+  conservare testo di domanda o risposta. Audit reale: 63 turni completi,
+  614 nodi richiamati, 77 usi sostenuti ma non provati (`12,54%`).
+- Il boot del Dream Engine, e poi la manutenzione giornaliera, aggregano ora la
+  timeline in uno stato durevole e materializzano sui documenti
+  `supported_use_count`,
+  `last_supported_use_at` e metodo del segnale. Il primo passaggio recupera
+  anche gli eventi storici già presenti.
+- L'uso ha un effetto immediato ma confinato: riordina soltanto i candidati
+  Loop 2e già eleggibili, con peso equivalente a due richiami e cap 5. Non
+  ammette memorie sotto soglia, non promuove insight, non cambia verità, TTL o
+  contenuto.
+- La revisione non resta affidata alla memoria umana: dopo 14 giorni e almeno
+  100 risposte, o comunque dopo 30 giorni, nasce un `review_pending` durevole,
+  ripetuto al boot e nello status. Il reminder non applica auto-tuning.
+- Aggiunto `explain_insight_promotion.py`: ricompone in lettura stato,
+  convergenza, fedeltà delle premesse, qualità del ponte, giudizi e fonti per
+  spiegare perché un insight è promosso, ipotesi, bloccato o sotto soglia.
+- Verifica completa: manifest unitario **59/59**. Il passaggio di data ha
+  inoltre scoperto un replay legacy dipendente dal clock corrente; il relativo
+  harness congela ora il tempo al `created_at` del census e torna a
+  ricostruire i contesti byte-per-byte anche nei giorni successivi.
+
 ### V2.21 (continua, 28/07/2026) — Thinking selettivo fondato sul verbatim
 
 - La prompt-ablation controllata ha separato l'effetto del budget dall'effetto

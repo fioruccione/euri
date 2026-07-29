@@ -73,20 +73,39 @@ def is_loop2e_candidate(doc: dict[str, Any], *, now_ts: float | None = None) -> 
 
 def loop2e_attention_score(doc: dict[str, Any]) -> float:
     """
-    Score ordinato per utilità di consolidamento: prima memorie richiamate spesso,
-    poi recenti. Il cap evita che recalled_count monopolizzi per sempre.
+    Score ordinato per utilità di consolidamento.
+
+    Un uso sostenuto nella risposta rinforza l'attenzione, ma non modifica
+    eleggibilità, verità o gate: vale come pochi richiami aggiuntivi e ha un cap.
+    Il contatore recall resta necessario per entrare nel pool.
     """
+    import config
+
     try:
         rc = min(int(doc.get("recalled_count") or 0), 20)
     except (TypeError, ValueError):
         rc = 0
+    try:
+        supported = min(
+            int(doc.get("supported_use_count") or 0),
+            int(getattr(config, "MEMORY_ATTENTION_SUPPORTED_USE_CAP", 5)),
+        )
+    except (TypeError, ValueError):
+        supported = 0
+    try:
+        supported_weight = float(
+            getattr(config, "MEMORY_ATTENTION_SUPPORTED_USE_WEIGHT", 2.0)
+        )
+    except (TypeError, ValueError):
+        supported_weight = 2.0
     try:
         lr = float(doc.get("last_recalled_at") or doc.get("created_at") or 0.0)
     except (TypeError, ValueError):
         lr = 0.0
     mid = bare_memory_id(doc.get("id", ""))
     tie = int(hashlib.sha1(mid.encode("utf-8")).hexdigest()[:6], 16) / 100_000_000
-    return rc * 10_000_000_000.0 + lr + tie
+    attention = rc + supported * max(0.0, supported_weight)
+    return attention * 10_000_000_000.0 + lr + tie
 
 
 def update_loop2e_candidate_index(r, doc: dict[str, Any], *, strict: bool = False) -> None:

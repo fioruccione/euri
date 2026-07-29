@@ -32,6 +32,7 @@ from core.memory_attention import (
     zset_loop2e_candidates,
 )
 from core.conversation_turns import run_verbatim_lifecycle_maintenance
+from core.memory_utility_shadow import run_memory_utility_shadow_maintenance
 
 
 CROSS_EPISODE_SEEN_KEY = "euri:cross_episode:seen"
@@ -305,6 +306,22 @@ class DreamEngine:
                 )
             except Exception as e:
                 logger.warning(f"Loop 2e: riconciliazione indice al boot fallita: {e}")
+            # Consuma subito la lineage già disponibile: non aspetta la prossima
+            # manutenzione giornaliera per applicare il rinforzo limitato. La
+            # funzione è incrementale e idempotente, quindi resta sicura anche
+            # quando il ciclo manutentivo la richiama in seguito.
+            try:
+                utility = run_memory_utility_shadow_maintenance(self._r)
+                logger.info(
+                    "Utilità memoria: lineage riconciliata al boot "
+                    f"({utility['totals'].get('turns_responded', 0)} risposte, "
+                    f"{utility['totals'].get('used_nodes_supported_not_proven', 0)} "
+                    "usi sostenuti non provati)"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Utilità memoria: riconciliazione al boot fallita: {e}"
+                )
             try:
                 internal, confirmed = self._reconcile_insight_epistemic_state()
                 logger.info(
@@ -470,6 +487,10 @@ class DreamEngine:
         except Exception as e:
             # L'audit non deve mai fermare gli altri loop manutentivi.
             logger.error(f"Lifecycle verbatim: audit automatico fallito ({e})")
+        try:
+            run_memory_utility_shadow_maintenance(self._r)
+        except Exception as e:
+            logger.error(f"Utilità memoria shadow: aggregazione fallita ({e})")
         self._contradiction_resolution_pass()
         if config.PLAUSIBILITY_GATE_ENABLED:
             self._plausibility_gate_pass()
@@ -497,6 +518,10 @@ class DreamEngine:
                 run_verbatim_lifecycle_maintenance(self._r)
             except Exception as e:
                 logger.error(f"Lifecycle verbatim: audit automatico fallito ({e})")
+            try:
+                run_memory_utility_shadow_maintenance(self._r)
+            except Exception as e:
+                logger.error(f"Utilità memoria shadow: aggregazione fallita ({e})")
 
             # 1. Loop 2b/2c: sogno creativo + valutazione insight
             self._creative_cycle()

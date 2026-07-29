@@ -10,6 +10,7 @@ import time
 from core.memory_attention import (
     LOOP2E_ZSET,
     is_loop2e_candidate,
+    loop2e_attention_score,
     remove_loop2e_candidate,
     update_loop2e_candidate_index,
 )
@@ -116,6 +117,26 @@ def test_explicit_remove_is_idempotent():
     assert "mem-1" not in r.zsets[LOOP2E_ZSET]
 
 
+def test_supported_use_is_bounded_attention_not_eligibility_or_truth():
+    unused = _doc(id="unused", recalled_count=5, supported_use_count=0)
+    useful = _doc(id="useful", recalled_count=5, supported_use_count=2)
+    assert loop2e_attention_score(useful) > loop2e_attention_score(unused)
+
+    # L'uso non apre il gate se mancano i tre richiami canonici.
+    assert not is_loop2e_candidate(
+        _doc(id="not-eligible", recalled_count=2, supported_use_count=99)
+    )
+    # Il cap impedisce crescita illimitata del rinforzo.
+    fixed = {"last_recalled_at": 1000.0, "created_at": 1000.0}
+    capped = _doc(
+        id="same", recalled_count=5, supported_use_count=5, **fixed
+    )
+    excessive = _doc(
+        id="same", recalled_count=5, supported_use_count=500, **fixed
+    )
+    assert loop2e_attention_score(capped) == loop2e_attention_score(excessive)
+
+
 if __name__ == "__main__":
     test_candidate_enters_index()
     test_requires_verification_exits_index()
@@ -124,4 +145,5 @@ if __name__ == "__main__":
     test_acephalous_or_untouched_does_not_enter()
     test_conversation_context_never_becomes_consolidation_evidence()
     test_explicit_remove_is_idempotent()
+    test_supported_use_is_bounded_attention_not_eligibility_or_truth()
     print("test_loop2e_attention: OK")

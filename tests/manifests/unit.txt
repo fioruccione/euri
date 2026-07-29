@@ -35,6 +35,7 @@ test_memory_benchmark.py
 test_memory_benchmark_heldout.py
 test_memory_dedup.py
 test_memory_outbox.py
+test_memory_utility_shadow.py
 test_named_save.py
 test_passive_provenance.py
 test_prompt_ablation.py

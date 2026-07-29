@@ -366,6 +366,16 @@ class VoiceDaemon:
                 counts.get("missing_source_refs", 0),
                 counts.get("malformed_turns", 0),
             )
+        from core.memory_utility_shadow import get_memory_utility_review_pending
+        utility_pending = get_memory_utility_review_pending(self.r)
+        if utility_pending:
+            logger.warning(
+                "Utilità memoria shadow: revisione ancora pendente — {:.1f} "
+                "giorni, {} risposte, {} entità; nessun auto-tuning eseguito",
+                float(utility_pending.get("observation_age_days") or 0),
+                utility_pending.get("turns_responded", 0),
+                utility_pending.get("entities_observed", 0),
+            )
 
     def _handle_social_snapshot(self, snapshot: SocialSnapshot) -> None:
         """Persist Phase-0 numbers and transitions, without changing behavior."""
@@ -1795,6 +1805,14 @@ class VoiceDaemon:
                     f"{counts.get('missing_source_refs', 0)} riferimenti mancanti "
                     f"e {counts.get('malformed_turns', 0)} turni malformati. "
                     "Non ho cancellato nulla"
+                )
+            from core.memory_utility_shadow import get_memory_utility_review_pending
+            utility_pending = get_memory_utility_review_pending(self.memory.r)
+            if utility_pending:
+                reply += (
+                    ". È inoltre maturata la revisione dei dati sull'utilità "
+                    "delle memorie richiamate. I dati sono pronti, ma non ho "
+                    "ritoccato automaticamente i pesi né i gate di promozione"
                 )
             self._speak(reply + ".")
             return

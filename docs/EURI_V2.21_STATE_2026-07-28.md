@@ -168,6 +168,25 @@ Nel medesimo ciclo di sviluppo:
 - Pulse e Cognitive Projector conservano eventi e causalità, ma gli eventi non
   diventano automaticamente credenze o memoria recuperabile.
 
+### 7. Dalla telemetria all'utilità limitata
+
+La lineage già operativa separa il semplice richiamo dall'uso sostenuto nella
+risposta. Il primo audit completo del 29 luglio contiene 63 turni appaiati,
+614 nodi richiamati e 77 attribuzioni lessicali
+`supported_not_proven` (`12,54%`).
+
+Il boot e la manutenzione giornaliera compattano questi eventi, anche
+retroattivamente, e materializzano un lower bound `supported_use_count`. Il segnale interviene
+soltanto nell'ordine di attenzione Loop 2e per memorie che hanno già superato
+il gate canonico dei richiami: peso 2, cap 5. Non cambia eleggibilità, verità,
+TTL, contenuto o gate di promozione.
+
+La finestra viene riesaminata dopo 14 giorni e 100 risposte, o forzatamente
+dopo 30 giorni. Il rapporto e l'avviso restano durevoli e visibili al boot e
+nello stato memoria; la maturazione non modifica automaticamente alcuna
+policy. Una spiegazione read-only per insight riunisce inoltre l'ultima trace
+di convergenza e i gate correnti senza rivalutare il contenuto.
+
 ## Invarianti di V2.21
 
 1. **La fonte primaria non viene sfrattata dal canale passivo.**
@@ -179,6 +198,8 @@ Nel medesimo ciclo di sviluppo:
 7. **Voce, mobile e Silent Chat condividono policy e fallback del retrieval.**
 8. **Le modifiche cognitive restano locali, auditabili e per quanto possibile
    reversibili.**
+9. **L'uso osservato orienta l'attenzione, ma non dimostra verità né autorizza
+   una promozione.**
 
 ## Stato dei sottosistemi
 
@@ -191,6 +212,7 @@ Nel medesimo ciclo di sviluppo:
 | Dream Engine e Loop 2a–2i | Operativi con gate epistemici |
 | Pulse | Bus afferente operativo |
 | Cognitive Projector | Timeline osservazionale operativa |
+| Utilità memoria | Attiva come rinforzo limitato Loop 2e, con review automatica |
 | Initiative | Operativa su una classe ristretta di eventi |
 | Percezione sociale | Fase osservazionale, nessun giudizio LLM |
 | AdaptiveClassifier | Sospeso; raccolta dati prima della riattivazione |

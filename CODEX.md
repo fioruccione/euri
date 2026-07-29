@@ -44,6 +44,17 @@
   cambia l'insieme dei problemi. Audit reale iniziale: 10 turni, 1 referenziato,
   9 recenti, 0 orfani, 0 riferimenti mancanti. Script manuale:
   `./venv/bin/python scripts/audit_verbatim_lifecycle.py --json`.
+- La telemetria `response_lineage_shadow_v1` non era vuota: audit del 29/07,
+  63 turni completi, 614 nodi richiamati e 77 utilizzi
+  `supported_not_proven` (12,54%). Il consumer giornaliero
+  `memory_utility_shadow` compatta gli eventi già al boot, retro-applica il
+  lower bound `supported_use_count` e lo usa immediatamente soltanto come rinforzo limitato
+  dell'ordine Loop 2e (peso 2, cap 5). Eleggibilità, verità, TTL e gate insight
+  restano invariati. Rapporto e reminder:
+  `euri:memory:utility_shadow:{latest,review_pending}`; review dopo 14 giorni
+  + 100 risposte o forzata a 30 giorni, richiamata al boot/status senza
+  auto-tuning. CLI read-only: `scripts/audit_memory_utility_shadow.py` e
+  `scripts/explain_insight_promotion.py <id>`.
 - Prova live UBQ del 28 luglio: la falsa premessa `1400 MPa` è stata respinta,
   ma la successiva richiesta dei valori salvati non recuperava la memoria
   corretta in Silent Chat. Diagnosi: il canale Streamlit usava ancora il RAG
@@ -75,10 +86,14 @@
   dedup conservativo di `MemoryManager`: errore = conserva, soltanto
   `DUPLICATO` esplicito scarta.
 - Verifica finale: compilazione e diff-check puliti; dopo il rollout del
-  lifecycle verbatim il manifest unitario è verde 58/58. Il primo passaggio
+  lifecycle verbatim il manifest unitario era verde 58/58. Il primo passaggio
   aveva esposto un timestamp
   assoluto marcescente in `test_correction_quarantine.py`, sostituito con un
   riferimento relativo.
+- Dopo l'attivazione dell'utilità osservata, il manifest unitario è verde
+  **59/59**. Il cambio 28→29 luglio ha anche esposto il clock non congelato nel
+  replay prompt legacy: ora usa il `created_at` originale del census e conserva
+  la verifica byte-per-byte nel tempo.
 - Bonifica Redis live completata con backup recuperabili per 30 giorni:
   `b65a0443` e `6607bf50` retrocessi a `hypothesis`, `06eb49eb` a `candidate`;
   reflection `24658252` soft-esclusa come conflazione Altosele/UBQ e memoria
