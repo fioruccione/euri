@@ -336,6 +336,12 @@ RAG_RECENCY_LIMIT = 2        # memorie recenti "ambient" iniettate a prescindere
 RAG_SEMANTIC_LIMIT = 5       # match semantici alla query corrente (la rilevanza)
 RAG_MEM_CAP = 6              # slot totali mostrati su query non-temporale
 RAG_MEM_CAP_TEMPORAL = 10    # slot su query con riferimento di tempo (diario più ampio)
+# "Di recente" non equivale alla recency ambientale: è un vincolo richiesto
+# dall'utente. La finestra è locale, esplicita e configurabile; se è vuota il
+# RAG non ripiega silenziosamente su ricordi più vecchi.
+RAG_RECENT_MEMORY_WINDOW_DAYS = max(
+    1, int(os.environ.get("EURI_RAG_RECENT_MEMORY_WINDOW_DAYS", "14"))
+)
 
 # Memoria passiva dual-channel (validazione census 27/07/2026: GO).
 # off       = retrieval storico invariato;

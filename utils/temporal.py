@@ -4,6 +4,7 @@ Restituisce (ts_start, ts_end) come Unix timestamp float, o None.
 Usato da _build_context per aggiungere un filtro temporale alla ricerca Redis.
 """
 import re
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 _MONTHS_IT = {
@@ -25,6 +26,65 @@ _NUMS_IT = {'uno': 1, 'due': 2, 'tre': 3, 'quattro': 4, 'cinque': 5,
             'sei': 6, 'sette': 7, 'otto': 8, 'nove': 9, 'dieci': 10}
 
 _MONTH_PAT = '|'.join(_MONTHS_IT.keys())
+
+_RECENT_MEMORY_PATTERNS = (
+    re.compile(r"\bdi\s+recente\b", re.IGNORECASE),
+    re.compile(r"\brecent(?:e|i|emente)\b", re.IGNORECASE),
+    re.compile(r"\bultimamente\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:negli|nelle)\s+ultim[ei]\s+(?:giorni|settimane)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:le\s+)?ultim[ei]\s+(?:cose|attivit[aà]|novit[aà])\b",
+        re.IGNORECASE,
+    ),
+)
+
+
+@dataclass(frozen=True)
+class RecentMemoryIntent:
+    """Vincolo temporale relativo per richieste sul passato prossimo."""
+
+    expression: str
+    window_days: int
+    start: float
+    end: float
+
+    def to_record(self) -> dict:
+        return {
+            "kind": "recent_memory",
+            "expression": self.expression,
+            "window_days": self.window_days,
+            "start": self.start,
+            "end": self.end,
+        }
+
+
+def detect_recent_memory_intent(
+    text: str,
+    now: datetime,
+    *,
+    window_days: int,
+) -> RecentMemoryIntent | None:
+    """Riconosce la recenza durevole senza confonderla con il contesto immediato.
+
+    Non modifica ``extract_temporal_range``: frasi memorizzate che contengono
+    "recentemente" non ricevono così un intervallo evento artificiale. Questa
+    funzione è destinata alle query di richiamo.
+    """
+    source = text or ""
+    for pattern in _RECENT_MEMORY_PATTERNS:
+        match = pattern.search(source)
+        if match:
+            days = max(1, int(window_days))
+            return RecentMemoryIntent(
+                expression=match.group(0),
+                window_days=days,
+                start=(now - timedelta(days=days)).timestamp(),
+                end=now.timestamp(),
+            )
+    return None
 
 
 def extract_temporal_range(text: str, now: datetime) -> tuple[float, float] | None:

@@ -172,6 +172,9 @@ def _reconstruct_contexts(
                 _FrozenBaseMemory(docs),
                 mode="search",
                 touch=False,
+                # Questo census precede la policy runtime del 29/07/2026:
+                # il replay deve ricostruire quel contratto, non quello odierno.
+                enable_recent_memory_intent=False,
             ).text
             expected_base = rag_results[question_id]["metadata"]["base_sha256"]
             if _sha256(base) != expected_base:

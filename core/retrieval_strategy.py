@@ -113,6 +113,19 @@ def choose_strategy(text: str, brain, recent_history=None) -> tuple[str, str]:
     specific_search se: pre-gate non scatta, brain senza classifier, errore, mode ignoto,
     confidence < floor, o subject_recall senza soggetto (inutilizzabile).
     """
+    # Il vincolo "di recente" è già risolto dal RAG temporale condiviso. Non
+    # lasciare che il classificatore lo trasformi in wide/subject recall,
+    # reintroducendo memorie storiche fuori finestra dopo il gate fail-closed.
+    from utils.date_utils import now
+    from utils.temporal import detect_recent_memory_intent
+    import config
+
+    if detect_recent_memory_intent(
+        text or "",
+        now(),
+        window_days=getattr(config, "RAG_RECENT_MEMORY_WINDOW_DAYS", 14),
+    ):
+        return "recent_context", ""
     if not _maybe_nonspecific(text) or not hasattr(brain, "classify_retrieval_strategy"):
         return "specific_search", ""
     res = brain.classify_retrieval_strategy(text, recent_history)

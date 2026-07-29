@@ -398,6 +398,16 @@ Euri parla italiano per default. La **lingua** delle risposte vive nei prompt (`
 
 Un punto merita attenzione a parte: l'**àncora temporale** iniettata nel contesto del modello a ogni turno (`core/brain.py`, "Data e ora corrente: …"). È resa **esplicitamente in italiano** dagli array `_GIORNI` e `_MESI` in `utils/date_utils.py` — *non* via `strftime('%A'/'%B')`. È una scelta deliberata: `strftime` segue il locale di sistema (spesso `C/POSIX` → giorno in inglese, es. "Saturday"), e un modello che risponde in italiano tende a ignorare un'àncora in lingua straniera, confabulando un cliché ("è venerdì sera") invece di leggere il dato. Scrivere la data nella lingua della conversazione la rende un'àncora forte. **Per un'altra lingua:** tradurre `_GIORNI`/`_MESI` (e l'etichetta "Data e ora corrente" in `brain.py`). `dt.weekday()` è 0=lunedì, quindi l'ordine degli array parte dal lunedì.
 
+Anche **“di recente” è una metrica locale esplicita**, non un giudizio lasciato
+al modello. Nel RAG condiviso da voce, mobile e Silent Chat, espressioni come
+*recentemente*, *ultimamente* e *negli ultimi giorni* aprono una finestra
+scorrevole di 14 giorni (override
+`EURI_RAG_RECENT_MEMORY_WINDOW_DAYS`). Conta il tempo dell'evento, non la data
+in cui una reflection o una sintesi è stata generata. La finestra non viene
+allargata silenziosamente: se è vuota Euri lo dichiara e può proporre
+all'utente una ricerca più ampia. Una domanda tematica senza queste espressioni
+continua invece a usare il normale retrieval semantico sull'archivio storico.
+
 La stessa convenzione vale ora anche per il **Passive learner**. Ogni turno nel
 prompt di estrazione usa l'àncora completa italiana, per esempio “domenica 23
 gennaio 2022”, e il modello deve conservare espressioni come “venerdì scorso”

@@ -50,6 +50,30 @@ La dichiarazione di versione non migra Redis e non riscrive memorie.
   harness congela ora il tempo al `created_at` del census e torna a
   ricostruire i contesti byte-per-byte anche nei giorni successivi.
 
+### V2.21 (continua, 29/07/2026) — “Recente” diventa un vincolo, non un'impressione
+
+- Una prova reale ha isolato un errore strutturale: alla richiesta
+  “raccontami qualcosa che abbiamo fatto di recente”, il retrieval semantico
+  poteva riportare un episodio del 21 giugno e il modello chiamarlo recente il
+  29 luglio. La memoria era datata correttamente; mancava il vincolo nella
+  query.
+- Le espressioni italiane di recenza durevole (`di recente`, `recentemente`,
+  `ultimamente`, `negli ultimi giorni/settimane`) attivano ora una finestra
+  locale esplicita, configurabile con
+  `EURI_RAG_RECENT_MEMORY_WINDOW_DAYS` (default 14 giorni), nel dispatcher
+  condiviso da voce, mobile e Silent Chat.
+- La finestra è fail-closed: il tempo effettivo dell'evento prevale sulla data
+  in cui una sintesi è stata creata; la ricerca semantica non può reintrodurre
+  ricordi più vecchi e, se non esistono risultati recenti, Euri deve dirlo e
+  proporre di allargare la finestra.
+- Il comportamento è osservabile nei log e in `RagContext.diagnostics`:
+  candidati temporali, eventi eleggibili, nodi visibili e
+  `fallback=none`. Le domande tematiche senza richiesta di recenza conservano
+  il percorso semantico precedente.
+- Il replay del benchmark precedente congela esplicitamente la vecchia policy,
+  così l'hardening live non riscrive retroattivamente gli esperimenti già
+  registrati. Verifica completa: manifest unitario **60/60**.
+
 ### V2.21 (continua, 28/07/2026) — Thinking selettivo fondato sul verbatim
 
 - La prompt-ablation controllata ha separato l'effetto del budget dall'effetto

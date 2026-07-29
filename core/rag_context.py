@@ -124,7 +124,18 @@ def insight_requires_external_validation(insight: dict) -> bool:
 
 def infer_context_mode(text: str, default: str = "chat") -> str:
     """Inferenza cheap per canali senza intent router, come Silent Chat."""
-    if _RECENT_CONTEXT_RE.search(text or "") or _SEARCH_CUE_RE.search(text or ""):
+    from utils.temporal import detect_recent_memory_intent
+
+    recent_memory = detect_recent_memory_intent(
+        text or "",
+        now(),
+        window_days=getattr(config, "RAG_RECENT_MEMORY_WINDOW_DAYS", 14),
+    )
+    if (
+        _RECENT_CONTEXT_RE.search(text or "")
+        or _SEARCH_CUE_RE.search(text or "")
+        or recent_memory is not None
+    ):
         return "search"
     return default
 
@@ -174,16 +185,32 @@ def build_rag_context(
     recent_history: list[dict] | None = None,
     excluded_sources: set[str] | None = None,
     touch: bool = True,
+    enable_recent_memory_intent: bool = True,
 ) -> RagContext:
-    """Costruisce il contesto RAG base e ritorna anche gli ID iniettati."""
-    from utils.temporal import extract_temporal_range
-    from core.temporal_recall import prioritize_window
+    """Costruisce il contesto RAG base e ritorna anche gli ID iniettati.
+
+    ``enable_recent_memory_intent=False`` esiste soltanto per riprodurre
+    byte-per-byte artefatti benchmark creati prima della policy del 29/07/2026.
+    I dispatcher runtime conservano sempre il default attivo.
+    """
+    from utils.temporal import detect_recent_memory_intent, extract_temporal_range
+    from core.temporal_recall import prioritize_recent_window, prioritize_window
 
     source_filter = config.DEMO_CONTEXT_SOURCES if config.DEMO_MODE else None
     source_exclude = sorted(excluded_sources or ())
     search_mode = mode == "search"
     recent_context_query = bool(_RECENT_CONTEXT_RE.search(text or ""))
-    reference_at = now().timestamp()
+    reference_dt = now()
+    reference_at = reference_dt.timestamp()
+    recent_memory_intent = (
+        detect_recent_memory_intent(
+            text or "",
+            reference_dt,
+            window_days=getattr(config, "RAG_RECENT_MEMORY_WINDOW_DAYS", 14),
+        )
+        if enable_recent_memory_intent
+        else None
+    )
     history_lines = (
         _format_recent_history(recent_history, reference_at=reference_at)
         if recent_context_query else []
@@ -213,18 +240,39 @@ def build_rag_context(
         results = []
     seen_ids = {r.get("id") for r in results}
 
-    time_range = extract_temporal_range(text, now())
+    explicit_time_range = extract_temporal_range(text, reference_dt)
+    time_range = (
+        (recent_memory_intent.start, recent_memory_intent.end)
+        if recent_memory_intent is not None
+        else explicit_time_range
+    )
+    recent_window_hits = 0
     if time_range:
         ts_start, ts_end = time_range
-        temporal_kwargs = {"limit": 200, "touch": touch}
+        # Per la recenza generica tocchiamo soltanto i nodi che superano il
+        # gate sull'evento, non i candidati vecchi entrati per asserted/created.
+        temporal_kwargs = {
+            "limit": 200,
+            "touch": False if recent_memory_intent is not None else touch,
+        }
         if source_exclude:
             temporal_kwargs["source_exclude"] = source_exclude
         window = memory.search_memories_by_timerange(
             ts_start, ts_end, **temporal_kwargs
         )
+        prioritized = (
+            prioritize_recent_window(window, ts_start, ts_end)
+            if recent_memory_intent is not None
+            else prioritize_window(window)
+        )
+        recent_window_hits = len(prioritized)
+        if recent_memory_intent is not None and touch and hasattr(
+            memory, "_touch_memories"
+        ):
+            memory._touch_memories(prioritized[: config.RAG_MEM_CAP_TEMPORAL])
         merged = []
         merged_seen = set()
-        for r in prioritize_window(window) + results:
+        for r in prioritized + ([] if recent_memory_intent is not None else results):
             rid = r.get("id")
             if rid not in merged_seen:
                 merged.append(r)
@@ -239,7 +287,11 @@ def build_rag_context(
         text or "",
     )
     keywords = list(dict.fromkeys(w for w in words if w.lower() not in _STOP_WORDS))
-    if keywords and not history_resolves_query:
+    if (
+        keywords
+        and not history_resolves_query
+        and recent_memory_intent is None
+    ):
         search_kwargs = {
             "limit": config.RAG_SEMANTIC_LIMIT,
             "source_filter": source_filter,
@@ -290,7 +342,11 @@ def build_rag_context(
 
     insight_lines: list[str] = []
     insight_docs: list[dict] = []
-    if keywords and not history_resolves_query:
+    if (
+        keywords
+        and not history_resolves_query
+        and recent_memory_intent is None
+    ):
         for ins in memory.search_insights(text, limit=2):
             dom_a = ins.get("domain_a", "?")
             dom_b = ins.get("domain_b", "?")
@@ -329,6 +385,26 @@ def build_rag_context(
             insight_docs.append(ins)
 
     sections: list[str] = []
+    if recent_memory_intent is not None:
+        from utils.date_utils import from_timestamp
+
+        start_dt = from_timestamp(recent_memory_intent.start)
+        end_dt = from_timestamp(recent_memory_intent.end)
+        start_label = (
+            start_dt.strftime("%d/%m/%Y %H:%M") if start_dt else "inizio ignoto"
+        )
+        end_label = (
+            end_dt.strftime("%d/%m/%Y %H:%M") if end_dt else "fine ignota"
+        )
+        sections.append(
+            "Vincolo temporale richiesto — MEMORIA RECENTE:\n"
+            f"- finestra locale: ultimi {recent_memory_intent.window_days} giorni "
+            f"({start_label} → {end_label})\n"
+            "- chiama «recente» soltanto ciò che è avvenuto dentro questa finestra; "
+            "la data di creazione di una sintesi non rende recente un evento vecchio.\n"
+            "- se il blocco dei ricordi recenti è vuoto, dichiaralo e proponi di "
+            "allargare la finestra: non sostituirlo con ricordi più vecchi."
+        )
     if recent_context_query:
         if history_lines:
             sections.append(
@@ -401,7 +477,17 @@ def build_rag_context(
                 f"{tacit_note}{suffix}"
             )
         if mem_lines:
-            sections.append("Ricordi/note rilevanti:\n" + "\n".join(mem_lines))
+            memory_heading = (
+                "Ricordi avvenuti nella finestra recente:"
+                if recent_memory_intent is not None
+                else "Ricordi/note rilevanti:"
+            )
+            sections.append(memory_heading + "\n" + "\n".join(mem_lines))
+    elif recent_memory_intent is not None:
+        sections.append(
+            "Ricordi avvenuti nella finestra recente:\n"
+            "- Nessuna memoria disponibile nella finestra richiesta."
+        )
     if insight_lines:
         sections.append(
             "Connessioni trasversali emerse (la convergenza interna non equivale a verità):\n"
@@ -475,12 +561,35 @@ def build_rag_context(
             for message in (recent_history or [])[-8:]
             if message.get("turn_ref") and str(message.get("content") or "").strip()
         ]
+    temporal_diagnostics = None
+    if recent_memory_intent is not None:
+        temporal_diagnostics = recent_memory_intent.to_record()
+        temporal_diagnostics.update(
+            {
+                "candidate_hits": len(window),
+                "eligible_hits": recent_window_hits,
+                "visible_hits": len(visible_results),
+                "fallback": "none",
+            }
+        )
+        logger.info(
+            "RAG memoria recente: finestra={}g candidati={} eleggibili={} "
+            "visibili={} fallback=none",
+            recent_memory_intent.window_days,
+            len(window),
+            recent_window_hits,
+            len(visible_results),
+        )
     return RagContext(
         text="\n\n".join(sections),
         ids=ids,
         mode=mode,
         nodes=nodes,
         turn_ids=history_turn_ids,
+        diagnostics={
+            "mode": "base",
+            "temporal_query": temporal_diagnostics,
+        },
     )
 
 
@@ -666,6 +775,7 @@ def build_dual_channel_context(
     diagnostics.update(
         {
             "mode": "dual_channel",
+            "temporal_query": base.diagnostics.get("temporal_query"),
             "verbatim_render_version": TURN_RENDER_VERSION,
             "presentation_requested": presentation,
             "presentation_applied": (
