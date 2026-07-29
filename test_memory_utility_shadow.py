@@ -11,9 +11,11 @@ from core.memory_utility_shadow import (
     aggregate_lineage_events,
     build_memory_utility_report,
     explain_insight_promotion,
+    migrate_legacy_utility_shadow_keys,
     run_memory_utility_shadow_maintenance,
     sync_supported_use_metadata,
 )
+from utils.redis_client import backfill_embeddings
 
 
 def _event(event_id, sense, kind, *, entity=None, payload=None):
@@ -87,6 +89,56 @@ class FakeRedis:
 
     def zrem(self, key, member):
         self.zsets.setdefault(key, {}).pop(member, None)
+
+
+class FakeBackfillRedis:
+    def __init__(self):
+        self.docs = {
+            "euri:memory:m1": {
+                "content": "Una memoria valida.",
+                "embedding": None,
+            }
+        }
+        self.string_keys = {
+            "euri:memory:utility_shadow:state": "{}",
+            "euri:memory:utility_shadow:latest": "{}",
+        }
+        self.json_reads = []
+
+    def scan_iter(self, _pattern):
+        return iter([*self.docs, *self.string_keys])
+
+    def type(self, key):
+        return "ReJSON-RL" if key in self.docs else "string"
+
+    class _Json:
+        def __init__(self, outer):
+            self.outer = outer
+
+        def get(self, key, _path):
+            self.outer.json_reads.append(key)
+            if key not in self.outer.docs:
+                raise TypeError("wrong Redis type")
+            return [dict(self.outer.docs[key])]
+
+        def set(self, key, path, value):
+            assert path == "$.embedding"
+            self.outer.docs[key]["embedding"] = value
+
+    def json(self):
+        return self._Json(self)
+
+
+class FakeEmbedder:
+    available = True
+
+    class _Vector:
+        @staticmethod
+        def tolist():
+            return [0.1, 0.2]
+
+    def encode(self, _content):
+        return self._Vector()
 
 
 def _rows():
@@ -223,6 +275,30 @@ def test_daily_maintenance_persists_and_does_not_duplicate_reminder():
     assert len(redis.events) == 1
 
 
+def test_legacy_utility_state_is_copied_without_deleting_rollback():
+    redis = FakeRedis()
+    legacy_state = "euri:memory:utility_shadow:state"
+    legacy_report = "euri:memory:utility_shadow:latest"
+    redis.values[legacy_state] = json.dumps({"schema_version": 1})
+    redis.values[legacy_report] = json.dumps({"old": True})
+
+    result = migrate_legacy_utility_shadow_keys(redis)
+
+    assert len(result["migrated"]) == 2
+    assert redis.values[UTILITY_STATE_KEY] == redis.values[legacy_state]
+    assert redis.values[UTILITY_REPORT_KEY] == redis.values[legacy_report]
+    assert legacy_state in redis.values
+    assert legacy_report in redis.values
+
+
+def test_embedding_backfill_ignores_non_json_keys_in_memory_namespace():
+    redis = FakeBackfillRedis()
+
+    assert backfill_embeddings(redis, FakeEmbedder()) == 1
+    assert redis.json_reads == ["euri:memory:m1"]
+    assert redis.docs["euri:memory:m1"]["embedding"] == [0.1, 0.2]
+
+
 def test_promotion_explain_uses_existing_signals_without_deciding_again():
     result = explain_insight_promotion(
         {
@@ -250,5 +326,7 @@ if __name__ == "__main__":
     test_review_matures_by_data_or_by_max_wait_without_policy_change()
     test_supported_use_is_materialized_idempotently_for_attention_only()
     test_daily_maintenance_persists_and_does_not_duplicate_reminder()
+    test_legacy_utility_state_is_copied_without_deleting_rollback()
+    test_embedding_backfill_ignores_non_json_keys_in_memory_namespace()
     test_promotion_explain_uses_existing_signals_without_deciding_again()
     print("test_memory_utility_shadow: OK")

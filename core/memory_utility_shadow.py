@@ -19,9 +19,16 @@ from core.response_lineage import LINEAGE_EXPERIMENT
 from loguru import logger
 
 
-UTILITY_STATE_KEY = "euri:memory:utility_shadow:state"
-UTILITY_REPORT_KEY = "euri:memory:utility_shadow:latest"
-UTILITY_REVIEW_PENDING_KEY = "euri:memory:utility_shadow:review_pending"
+# Stato di sistema, non documenti di memoria: il namespace non deve combaciare
+# con il prefisso RedisJSON ``euri:memory:*`` usato da indice e backfill.
+UTILITY_STATE_KEY = "euri:utility:memory_shadow:state"
+UTILITY_REPORT_KEY = "euri:utility:memory_shadow:latest"
+UTILITY_REVIEW_PENDING_KEY = "euri:utility:memory_shadow:review_pending"
+_LEGACY_UTILITY_KEYS = {
+    "euri:memory:utility_shadow:state": UTILITY_STATE_KEY,
+    "euri:memory:utility_shadow:latest": UTILITY_REPORT_KEY,
+    "euri:memory:utility_shadow:review_pending": UTILITY_REVIEW_PENDING_KEY,
+}
 UTILITY_SCHEMA_VERSION = 1
 _QUERY_HASH_CAP_PER_ENTITY = 64
 
@@ -63,8 +70,43 @@ def _load_json_key(redis_client, key: str) -> dict:
         return {}
 
 
+def migrate_legacy_utility_shadow_keys(redis_client) -> dict:
+    """Copia una sola volta lo stato legacy fuori da ``euri:memory:*``.
+
+    La copia è conservativa: una chiave nuova già esistente vince e le vecchie
+    stringhe non vengono cancellate. Il backfill type-safe le ignora; restano
+    disponibili come rollback/audit del passaggio.
+    """
+    migrated = []
+    preserved = []
+    for legacy_key, current_key in _LEGACY_UTILITY_KEYS.items():
+        try:
+            current = redis_client.get(current_key)
+            legacy = redis_client.get(legacy_key)
+        except Exception:
+            continue
+        if current:
+            if legacy:
+                preserved.append(legacy_key)
+            continue
+        if not legacy:
+            continue
+        redis_client.set(current_key, legacy)
+        migrated.append({"from": legacy_key, "to": current_key})
+    if migrated:
+        logger.info(
+            "Utilità memoria: namespace migrato conservativamente ({} chiavi)",
+            len(migrated),
+        )
+    return {
+        "migrated": migrated,
+        "legacy_preserved": preserved,
+    }
+
+
 def get_memory_utility_review_pending(redis_client) -> dict:
     """Ritorna l'avviso durevole, senza mutare la finestra osservativa."""
+    migrate_legacy_utility_shadow_keys(redis_client)
     return _load_json_key(redis_client, UTILITY_REVIEW_PENDING_KEY)
 
 
@@ -387,6 +429,7 @@ def run_memory_utility_shadow_maintenance(
 ) -> dict:
     """Aggiorna rapporto e promemoria durante la manutenzione giornaliera."""
     now_ts = time.time() if reference_at is None else float(reference_at)
+    namespace_migration = migrate_legacy_utility_shadow_keys(redis_client)
     state = _load_json_key(redis_client, UTILITY_STATE_KEY) or _new_state(now_ts)
     if state.get("schema_version") != UTILITY_SCHEMA_VERSION:
         raise ValueError("memory utility shadow state schema incompatibile")
@@ -422,6 +465,7 @@ def run_memory_utility_shadow_maintenance(
         ),
     )
     report["metadata_sync"] = sync_result
+    report["namespace_migration"] = namespace_migration
     redis_client.set(
         UTILITY_REPORT_KEY,
         json.dumps(report, ensure_ascii=False, sort_keys=True),

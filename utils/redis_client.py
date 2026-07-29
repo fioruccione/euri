@@ -182,10 +182,16 @@ def backfill_embeddings(r: redis.Redis, embedder) -> int:
     if not embedder.available:
         return 0
 
-    keys = r.keys("euri:memory:*")
     updated = 0
-    for key in keys:
+    skipped_non_json = 0
+    for key in r.scan_iter("euri:memory:*"):
         try:
+            key_type = r.type(key)
+            if isinstance(key_type, bytes):
+                key_type = key_type.decode("utf-8", errors="replace")
+            if str(key_type or "").lower() not in {"rejson-rl", "json"}:
+                skipped_non_json += 1
+                continue
             doc = r.json().get(key, "$")
             if not doc:
                 continue
@@ -203,6 +209,11 @@ def backfill_embeddings(r: redis.Redis, embedder) -> int:
         except Exception as e:
             logger.error(f"Errore backfill {key}: {e}")
 
+    if skipped_non_json:
+        logger.debug(
+            "Backfill embedding: {} chiavi non RedisJSON ignorate",
+            skipped_non_json,
+        )
     if updated:
         logger.info(f"Backfill embedding: {updated} memorie aggiornate")
     return updated

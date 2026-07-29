@@ -74,6 +74,20 @@ La dichiarazione di versione non migra Redis e non riscrive memorie.
   così l'hardening live non riscrive retroattivamente gli esperimenti già
   registrati. Verifica completa: manifest unitario **60/60**.
 
+### V2.21 (continua, 29/07/2026) — Namespace dello stato utility separato
+
+- Corretto l'avviso innocuo al boot `Existing key has wrong Redis type`: le
+  stringhe di stato `utility_shadow` vivevano sotto `euri:memory:*` e il
+  backfill embedding le scambiava per documenti memoria RedisJSON.
+- Stato, rapporto e reminder usano ora `euri:utility:memory_shadow:*`. Al primo
+  ciclo i valori legacy vengono copiati conservativamente; le vecchie chiavi
+  restano intatte come rollback/audit e nessuna osservazione raccolta viene
+  persa.
+- Il backfill usa `SCAN` e controlla il tipo Redis prima di `JSON.GET`: eventuali
+  future chiavi di servizio finite nel namespace memoria vengono ignorate
+  senza produrre errori e senza interrompere l'aggiornamento dei documenti
+  validi.
+
 ### V2.21 (continua, 28/07/2026) — Thinking selettivo fondato sul verbatim
 
 - La prompt-ablation controllata ha separato l'effetto del budget dall'effetto
