@@ -57,6 +57,14 @@ La dichiarazione di versione non migra Redis e non riscrive memorie.
   reale degrada a `none`. L'harness ora conserva esattamente quella decisione
   e registra separatamente la violazione del contratto; fixture, prompt, gold,
   ordine e soglie restano congelati. Il checkpoint parziale non viene riusato.
+- Run controllato completato: 60 osservazioni e 120 chiamate, senza Redis.
+  Loop 2f ottiene `GO_DEV` (34/36, una falsa supersessione), ma viola il
+  contratto d'uscita in 7/60 chiamate e il refuso salva accidentalmente tre
+  coppie target-risultato. Loop 2h resta
+  `INCONCLUSIVE_DEV_NO_OPPORTUNITY`: 2f non crea errori cross-entità nel
+  campione, quindi 2h non cambia alcuna azione; inoltre sceglie `UNKNOWN` in
+  0/6 casi volutamente ambigui. Risultati e limiti sono documentati in
+  `docs/EURI_LOOP2F_LOOP2H_RESULTS_2026-07-29.md`.
 
 ### V2.21 (continua, 29/07/2026) — Memoria personale e scenari non condividono più lo stesso mondo
 
