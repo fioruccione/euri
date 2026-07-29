@@ -21,6 +21,7 @@ import inspect
 import json
 import math
 import os
+import re
 import subprocess
 import time
 from collections import Counter, defaultdict
@@ -285,7 +286,7 @@ def _model_digest(model: str) -> str:
     raise Loop2FHError(f"digest Ollama non trovato per {model!r}")
 
 
-def production_classify_2f(memory_a: str, memory_b: str) -> str:
+def production_classify_2f(memory_a: str, memory_b: str) -> dict:
     engine = DreamEngine.__new__(DreamEngine)
     captured: dict[str, Any] = {}
 
@@ -305,16 +306,22 @@ def production_classify_2f(memory_a: str, memory_b: str) -> str:
             f"2f ha mascherato un errore modello come NESSUNA: {captured['error']}"
         )
     raw = str(captured.get("raw") or "").strip().upper()
-    if not raw or not any(
+    contract_ok = bool(raw) and any(
         token in raw for token in ("CONTRADD", "CONFRONT", "NESSUNA")
-    ):
-        raise Loop2FHError(
-            f"2f output fuori contratto mascherato come {label!r}"
-        )
-    return label
+    )
+    return {
+        "label": label,
+        "contract_ok": contract_ok,
+        "diagnostic": (
+            ""
+            if contract_ok
+            else ("empty_output" if not raw else "unrecognized_nonempty_output")
+        ),
+        "raw_sha256": _sha_text(raw),
+    }
 
 
-def production_classify_2h(memory_a: str, memory_b: str) -> str:
+def production_classify_2h(memory_a: str, memory_b: str) -> dict:
     captured: dict[str, Any] = {}
     original_get_client = self_observation_module.get_dream_client
 
@@ -350,23 +357,77 @@ def production_classify_2h(memory_a: str, memory_b: str) -> str:
         raise Loop2FHError(
             f"2h ha mascherato un errore modello come UNKNOWN: {captured['error']}"
         )
-    raw = str(captured.get("raw") or "").strip()
+    raw = re.sub(
+        r"<think>.*?</think>",
+        "",
+        str(captured.get("raw") or ""),
+        flags=re.DOTALL,
+    ).strip()
     start, end = raw.find("{"), raw.rfind("}")
     if start < 0 or end <= start:
-        raise Loop2FHError(
-            f"2h output fuori contratto mascherato come {relation!r}"
-        )
+        return {
+            "label": relation,
+            "contract_ok": False,
+            "diagnostic": "missing_json_object",
+            "raw_sha256": _sha_text(raw),
+        }
     try:
         raw_relation = str(
             json.loads(raw[start : end + 1]).get("relation") or ""
         ).strip().lower()
     except (json.JSONDecodeError, AttributeError) as exc:
-        raise Loop2FHError("2h JSON fuori contratto") from exc
+        return {
+            "label": relation,
+            "contract_ok": False,
+            "diagnostic": f"invalid_json:{type(exc).__name__}",
+            "raw_sha256": _sha_text(raw),
+        }
     if raw_relation not in LABELS_2H:
+        return {
+            "label": relation,
+            "contract_ok": False,
+            "diagnostic": "invalid_relation",
+            "raw_sha256": _sha_text(raw),
+        }
+    return {
+        "label": relation,
+        "contract_ok": True,
+        "diagnostic": "",
+        "raw_sha256": _sha_text(raw),
+    }
+
+
+def _normalize_classifier_result(value: Any, allowed: frozenset[str]) -> dict:
+    """Accetta stringhe nei test e metadati strutturati nel percorso reale."""
+
+    if isinstance(value, str):
+        result = {
+            "label": value,
+            "contract_ok": True,
+            "diagnostic": "",
+            "raw_sha256": None,
+        }
+    elif isinstance(value, dict):
+        result = {
+            "label": value.get("label"),
+            "contract_ok": value.get("contract_ok"),
+            "diagnostic": str(value.get("diagnostic") or ""),
+            "raw_sha256": value.get("raw_sha256"),
+        }
+    else:
         raise Loop2FHError(
-            f"2h relazione raw fuori contratto {raw_relation!r}"
+            f"risultato classificatore con tipo non valido: {type(value).__name__}"
         )
-    return relation
+    if result["label"] not in allowed:
+        raise Loop2FHError(f"label classificatore non valida {result['label']!r}")
+    if not isinstance(result["contract_ok"], bool):
+        raise Loop2FHError("contract_ok mancante o non booleano")
+    if result["raw_sha256"] is not None and (
+        not isinstance(result["raw_sha256"], str)
+        or len(result["raw_sha256"]) != 64
+    ):
+        raise Loop2FHError("raw_sha256 non valido")
+    return result
 
 
 def _identity(fixture_path: Path, *, model: str, model_digest: str) -> dict:
@@ -403,6 +464,14 @@ def _validate_checkpoint(checkpoint: dict, identity: dict, expected_keys: set[st
             raise Loop2FHError(f"{key}: label 2f invalida")
         if "2h" in labels and labels["2h"].get("label") not in LABELS_2H:
             raise Loop2FHError(f"{key}: label 2h invalida")
+        for stage, stage_result in labels.items():
+            if not isinstance(stage_result.get("contract_ok"), bool):
+                raise Loop2FHError(f"{key}: {stage} contract_ok non valido")
+            raw_sha = stage_result.get("raw_sha256")
+            if raw_sha is not None and (
+                not isinstance(raw_sha, str) or len(raw_sha) != 64
+            ):
+                raise Loop2FHError(f"{key}: {stage} raw_sha256 non valido")
 
 
 def execute(
@@ -410,8 +479,8 @@ def execute(
     fixture_path: Path = DEFAULT_FIXTURE,
     output_dir: Path,
     execute_models: bool = False,
-    classify_2f: Callable[[str, str], str] | None = None,
-    classify_2h: Callable[[str, str], str] | None = None,
+    classify_2f: Callable[[str, str], Any] | None = None,
+    classify_2h: Callable[[str, str], Any] | None = None,
     model: str | None = None,
     model_digest: str | None = None,
     enforce_git: bool = True,
@@ -496,16 +565,15 @@ def execute(
                     continue
                 started = time.monotonic()
                 if stage == "2f":
-                    label = classify_2f(case["memory_a"], case["memory_b"])
+                    raw_result = classify_2f(case["memory_a"], case["memory_b"])
                     allowed = LABELS_2F
                 else:
-                    label = classify_2h(case["memory_a"], case["memory_b"])
+                    raw_result = classify_2h(case["memory_a"], case["memory_b"])
                     allowed = LABELS_2H
                 elapsed = time.monotonic() - started
-                if label not in allowed:
-                    raise Loop2FHError(f"{key}: {stage} ha restituito {label!r}")
+                stage_result = _normalize_classifier_result(raw_result, allowed)
                 record["labels"][stage] = {
-                    "label": label,
+                    **stage_result,
                     "latency_s": round(elapsed, 6),
                     "completed_at": time.time(),
                 }
@@ -758,16 +826,32 @@ def analyze(
         }
 
     latency = {}
+    contract = {}
     for stage in ("2f", "2h"):
         values = [
             float(record["labels"][stage]["latency_s"])
             for record in results["records"].values()
+        ]
+        violations = [
+            {
+                "observation_key": key,
+                "diagnostic": record["labels"][stage].get("diagnostic") or "",
+                "raw_sha256": record["labels"][stage].get("raw_sha256"),
+            }
+            for key, record in sorted(results["records"].items())
+            if not record["labels"][stage]["contract_ok"]
         ]
         latency[stage] = {
             "calls": len(values),
             "total_s": sum(values),
             "mean_s": sum(values) / len(values),
             "max_s": max(values),
+        }
+        contract[stage] = {
+            "valid": len(values) - len(violations),
+            "violations": len(violations),
+            "violation_rate": _rate(len(violations), len(values)),
+            "details": violations,
         }
 
     return {
@@ -797,6 +881,7 @@ def analyze(
         },
         "strata": strata,
         "latency": latency,
+        "output_contract": contract,
         "case_rows": rows,
         "limitations": [
             "development set controllato e scritto conoscendo l'architettura",

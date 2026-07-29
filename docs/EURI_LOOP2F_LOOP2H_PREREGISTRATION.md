@@ -192,3 +192,32 @@ Non autorizza a dire:
 
 La verifica ecologica successiva richiederà un campione reale cieco, conservando
 entrambe le fonti e senza assumere `narrated` come ground truth.
+
+## 9. Emendamento tecnico pre-risultati (29/07/2026)
+
+La prima esecuzione si è arrestata dopo sette chiamate complete, durante
+`sup_02__r0`, prima di produrre `results.json` e prima di eseguire qualunque
+analisi aggregata. Il classificatore 2f ha ricevuto dal modello
+`CONTRADIZIONE` (una sola `D`), mentre il parser di produzione riconosce la
+contraddizione soltanto se trova la sottostringa `CONTRADD`. Il comportamento
+effettivo di produzione è quindi `none`.
+
+L'episodio ha rivelato un difetto di osservabilità del banco: una risposta
+fuori contratto veniva correttamente bloccata, ma ciò impediva di completare la
+misura del comportamento reale del loop. L'harness viene perciò irrobustito
+prima della prima run completa, senza cambiare fixture, ordine, prompt,
+modello, gold, metriche o soglie:
+
+- eccezioni di trasporto/modello continuano ad arrestare il run;
+- un output non vuoto fuori contratto conserva la label realmente prodotta dal
+  parser di produzione;
+- il record aggiunge `contract_ok`, un diagnostico strutturato e soltanto
+  l'hash SHA-256 dell'output grezzo;
+- l'analisi riporta separatamente frequenza e casi delle violazioni del
+  contratto.
+
+Il checkpoint parziale originale non viene ripreso né usato come risultato.
+La nuova esecuzione parte in una directory distinta, legata al nuovo commit.
+Questo emendamento non corregge il parser di 2f e non trasforma
+`CONTRADIZIONE` in `contradiction`: il difetto resta parte del sistema
+misurato.

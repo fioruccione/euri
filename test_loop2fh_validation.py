@@ -11,6 +11,7 @@ from benchmarks.euri_memory.loop2fh_validation import (
     LABELS_2H,
     Loop2FHError,
     _identity,
+    _normalize_classifier_result,
     analyze,
     counterbalanced_order,
     dry_run,
@@ -50,11 +51,17 @@ def _synthetic_results() -> dict:
                 "labels": {
                     "2f": {
                         "label": label_2f,
+                        "contract_ok": True,
+                        "diagnostic": "",
+                        "raw_sha256": None,
                         "latency_s": 0.1,
                         "completed_at": 1.0,
                     },
                     "2h": {
                         "label": case["expected_2h_relation"],
+                        "contract_ok": True,
+                        "diagnostic": "",
+                        "raw_sha256": None,
                         "latency_s": 0.2,
                         "completed_at": 1.0,
                     },
@@ -217,6 +224,40 @@ def test_protocol_identity_contains_source_and_fixture_hashes():
     assert identity["model_digest"] == "sha256:fake"
 
 
+def test_output_contract_violation_preserves_production_label():
+    raw_sha = "a" * 64
+    result = _normalize_classifier_result(
+        {
+            "label": "none",
+            "contract_ok": False,
+            "diagnostic": "unrecognized_nonempty_output",
+            "raw_sha256": raw_sha,
+        },
+        LABELS_2F,
+    )
+    assert result == {
+        "label": "none",
+        "contract_ok": False,
+        "diagnostic": "unrecognized_nonempty_output",
+        "raw_sha256": raw_sha,
+    }
+
+    try:
+        _normalize_classifier_result(
+            {
+                "label": "none",
+                "contract_ok": "no",
+                "diagnostic": "",
+                "raw_sha256": raw_sha,
+            },
+            LABELS_2F,
+        )
+    except Loop2FHError as exc:
+        assert "contract_ok" in str(exc)
+    else:
+        raise AssertionError("contract_ok non booleano doveva essere rifiutato")
+
+
 if __name__ == "__main__":
     test_fixture_and_dry_run_are_frozen_and_complete()
     test_gold_is_not_part_of_classifier_contract()
@@ -224,7 +265,8 @@ if __name__ == "__main__":
     test_analysis_detects_incremental_value_without_damage()
     test_analysis_fails_closed_on_identity_or_label_tampering()
     test_protocol_identity_contains_source_and_fixture_hashes()
+    test_output_contract_violation_preserves_production_label()
     print(
-        "test_loop2fh_validation: 6/6 OK "
+        "test_loop2fh_validation: 7/7 OK "
         f"(2f={sorted(LABELS_2F)}, 2h={sorted(LABELS_2H)})"
     )

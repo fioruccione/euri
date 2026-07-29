@@ -52,6 +52,11 @@ La dichiarazione di versione non migra Redis e non riscrive memorie.
   2 inversioni annotate e 21 archi con vincitore ormai assente.
 - Regressioni pure e resume/integrità del nuovo harness: manifest unitario
   **66/66**. Nessuna modifica ai loop di produzione e nessuna scrittura Redis.
+- Il primo avvio del protocollo si è fermato prima di qualsiasi analisi su una
+  risposta 2f fuori contratto (`CONTRADIZIONE`, una sola `D`), che il parser
+  reale degrada a `none`. L'harness ora conserva esattamente quella decisione
+  e registra separatamente la violazione del contratto; fixture, prompt, gold,
+  ordine e soglie restano congelati. Il checkpoint parziale non viene riusato.
 
 ### V2.21 (continua, 29/07/2026) — Memoria personale e scenari non condividono più lo stesso mondo
 
