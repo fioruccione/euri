@@ -1,0 +1,386 @@
+{
+  "schema_version": 1,
+  "fixture_id": "loop2fh-controlled-it-v1",
+  "language": "it",
+  "description": "Casi controllati per distinguere contraddizione sullo stesso referente, entità distinte, fatti complementari, target e misura, ambiguità.",
+  "cases": [
+    {
+      "case_id": "sup_01",
+      "stratum": "same_claim_supersede",
+      "memory_a": "Il lotto PP L-204 ha un indice di fluidità MFI pari a 6 g/10 min.",
+      "memory_b": "La ripetizione confermata sullo stesso lotto PP L-204 corregge l'MFI a 4 g/10 min; il valore 6 era un errore di trascrizione.",
+      "expected_action": "supersede_a",
+      "expected_2h_relation": "same",
+      "stability_probe": true
+    },
+    {
+      "case_id": "sup_02",
+      "stratum": "same_claim_supersede",
+      "memory_a": "Il server Orion usa attualmente l'indirizzo 10.0.0.18.",
+      "memory_b": "Dopo la riconfigurazione, l'indirizzo attuale del server Orion è 10.0.0.27 e il precedente non è più assegnato.",
+      "expected_action": "supersede_a",
+      "expected_2h_relation": "same",
+      "stability_probe": false
+    },
+    {
+      "case_id": "sup_03",
+      "stratum": "same_claim_supersede",
+      "memory_a": "L'ordine cliente OC-771 prevede 800 kg.",
+      "memory_b": "Il cliente ha corretto l'ordine OC-771: la quantità definitiva è 1.000 kg, non 800 kg.",
+      "expected_action": "supersede_a",
+      "expected_2h_relation": "same",
+      "stability_probe": false
+    },
+    {
+      "case_id": "sup_04",
+      "stratum": "same_claim_supersede",
+      "memory_a": "L'appuntamento con Marta per la pratica P-19 è fissato il 4 agosto alle 10.",
+      "memory_b": "Marta ha riprogrammato lo stesso appuntamento della pratica P-19 al 6 agosto alle 15; il 4 agosto è annullato.",
+      "expected_action": "supersede_a",
+      "expected_2h_relation": "same",
+      "stability_probe": true
+    },
+    {
+      "case_id": "sup_05",
+      "stratum": "same_claim_supersede",
+      "memory_a": "Nel progetto Nadir, Elisa è la responsabile qualità.",
+      "memory_b": "Dal 1 agosto, per il progetto Nadir la responsabile qualità è Paola; Elisa ha lasciato l'incarico.",
+      "expected_action": "supersede_a",
+      "expected_2h_relation": "same",
+      "stability_probe": false
+    },
+    {
+      "case_id": "sup_06",
+      "stratum": "same_claim_supersede",
+      "memory_a": "Il setpoint operativo dell'estrusore E7 è 185 °C.",
+      "memory_b": "La procedura revisionata corregge il setpoint operativo dell'estrusore E7 a 195 °C; 185 °C non va più usato.",
+      "expected_action": "supersede_a",
+      "expected_2h_relation": "same",
+      "stability_probe": false
+    },
+    {
+      "case_id": "sup_07",
+      "stratum": "same_claim_supersede",
+      "memory_a": "La formulazione F-88 contiene il 2% di compatibilizzante.",
+      "memory_b": "La scheda corretta della formulazione F-88 indica 1,2% di compatibilizzante; il 2% apparteneva a una bozza errata.",
+      "expected_action": "supersede_a",
+      "expected_2h_relation": "same",
+      "stability_probe": true
+    },
+    {
+      "case_id": "sup_08",
+      "stratum": "same_claim_supersede",
+      "memory_a": "Il recapito operativo di Luca termina con 4821.",
+      "memory_b": "Luca ha sostituito il recapito operativo: ora termina con 7390 e quello con 4821 è disattivato.",
+      "expected_action": "supersede_a",
+      "expected_2h_relation": "same",
+      "stability_probe": false
+    },
+    {
+      "case_id": "sup_09",
+      "stratum": "same_claim_supersede",
+      "memory_a": "Il progetto Vega è ancora in attesa di approvazione.",
+      "memory_b": "Il progetto Vega è stato approvato definitivamente; non è più in attesa.",
+      "expected_action": "supersede_a",
+      "expected_2h_relation": "same",
+      "stability_probe": false
+    },
+    {
+      "case_id": "sup_10",
+      "stratum": "same_claim_supersede",
+      "memory_a": "La giacenza corrente del codice R45 è 320 pezzi.",
+      "memory_b": "Il conteggio inventariale ha corretto la giacenza corrente del codice R45 a 287 pezzi; 320 era errato.",
+      "expected_action": "supersede_a",
+      "expected_2h_relation": "same",
+      "stability_probe": false
+    },
+    {
+      "case_id": "sup_11",
+      "stratum": "same_claim_supersede",
+      "memory_a": "Il ticket T-902 ha priorità bassa.",
+      "memory_b": "Il ticket T-902 è stato riclassificato con priorità alta; la priorità bassa non è più valida.",
+      "expected_action": "supersede_a",
+      "expected_2h_relation": "same",
+      "stability_probe": false
+    },
+    {
+      "case_id": "sup_12",
+      "stratum": "same_claim_supersede",
+      "memory_a": "La pompa P3 installata sulla linea ha matricola MX-440.",
+      "memory_b": "La verifica fisica ha corretto la matricola della stessa pompa P3: è MX-404, non MX-440.",
+      "expected_action": "supersede_a",
+      "expected_2h_relation": "same",
+      "stability_probe": false
+    },
+    {
+      "case_id": "dist_01",
+      "stratum": "distinct_entities_keep",
+      "memory_a": "Il compound UBQ U-17 mostra un modulo a trazione di 1.250 MPa.",
+      "memory_b": "Il compound Altosele A-9 mostra un modulo a trazione di 1.400 MPa.",
+      "expected_action": "keep_both",
+      "expected_2h_relation": "related",
+      "stability_probe": true
+    },
+    {
+      "case_id": "dist_02",
+      "stratum": "distinct_entities_keep",
+      "memory_a": "Il server Atlas ha 64 GB di RAM e usa Ubuntu.",
+      "memory_b": "Il server Boreale ha 128 GB di RAM e usa Ubuntu.",
+      "expected_action": "keep_both",
+      "expected_2h_relation": "related",
+      "stability_probe": false
+    },
+    {
+      "case_id": "dist_03",
+      "stratum": "distinct_entities_keep",
+      "memory_a": "Anna ha visitato il Portogallo nel 2025.",
+      "memory_b": "Beatrice ha visitato la Grecia nel 2025.",
+      "expected_action": "keep_both",
+      "expected_2h_relation": "different",
+      "stability_probe": false
+    },
+    {
+      "case_id": "dist_04",
+      "stratum": "distinct_entities_keep",
+      "memory_a": "Per il cliente Alfa il dosaggio dell'additivo Z è 0,8%.",
+      "memory_b": "Per il cliente Beta il dosaggio dell'additivo Z è 1,1%.",
+      "expected_action": "keep_both",
+      "expected_2h_relation": "related",
+      "stability_probe": true
+    },
+    {
+      "case_id": "dist_05",
+      "stratum": "distinct_entities_keep",
+      "memory_a": "La linea L1 lavora il materiale K a 180 °C.",
+      "memory_b": "La linea L2 lavora il materiale K a 205 °C.",
+      "expected_action": "keep_both",
+      "expected_2h_relation": "related",
+      "stability_probe": false
+    },
+    {
+      "case_id": "dist_06",
+      "stratum": "distinct_entities_keep",
+      "memory_a": "Il lotto X31 ha MFI 5,2 g/10 min.",
+      "memory_b": "Il lotto Y77 ha MFI 7,8 g/10 min.",
+      "expected_action": "keep_both",
+      "expected_2h_relation": "related",
+      "stability_probe": false
+    },
+    {
+      "case_id": "dist_07",
+      "stratum": "distinct_entities_keep",
+      "memory_a": "L'appuntamento con Nadia riguarda il contratto C-11 ed è alle 9.",
+      "memory_b": "L'appuntamento con Omar riguarda il contratto C-12 ed è alle 11.",
+      "expected_action": "keep_both",
+      "expected_2h_relation": "different",
+      "stability_probe": false
+    },
+    {
+      "case_id": "dist_08",
+      "stratum": "distinct_entities_keep",
+      "memory_a": "Il progetto Iris deve consegnare il prototipo entro settembre.",
+      "memory_b": "Il progetto Quarzo deve consegnare il prototipo entro novembre.",
+      "expected_action": "keep_both",
+      "expected_2h_relation": "related",
+      "stability_probe": false
+    },
+    {
+      "case_id": "dist_09",
+      "stratum": "distinct_entities_keep",
+      "memory_a": "La workstation WS-3 monta una RTX 3080 e 64 GB di RAM.",
+      "memory_b": "La workstation WS-8 monta una RTX 4090 e 128 GB di RAM.",
+      "expected_action": "keep_both",
+      "expected_2h_relation": "related",
+      "stability_probe": true
+    },
+    {
+      "case_id": "dist_10",
+      "stratum": "distinct_entities_keep",
+      "memory_a": "Il fornitore Nord propone il granulato P a 1,12 euro/kg.",
+      "memory_b": "Il fornitore Sud propone il granulato P a 1,19 euro/kg.",
+      "expected_action": "keep_both",
+      "expected_2h_relation": "related",
+      "stability_probe": false
+    },
+    {
+      "case_id": "dist_11",
+      "stratum": "distinct_entities_keep",
+      "memory_a": "Lo stabilimento Est consuma 420 MWh al mese.",
+      "memory_b": "Lo stabilimento Ovest consuma 510 MWh al mese.",
+      "expected_action": "keep_both",
+      "expected_2h_relation": "related",
+      "stability_probe": false
+    },
+    {
+      "case_id": "dist_12",
+      "stratum": "distinct_entities_keep",
+      "memory_a": "Il cane Milo pesa 18 kg.",
+      "memory_b": "Il cane Argo pesa 24 kg.",
+      "expected_action": "keep_both",
+      "expected_2h_relation": "different",
+      "stability_probe": false
+    },
+    {
+      "case_id": "comp_01",
+      "stratum": "same_entity_complementary_keep",
+      "memory_a": "Il materiale M-12 ha modulo a trazione di 1.100 MPa.",
+      "memory_b": "Il materiale M-12 ha resistenza IZOD di 4,2 kJ/m².",
+      "expected_action": "keep_both",
+      "expected_2h_relation": "same",
+      "stability_probe": true
+    },
+    {
+      "case_id": "comp_02",
+      "stratum": "same_entity_complementary_keep",
+      "memory_a": "Il progetto Riva dispone di un budget di 80.000 euro.",
+      "memory_b": "Il progetto Riva ha come scadenza il 30 novembre.",
+      "expected_action": "keep_both",
+      "expected_2h_relation": "same",
+      "stability_probe": false
+    },
+    {
+      "case_id": "comp_03",
+      "stratum": "same_entity_complementary_keep",
+      "memory_a": "Sara è responsabile acquisti per il progetto Lima.",
+      "memory_b": "Sara lavora nell'ufficio di Torino.",
+      "expected_action": "keep_both",
+      "expected_2h_relation": "same",
+      "stability_probe": false
+    },
+    {
+      "case_id": "comp_04",
+      "stratum": "same_entity_complementary_keep",
+      "memory_a": "L'estrusore E4 opera a 190 °C.",
+      "memory_b": "L'estrusore E4 opera con pressione di testa pari a 72 bar.",
+      "expected_action": "keep_both",
+      "expected_2h_relation": "same",
+      "stability_probe": false
+    },
+    {
+      "case_id": "comp_05",
+      "stratum": "same_entity_complementary_keep",
+      "memory_a": "Per il viaggio V-8 il volo parte da Milano il 12 settembre.",
+      "memory_b": "Per il viaggio V-8 l'hotel prenotato è vicino alla stazione centrale.",
+      "expected_action": "keep_both",
+      "expected_2h_relation": "same",
+      "stability_probe": false
+    },
+    {
+      "case_id": "comp_06",
+      "stratum": "same_entity_complementary_keep",
+      "memory_a": "L'ordine O-55 contiene 24 scatole.",
+      "memory_b": "L'ordine O-55 va consegnato in via Verdi 18.",
+      "expected_action": "keep_both",
+      "expected_2h_relation": "same",
+      "stability_probe": false
+    },
+    {
+      "case_id": "target_01",
+      "stratum": "target_vs_result_keep",
+      "memory_a": "Per il compound C-26 il target progettuale del modulo è 1.400 MPa.",
+      "memory_b": "Sul primo campione del compound C-26 è stato misurato un modulo di 1.250 MPa.",
+      "expected_action": "keep_both",
+      "expected_2h_relation": "same",
+      "stability_probe": true
+    },
+    {
+      "case_id": "target_02",
+      "stratum": "target_vs_result_keep",
+      "memory_a": "Per la linea Q il target di scarto è inferiore al 2%.",
+      "memory_b": "Nel turno di prova della linea Q lo scarto misurato è stato 3,1%.",
+      "expected_action": "keep_both",
+      "expected_2h_relation": "same",
+      "stability_probe": false
+    },
+    {
+      "case_id": "target_03",
+      "stratum": "target_vs_result_keep",
+      "memory_a": "Il progetto Sole ha un obiettivo di consegna di 20 giorni.",
+      "memory_b": "Nel pilot del progetto Sole la consegna effettiva ha richiesto 27 giorni.",
+      "expected_action": "keep_both",
+      "expected_2h_relation": "same",
+      "stability_probe": false
+    },
+    {
+      "case_id": "target_04",
+      "stratum": "target_vs_result_keep",
+      "memory_a": "Per il reparto A il consumo energetico obiettivo è 350 MWh mensili.",
+      "memory_b": "A luglio il reparto A ha consumato 392 MWh.",
+      "expected_action": "keep_both",
+      "expected_2h_relation": "same",
+      "stability_probe": false
+    },
+    {
+      "case_id": "target_05",
+      "stratum": "target_vs_result_keep",
+      "memory_a": "La capacità nominale prevista per il dosatore D2 è 600 kg/h.",
+      "memory_b": "Nel collaudo il dosatore D2 ha raggiunto 540 kg/h.",
+      "expected_action": "keep_both",
+      "expected_2h_relation": "same",
+      "stability_probe": false
+    },
+    {
+      "case_id": "target_06",
+      "stratum": "target_vs_result_keep",
+      "memory_a": "Il budget approvato per la commessa Kappa è 45.000 euro.",
+      "memory_b": "Il costo consuntivo provvisorio della commessa Kappa è 48.700 euro.",
+      "expected_action": "keep_both",
+      "expected_2h_relation": "same",
+      "stability_probe": false
+    },
+    {
+      "case_id": "amb_01",
+      "stratum": "ambiguous_identity_diagnostic",
+      "memory_a": "Aurora usa il modulo di controllo versione 3.",
+      "memory_b": "Aurora ha cambiato ufficio e ora lavora al secondo piano.",
+      "expected_action": null,
+      "expected_2h_relation": "unknown",
+      "stability_probe": true
+    },
+    {
+      "case_id": "amb_02",
+      "stratum": "ambiguous_identity_diagnostic",
+      "memory_a": "Il lotto pilota ha dato MFI 5.",
+      "memory_b": "Il lotto pilota ha dato MFI 8.",
+      "expected_action": null,
+      "expected_2h_relation": "unknown",
+      "stability_probe": false
+    },
+    {
+      "case_id": "amb_03",
+      "stratum": "ambiguous_identity_diagnostic",
+      "memory_a": "Leonardo segue la configurazione del server.",
+      "memory_b": "Leonardo è stato approvato come nome del nuovo progetto.",
+      "expected_action": null,
+      "expected_2h_relation": "unknown",
+      "stability_probe": false
+    },
+    {
+      "case_id": "amb_04",
+      "stratum": "ambiguous_identity_diagnostic",
+      "memory_a": "La macchina principale lavora a 175 °C.",
+      "memory_b": "La macchina principale lavora a 205 °C.",
+      "expected_action": null,
+      "expected_2h_relation": "unknown",
+      "stability_probe": false
+    },
+    {
+      "case_id": "amb_05",
+      "stratum": "ambiguous_identity_diagnostic",
+      "memory_a": "Il cliente tedesco richiede sacchi da 20 kg.",
+      "memory_b": "Il cliente tedesco richiede sacchi da 25 kg.",
+      "expected_action": null,
+      "expected_2h_relation": "unknown",
+      "stability_probe": false
+    },
+    {
+      "case_id": "amb_06",
+      "stratum": "ambiguous_identity_diagnostic",
+      "memory_a": "Il campione blu contiene il 3% di carica.",
+      "memory_b": "Il campione blu contiene il 7% di carica.",
+      "expected_action": null,
+      "expected_2h_relation": "unknown",
+      "stability_probe": false
+    }
+  ]
+}

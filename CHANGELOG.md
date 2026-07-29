@@ -23,6 +23,36 @@ Stato, numeri, invarianti e limiti sono congelati nella fotografia
 [docs/EURI_V2.21_STATE_2026-07-28.md](docs/EURI_V2.21_STATE_2026-07-28.md).
 La dichiarazione di versione non migra Redis e non riscrive memorie.
 
+### V2.21 (continua, 29/07/2026) — Operatori cognitivi resi falsificabili
+
+- Censiti dal codice gli operatori 2a–2i, propagazione, gate archiviato e
+  cleanup, separando comportamento verificato, intenzione, misura e ipotesi.
+  La forma unica non regge: emergono aggiornatori di evidenza, generatori e
+  mietitori. Soltanto 2f/2h/propagazione sono oggi chiaramente TMS-like; le
+  cancellazioni esplicite e il TTL Redis non lasciano abbastanza stato per un
+  controfattuale affidabile.
+- L'audit ha trovato due difetti strutturali senza modificarli: il ciclo
+  forzato usa ordine e molteplicità diversi dal runtime; il cleanup post-2a
+  chiama `get_expiring_memories(days_ahead=0)` e costruisce una finestra
+  impossibile, quindi è un no-op. Documentato anche il buco di provenienza
+  della lezione `bad_reasoning` di 2g.
+- Prima mappa verificata del prior art: RMM, MemSifter, SF-AMS e MemLineage
+  impediscono di rivendicare genericamente utilità/outcome/lineage come novità.
+  La tesi falsificabile viene ristretta all'anello
+  output-osservato→lifecycle e alla conservazione degli errori come storia
+  epistemica.
+- Preregistrata la prima verifica appaiata: 42 coppie italiane controllate,
+  36 primarie, 6 ambigue, 9 sentinelle replicate, 120 chiamate previste.
+  Confronta 2f con 2f+2h sugli stessi input, usa direttamente i classificatori
+  di produzione, controbilancia l'ordine, non apre Redis e non passa i gold ai
+  prompt. Il run reale è bloccato finché protocollo, fixture e harness non sono
+  committati.
+- Baseline storica read-only, non usata come gold: 603 coppie 2f controllate,
+  252 supersessioni attive, 230 narrate, 98 confronti, 83 reflection 2h,
+  2 inversioni annotate e 21 archi con vincitore ormai assente.
+- Regressioni pure e resume/integrità del nuovo harness: manifest unitario
+  **66/66**. Nessuna modifica ai loop di produzione e nessuna scrittura Redis.
+
 ### V2.21 (continua, 29/07/2026) — Memoria personale e scenari non condividono più lo stesso mondo
 
 - Chiuso un difetto strutturale: una battuta concreta, un role-play o una

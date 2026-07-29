@@ -32,6 +32,7 @@ test_insight_epistemic_boundary.py
 test_initiative.py
 test_loop2a_reflection.py
 test_loop2e_attention.py
+test_loop2fh_validation.py
 test_memory_idempotency.py
 test_memory_benchmark.py
 test_memory_benchmark_heldout.py
