@@ -138,8 +138,15 @@ def gather_grounded_evidence(r, topic: str, embedder=None, limit: int = 6) -> li
     stop-list cucita a mano). Non è verità, è evidenza vissuta da far leggere a chi giudica.
     """
     from redis.commands.search.query import Query
+    from core.memory_scope import PERSONAL_SCOPE, scope_clause, scope_of
+    # Lo scope entra nella QUERY, non solo nell'idratazione: filtrare dopo lascerebbe
+    # ai documenti di un altro mondo la facoltà di occupare posti nella finestra e di
+    # spingerne fuori evidenza personale. Non è un leak — è perdita di richiamo, e un
+    # test sull'output non la vedrebbe. Il filtro sotto resta come seconda validazione
+    # fail-closed contro un indice stale.
+    grounded_query = f"({scope_clause(PERSONAL_SCOPE)}) (@source:{{{_GROUNDED_SRC}}})"
     try:
-        res = r.ft("idx:memories").search(Query(f"@source:{{{_GROUNDED_SRC}}}").paging(0, 800))
+        res = r.ft("idx:memories").search(Query(grounded_query).paging(0, 800))
     except Exception as e:
         logger.error(f"gather_grounded_evidence: {e}")
         return []
@@ -149,7 +156,12 @@ def gather_grounded_evidence(r, topic: str, embedder=None, limit: int = 6) -> li
             o = r.json().get(d.id)
         except Exception:
             continue
-        if o and o.get("content") and o.get("memory_kind") != "conversation_anchor":
+        if (
+            o
+            and scope_of(o) == PERSONAL_SCOPE
+            and o.get("content")
+            and o.get("memory_kind") != "conversation_anchor"
+        ):
             docs.append(o)
     if not docs:
         return []
