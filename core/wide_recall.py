@@ -73,6 +73,8 @@ def build_wide_recall_map(
     max_lateral da altri domini (un rappresentante per dominio). Esclude superseded e web.
     """
     by_domain: dict[str, list[tuple]] = {}
+    from core.memory_scope import current_scope, scope_of
+    expected_scope = current_scope()
     for key in r.scan_iter("euri:memory:*"):
         try:
             d = r.json().get(key, "$")
@@ -81,6 +83,8 @@ def build_wide_recall_map(
         if not d:
             continue
         doc = d[0]
+        if scope_of(doc) != expected_scope:
+            continue
         if doc.get("superseded_by") or doc.get("correction_pending") or doc.get("source") == "web":
             continue
         dom = doc.get("domain") or "generale"

@@ -164,6 +164,8 @@ def build_subject_recall(
     if not tokens:
         return []
     found = []
+    from core.memory_scope import current_scope, scope_of
+    expected_scope = current_scope()
     for key in memory.r.scan_iter("euri:memory:*"):
         try:
             d = memory.r.json().get(key, "$")
@@ -172,6 +174,8 @@ def build_subject_recall(
         if not d:
             continue
         doc = d[0]
+        if scope_of(doc) != expected_scope:
+            continue
         if doc.get("superseded_by") or doc.get("correction_pending") or doc.get("source") == "web":
             continue
         low = (doc.get("content") or "").lower()
@@ -215,6 +219,8 @@ def build_entity_recall(
         }
     }
     found = []
+    from core.memory_scope import current_scope, scope_of
+    expected_scope = current_scope()
     for key in memory.r.scan_iter("euri:memory:*"):
         try:
             d = memory.r.json().get(key, "$")
@@ -223,6 +229,8 @@ def build_entity_recall(
         if not d:
             continue
         doc = d[0]
+        if scope_of(doc) != expected_scope:
+            continue
         source = doc.get("source") or ""
         if doc.get("superseded_by") or doc.get("correction_pending") or source == "web":
             continue

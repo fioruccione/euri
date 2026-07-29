@@ -14,6 +14,7 @@ from core.ollama_client import chat_client
 from core.operational_context import load_operational_context
 import config
 from utils.date_utils import now, format_datetime_full, from_timestamp
+from core.memory_scope import current_scope, normalize_scope
 
 
 _OWNER_NAME = config.OWNER_DISPLAY_NAME
@@ -67,9 +68,11 @@ class Brain:
         trusted: bool,
         *,
         observed_at: float | None = None,
+        memory_scope: str | None = None,
     ) -> None:
         """Aggiunge un messaggio alla history LLM e al journal passivo."""
         at = time.time() if observed_at is None else float(observed_at)
+        memory_scope = normalize_scope(memory_scope or current_scope())
         if role == "user":
             gap_s = getattr(config, "TEMPORAL_EPISODE_GAP_SECONDS", 30 * 60)
             if (
@@ -90,6 +93,7 @@ class Brain:
             "observed_at": at,
             "conversation_id": self._conversation_id,
             "segment_id": self._history_segment_id,
+            "memory_scope": memory_scope,
         }
         self._conversation_history.append(message)
         self._passive_journal.append(dict(message))
@@ -131,6 +135,7 @@ class Brain:
         observed_at: float | None = None,
         thinking: bool = False,
         thinking_reason: str = "",
+        memory_scope: str | None = None,
     ) -> str:
         """
         Genera una risposta per voce: breve, diretta, italiana.
@@ -142,7 +147,20 @@ class Brain:
         )
 
         user_observed_at = time.time() if observed_at is None else float(observed_at)
+        memory_scope = normalize_scope(memory_scope or current_scope())
         messages = [{"role": "system", "content": config.SYSTEM_PROMPT}]
+        if memory_scope.startswith("experiment_"):
+            label = memory_scope.removeprefix("experiment_").replace("_", " ")
+            messages.append({
+                "role": "system",
+                "content": (
+                    "SESSIONE SPERIMENTALE ISOLATA "
+                    f"«{label}». Tutti i dati di questa sessione sono materiale "
+                    "di prova, non fatti della vita reale dell'utente. Ragiona "
+                    "coerentemente dentro lo scenario, ma non presentarli come "
+                    "memoria personale e non mescolarli con altri progetti."
+                ),
+            })
 
         # Contesto operativo opzionale (EURI_CONTEXT.md): cornice del mondo in cui Euri opera.
         # Fail-open: "" se il file manca → prompt identico a prima.
@@ -160,19 +178,26 @@ class Brain:
         })
 
         # Episodi compressi della sessione corrente (max EPISODE_MAX_INJECT)
-        if self._episodes:
+        scoped_episodes = [
+            episode for episode in self._episodes
+            if normalize_scope(episode.get("memory_scope")) == memory_scope
+        ]
+        if scoped_episodes:
             ep_text = "\n\n".join(
                 f"[Episodio {i+1} | "
                 f"da {turn_time_label(ep.get('started_at'), user_observed_at)} "
                 f"a {turn_time_label(ep.get('ended_at'), user_observed_at)}] "
                 f"{ep.get('summary', '')}"
-                for i, ep in enumerate(self._episodes[-config.EPISODE_MAX_INJECT:])
+                for i, ep in enumerate(scoped_episodes[-config.EPISODE_MAX_INJECT:])
             )
             messages.append({"role": "system", "content": f"Episodi conversazione corrente:\n{ep_text}"})
 
         # Aggiungi storico recente sotto lock — evita race con _compress_episode
         with self.history_lock:
-            history = list(self._conversation_history[-self._max_history:])
+            history = [
+                message for message in self._conversation_history
+                if normalize_scope(message.get("memory_scope")) == memory_scope
+            ][-self._max_history:]
         if history:
             timeline = []
             for index, message in enumerate(history, start=1):
@@ -245,16 +270,32 @@ class Brain:
             # side-channel globale condiviso tra voce e mobile.
             with self.history_lock:
                 self._append_history_locked(
-                    "user", user_text, trusted, observed_at=user_observed_at
+                    "user",
+                    user_text,
+                    trusted,
+                    observed_at=user_observed_at,
+                    memory_scope=memory_scope,
                 )
                 self._append_history_locked(
-                    "assistant", reply, trusted, observed_at=time.time()
+                    "assistant",
+                    reply,
+                    trusted,
+                    observed_at=time.time(),
+                    memory_scope=memory_scope,
                 )
-                trigger_compress = len(self._conversation_history) >= config.EPISODE_COMPRESSION_THRESHOLD
+                scoped_count = sum(
+                    1 for message in self._conversation_history
+                    if normalize_scope(message.get("memory_scope")) == memory_scope
+                )
+                trigger_compress = scoped_count >= config.EPISODE_COMPRESSION_THRESHOLD
 
             # Compressione episodica in background se la history è abbastanza lunga
             if trigger_compress:
-                threading.Thread(target=self._compress_episode, daemon=True).start()
+                threading.Thread(
+                    target=self._compress_episode,
+                    args=(memory_scope,),
+                    daemon=True,
+                ).start()
 
             return reply
 
@@ -266,18 +307,36 @@ class Brain:
         """Inietta uno scambio tool nella history LLM — visibile ai turn CHAT successivi."""
         user_at = time.time()
         with self.history_lock:
-            self._append_history_locked("user", user_text, False, observed_at=user_at)
-            self._append_history_locked("assistant", result_text, False, observed_at=time.time())
+            scope = current_scope()
+            self._append_history_locked(
+                "user",
+                user_text,
+                False,
+                observed_at=user_at,
+                memory_scope=scope,
+            )
+            self._append_history_locked(
+                "assistant",
+                result_text,
+                False,
+                observed_at=time.time(),
+                memory_scope=scope,
+            )
 
-    def _compress_episode(self):
+    def _compress_episode(self, memory_scope: str | None = None):
         """Comprime i messaggi più vecchi in un episodio — gira in background."""
         from core.temporal_context import history_line_for_prompt
 
+        memory_scope = normalize_scope(memory_scope or current_scope())
         with self._compress_lock:
             with self.history_lock:
-                if len(self._conversation_history) < config.EPISODE_COMPRESSION_THRESHOLD:
+                scoped = [
+                    message for message in self._conversation_history
+                    if normalize_scope(message.get("memory_scope")) == memory_scope
+                ]
+                if len(scoped) < config.EPISODE_COMPRESSION_THRESHOLD:
                     return  # un altro thread ha già compresso
-                chunk = self._conversation_history[:config.EPISODE_COMPRESSION_CHUNK]
+                chunk = scoped[:config.EPISODE_COMPRESSION_CHUNK]
             reference_at = time.time()
             lines = [history_line_for_prompt(m, reference_at=reference_at) for m in chunk]
             dialogue = "\n".join(lines)
@@ -307,7 +366,11 @@ class Brain:
                 if not summary:
                     return
                 with self.history_lock:
-                    self._conversation_history = self._conversation_history[config.EPISODE_COMPRESSION_CHUNK:]
+                    removed = {int(message["seq"]) for message in chunk}
+                    self._conversation_history = [
+                        message for message in self._conversation_history
+                        if int(message.get("seq") or -1) not in removed
+                    ]
                 started_at = min(
                     (float(m.get("observed_at")) for m in chunk if m.get("observed_at") is not None),
                     default=reference_at,
@@ -328,11 +391,13 @@ class Brain:
                     "source_turn_refs": [
                         m.get("turn_ref") for m in chunk if m.get("turn_ref")
                     ],
+                    "memory_scope": memory_scope,
                 }
                 self._episodes.append({
                     "summary": summary,
                     "started_at": started_at,
                     "ended_at": ended_at,
+                    "memory_scope": memory_scope,
                 })
                 logger.info(f"Episodic compression: {config.EPISODE_COMPRESSION_CHUNK} messaggi → episodio #{len(self._episodes)}")
                 if self._episode_callback:
@@ -594,11 +659,25 @@ class Brain:
                 turn_time = "tempo non registrato"
             lines.append(f"[T{index} | {turn_time}] {role}: {msg['content']}")
         dialogue = "\n".join(lines)
+        from core.memory_scope import is_experimental, normalize_scope
+        memory_scope = normalize_scope(conversation[0].get("memory_scope"))
+        scope_contract = (
+            "Questa è una SESSIONE SPERIMENTALE ISOLATA: estrai i dati dello "
+            "scenario perché devono essere richiamabili soltanto nel suo scope; "
+            "non reinterpretarli come fatti personali reali.\n"
+            if is_experimental(memory_scope)
+            else
+            "Questa è memoria PERSONALE: non estrarre esempi, ipotesi, giochi di "
+            "ruolo, simulazioni, battute o dati che l'utente presenta esplicitamente "
+            "come inventati/test. Una frase concreta dentro uno scenario fittizio "
+            "non diventa un fatto reale.\n"
+        )
 
         prompt = (
             f"Analizza questa conversazione tra {owner_name} e il suo assistente "
             f"{assistant_name}.\n\n"
             f"{dialogue}\n\n"
+            f"{scope_contract}"
             f"Estrai SOLO elementi che vale la pena ricordare per una conversazione futura.\n"
             f"Distingui due tipi:\n"
             f"- FATTO: informazione concreta, decisione, risultato o preferenza riutilizzabile.\n"

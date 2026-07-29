@@ -1,6 +1,7 @@
 # Nessun Redis/Ollama/hardware reale. Ammessi fake, temp file e subprocess locali.
 test_act_word.py
 test_action_controller.py
+test_addressedness.py
 test_coderunner_sandbox.py
 test_clipboard_persistence.py
 test_correction_quarantine.py
@@ -35,6 +36,7 @@ test_memory_benchmark.py
 test_memory_benchmark_heldout.py
 test_memory_dedup.py
 test_memory_outbox.py
+test_memory_scope.py
 test_memory_utility_shadow.py
 test_named_save.py
 test_passive_provenance.py

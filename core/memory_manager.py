@@ -25,6 +25,12 @@ from core.memory_outbox import (
     process_memory_outbox_event,
 )
 from core.pulse import pulse_emit
+from core.memory_scope import (
+    PERSONAL_SCOPE,
+    current_scope,
+    normalize_scope,
+    scope_clause,
+)
 
 # Sorgenti di memoria che nascono da un'INTERAZIONE col mondo (→ polo extero del Pulse);
 # le altre (passive/loop2e/reflection/reaction…) sono elaborazione interna di Euri (→ intero).
@@ -92,12 +98,16 @@ class MemoryManager:
     # ──────────────────────────────────────────
 
     @staticmethod
-    def _idempotency_key(content: str, source: str) -> str | None:
+    def _idempotency_key(
+        content: str,
+        source: str,
+        memory_scope: str = PERSONAL_SCOPE,
+    ) -> str | None:
         normalized = " ".join((content or "").lower().split())
         if not normalized:
             return None
         digest = hashlib.sha1(normalized.encode()).hexdigest()
-        return f"euri:idem:save:{source}:{digest}"
+        return f"euri:idem:save:{normalize_scope(memory_scope)}:{source}:{digest}"
 
     def _commit_idempotent_memory(
         self,
@@ -153,6 +163,7 @@ class MemoryManager:
         temporal_context: dict | None = None,
         final_fields: dict | None = None,
         precommit_guard=None,
+        memory_scope: str | None = None,
     ) -> str | None:
         """Costruisce e pubblica una memoria canonica già completa.
 
@@ -185,9 +196,13 @@ class MemoryManager:
         # vincitore. Abilitato SOLO dove la race è reale e le eventuali post-mutazioni sono
         # conservative anche su un nodo identico esistente: passive learner e save esplicito.
         # Fail-mode sicuro: spento = resta il dedup best-effort.
-        idem_key = self._idempotency_key(content, source) if idempotent else None
-
         ts = now()
+        memory_scope = normalize_scope(memory_scope or current_scope())
+        idem_key = (
+            self._idempotency_key(content, source, memory_scope)
+            if idempotent
+            else None
+        )
         temporal_context = dict(temporal_context or {})
 
         def _float_or_none(value):
@@ -255,7 +270,9 @@ class MemoryManager:
         if embedding is not None:
             try:
                 vec_bytes = vec.astype("float32").tobytes()
-                hint_domains = neighbor_domains(vec_bytes, self.r, k=8)
+                hint_domains = neighbor_domains(
+                    vec_bytes, self.r, k=8, memory_scope=memory_scope
+                )
             except Exception as e:
                 logger.debug(f"P1 neighbor_domains fallito: {e}")
         domain_label = assign_domain(content, hint_domains=hint_domains)
@@ -279,6 +296,7 @@ class MemoryManager:
             "category": category,
             "source": source,
             "memory_kind": memory_kind,
+            "memory_scope": memory_scope,
             "domain": domain_label,
             "requires_verification": requires_verification,
             "created_at": to_timestamp(ts),
@@ -305,7 +323,7 @@ class MemoryManager:
             doc["completed_at"] = None
         if final_fields:
             immutable = {
-                "id", "content", "source", "embedding",
+                "id", "content", "source", "embedding", "memory_scope",
             }
             forbidden = immutable.intersection(final_fields)
             if forbidden:
@@ -378,6 +396,7 @@ class MemoryManager:
         touch: bool = True,
         *,
         source_exclude: list[str] | None = None,
+        memory_scope: str | None = None,
     ) -> list[dict]:
         """
         Ricerca a tre livelli:
@@ -390,6 +409,7 @@ class MemoryManager:
         touch=True rinforza solo i risultati restituiti: recalled_count, last_recalled_at
         e TTL scorrevole. Usa touch=False per audit, UI diagnostica e test read-only.
         """
+        memory_scope = normalize_scope(memory_scope or current_scope())
         if self._embedder and self._embedder.available and query != "*":
             merged: list[dict] = []
             seen_uuids: set[str] = set()
@@ -410,6 +430,7 @@ class MemoryManager:
                         max(id_cap * 4, 8),
                         source_filter=source_filter,
                         source_exclude=source_exclude,
+                        memory_scope=memory_scope,
                         touch=False,
                     ),
                     limit=id_cap,
@@ -428,6 +449,7 @@ class MemoryManager:
                 limit,
                 source_filter=source_filter,
                 source_exclude=source_exclude,
+                memory_scope=memory_scope,
             )
             semantic = [r for r in semantic if not r.get("superseded_by")]
             if source_filter is not None:
@@ -447,6 +469,7 @@ class MemoryManager:
                     limit,
                     source_filter=source_filter,
                     source_exclude=source_exclude,
+                    memory_scope=memory_scope,
                     touch=False,
                 )
                 for r in hybrid:
@@ -473,6 +496,7 @@ class MemoryManager:
                 max(limit * 4, limit),
                 source_filter=source_filter,
                 source_exclude=source_exclude,
+                memory_scope=memory_scope,
                 touch=False,
             )
             results = self._rank_epistemically(candidates, limit=limit)
@@ -486,6 +510,7 @@ class MemoryManager:
             max(limit * 4, limit),
             source_filter=source_filter,
             source_exclude=source_exclude,
+            memory_scope=memory_scope,
             touch=False,
         )
         results = self._rank_epistemically(candidates, limit=limit)
@@ -512,9 +537,10 @@ class MemoryManager:
     def _source_prefix(
         source_filter: list[str] | None,
         source_exclude: list[str] | None = None,
+        memory_scope: str | None = None,
     ) -> str:
         """Prefiltro RediSearch inclusivo/esclusivo per la source."""
-        clauses = []
+        clauses = [scope_clause(memory_scope)]
         if source_filter:
             clauses.append("@source:{" + "|".join(source_filter) + "}")
         if source_exclude:
@@ -528,9 +554,12 @@ class MemoryManager:
         source_filter: list[str] | None = None,
         source_exclude: list[str] | None = None,
         touch: bool = True,
+        memory_scope: str | None = None,
     ) -> list[dict]:
         try:
-            prefix = self._source_prefix(source_filter, source_exclude).strip()
+            prefix = self._source_prefix(
+                source_filter, source_exclude, memory_scope
+            ).strip()
             safe_query = query if query == "*" else self._sanitize_query_or(query)
 
             # Se abbiamo sia un filtro source che una query testuale, li isoliamo con parentesi
@@ -544,7 +573,9 @@ class MemoryManager:
                 
             q = Query(full_query).paging(0, limit).sort_by("created_at", asc=False)
             results = self.r.ft("idx:memories").search(q)
-            return self._hydrate(results.docs, touch=touch)
+            return self._hydrate(
+                results.docs, touch=touch, memory_scope=memory_scope
+            )
         except Exception as e:
             logger.error(f"Errore ricerca keyword memories: {e}")
             return []
@@ -555,6 +586,7 @@ class MemoryManager:
         limit: int,
         source_filter: list[str] | None = None,
         source_exclude: list[str] | None = None,
+        memory_scope: str | None = None,
     ) -> list[dict]:
         """KNN search tramite embedding — restituisce docs ordinati per distanza coseno."""
         vec = self._embedder.encode(query, mode="query")
@@ -572,7 +604,9 @@ class MemoryManager:
                 db=config.REDIS_DB,
                 decode_responses=False,
             )
-            prefilter = self._source_prefix(source_filter, source_exclude).strip() or "*"
+            prefilter = self._source_prefix(
+                source_filter, source_exclude, memory_scope
+            ).strip() or "*"
             q = (RQuery(f"({prefilter})=>[KNN {limit * 2} @embedding $vec AS vec_score]")
                  .sort_by("vec_score")
                  .paging(0, limit * 2)
@@ -596,6 +630,10 @@ class MemoryManager:
                     item = data[0]
                     if item.get("superseded_by"):  # soft-deleted da Loop 2f
                         continue
+                    if normalize_scope(item.get("memory_scope")) != normalize_scope(
+                        memory_scope or current_scope()
+                    ):
+                        continue
                     item["_created_at"] = from_timestamp(item.get("created_at"))
                     item["_vec_score"] = score
                     docs.append(item)
@@ -611,6 +649,7 @@ class MemoryManager:
         source_filter: list[str] | None = None,
         source_exclude: list[str] | None = None,
         touch: bool = True,
+        memory_scope: str | None = None,
     ) -> list[dict]:
         """
         Merge ricerca semantica + keyword.
@@ -624,6 +663,7 @@ class MemoryManager:
             limit,
             source_filter=source_filter,
             source_exclude=source_exclude,
+            memory_scope=memory_scope,
         )
         kw_docs = (
             self._search_keyword(
@@ -632,6 +672,7 @@ class MemoryManager:
                 source_filter=source_filter,
                 source_exclude=source_exclude,
                 touch=False,
+                memory_scope=memory_scope,
             )
             if kw_query
             else []
@@ -667,14 +708,22 @@ class MemoryManager:
             self._touch_memories(results)
         return results
 
-    def _hydrate(self, raw_docs, touch: bool = True) -> list[dict]:
+    def _hydrate(
+        self,
+        raw_docs,
+        touch: bool = True,
+        memory_scope: str | None = None,
+    ) -> list[dict]:
         """Carica i documenti completi da Redis JSON; opzionalmente rinforza i richiami."""
+        expected_scope = normalize_scope(memory_scope or current_scope())
         docs = []
         for doc in raw_docs:
             data = self.r.json().get(doc.id, "$")
             if data:
                 item = data[0]
                 if item.get("superseded_by"):  # soft-deleted da Loop 2f — escludi dalla ricerca
+                    continue
+                if normalize_scope(item.get("memory_scope")) != expected_scope:
                     continue
                 item["_created_at"] = from_timestamp(item.get("created_at"))
                 docs.append(item)
@@ -749,13 +798,16 @@ class MemoryManager:
         touch: bool = True,
         *,
         source_exclude: list[str] | None = None,
+        memory_scope: str | None = None,
     ) -> list[dict]:
+        memory_scope = normalize_scope(memory_scope or current_scope())
         candidates = self._search_keyword(
             "*",
             limit=max(limit * 4, limit),
             source_filter=source_filter,
             source_exclude=source_exclude,
             touch=False,
+            memory_scope=memory_scope,
         )
         results = self._rank_epistemically(candidates, limit=limit)
         if touch:
@@ -770,6 +822,7 @@ class MemoryManager:
         touch: bool = True,
         *,
         source_exclude: list[str] | None = None,
+        memory_scope: str | None = None,
     ) -> list[dict]:
         """Recupera memorie per tempo dell'evento, dell'affermazione o del salvataggio."""
         try:
@@ -778,7 +831,10 @@ class MemoryManager:
                 f"@asserted_at:[{ts_start} {ts_end}] | "
                 f"@created_at:[{ts_start} {ts_end}])"
             )
-            source_clause = self._source_prefix(None, source_exclude)
+            memory_scope = normalize_scope(memory_scope or current_scope())
+            source_clause = self._source_prefix(
+                None, source_exclude, memory_scope
+            )
             if source_clause:
                 temporal_query = f"({source_clause}) ({temporal_query})"
             q = (Query(temporal_query)
@@ -786,7 +842,10 @@ class MemoryManager:
                  .paging(0, max(limit * 4, limit)))
             results = self.r.ft("idx:memories").search(q)
             memories = self._rank_epistemically(
-                self._hydrate(results.docs, touch=False), limit=limit
+                self._hydrate(
+                    results.docs, touch=False, memory_scope=memory_scope
+                ),
+                limit=limit,
             )
             if touch:
                 self._touch_memories(memories)
@@ -795,10 +854,20 @@ class MemoryManager:
             logger.error(f"Errore ricerca temporale: {e}")
             return []
 
-    def get_recent_reflections(self, limit: int = 2, touch: bool = True) -> list[dict]:
+    def get_recent_reflections(
+        self,
+        limit: int = 2,
+        touch: bool = True,
+        *,
+        memory_scope: str | None = None,
+    ) -> list[dict]:
         """Restituisce le reflection più recenti generate da Loop 2a."""
         candidates = self._search_keyword(
-            "*", limit=max(limit * 4, limit), source_filter=["reflection"], touch=False
+            "*",
+            limit=max(limit * 4, limit),
+            source_filter=["reflection"],
+            touch=False,
+            memory_scope=memory_scope,
         )
         results = self._rank_epistemically(candidates, limit=limit)
         if touch:
@@ -928,7 +997,13 @@ class MemoryManager:
             return True
         return False
 
-    def is_duplicate_memory(self, content: str, llm_probe_fn=None) -> bool:
+    def is_duplicate_memory(
+        self,
+        content: str,
+        llm_probe_fn=None,
+        *,
+        memory_scope: str | None = None,
+    ) -> bool:
         """
         True se esiste già una memoria semanticamente equivalente.
 
@@ -942,7 +1017,9 @@ class MemoryManager:
         if self._embedder and self._embedder.available:
             vec_new = self._embedder.encode(content)
             if vec_new is not None:
-                candidates = self._search_semantic(content, limit=3)
+                candidates = self._search_semantic(
+                    content, limit=3, memory_scope=memory_scope
+                )
                 for cand in candidates:
                     score = cand.get("_vec_score", 1.0)  # COSINE distance (0=identico, 1=opposto)
                     similarity = 1.0 - score
@@ -988,7 +1065,12 @@ class MemoryManager:
         if len(words) < 2:
             return False
         keyword_query = " | ".join(words[:5])
-        results = self._search_keyword(keyword_query, limit=3, touch=False)
+        results = self._search_keyword(
+            keyword_query,
+            limit=3,
+            touch=False,
+            memory_scope=memory_scope,
+        )
         if not results:
             return False
         content_kws = set(words)
@@ -1233,7 +1315,8 @@ class MemoryManager:
             k = max(max_supersede + 5, 12)
             q = (
                 Query(
-                    f"(@domain:{{{safe_domain}}} @source:{{reflection}})"
+                    f"({scope_clause()} @domain:{{{safe_domain}}} "
+                    f"@source:{{reflection}})"
                     f"=>[KNN {k} @embedding $vec AS dup_score]"
                 )
                 .sort_by("dup_score")
@@ -1315,16 +1398,27 @@ class MemoryManager:
             "teach": len(teach),
         }
 
-    def _query_todos(self, query: str, limit: int = 20) -> list[dict]:
+    def _query_todos(
+        self,
+        query: str,
+        limit: int = 20,
+        *,
+        memory_scope: str | None = None,
+    ) -> list[dict]:
         """Query sugli impegni: memorie con status pending/done in idx:memories."""
         try:
-            q = Query(query).paging(0, limit).sort_by("due_at", asc=True)
+            scoped_query = f"({scope_clause(memory_scope)}) ({query})"
+            q = Query(scoped_query).paging(0, limit).sort_by("due_at", asc=True)
             results = self.r.ft("idx:memories").search(q)
             docs = []
             for doc in results.docs:
                 data = self.r.json().get(doc.id, "$")
                 if data:
                     item = data[0]
+                    if normalize_scope(item.get("memory_scope")) != normalize_scope(
+                        memory_scope or current_scope()
+                    ):
+                        continue
                     item.pop("embedding", None)  # inutile ai consumatori, pesante nei log
                     item["_due_at"] = from_timestamp(item.get("due_at"))
                     item["_created_at"] = from_timestamp(item.get("created_at"))
@@ -1338,9 +1432,18 @@ class MemoryManager:
     # NOTES (appunti per categoria)
     # ──────────────────────────────────────────
 
-    def save_note(self, content: str, category: str = "personale", tags: list[str] = None, source: str = "user") -> str:
+    def save_note(
+        self,
+        content: str,
+        category: str = "personale",
+        tags: list[str] = None,
+        source: str = "user",
+        *,
+        memory_scope: str | None = None,
+    ) -> str:
         nid = str(uuid.uuid4())
         key = f"euri:note:{nid}"
+        memory_scope = normalize_scope(memory_scope or current_scope())
         doc = {
             "id": nid,
             "content": content,
@@ -1348,6 +1451,7 @@ class MemoryManager:
             "source": source,
             "created_at": to_timestamp(now()),
             "tags": tags or [],
+            "memory_scope": memory_scope,
         }
         self.r.json().set(key, "$", doc)
         logger.info(f"Nota salvata: {nid}")
@@ -1377,6 +1481,8 @@ class MemoryManager:
                 if not data:
                     continue
                 doc = data[0]
+                if normalize_scope(doc.get("memory_scope")) != PERSONAL_SCOPE:
+                    continue
                 if doc.get("source") not in OPERATIONAL:
                     continue
                 ts = doc.get("created_at", 0)
@@ -1402,6 +1508,8 @@ class MemoryManager:
         Il sogno (Loop 2b) resta libero: il filtro opera solo qui, al recupero.
         Recalled_count viene incrementato solo per gli insight effettivamente restituiti.
         """
+        if current_scope() != PERSONAL_SCOPE:
+            return []
         if not self._embedder or not self._embedder.available:
             return []
         vec = self._embedder.encode(query, mode="query")
@@ -1466,11 +1574,22 @@ class MemoryManager:
             logger.error(f"Errore ricerca insights: {e}")
             return []
 
-    def search_notes(self, query: str, category: str = None, limit: int = 5) -> list[dict]:
+    def search_notes(
+        self,
+        query: str,
+        category: str = None,
+        limit: int = 5,
+        *,
+        memory_scope: str | None = None,
+    ) -> list[dict]:
         safe = self._sanitize_query(query)
-        q_str = safe
+        expected_scope = normalize_scope(memory_scope or current_scope())
+        q_str = f"({scope_clause(expected_scope)}) ({safe})"
         if category:
-            q_str = f"@category:{{{category}}} {safe}"
+            q_str = (
+                f"({scope_clause(expected_scope)}) "
+                f"(@category:{{{category}}}) ({safe})"
+            )
         try:
             q = Query(q_str).paging(0, limit).sort_by("created_at", asc=False)
             results = self.r.ft("idx:notes").search(q)
@@ -1479,6 +1598,8 @@ class MemoryManager:
                 data = self.r.json().get(doc.id, "$")
                 if data:
                     item = data[0]
+                    if normalize_scope(item.get("memory_scope")) != expected_scope:
+                        continue
                     item["_created_at"] = from_timestamp(item.get("created_at"))
                     docs.append(item)
             return docs
@@ -1520,16 +1641,30 @@ class MemoryManager:
             "Euri": config.ASSISTANT_DISPLAY_NAME,
         }.get(role, role)
         date_key = now().strftime("%Y-%m-%d")
-        key = f"euri:conversation:{date_key}"
+        memory_scope = current_scope()
+        key = (
+            f"euri:conversation:{date_key}"
+            if memory_scope == PERSONAL_SCOPE
+            else f"euri:conversation:{memory_scope}:{date_key}"
+        )
         entry = f"[{now().strftime('%H:%M:%S')}] {role}: {text}"
         # ARRING (Redis 8.8): ring buffer nativo capped, sostituisce rpush+ltrim.
         # Espulsione FIFO automatica oltre il cap, O(1) per insert.
         self.r.execute_command("ARRING", key, self._CONVERSATION_RING_CAP, entry)
         self.r.expire(key, 60 * 60 * 24 * 30)  # 30 giorni
 
-    def get_today_conversation(self) -> list[str]:
+    def get_today_conversation(
+        self,
+        *,
+        memory_scope: str | None = None,
+    ) -> list[str]:
         date_key = now().strftime("%Y-%m-%d")
-        key = f"euri:conversation:{date_key}"
+        memory_scope = normalize_scope(memory_scope or current_scope())
+        key = (
+            f"euri:conversation:{date_key}"
+            if memory_scope == PERSONAL_SCOPE
+            else f"euri:conversation:{memory_scope}:{date_key}"
+        )
         if not self.r.exists(key):
             return []
         # Retrocompatibilità: chiavi pre-V2.16 sono LIST (rpush). Lette finché expire.
@@ -1766,13 +1901,27 @@ class MemoryManager:
                 return True
         return False
 
-    def set_last_rag_ctx(self, ids: list[str]) -> None:
+    @staticmethod
+    def _last_rag_ctx_key(memory_scope: str | None = None) -> str:
+        scope = normalize_scope(memory_scope or current_scope())
+        return (
+            "euri:last_rag_ctx"
+            if scope == PERSONAL_SCOPE
+            else f"euri:last_rag_ctx:{scope}"
+        )
+
+    def set_last_rag_ctx(
+        self,
+        ids: list[str],
+        *,
+        memory_scope: str | None = None,
+    ) -> None:
         """
         Memorizza gli ID delle memorie iniettate nel turno corrente.
         Usato dal Loop 2g per ricostruire il contesto del turno che ha generato l'errore.
         TTL 1h: oltre quel limite, la correzione non è più associabile in modo affidabile.
         """
-        key = "euri:last_rag_ctx"
+        key = self._last_rag_ctx_key(memory_scope)
         if not ids:
             self.r.delete(key)
             return
@@ -1781,10 +1930,11 @@ class MemoryManager:
         # moriva tra rpush ed expire. Lista serializzata in JSON (gli id non hanno virgole).
         self.r.set(key, json.dumps(ids), ex=3600)
 
-    def get_last_rag_ctx(self) -> list[str]:
+    def get_last_rag_ctx(self, *, memory_scope: str | None = None) -> list[str]:
         """Recupera gli ID del RAG context del turno precedente (può essere vuoto)."""
+        key = self._last_rag_ctx_key(memory_scope)
         try:
-            raw = self.r.get("euri:last_rag_ctx")
+            raw = self.r.get(key)
         except Exception:
             # Chiave residua nel vecchio formato lista → WRONGTYPE su GET: il prossimo
             # set_last_rag_ctx la sovrascrive col nuovo formato. Best-effort: [].
@@ -1812,6 +1962,7 @@ class MemoryManager:
         rag_ctx_ids: list[str],
         *,
         created_at: float,
+        memory_scope: str | None = None,
     ) -> list[str]:
         """Demote immediato e reversibile per il bersaglio evidente di una correzione.
 
@@ -1823,6 +1974,7 @@ class MemoryManager:
         if not self._is_immediate_quarantine_correction(correzione_user):
             return []
 
+        expected_scope = normalize_scope(memory_scope or current_scope())
         scored: list[tuple[int, str, dict]] = []
         for mid in rag_ctx_ids or []:
             if not mid:
@@ -1832,6 +1984,8 @@ class MemoryManager:
                 raw = self.r.json().get(mkey, "$")
                 doc = raw[0] if raw else {}
             except Exception:
+                continue
+            if normalize_scope(doc.get("memory_scope")) != expected_scope:
                 continue
             content = doc.get("content") or ""
             score = self.correction_overlap_score(correzione_user, content)
@@ -1876,6 +2030,7 @@ class MemoryManager:
         sid = str(uuid.uuid4())
         key = f"euri:correction:{sid}"
         created_at = to_timestamp(now())
+        memory_scope = current_scope()
         audit_only = self._is_meta_joke_audit_only(correzione_user)
         explicit_correction = self._is_immediate_quarantine_correction(correzione_user)
         mutation_policy = (
@@ -1895,6 +2050,7 @@ class MemoryManager:
             "status": "dismissed" if audit_only else "pending",
             "verdict": "not_a_correction" if audit_only else None,
             "mutation_policy": mutation_policy,
+            "memory_scope": memory_scope,
             "dismiss_reason": "pragmatic_meta_signal" if audit_only else None,
             "created_at": created_at,
             "analyzed_at": created_at if audit_only else None,
@@ -1905,7 +2061,11 @@ class MemoryManager:
             []
             if audit_only
             else self._quarantine_correction_targets(
-                sid, correzione_user, rag_ctx_ids or [], created_at=created_at
+                sid,
+                correzione_user,
+                rag_ctx_ids or [],
+                created_at=created_at,
+                memory_scope=memory_scope,
             )
         )
         if quarantined:

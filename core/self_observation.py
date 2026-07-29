@@ -241,6 +241,9 @@ class SelfObservation:
         """
         if not doc:
             return "missing_document"
+        from core.memory_scope import PERSONAL_SCOPE, scope_of
+        if scope_of(doc) != PERSONAL_SCOPE:
+            return "non_personal_scope"
 
         verification = str(doc.get("verification_status") or "").casefold()
         epistemic = str(doc.get("epistemic_status") or "").casefold()

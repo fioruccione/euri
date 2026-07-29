@@ -16,6 +16,7 @@ from dataclasses import dataclass
 import config
 from loguru import logger
 from utils.date_utils import format_datetime_full, from_timestamp
+from core.memory_scope import PERSONAL_SCOPE, normalize_scope
 
 
 TURN_KEY_PREFIX = "euri:turn:"
@@ -54,6 +55,7 @@ class ArchivedTurn:
     trusted: bool
     observed_at: float
     segment_id: int | None
+    memory_scope: str = PERSONAL_SCOPE
 
     def render(self) -> str:
         # Il verbatim prova che la frase è stata pronunciata in quel momento,
@@ -61,8 +63,13 @@ class ArchivedTurn:
         # restano accanto alla fonte quando entra nel prompt.
         observed = format_datetime_full(from_timestamp(self.observed_at))
         channel = "canale autenticato" if self.trusted else "canale non autenticato"
+        scope = (
+            f"; scenario sperimentale {self.memory_scope.removeprefix('experiment_')}"
+            if self.memory_scope.startswith("experiment_")
+            else ""
+        )
         return (
-            f"[Turno originale del {observed}; {channel}] "
+            f"[Turno originale del {observed}; {channel}{scope}] "
             f"{self.speaker}: {self.content}"
         )
 
@@ -97,6 +104,7 @@ class ConversationTurnStore:
             "trusted": bool(message.get("trusted")),
             "observed_at": float(message.get("observed_at")),
             "segment_id": message.get("segment_id"),
+            "memory_scope": normalize_scope(message.get("memory_scope")),
         }
         # Lo stesso ref identifica lo stesso turno: la riscrittura è idempotente.
         self.r.json().set(key, "$", doc)
@@ -143,6 +151,7 @@ class ConversationTurnStore:
                     if doc.get("segment_id") is not None
                     else None
                 ),
+                memory_scope=normalize_scope(doc.get("memory_scope")),
             )
         except (KeyError, TypeError, ValueError):
             logger.warning(f"Archivio turni: documento malformato per {turn_ref}")

@@ -41,9 +41,15 @@ def write_memory(doc: dict):
     vault_path = Path(config.OBSIDIAN_VAULT_PATH)
     domain = doc.get("domain", "generale")
     mem_id = doc["id"]
+    from core.memory_scope import is_experimental, normalize_scope
+    memory_scope = normalize_scope(doc.get("memory_scope"))
     
     # Crea la cartella del dominio
-    dir_path = vault_path / "Memories" / domain
+    dir_path = (
+        vault_path / "Experiments" / memory_scope / "Memories" / domain
+        if is_experimental(memory_scope)
+        else vault_path / "Memories" / domain
+    )
     try:
         dir_path.mkdir(parents=True, exist_ok=True)
     except Exception as e:
@@ -64,6 +70,7 @@ def write_memory(doc: dict):
         "memory_kind": doc.get("memory_kind", "semantic_fact"),
         "domain": domain,
         "source": doc.get("source", "user"),
+        "memory_scope": memory_scope,
         "created_at": date_str
     }
     if doc.get("memory_title"):

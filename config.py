@@ -39,6 +39,13 @@ REDIS_HOST = os.environ.get("EURI_REDIS_HOST", "localhost").strip() or "localhos
 REDIS_PORT = int(os.environ.get("EURI_REDIS_PORT", "6379"))
 REDIS_DB = int(os.environ.get("EURI_REDIS_DB", "0"))
 
+# Le sessioni sperimentali sono durevoli abbastanza da attraversare un riavvio,
+# ma scadono fail-safe: una modalità test dimenticata non può catturare per giorni
+# la conversazione personale. I contenuti restano archiviati nel loro scope.
+MEMORY_EXPERIMENT_SCOPE_TTL_SECONDS = int(
+    os.environ.get("EURI_MEMORY_EXPERIMENT_SCOPE_TTL_SECONDS", str(24 * 3600))
+)
+
 # Ollama
 OLLAMA_HOST = "http://localhost:11434"   # default condiviso (offline-first)
 # Host distinti per realtime (Gemma) e Dream Engine (Qwen). Default = OLLAMA_HOST (localhost):
@@ -507,8 +514,9 @@ FACEPRINT_DIR = str(Path.home() / "euri" / "models" / "faceprints")
 FACE_ENROLLMENT_REQUEST_KEY = "euri:face_enrollment:request"
 FACE_ENROLLMENT_STATUS_PREFIX = "euri:face_enrollment:status:"
 FACE_ENROLLMENT_TTL_S = 300
-# Snapshot operativo effimero Voice Daemon -> Silent Chat. Contiene soltanto
-# presenza/identita' dichiarative, mai frame, embedding o similarity biometrica.
+# Snapshot operativo effimero del VisualGate per i canali conversazionali locali.
+# Contiene soltanto presenza/identita' dichiarative, mai frame, embedding o
+# similarity biometrica.
 VISUAL_PRESENCE_STATE_KEY = "euri:visual_gate:state"
 VISUAL_PRESENCE_STATE_TTL_S = 8
 VISUAL_PRESENCE_REFRESH_S = 1.0
@@ -527,11 +535,27 @@ SOCIAL_PERCEPTION_STABILITY_SAMPLES = 4
 SOCIAL_PERCEPTION_IDENTITY_MAX_AGE_S = 8
 SOCIAL_PERCEPTION_LATEST_TTL_S = 30
 SOCIAL_PERCEPTION_BASELINE_INTERVAL_S = 60
+# Fase 2a sperimentale: espone al prompt locale soltanto gli stati descrittivi
+# stabilizzati. Non abilita inferenze emotive, memoria o iniziativa autonoma.
+SOCIAL_PERCEPTION_CONTEXT_ENABLED = (
+    os.environ.get("EURI_SOCIAL_PERCEPTION_CONTEXT_ENABLED", "1") == "1"
+)
 # Preparato ma spento: abilitarlo cambierebbe la versione del Cognitive Present
 # e potrebbe quindi influire indirettamente sulle decisioni asincrone.
 SOCIAL_PERCEPTION_PRESENT_ENABLED = False
 # Futuro interprete occasionale Gemma4 Vision in idle. Non implementato in Fase 0.
 SOCIAL_PERCEPTION_MULTIMODAL_ENABLED = False
+
+# Dopo il wake word, una conversazione mantiene un focus più lungo della lease
+# diretta. Fuori dai 45 secondi una frase senza wake viene accettata soltanto se
+# voce+volto owner sono verificati e un gate semantico la riconosce come vera
+# continuazione, non come semplice parlato sullo stesso argomento.
+CONVERSATION_ADAPTIVE_FOLLOWUP_ENABLED = (
+    os.environ.get("EURI_CONVERSATION_ADAPTIVE_FOLLOWUP_ENABLED", "1") == "1"
+)
+CONVERSATION_ADAPTIVE_FOLLOWUP_MIN_CONFIDENCE = float(
+    os.environ.get("EURI_CONVERSATION_ADAPTIVE_FOLLOWUP_MIN_CONFIDENCE", "0.90")
+)
 
 # Propagazione di provenienza (invariante A della primitiva cognitiva).
 # Un nodo derivato (consolidated_from) la cui fondamenta è caduta — genitori

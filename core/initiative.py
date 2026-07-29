@@ -142,6 +142,19 @@ def build_candidate(r, event_id: str, event: dict[str, Any]) -> InitiativeCandid
     eligible = False
     reason = "unsupported_event"
     goal = ""
+    from core.memory_scope import PERSONAL_SCOPE, scope_of
+    if related and scope_of(related) != PERSONAL_SCOPE:
+        return InitiativeCandidate(
+            event_id=event_id,
+            event=dict(event),
+            payload=payload,
+            related_key=related_key,
+            related=related,
+            score=score,
+            eligible=False,
+            reason="non_personal_scope",
+            goal="",
+        )
 
     if sense == "insight" and kind == "promoted":
         if not related:
@@ -199,6 +212,9 @@ def build_candidate(r, event_id: str, event: dict[str, Any]) -> InitiativeCandid
 def _memory_clarify_reason(doc: dict[str, Any]) -> str:
     """True solo per memorie passive la cui incertezza Stefano può risolvere."""
     if not doc:
+        return ""
+    from core.memory_scope import PERSONAL_SCOPE, scope_of
+    if scope_of(doc) != PERSONAL_SCOPE:
         return ""
     if doc.get("source") != "passive":
         return ""

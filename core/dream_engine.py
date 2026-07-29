@@ -33,6 +33,7 @@ from core.memory_attention import (
 )
 from core.conversation_turns import run_verbatim_lifecycle_maintenance
 from core.memory_utility_shadow import run_memory_utility_shadow_maintenance
+from core.memory_scope import PERSONAL_SCOPE, scope_of
 
 
 CROSS_EPISODE_SEEN_KEY = "euri:cross_episode:seen"
@@ -93,6 +94,8 @@ def dream_seed_rejection_reason(doc: dict) -> str | None:
     """Motivo fail-closed per cui una memoria non puo' fondare un sogno creativo."""
     if not doc:
         return "missing"
+    if scope_of(doc) != PERSONAL_SCOPE:
+        return "non_personal_scope"
     if str(doc.get("source") or "").lower() not in DREAM_SEED_ALLOWED_SOURCES:
         return "derived_source"
     if str(doc.get("memory_kind") or "").lower() in DREAM_SEED_BLOCKED_KINDS:
@@ -643,7 +646,9 @@ class DreamEngine:
             # rivalidati da _get_random_memory_from_domain.
             allowed_sources = "|".join(sorted(DREAM_SEED_ALLOWED_SOURCES))
             res = self._r.execute_command(
-                "FT.AGGREGATE", "idx:memories", f"@source:{{{allowed_sources}}}",
+                "FT.AGGREGATE",
+                "idx:memories",
+                f"@memory_scope:{{personal}} @source:{{{allowed_sources}}}",
                 "GROUPBY", "1", "@domain"
             )
             domains = []
@@ -664,7 +669,10 @@ class DreamEngine:
             safe_domain = domain.replace(" ", "\\ ")
             allowed_sources = "|".join(sorted(DREAM_SEED_ALLOWED_SOURCES))
             q = (
-                Query(f"@domain:{{{safe_domain}}} @source:{{{allowed_sources}}}")
+                Query(
+                    f"@memory_scope:{{personal}} "
+                    f"@domain:{{{safe_domain}}} @source:{{{allowed_sources}}}"
+                )
                 .paging(0, 200)
                 .return_fields("id")
             )
@@ -2298,7 +2306,7 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
         cases: list[dict] = []
         try:
             q = (
-                Query("*")
+                Query("@memory_scope:{personal}")
                 .sort_by("created_at", asc=False)
                 .paging(0, oversample)
                 .return_fields("id", "content", "source", "domain", "created_at")
@@ -2317,6 +2325,8 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
                 doc = raw[0] if raw else {}
             except Exception:
                 doc = {}
+            if scope_of(doc) != PERSONAL_SCOPE:
+                continue
             content = (doc.get("content") or getattr(row, "content", "") or "").strip()
             if not content or not _case_has_causal_hint(content):
                 continue
@@ -2591,6 +2601,8 @@ Rispondi SOLO con: CONTRADDIZIONE, CONFRONTO, o NESSUNA."""
     @classmethod
     def _loop2f_candidate_allowed(cls, doc: dict, *, skip_sources: set[str] | None = None) -> bool:
         """Gate completo per memorie che possono essere lavorate dal Loop 2f."""
+        if scope_of(doc) != PERSONAL_SCOPE:
+            return False
         if not cls._loop2f_source_allowed(doc):
             return False
         if doc.get("correction_pending"):
@@ -2776,7 +2788,10 @@ Rispondi solo col confronto."""
                     vec_bytes = np.array(seed_emb, dtype=np.float32).tobytes()
                     safe_domain = seed_domain.replace(" ", "\\ ")
                     q = (
-                        Query(f"(@domain:{{{safe_domain}}})=>[KNN 6 @embedding $vec AS score]")
+                        Query(
+                            f"(@memory_scope:{{personal}} @domain:{{{safe_domain}}})"
+                            f"=>[KNN 6 @embedding $vec AS score]"
+                        )
                         .sort_by("score")
                         .return_fields("id", "score")
                         .dialect(2)
@@ -3002,6 +3017,7 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
         candidate_ids: list[str] = []
         scored: list[tuple[int, float, str]] = []
         seen: set[str] = set()
+        signal_scope = scope_of(doc)
 
         # Scansione completa ma cheap: il Loop 2g gira in idle, su max 10 signal.
         # Prima ordinazione = overlap con la correzione; così un nodo che contiene
@@ -3014,6 +3030,8 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
                     continue
                 doc_candidate = raw[0]
             except Exception:
+                continue
+            if scope_of(doc_candidate) != signal_scope:
                 continue
             if doc_candidate.get("superseded_by") or doc_candidate.get("source") == "web":
                 continue
@@ -3046,6 +3064,8 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
                         continue
                     doc_candidate = raw[0]
                 except Exception:
+                    continue
+                if scope_of(doc_candidate) != signal_scope:
                     continue
                 if doc_candidate.get("superseded_by") or doc_candidate.get("source") == "web":
                     continue
@@ -3119,6 +3139,7 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
             counts = {"not_a_correction": 0, "bad_memory": 0, "bad_reasoning": 0, "ambiguous": 0}
 
             for key, doc in pending:
+                signal_scope = scope_of(doc)
                 # Il detector e il giudice possono proporre; solo una correzione
                 # esplicita dell'owner porta autorità mutante. I signal legacy
                 # senza policy sono fail-closed come proposal_only.
@@ -3131,7 +3152,11 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
                     mkey = mid if mid.startswith("euri:memory:") else f"euri:memory:{mid}"
                     try:
                         m = self._r.json().get(mkey, "$")
-                        if m and m[0].get("content"):
+                        if (
+                            m
+                            and scope_of(m[0]) == signal_scope
+                            and m[0].get("content")
+                        ):
                             ctx_memories.append(m[0]["content"][:200])
                     except Exception:
                         continue
@@ -3161,6 +3186,9 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
                             continue
                         mkey = mid if mid.startswith("euri:memory:") else f"euri:memory:{mid}"
                         try:
+                            raw_target = self._r.json().get(mkey, "$")
+                            if not raw_target or scope_of(raw_target[0]) != signal_scope:
+                                continue
                             # Incremento atomico (come recalled_count): elimina la race del
                             # read-modify-write. audit_flag non è inizializzato in save_memory,
                             # quindi lo si crea a 0 solo se assente (SET NX, idempotente) e poi
@@ -3201,6 +3229,7 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
                                 category="lesson",
                                 tags=["lesson", "from_correction"],
                                 source="reaction",
+                                memory_scope=signal_scope,
                             )
                         except Exception as e:
                             effect_ok = False
@@ -3290,6 +3319,8 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
             try:
                 raw = self._r.json().get(mkey, "$")
                 mem = raw[0] if raw else {}
+                if scope_of(mem) != scope_of(doc):
+                    continue
                 if mem.get("correction_signal_id") != sid:
                     continue
                 prev = bool(mem.get("correction_pending_prev_requires_verification"))
@@ -3395,6 +3426,8 @@ Rispondi SOLO con JSON valido:
                     if not d:
                         continue
                     doc = d[0]
+                    if scope_of(doc) != PERSONAL_SCOPE:
+                        continue
                     content = (doc.get("content") or "").strip()
                     if not content:
                         continue
@@ -3847,7 +3880,10 @@ Rispondi SOLO con JSON valido:
                     vec_bytes = vec.astype("float32").tobytes()
                     safe_domain = seed_domain.replace(" ", "\\ ")
                     q = (
-                        Query(f"(@domain:{{{safe_domain}}})=>[KNN 6 @embedding $vec AS score]")
+                        Query(
+                            f"(@memory_scope:{{personal}} @domain:{{{safe_domain}}})"
+                            f"=>[KNN 6 @embedding $vec AS score]"
+                        )
                         .sort_by("score")
                         .return_fields("id", "content", "recalled_count", "requires_verification", "source", "domain")
                         .dialect(2)
@@ -4123,7 +4159,10 @@ Rispondi SOLO con la sintesi. Niente intestazioni."""
             )
             safe_domain = domain.replace(" ", "\\ ")
             q = (
-                Query(f"(@domain:{{{safe_domain}}} @source:{{loop2e}})=>[KNN 3 @embedding $vec AS dup_score]")
+                Query(
+                    f"(@memory_scope:{{personal}} @domain:{{{safe_domain}}} "
+                    f"@source:{{loop2e}})=>[KNN 3 @embedding $vec AS dup_score]"
+                )
                 .sort_by("dup_score")
                 .return_fields("dup_score")
                 .dialect(2)

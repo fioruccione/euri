@@ -89,6 +89,7 @@ def process_memory_outbox_event(r, event_key: str) -> bool:
                 "id": memory_id,
                 "mem_source": source,
                 "memory_kind": doc.get("memory_kind"),
+                "memory_scope": doc.get("memory_scope", "personal"),
                 "domain": doc.get("domain"),
                 "asserted_at": doc.get("asserted_at"),
                 "event_start": doc.get("event_start"),

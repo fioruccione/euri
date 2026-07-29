@@ -17,8 +17,9 @@ def get_client() -> redis.Redis:
 
 def init_indexes(r: redis.Redis):
     """Crea/migra gli indici RediSearch se necessario."""
+    backfill_memory_scopes(r)
     _ensure_memory_index(r)
-    _create_note_index(r)
+    _ensure_note_index(r)
     _create_dream_index(r)
     _create_insight_index(r)
     logger.info("Indici Redis inizializzati")
@@ -67,6 +68,7 @@ def _ensure_memory_index(r: redis.Redis):
             "domain": "domain",
             "status": "status",
             "memory_kind": "memory_kind",
+            "memory_scope": "memory_scope",
             "asserted_at": "asserted_at",
             "event_start": "event_start",
             "event_end": "event_end",
@@ -89,6 +91,7 @@ def _create_memory_index(r: redis.Redis):
         TagField("$.source", as_name="source"),
         TagField("$.domain", as_name="domain"),          # ← NUOVO: domain gating
         TagField("$.memory_kind", as_name="memory_kind"),
+        TagField("$.memory_scope", as_name="memory_scope"),
         NumericField("$.created_at", as_name="created_at", sortable=True),
         NumericField("$.asserted_at", as_name="asserted_at", sortable=True),
         NumericField("$.event_start", as_name="event_start", sortable=True),
@@ -113,6 +116,65 @@ def _create_memory_index(r: redis.Redis):
     logger.info("Creato indice idx:memories (con VECTOR + domain)")
 
 
+def backfill_memory_scopes(r: redis.Redis) -> dict:
+    """Marca come personali i documenti legacy privi di scope.
+
+    La migrazione è idempotente e non interpreta il contenuto. Viene eseguita
+    prima della ricostruzione dell'indice, così il filtro fail-closed non rende
+    invisibile la memoria storica.
+    """
+    memories = turns = notes = skipped = 0
+    for pattern, field in (
+        ("euri:memory:*", "$.memory_scope"),
+        ("euri:turn:*", "$.memory_scope"),
+        ("euri:note:*", "$.memory_scope"),
+    ):
+        for key in r.scan_iter(pattern):
+            try:
+                raw = r.json().get(key, "$")
+                if not raw or not isinstance(raw[0], dict):
+                    skipped += 1
+                    continue
+                if raw[0].get("memory_scope"):
+                    continue
+                r.json().set(key, field, "personal")
+                if pattern.startswith("euri:memory"):
+                    memories += 1
+                elif pattern.startswith("euri:turn"):
+                    turns += 1
+                else:
+                    notes += 1
+            except Exception:
+                # Nel namespace memory esistono anche chiavi legacy non-JSON.
+                skipped += 1
+    if memories or turns or notes:
+        logger.info(
+            "Backfill scope memoria: {} memorie, {} turni e {} note marcati personal",
+            memories,
+            turns,
+            notes,
+        )
+    return {
+        "memories": memories,
+        "turns": turns,
+        "notes": notes,
+        "skipped": skipped,
+    }
+
+
+def _ensure_note_index(r: redis.Redis):
+    """Crea o migra idx:notes includendo il confine di memoria."""
+    try:
+        r.ft("idx:notes").info()
+        if not _has_field(r, "idx:notes", "memory_scope"):
+            logger.info("Migrazione idx:notes: aggiunta campo memory_scope...")
+            r.ft("idx:notes").dropindex()
+            _create_note_index(r)
+            logger.info("Migrazione idx:notes completata (dati preservati)")
+    except Exception:
+        _create_note_index(r)
+
+
 def _create_note_index(r: redis.Redis):
     try:
         r.ft("idx:notes").info()
@@ -122,6 +184,7 @@ def _create_note_index(r: redis.Redis):
             TextField("$.content", as_name="content"),
             TagField("$.category", as_name="category"),
             TagField("$.source", as_name="source"),
+            TagField("$.memory_scope", as_name="memory_scope"),
             NumericField("$.created_at", as_name="created_at", sortable=True),
             TagField("$.tags[*]", as_name="tags"),
         )

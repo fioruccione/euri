@@ -242,6 +242,7 @@ def _raw_turn_document(corpus: ConversationCorpus, turn: Any, embedding: list[fl
         "source": "conversation",
         "domain": "conversation",
         "memory_kind": "conversation_turn",
+        "memory_scope": "personal",
         "created_at": asserted_at,
         "asserted_at": asserted_at,
         "event_start": None,
@@ -299,6 +300,7 @@ def _session_messages(session: Any, start_seq: int) -> tuple[list[dict], dict[in
                 "observed_at": _timestamp(session.timestamp, offset=offset),
                 "conversation_id": session.session_id,
                 "segment_id": int(session.session_id.rsplit("_", 1)[-1]),
+                "memory_scope": "personal",
             }
         )
     return messages, turn_ids, seq

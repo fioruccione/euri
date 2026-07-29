@@ -5,8 +5,11 @@ import time
 import config
 from core.visual_presence import (
     publish_visual_presence,
+    read_social_perception,
     read_visual_presence,
+    social_perception_context,
     visual_presence_context,
+    with_visual_context,
 )
 from voice.visual_gate import VisualGate
 
@@ -22,6 +25,9 @@ class FakeRedis:
 
     def get(self, key):
         return self.values.get(key)
+
+    def put_json(self, key, payload):
+        self.values[key] = json.dumps(payload)
 
 
 class EnabledAuth:
@@ -101,6 +107,90 @@ def test_missing_snapshot_does_not_deny_visual_capability():
     context = visual_presence_context(FakeRedis())
     assert "non dispone ora di uno snapshot fresco" in context
     assert "Non negare l'esistenza del sensore" in context
+
+
+def _publish_owner(redis, *, observed_at=1000.0):
+    publish_visual_presence(
+        redis,
+        {
+            "camera_available": True,
+            "recognition_available": True,
+            "gate_active": True,
+            "face_detected": True,
+            "identity": config.OWNER_ACTOR_ID,
+            "owner_present": True,
+        },
+        observed_at=observed_at,
+        ttl_s=8,
+    )
+
+
+def _publish_social(redis, *, observed_at=1000.0, calibrated=True, actor_id=None):
+    redis.put_json(
+        "euri:social:latest",
+        {
+            "actor_id": actor_id or config.OWNER_ACTOR_ID,
+            "observed_at": observed_at,
+            "calibrated": calibrated,
+            "states": {
+                "smile": "slight",
+                "brow_contraction": "neutral",
+                "gaze_down": "present",
+            },
+            "confidences": {
+                "smile": 0.98,
+                "brow_contraction": 0.97,
+                "gaze_down": 0.96,
+            },
+            "metrics": {"smile": 0.42},
+            "auxiliary_metrics": {"head_pitch_deg": 12.5},
+        },
+    )
+
+
+def test_social_context_is_fresh_owner_only_and_descriptive():
+    redis = FakeRedis()
+    _publish_owner(redis)
+    _publish_social(redis)
+
+    state = read_social_perception(redis, now=1001.0)
+    assert state is not None
+    assert set(state) == {"actor_id", "observed_at", "states", "confidences"}
+    context = social_perception_context(redis, now=1001.0)
+    assert "sorriso lieve stabilizzato" in context
+    assert "sguardo stabilizzato verso il basso" in context
+    assert "NON emozioni" in context
+    assert "head_pitch" not in context
+    assert "0.42" not in context
+    assert "felice" not in context
+    assert "triste" not in context
+    assert "arrabbiato" not in context
+
+    assert read_social_perception(redis, now=1031.0) is None
+
+    _publish_owner(redis, observed_at=2000.0)
+    _publish_social(redis, observed_at=2000.0, calibrated=False)
+    assert read_social_perception(redis, now=2001.0) is None
+
+    _publish_social(redis, observed_at=2000.0, actor_id="ospite")
+    assert read_social_perception(redis, now=2001.0) is None
+
+
+def test_runtime_context_keeps_memory_and_adds_only_sanitized_visual_state():
+    redis = FakeRedis()
+    _publish_owner(redis)
+    _publish_social(redis)
+    context = with_visual_context(
+        "=== MEMORIA ===\nDato originale.",
+        redis,
+        now=1001.0,
+    )
+    assert context.startswith("=== MEMORIA ===\nDato originale.")
+    assert "=== STATO VISIVO OPERATIVO" in context
+    assert "=== OSSERVAZIONI SOCIALI VISIVE" in context
+    assert config.OWNER_DISPLAY_NAME in context
+    assert "similarity" not in context
+    assert "embedding" not in context
 
 
 if __name__ == "__main__":

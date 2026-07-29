@@ -1,6 +1,7 @@
 # Percezione sociale visiva di Euri
 
-**Stato: Fase 0 implementata il 20/07/2026; attiva dal prossimo riavvio, solo osservativa.**
+**Stato: Fase 0 attiva dal 20/07/2026; Fase 2a descrittiva attiva dal
+29/07/2026 sui soli prompt locali.**
 
 ## Intenzione
 
@@ -60,6 +61,15 @@ numerico al minuto alimenta `euri:social:baseline` per l'audit. Le sole transizi
 persistenti entrano in `euri:pulse` con salienza bassa. Nessuna immagine e nessuna
 memoria cognitiva vengono scritte.
 
+Dal 29/07/2026 una Fase 2a sperimentale espone a voce e Silent Chat soltanto i
+tre stati stabilizzati e freschi, dopo aver rivalidato presenza e identita'
+dell'owner. Il prompt riceve descrizioni come `sorriso lieve stabilizzato` o
+`sguardo verso il basso rispetto alla telecamera`, mai coefficienti grezzi o
+etichette emotive. Può adattare leggermente tono e brevità soltanto quando il
+segnale è coerente con le parole dell'utente; non alimenta Cognitive Present,
+Initiative, memoria o autorizzazioni. Kill switch:
+`EURI_SOCIAL_PERCEPTION_CONTEXT_ENABLED=0`.
+
 La Control Room rende ripetibile la calibrazione della Fase 0. L'identita' raccoglie
 quattro prototipi SFace in posture diverse senza ridurre la soglia di autenticazione.
 La UI non acquisisce un secondo stream video: invia un comando effimero al VisualGate,
@@ -114,6 +124,9 @@ non **che cosa considera vero**.
 - Consentire al modello di adattare brevita', tono o richiesta di chiarimento.
 - Rivalidare lo snapshot immediatamente prima di ogni eventuale efferenza.
 
+La sottofase 2a attuale applica i primi due punti alle sole risposte richieste
+esplicitamente. Non interpreta emozioni e non abilita efferenza autonoma.
+
 Un eventuale interprete multimodale Gemma appartiene a questa fase, non al sensore.
 Non deve analizzare continuamente la webcam: puo' ricevere un solo frame volatile
 durante una pausa reale o per chiarire un evento ambiguo, insieme agli ultimi turni
@@ -142,11 +155,12 @@ non e' ancora implementato.
 
 ## Criterio per riprendere il lavoro
 
-La prima implementazione si ferma alla Fase 0 e include test deterministici
+La prima implementazione si è fermata alla Fase 0 e include test deterministici
 su smoothing, TTL, transizioni, cambio identita' e assenza di persistenza delle
-immagini. Solo dati reali raccolti con la webcam di Stefano possono autorizzare la
-Fase 1; la Fase 2 richiede inoltre esempi annotati da Stefano per distinguere almeno
-concentrazione, indisponibilita' e riscontro positivo.
+immagini. La Fase 2a è stata attivata dopo calibrazione personale, oltre 3.400
+campioni reali e verifica live esplicita di Stefano, ma resta descrittiva. Esempi
+annotati da Stefano sono ancora necessari prima di distinguere concentrazione,
+indisponibilita' e riscontro positivo o modificare Initiative.
 
 Installazione del modello locale ufficiale:
 

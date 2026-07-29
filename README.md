@@ -125,6 +125,44 @@ turni verbatim con `turn_ref`, così una nota passiva nata in chat può restare
 un locator verificabile invece di perdere la propria fonte. L'archivio dei
 turni viene popolato in ogni modalità.
 
+**Confine personale/sperimentale.** Il retrieval migliore non risolve da solo
+un problema precedente all'indice: una frase può essere semanticamente chiara
+ma appartenere a una battuta, una simulazione o un test. Dal 29/07/2026 Euri
+non conserva più tutti questi mondi nello stesso namespace cognitivo.
+
+Ogni memoria, nota, episodio e turno originale porta uno scope durevole:
+`personal` oppure `experiment_<nome>`. History, RAG, dual-channel, deduplica,
+correzioni e log recente vedono soltanto lo scope attivo. I loop che formano
+conoscenza canonica — sogni, consolidamento, confronto, self-observation,
+plausibility e Initiative — consumano soltanto `personal`; un dato di prova
+resta osservabile e auditabile, ma non può maturare silenziosamente in una
+convinzione personale.
+
+Il parser accetta soltanto scope canonici. Un valore presente ma malformato
+non degrada mai a `personal`: viene confinato in `invalid_scope` e resta fuori
+dal retrieval personale e dai loop canonici. Anche i valori TAG destinati a
+RediSearch vengono escapati prima di costruire la query.
+
+Per aprire e chiudere un banco di prova, in voce o Silent Chat:
+
+```text
+Euri, avvia una sessione sperimentale chiamata Prova UBQ
+Euri, in che modalità di memoria siamo?
+Euri, chiudi la sessione sperimentale
+```
+
+La sessione scade automaticamente dopo 24 ore se viene dimenticata. La
+scadenza torna alla memoria personale ma non elimina lo storico: nel Vault le
+memorie sperimentali vivono sotto `Experiments/<scope>/`. All'avvio, i
+documenti precedenti privi di scope vengono marcati `personal` senza alterarne
+contenuto o provenienza.
+
+Il confine è deliberatamente esplicito. L'estrattore scarta anche battute,
+esempi e simulazioni quando la conversazione li dichiara tali, ma nessun LLM
+può sapere con certezza che una frase falsa formulata seriamente sia “solo uno
+scherzo”. Per prove lunghe o dati inventati, la sessione sperimentale è la
+garanzia strutturale.
+
 **Utilità osservata, non presunta.** La lineage `response_lineage_shadow_v1`
 registra già, senza testo delle domande o delle risposte, quali nodi entrano
 nel prompt e per quali esiste evidenza lessicale distintiva nella risposta.
@@ -225,6 +263,13 @@ osservabile, ma l'Initiative Controller e il RAG non li consumano ancora come
 relazioni semantiche: questo confine è intenzionale e impedisce che un'analogia
 diventi silenziosamente un fatto.
 
+La voce usa inoltre un consenso conversazionale adattivo. Il wake word apre
+sempre la sessione e resta obbligatorio per ospiti e assenza visiva; oltre la
+lease diretta di 45 secondi, entro il focus di cinque minuti, un seguito senza
+“Euri” passa soltanto con voce e volto owner verificati e con un giudizio
+semantico ad alta confidenza di continuazione diretta. La sola affinità di
+argomento non basta: nel dubbio il turno resta ambientale e viene ignorato.
+
 ### 4. Il Secondo Cervello (Integrazione Obsidian)
 Euri è bidirezionalmente sincronizzato con **Obsidian** (cartella `EuriVault`).
 - Tutte le memorie salvate e classificate compaiono come file Markdown categorizzati nelle cartelle dei domini in Obsidian.
@@ -260,9 +305,12 @@ Euri può analizzare immagini locali usando **Gemma 4 Vision** (multimodale), se
 
 Il VisualGate include inoltre una **percezione sociale Fase 0** locale e osservativa:
 MediaPipe misura pochi movimenti facciali stabilizzati e la posa della testa sugli
-stessi frame usati per presenza e identita'. Non assegna emozioni, non salva immagini,
-non chiama l'LLM e non modifica ancora il comportamento di Euri. Specifica e percorso
-di attivazione progressiva sono in `SPEC_SOCIAL_PERCEPTION.md`.
+stessi frame usati per presenza e identita'. Dal 29/07/2026 una Fase 2a sperimentale
+fornisce a voce e Silent Chat soltanto sorriso, contrazione delle sopracciglia e
+sguardo verso il basso come osservazioni descrittive effimere. Non assegna emozioni,
+non salva immagini, non crea memorie e non influenza Initiative o autorizzazioni.
+Specifica e percorso di attivazione progressiva sono in
+`SPEC_SOCIAL_PERCEPTION.md`.
 
 ### 7. Control Room (Streamlit UI)
 Un'interfaccia web leggera (`ui/app.py`) per:

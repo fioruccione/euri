@@ -15,6 +15,7 @@ _BOOL_FIELDS = (
     "owner_present",
     "demo_mode",
 )
+_SOCIAL_FEATURES = ("smile", "brow_contraction", "gaze_down")
 
 
 def publish_visual_presence(
@@ -62,6 +63,60 @@ def read_visual_presence(redis_client, *, now: float | None = None) -> dict | No
         return None
 
 
+def read_social_perception(redis_client, *, now: float | None = None) -> dict | None:
+    """Legge solo stati sociali calibrati, freschi e riferiti all'owner presente."""
+    if not getattr(config, "SOCIAL_PERCEPTION_CONTEXT_ENABLED", False):
+        return None
+    try:
+        visual = read_visual_presence(redis_client, now=now)
+        if not visual or not visual.get("owner_present"):
+            return None
+
+        raw = redis_client.get("euri:social:latest")
+        if not raw:
+            return None
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        payload = json.loads(raw)
+        if (
+            not isinstance(payload, dict)
+            or payload.get("actor_id") != config.OWNER_ACTOR_ID
+            or payload.get("calibrated") is not True
+        ):
+            return None
+
+        observed_at = float(payload.get("observed_at") or 0)
+        current = time.time() if now is None else float(now)
+        ttl_s = max(1.0, float(config.SOCIAL_PERCEPTION_LATEST_TTL_S))
+        if observed_at <= 0 or current - observed_at > ttl_s:
+            return None
+
+        states_in = payload.get("states") or {}
+        confidence_in = payload.get("confidences") or {}
+        states: dict[str, str] = {}
+        confidences: dict[str, float] = {}
+        allowed = {
+            "smile": {"neutral", "slight", "marked"},
+            "brow_contraction": {"neutral", "present"},
+            "gaze_down": {"neutral", "present"},
+        }
+        for feature in _SOCIAL_FEATURES:
+            state = str(states_in.get(feature) or "neutral")
+            states[feature] = state if state in allowed[feature] else "neutral"
+            confidences[feature] = max(
+                0.0,
+                min(1.0, float(confidence_in.get(feature) or 0.0)),
+            )
+        return {
+            "actor_id": config.OWNER_ACTOR_ID,
+            "observed_at": observed_at,
+            "states": states,
+            "confidences": confidences,
+        }
+    except Exception:
+        return None
+
+
 def visual_presence_context(redis_client, *, now: float | None = None) -> str:
     """Contesto operativo per l'LLM; descrive evidenza, non concede autorita'."""
     assistant = config.ASSISTANT_DISPLAY_NAME
@@ -102,4 +157,71 @@ def visual_presence_context(redis_client, *, now: float | None = None) -> str:
     return (
         f"{heading}\nLa webcam e' disponibile, ma VisualGate non rileva ora un volto "
         "fresco davanti allo schermo."
+    )
+
+
+def social_perception_context(redis_client, *, now: float | None = None) -> str:
+    """Descrive movimenti visibili; vieta al prompt di trasformarli in emozioni."""
+    state = read_social_perception(redis_client, now=now)
+    if state is None:
+        return ""
+
+    states = state["states"]
+    confidence = state["confidences"]
+    observations: list[str] = []
+
+    smile = states["smile"]
+    if confidence["smile"] >= 0.6:
+        observations.append(
+            {
+                "neutral": "nessun sorriso stabile rilevato",
+                "slight": "sorriso lieve stabilizzato",
+                "marked": "sorriso marcato stabilizzato",
+            }[smile]
+        )
+    brow = states["brow_contraction"]
+    if confidence["brow_contraction"] >= 0.6:
+        observations.append(
+            "contrazione visibile delle sopracciglia"
+            if brow == "present"
+            else "nessuna contrazione stabile delle sopracciglia"
+        )
+    gaze = states["gaze_down"]
+    if confidence["gaze_down"] >= 0.6:
+        observations.append(
+            "sguardo stabilizzato verso il basso rispetto alla telecamera"
+            if gaze == "present"
+            else "nessuno sguardo verso il basso stabilizzato"
+        )
+    if not observations:
+        return ""
+
+    owner = config.OWNER_DISPLAY_NAME
+    return (
+        "=== OSSERVAZIONI SOCIALI VISIVE (effimere, descrittive) ===\n"
+        f"Sul volto riconosciuto di {owner}: " + "; ".join(observations) + ".\n"
+        "Sono movimenti visibili, NON emozioni, intenzioni, sincerita' o approvazione. "
+        "Lo sguardo verso il basso puo' indicare schermo, tastiera o lavoro. "
+        "Usa questi segnali solo per adattare leggermente tono o brevita' quando sono "
+        "coerenti con le parole dell'utente; altrimenti ignorali. Non citarli "
+        "spontaneamente, non salvarli come fatti e non usarli per autorizzare azioni."
+    )
+
+
+def with_visual_context(
+    base_context: str,
+    redis_client,
+    *,
+    now: float | None = None,
+) -> str:
+    """Aggiunge presenza e segnali sociali effimeri senza alterare la memoria."""
+    base = str(base_context or "")
+    return "\n\n".join(
+        part
+        for part in (
+            base,
+            visual_presence_context(redis_client, now=now),
+            social_perception_context(redis_client, now=now),
+        )
+        if part
     )

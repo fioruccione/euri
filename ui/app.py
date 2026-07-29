@@ -176,6 +176,12 @@ def get_voice_processor():
 
 # Inizializzazione
 r = get_redis()
+from core.memory_scope import (
+    active_scope_state,
+    bind_memory_scope,
+    get_active_scope,
+)
+bind_memory_scope(get_active_scope(r))
 embedder = get_embedder()
 brain = get_brain()
 memory_manager = MemoryManager(r, embedder)
@@ -191,6 +197,7 @@ if brain._episode_callback is None:
         summary,
         category="episodio", source="episode",
         memory_kind="conversation_episode", temporal_context=temporal_context,
+        memory_scope=temporal_context.get("memory_scope"),
     )
 
 # Layout generale: 2 colonne (Main a sinistra, Terminale a destra)
@@ -203,6 +210,14 @@ page = st.sidebar.radio("Navigazione", ["🎙️ Voce", "Telemetria & Welford", 
 
 st.sidebar.markdown("---")
 st.sidebar.info(f"**Modello:** {config.OLLAMA_MODEL}\n\n**Vault:** {config.OBSIDIAN_VAULT_PATH}")
+_scope_state = active_scope_state(r)
+if _scope_state.get("active"):
+    st.sidebar.warning(
+        "🧪 **Memoria sperimentale attiva**\n\n"
+        f"{_scope_state.get('label')}"
+    )
+else:
+    st.sidebar.caption("🧠 Memoria personale")
 
 if st.sidebar.button("Pulisci Memoria Chat"):
     st.session_state.messages = []
@@ -809,6 +824,67 @@ with main_col:
 
         # Input utente
         if prompt:
+            from core.memory_scope import (
+                parse_scope_command,
+                start_experiment,
+                stop_experiment,
+            )
+            _scope_command = parse_scope_command(prompt)
+            if _scope_command is not None:
+                if _scope_command.action == "start" and not _scope_command.label:
+                    _scope_reply = (
+                        "Dammi un nome per la sessione sperimentale, "
+                        "per esempio Progetto Alfa."
+                    )
+                elif _scope_command.action == "start":
+                    _new_scope = start_experiment(
+                        r,
+                        _scope_command.label,
+                        ttl_seconds=getattr(
+                            config,
+                            "MEMORY_EXPERIMENT_SCOPE_TTL_SECONDS",
+                            24 * 3600,
+                        ),
+                    )
+                    bind_memory_scope(_new_scope["scope"])
+                    st.session_state.pop("sc_awaiting", None)
+                    st.session_state.messages = []
+                    _scope_reply = (
+                        f"Sessione sperimentale **{_new_scope['label']}** attiva. "
+                        "Turni e ricordi restano separati dalla memoria personale."
+                    )
+                elif _scope_command.action == "stop":
+                    _old_scope = stop_experiment(r)
+                    bind_memory_scope("personal")
+                    st.session_state.pop("sc_awaiting", None)
+                    st.session_state.messages = []
+                    _scope_reply = (
+                        f"Sessione sperimentale **{_old_scope.get('label')}** chiusa. "
+                        "Sono tornata alla memoria personale."
+                        if _old_scope.get("active")
+                        else "Non c'era una sessione sperimentale attiva."
+                    )
+                else:
+                    _state = active_scope_state(r)
+                    _scope_reply = (
+                        f"Siamo nella sessione sperimentale **{_state.get('label')}**."
+                        if _state.get("active")
+                        else "Siamo nella memoria personale ordinaria."
+                    )
+                st.session_state.messages.extend([
+                    {"role": "user", "content": prompt, "observed_at": time.time()},
+                    {
+                        "role": "assistant",
+                        "content": _scope_reply,
+                        "observed_at": time.time(),
+                    },
+                ])
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+                with st.chat_message("assistant"):
+                    st.markdown(_scope_reply)
+                st.rerun()
+
             # ── Curiosity loop (Euri Pulse, ramo efferente) — versione scritta ───
             # Stessa orchestrazione della voce (core.reaction, una sola verità), ma
             # via tastiera: Stefano non deve parlare ad alta voce (zero costo sociale,
@@ -819,8 +895,14 @@ with main_col:
             #   (2) Stefano chiede dei MIEI sogni/intuizioni → briefing: pesco un insight
             #       non groundato e glielo chiedo ("è vero che…?"), poi resto in attesa.
             import core.reaction as _rx
+            from core.memory_scope import current_scope, is_experimental, scope_of
+            _experimental_chat = is_experimental(current_scope())
 
-            _pending = st.session_state.pop("sc_awaiting", None)
+            _pending = (
+                None
+                if _experimental_chat
+                else st.session_state.pop("sc_awaiting", None)
+            )
             if _pending is not None:
                 st.session_state.messages.append({
                     "role": "user", "content": prompt, "observed_at": time.time()
@@ -858,7 +940,7 @@ with main_col:
                 memory_manager.log_conversation("Euri", ack)
                 st.stop()
 
-            if _rx.BRIEFING_HINT_RE.search(prompt):
+            if not _experimental_chat and _rx.BRIEFING_HINT_RE.search(prompt):
                 _is_brief, _topic = _rx.understand_briefing(prompt)
                 if _is_brief:
                     st.session_state.messages.append({
@@ -990,10 +1072,10 @@ with main_col:
                         response = save_res["reply"]
                     else:
                         chat_hint = "[Modalità chat testuale — nessun vincolo TTS. Puoi rispondere con più profondità, sviluppare i concetti, fare domande di ritorno. Sii presente e partecipe come in una conversazione reale.]"
-                        from core.visual_presence import visual_presence_context
-                        visual_context = visual_presence_context(r)
+                        from core.visual_presence import with_visual_context
+                        context_full = with_visual_context(context, r)
                         context_full = "\n\n".join(
-                            part for part in (context, visual_context, chat_hint) if part
+                            part for part in (context_full, chat_hint) if part
                         )
                         # Gradino 2 — strategia di retrieval (wide/subject) sul modello caldo,
                         # solo quando la pre-gate cheap scatta; specific_search → invariato.
@@ -1089,11 +1171,17 @@ with main_col:
                         recent_msgs = [
                             dict(message)
                             for message in brain._conversation_history[-6:]
+                            if scope_of(message) == current_scope()
                         ]
                     if recent_msgs:
                         facts = brain.extract_passive_memories(recent_msgs)
                         saved = 0
                         for fact_item in facts:
+                            from core.memory_scope import normalize_scope
+                            fact_scope = normalize_scope(
+                                recent_msgs[0].get("memory_scope")
+                                if recent_msgs else None
+                            )
                             from core.temporal_context import derive_passive_memory_metadata
                             weak_support = isinstance(fact_item, dict) and fact_item.get("support") == "weak"
                             fact = fact_item.get("content", "") if isinstance(fact_item, dict) else str(fact_item)
@@ -1124,7 +1212,11 @@ with main_col:
                                 recent_msgs,
                             )
                             clean = metadata["canonical_content"]
-                            if memory_manager.is_duplicate_memory(clean, llm_probe_fn=brain.probe_same_meaning):
+                            if memory_manager.is_duplicate_memory(
+                                clean,
+                                llm_probe_fn=brain.probe_same_meaning,
+                                memory_scope=fact_scope,
+                            ):
                                 continue
                             final_fields = {
                                 "passive_provenance": provenance_audit,
@@ -1144,6 +1236,7 @@ with main_col:
                                 memory_kind=metadata["memory_kind"],
                                 temporal_context=metadata["temporal_context"],
                                 final_fields=final_fields,
+                                memory_scope=fact_scope,
                             )
                             if mid and (weak_support or metadata["memory_kind"] == "conversation_anchor"):
                                 from core.memory_attention import remove_loop2e_candidate

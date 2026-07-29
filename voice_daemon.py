@@ -102,7 +102,9 @@ _IMPLICIT_READ_LOG_RE = re.compile(
 # Correzioni misrecognition STT (Whisper IT)
 # ──────────────────────────────────────────
 _WAKE_WORD_RE = re.compile(r'\beuri\b', re.IGNORECASE)
-_CONVERSATION_WINDOW_SEC = 45  # secondi di conversazione attiva senza wake word
+_CONVERSATION_WINDOW_SEC = int(
+    getattr(config, "CONVERSATION_LEASE_SECONDS", 45)
+)  # secondi di conversazione diretta senza wake word
 
 _STT_CORRECTIONS: dict[str, str] = {
     "salve a tutti": "salva tutto",
@@ -183,6 +185,7 @@ class VoiceDaemon:
             summary,
             category="episodio", source="episode",
             memory_kind="conversation_episode", temporal_context=temporal_context,
+            memory_scope=temporal_context.get("memory_scope"),
         )
         self.executor = Executor()
         self.executor.brain  = self.brain
@@ -300,6 +303,16 @@ class VoiceDaemon:
     def setup(self):
         logger.info("Inizializzazione Euri...")
         init_indexes(self.r)
+        from core.memory_scope import active_scope_state
+        scope_state = active_scope_state(self.r)
+        if scope_state.get("active"):
+            logger.warning(
+                "Scope memoria SPERIMENTALE ancora attivo: {} ({})",
+                scope_state.get("label"),
+                scope_state.get("scope"),
+            )
+        else:
+            logger.info("Scope memoria: personal")
         self.vad.load()
         self.stt.load()
         self.tts.load()
@@ -2438,8 +2451,12 @@ class VoiceDaemon:
     def _handle_save_last(self, text: str):
         """Salva un riassunto della conversazione recente."""
         self.memory.log_conversation(_OWNER_NAME, text)
+        from core.memory_scope import current_scope, scope_of
         with self.brain.history_lock:
-            history = list(self.brain._conversation_history)
+            history = [
+                message for message in self.brain._conversation_history
+                if scope_of(message) == current_scope()
+            ]
         if len(history) < 2:
             self._speak("Non c'è abbastanza conversazione da salvare.")
             return
@@ -2485,6 +2502,13 @@ class VoiceDaemon:
         # Gradino 2 — strategia di retrieval (wide/subject) sul modello caldo, solo quando la
         # pre-gate cheap scatta; specific_search → context invariato.
         context = self._augment_context_by_strategy(text, context)
+        # Il VisualGate era gia' afferente sul pulse e disponibile alla Silent Chat,
+        # ma la voce non riceveva il suo stato corrente: il modello poteva quindi
+        # negare un sensore che il daemon stava usando nello stesso momento.
+        # Iniettiamo soltanto lo snapshot sanitizzato e a TTL breve: non e' memoria,
+        # non attribuisce autorita' e non contiene frame, embedding o similarity.
+        from core.visual_presence import with_visual_context
+        context = with_visual_context(context, self.r)
         context = (context + "\n\n" if context else "") + "[Modalità conversazione: sii presente e naturale, non rigido.]"
         lineage = self._start_response_lineage(
             text, channel="voice_chat", mode="chat"
@@ -2823,6 +2847,79 @@ class VoiceDaemon:
         self.memory.log_conversation(_ASSISTANT_NAME, reply)
         self._speak(reply)
 
+    def _handle_memory_scope_command(self, text: str) -> bool:
+        """Controllo deterministico del confine personale/sperimentale."""
+        from core.memory_scope import (
+            active_scope_state,
+            parse_scope_command,
+            start_experiment,
+            stop_experiment,
+        )
+
+        command = parse_scope_command(text)
+        if command is None:
+            return False
+        if command.action == "start":
+            if not command.label:
+                self._speak(
+                    "Dammi un nome per la sessione sperimentale, per esempio Progetto Alfa."
+                )
+                return True
+            state = start_experiment(
+                self.r,
+                command.label,
+                ttl_seconds=getattr(
+                    config, "MEMORY_EXPERIMENT_SCOPE_TTL_SECONDS", 24 * 3600
+                ),
+            )
+            # Una domanda proattiva o una verifica nata nella memoria personale
+            # non può ricevere risposta dentro lo scenario appena aperto.
+            if self._awaiting_reaction:
+                self.present.clear_pending_question(
+                    self._awaiting_reaction.data.get("question_id")
+                )
+            if self._awaiting_memory_verification:
+                self.present.clear_pending_question(
+                    self._awaiting_memory_verification.data.get("question_id")
+                )
+            self._awaiting_reaction = None
+            self._awaiting_memory_verification = None
+            logger.info(
+                "Scope memoria: sessione sperimentale attiva scope={} label={!r}",
+                state["scope"],
+                state["label"],
+            )
+            self._speak(
+                f"Sessione sperimentale {state['label']} attiva. "
+                "Da ora ricordi e turni restano separati dalla memoria personale. "
+                "La chiuderò automaticamente entro ventiquattro ore se non lo fai tu."
+            )
+            return True
+        if command.action == "stop":
+            previous = stop_experiment(self.r)
+            if previous.get("active"):
+                logger.info(
+                    "Scope memoria: sessione sperimentale chiusa scope={}",
+                    previous.get("scope"),
+                )
+                self._speak(
+                    f"Sessione sperimentale {previous.get('label')} chiusa. "
+                    "Sono tornata alla memoria personale."
+                )
+            else:
+                self._speak("Non c'era una sessione sperimentale attiva.")
+            return True
+
+        state = active_scope_state(self.r)
+        if state.get("active"):
+            self._speak(
+                f"Siamo nella sessione sperimentale {state.get('label')}. "
+                "La memoria personale resta separata."
+            )
+        else:
+            self._speak("Siamo nella memoria personale ordinaria.")
+        return True
+
     def _dispatch(
         self,
         text: str,
@@ -2831,7 +2928,28 @@ class VoiceDaemon:
         trusted: bool = False,
         observed_at: float | None = None,
     ):
+        """Applica lo scope conversazionale anche ai percorsi anticipati/pending."""
+        from core.memory_scope import get_active_scope, use_memory_scope
+
+        with use_memory_scope(get_active_scope(self.r)):
+            return self._dispatch_scoped(
+                text,
+                detected_lang=detected_lang,
+                trusted=trusted,
+                observed_at=observed_at,
+            )
+
+    def _dispatch_scoped(
+        self,
+        text: str,
+        detected_lang: str = "it",
+        *,
+        trusted: bool = False,
+        observed_at: float | None = None,
+    ):
         """Smista il testo trascritto all'handler corretto."""
+        if self._handle_memory_scope_command(text):
+            return
         if self._pending_guest_review:
             if self._pending_guest_review.expired():
                 self._pending_guest_review = None
@@ -2976,7 +3094,11 @@ class VoiceDaemon:
         # decide se è davvero una richiesta sui sogni di Euri e ne estrae il TEMA — capendo,
         # non contando connettori (così "cosa hai sognato ULTIMAMENTE" non scambia l'avverbio
         # per un tema, e "hai pensato al Poseidon?" funziona senza la frase-magica).
-        if self._BRIEFING_HINT_RE.search(text):
+        from core.memory_scope import current_scope, is_experimental
+        if (
+            not is_experimental(current_scope())
+            and self._BRIEFING_HINT_RE.search(text)
+        ):
             _is_briefing, _topic = self._understand_briefing(text)
             if _is_briefing:
                 self.memory.log_conversation(_OWNER_NAME, text)
@@ -3142,6 +3264,11 @@ class VoiceDaemon:
                 # Euri e parlato ambient: un solo messaggio trusted non deve rendere
                 # FORTE un fatto estratto dalla parte ambient del batch.
                 for segment_addressed, segment_history in self._passive_extraction_batches(new_history):
+                    from core.memory_scope import normalize_scope
+                    segment_scope = normalize_scope(
+                        segment_history[0].get("memory_scope")
+                        if segment_history else None
+                    )
                     facts = self.brain.extract_passive_memories(segment_history) or []
                     for fact_item in facts:
                         extracted += 1
@@ -3179,7 +3306,11 @@ class VoiceDaemon:
                         )
                         clean = metadata["canonical_content"]
                         validated += 1
-                        if self.memory.is_duplicate_memory(clean, llm_probe_fn=self.brain.probe_same_meaning):
+                        if self.memory.is_duplicate_memory(
+                            clean,
+                            llm_probe_fn=self.brain.probe_same_meaning,
+                            memory_scope=segment_scope,
+                        ):
                             duplicates += 1
                             continue
                         final_fields = {
@@ -3200,6 +3331,7 @@ class VoiceDaemon:
                             memory_kind=metadata["memory_kind"],
                             temporal_context=metadata["temporal_context"],
                             final_fields=final_fields,
+                            memory_scope=segment_scope,
                         )
                         if mid and (weak_support or metadata["memory_kind"] == "conversation_anchor"):
                             from core.memory_attention import remove_loop2e_candidate
@@ -3544,6 +3676,12 @@ class VoiceDaemon:
     def _initiative_block_reason(self, *, idle_seconds: float | None = None,
                                  cooldown_s: float | None = None) -> str:
         """Ritorna "" se Euri può iniziare una domanda proattiva adesso."""
+        try:
+            from core.memory_scope import get_active_scope, is_experimental
+            if is_experimental(get_active_scope(self.r)):
+                return "experimental_memory_scope"
+        except Exception:
+            return "memory_scope_unavailable"
         if self._voice_input_inflight.is_set():
             return "voice_input_inflight"
         try:
@@ -4133,16 +4271,19 @@ class VoiceDaemon:
 
     @staticmethod
     def _partition_passive_history(history: list[dict]) -> list[tuple[bool, list[dict]]]:
-        """Separa per provenienza mantenendo ordine e coppie user/assistant."""
-        buckets: dict[bool, list[dict]] = {}
-        order: list[bool] = []
+        """Separa per provenienza e scope senza fondere mondi epistemici."""
+        from core.memory_scope import normalize_scope
+
+        buckets: dict[tuple[str, bool], list[dict]] = {}
+        order: list[tuple[str, bool]] = []
         for message in history:
             addressed = bool(message.get("trusted"))
-            if addressed not in buckets:
-                buckets[addressed] = []
-                order.append(addressed)
-            buckets[addressed].append(message)
-        return [(addressed, buckets[addressed]) for addressed in order]
+            key = (normalize_scope(message.get("memory_scope")), addressed)
+            if key not in buckets:
+                buckets[key] = []
+                order.append(key)
+            buckets[key].append(message)
+        return [(addressed, buckets[(scope, addressed)]) for scope, addressed in order]
 
     @classmethod
     def _passive_extraction_batches(cls, history: list[dict]) -> list[tuple[bool, list[dict]]]:
@@ -4152,10 +4293,26 @@ class VoiceDaemon:
         scende sotto la soglia, conserva il batch intero ma lo marca non rivolto:
         tutti i fatti risultanti vengono quindi degradati a DEBOLE.
         """
-        partitions = cls._partition_passive_history(history)
-        if len(partitions) > 1 and any(len(batch) < 4 for _, batch in partitions):
-            return [(False, history)]
-        return partitions
+        from core.memory_scope import normalize_scope
+
+        by_scope: dict[str, list[dict]] = {}
+        scope_order: list[str] = []
+        for message in history:
+            scope = normalize_scope(message.get("memory_scope"))
+            if scope not in by_scope:
+                by_scope[scope] = []
+                scope_order.append(scope)
+            by_scope[scope].append(message)
+
+        result: list[tuple[bool, list[dict]]] = []
+        for scope in scope_order:
+            scoped = by_scope[scope]
+            partitions = cls._partition_passive_history(scoped)
+            if len(partitions) > 1 and any(len(batch) < 4 for _, batch in partitions):
+                result.append((False, scoped))
+            else:
+                result.extend(partitions)
+        return result
 
     @staticmethod
     def _passive_weak_support(support: str | None, segment_addressed: bool) -> bool:
@@ -4174,6 +4331,43 @@ class VoiceDaemon:
         if self._translate_bidir or self._dictation_mode:
             return True
         return has_wake_word or conversation_open or since_last < _CONVERSATION_WINDOW_SEC
+
+    def _adaptive_followup_addressed(
+        self,
+        text: str,
+        *,
+        authenticated: bool,
+        require_wake_word: bool,
+        focus_open: bool,
+    ) -> bool:
+        """Recupera un seguito fuori lease solo con identità e continuità forti."""
+        if (
+            not getattr(config, "CONVERSATION_ADAPTIVE_FOLLOWUP_ENABLED", False)
+            or not authenticated
+            or require_wake_word
+            or not focus_open
+        ):
+            return False
+        try:
+            if not self.visual_gate.is_owner_present():
+                return False
+            with self.brain.history_lock:
+                history = list(self.brain._conversation_history)
+            from core.addressedness import (
+                classify_adaptive_followup,
+                recent_dialogue_text,
+            )
+            dialogue = recent_dialogue_text(history)
+            classifier = getattr(
+                self,
+                "_adaptive_followup_classifier",
+                classify_adaptive_followup,
+            )
+            result = classifier(text, dialogue)
+            return bool(result.get("accepted"))
+        except Exception as exc:
+            logger.debug(f"Addressedness gate: precondizione fallita ({exc})")
+            return False
 
     @staticmethod
     def _is_garbage_transcript(text: str) -> tuple[bool, float]:
@@ -4226,10 +4420,20 @@ class VoiceDaemon:
             if has_previous_activity else float("inf")
         )
         try:
-            conversation_open = self.present.snapshot(now=guard_at).conversation_open(guard_at)
+            present_snapshot = self.present.snapshot(now=guard_at)
+            conversation_open = present_snapshot.conversation_open(guard_at)
+            focus_open = present_snapshot.focus_open(guard_at)
         except Exception:
             conversation_open = False
+            focus_open = False
         addressed = self._utterance_is_addressed(has_wake_word, since_last, conversation_open)
+        if not addressed:
+            addressed = self._adaptive_followup_addressed(
+                text,
+                authenticated=authenticated,
+                require_wake_word=require_wake_word,
+                focus_open=focus_open,
+            )
         if require_wake_word:
             addressed = has_wake_word
         if not addressed:
@@ -4313,6 +4517,10 @@ class VoiceDaemon:
                             }, maxlen=20)
                             continue
 
+                        # Il worker mobile vive in un thread proprio: i ContextVar non
+                        # ereditano automaticamente lo scope attivo del daemon.
+                        from core.memory_scope import bind_memory_scope, get_active_scope
+                        bind_memory_scope(get_active_scope(self.r))
                         self._last_activity_ts = time.time()
                         self.memory.log_conversation(_OWNER_NAME, text)
 

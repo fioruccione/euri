@@ -244,6 +244,62 @@ def test_long_utterance_keeps_consent_from_speech_start():
     print("OK  turno lungo conserva il consenso dall'inizio, senza fail-open ambientale")
 
 
+def test_adaptive_followup_requires_owner_focus_and_semantic_acceptance():
+    d = make(last_activity=100.0)
+    d.present.accept_user_turn("Euri, spiegami il sensore", at=100.0)
+    d.visual_gate = type(
+        "Gate",
+        (),
+        {"is_owner_present": lambda _self: True},
+    )()
+    d.brain = type(
+        "BrainStub",
+        (),
+        {
+            "history_lock": threading.RLock(),
+            "_conversation_history": [
+                {"role": "user", "content": "Euri, spiegami il sensore"},
+                {"role": "assistant", "content": "Il segnale resta descrittivo."},
+            ],
+        },
+    )()
+    d._adaptive_followup_classifier = lambda *_args, **_kwargs: {
+        "accepted": True,
+        "relation": "direct_followup",
+        "confidence": 0.97,
+    }
+
+    accepted = d._accept_voice_transcript(
+        "In che modo questo potrebbe aiutarci?",
+        now_ts=200.0,
+        authenticated=True,
+    )
+    assert accepted is not None and accepted[1] is False
+
+    d._adaptive_followup_classifier = lambda *_args, **_kwargs: {
+        "accepted": False,
+        "relation": "ambient",
+        "confidence": 0.99,
+    }
+    assert d._accept_voice_transcript(
+        "Mi sa che carica l'87.",
+        now_ts=300.0,
+        authenticated=True,
+    ) is None
+
+    d.visual_gate = type(
+        "Gate",
+        (),
+        {"is_owner_present": lambda _self: False},
+    )()
+    assert d._accept_voice_transcript(
+        "In che modo questo potrebbe aiutarci?",
+        now_ts=310.0,
+        authenticated=True,
+    ) is None
+    print("OK  seguito adattivo: owner+focus+semantica, altrimenti wake")
+
+
 def test_memory_operations_are_domain_independent():
     recall_cases = [
         "Euri, cosa hai in memoria?",
@@ -356,6 +412,7 @@ if __name__ == "__main__":
     test_first_utterance_without_wake_does_not_open_a_session()
     test_long_tts_lease_accepts_followup_without_wake_word()
     test_long_utterance_keeps_consent_from_speech_start()
+    test_adaptive_followup_requires_owner_focus_and_semantic_acceptance()
     test_memory_operations_are_domain_independent()
     test_memory_audit_candidates_are_bounded_and_risk_first()
     test_offtopic_reaction_returns_turn_to_dispatch()

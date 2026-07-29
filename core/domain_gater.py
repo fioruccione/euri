@@ -14,9 +14,16 @@ from core.memory_risk import rank_memories_epistemically
 from redis.commands.search.query import Query
 
 import config
+from core.memory_scope import current_scope, normalize_scope, scope_clause
 
 
-def _knn_domains(vec_bytes: bytes, r, k: int, exclude_id: str | None = None) -> list[str]:
+def _knn_domains(
+    vec_bytes: bytes,
+    r,
+    k: int,
+    exclude_id: str | None = None,
+    memory_scope: str | None = None,
+) -> list[str]:
     """
     Ritorna i domini delle k memorie semanticamente più vicine (KNN su tutto il DB),
     ordinati dal più vicino. Riferimento auto-derivato: nessun dominio è cablato nel
@@ -26,7 +33,10 @@ def _knn_domains(vec_bytes: bytes, r, k: int, exclude_id: str | None = None) -> 
     try:
         n = k + (1 if exclude_id else 0)
         q = (
-            Query(f"*=>[KNN {n} @embedding $vec AS score]")
+            Query(
+                f"({scope_clause(memory_scope)})"
+                f"=>[KNN {n} @embedding $vec AS score]"
+            )
             .sort_by("score")
             .return_fields("id", "domain")
             .dialect(2)
@@ -44,13 +54,25 @@ def _knn_domains(vec_bytes: bytes, r, k: int, exclude_id: str | None = None) -> 
         return []
 
 
-def neighbor_domains(vec_bytes: bytes, r, k: int = 8) -> list[str]:
+def neighbor_domains(
+    vec_bytes: bytes,
+    r,
+    k: int = 8,
+    *,
+    memory_scope: str | None = None,
+) -> list[str]:
     """P1 — domini dei vicini semantici, da passare come suggerimento ad assign_domain."""
-    return _knn_domains(vec_bytes, r, k)
+    return _knn_domains(vec_bytes, r, k, memory_scope=memory_scope)
 
 
-def detect_domain_outlier(vec_bytes: bytes, assigned_domain: str, r,
-                          k: int = 10, exclude_id: str | None = None) -> dict:
+def detect_domain_outlier(
+    vec_bytes: bytes,
+    assigned_domain: str,
+    r,
+    k: int = 10,
+    exclude_id: str | None = None,
+    memory_scope: str | None = None,
+) -> dict:
     """
     R1 — rileva se il dominio assegnato è incoerente col vicinato semantico.
     Outlier = il dominio assegnato NON compare tra i domini dei k vicini.
@@ -60,7 +82,13 @@ def detect_domain_outlier(vec_bytes: bytes, assigned_domain: str, r,
     Ritorna: {is_outlier, assigned, suggested, neighbor_counts}
     """
     from collections import Counter
-    doms = _knn_domains(vec_bytes, r, k, exclude_id=exclude_id)
+    doms = _knn_domains(
+        vec_bytes,
+        r,
+        k,
+        exclude_id=exclude_id,
+        memory_scope=memory_scope,
+    )
     if not doms:
         return {"is_outlier": False, "assigned": assigned_domain,
                 "suggested": None, "neighbor_counts": {}}
@@ -134,8 +162,9 @@ Rispondi SOLO con l'etichetta. Nessuna spiegazione. Niente virgolette. Tutto min
 def _source_prefilter(
     source_filter: list[str] | None,
     source_exclude: list[str] | None,
+    memory_scope: str | None = None,
 ) -> str:
-    clauses = []
+    clauses = [scope_clause(memory_scope)]
     if source_filter:
         clauses.append("@source:{" + "|".join(source_filter) + "}")
     if source_exclude:
@@ -151,6 +180,7 @@ def domain_aware_search(
     *,
     source_filter: list[str] | None = None,
     source_exclude: list[str] | None = None,
+    memory_scope: str | None = None,
 ) -> list[dict]:
     """
     Ricerca vettoriale in due passaggi.
@@ -174,7 +204,10 @@ def domain_aware_search(
     DOMAIN_BOOST = 0.85  # <1: 'score' è una distanza, quindi in-dominio = avvicinato
     pool = max(limit * 4, 20)
     try:
-        prefilter = _source_prefilter(source_filter, source_exclude)
+        memory_scope = normalize_scope(memory_scope or current_scope())
+        prefilter = _source_prefilter(
+            source_filter, source_exclude, memory_scope
+        )
         q_all = (
             Query(f"({prefilter})=>[KNN {pool} @embedding $vec AS score]")
             .sort_by("score")
@@ -199,6 +232,8 @@ def domain_aware_search(
         # requires_verification/provenance_stale/audit_flag/consolidation_risk, altrimenti
         # il prompt RAG perde proprio i flag epistemici che guidano la cautela.
         if item.get("superseded_by"):
+            continue
+        if normalize_scope(item.get("memory_scope")) != memory_scope:
             continue
         source = item.get("source")
         if source_filter is not None and source not in source_filter:

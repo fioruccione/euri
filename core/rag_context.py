@@ -146,9 +146,14 @@ def _format_recent_history(
     limit: int = 8,
     reference_at: float | None = None,
 ) -> list[str]:
+    from core.memory_scope import current_scope, scope_of
+    scoped_history = [
+        message for message in (recent_history or [])
+        if scope_of(message) == current_scope()
+    ]
     rows = []
     previous_at = None
-    for msg in (recent_history or [])[-limit:]:
+    for msg in scoped_history[-limit:]:
         role = msg.get("role")
         content = (msg.get("content") or "").strip()
         if not content:
@@ -301,7 +306,12 @@ def build_rag_context(
             search_kwargs["source_exclude"] = source_exclude
         extra_memories = memory.search_memories(text, **search_kwargs)
         kw_query = " | ".join(keywords[:8])
-        extra_notes = memory.search_notes(kw_query, limit=2)
+        from core.memory_scope import PERSONAL_SCOPE, current_scope
+        extra_notes = (
+            memory.search_notes(kw_query, limit=2)
+            if current_scope() == PERSONAL_SCOPE
+            else []
+        )
         for r in extra_memories + extra_notes:
             rid = r.get("id")
             if rid not in seen_ids:
@@ -648,6 +658,8 @@ def build_dual_channel_context(
         compose_selective_presentation,
         evaluate_selective_gate,
     )
+    from core.memory_scope import current_scope, scope_of
+    expected_scope = current_scope()
 
     if presentation not in {"append", "selective"}:
         raise ValueError(f"presentazione dual-channel non valida: {presentation}")
@@ -673,16 +685,27 @@ def build_dual_channel_context(
         if node.get("kind") == "memory" and node.get("source") == "passive"
     ][: FROZEN_POLICY["Q_notes"]]
 
-    locator_notes = [
-        _passive_source_refs(_load_memory_document(memory, node["id"]))
-        for node in passive_nodes
-    ]
+    locator_notes = []
+    for node in passive_nodes:
+        locator_doc = _load_memory_document(memory, node["id"])
+        locator_notes.append(
+            _passive_source_refs(locator_doc)
+            if scope_of(locator_doc) == expected_scope
+            else []
+        )
+
+    def _render_scoped_turn(turn_ref: str) -> str:
+        turn = turn_store.get(turn_ref)
+        if not turn or turn.memory_scope != expected_scope:
+            return ""
+        return turn.render()
+
     composition = compose_dual_channel(
         base_context_text=base.text,
         base_slots=len(base.nodes),
         base_turn_ids=base.turn_ids,
         locator_notes=locator_notes,
-        render_turn=turn_store.render,
+        render_turn=_render_scoped_turn,
     )
 
     added_nodes = []
@@ -692,7 +715,7 @@ def build_dual_channel_context(
     }
     for position, turn_ref in enumerate(composition.added_turn_ids(), 1):
         turn = turn_store.get(turn_ref)
-        if not turn:
+        if not turn or turn.memory_scope != expected_scope:
             continue
         addition = addition_by_turn[turn_ref]
         addition_gate_inputs.append(

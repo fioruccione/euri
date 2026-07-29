@@ -23,6 +23,85 @@ Stato, numeri, invarianti e limiti sono congelati nella fotografia
 [docs/EURI_V2.21_STATE_2026-07-28.md](docs/EURI_V2.21_STATE_2026-07-28.md).
 La dichiarazione di versione non migra Redis e non riscrive memorie.
 
+### V2.21 (continua, 29/07/2026) — Memoria personale e scenari non condividono più lo stesso mondo
+
+- Chiuso un difetto strutturale: una battuta concreta, un role-play o una
+  conversazione di prova potevano superare l'estrattore passivo e, una volta
+  salvati, partecipare a retrieval, deduplica, correzioni, consolidamenti e
+  sogni come qualunque fatto personale.
+- Ogni memoria, nota e turno verbatim porta ora un `memory_scope` durevole.
+  Il default e lo storico sono `personal`; una sessione dichiarata crea uno
+  scope `experiment_<nome>` separato. Gli indici RediSearch filtrano lo scope
+  prima del ranking e l'idratazione JSON lo rivalida, quindi un indice stale
+  non può riaprire il confine.
+- Hardening dopo audit indipendente: soltanto `None`/vuoto conserva il fallback
+  legacy a `personal`. Uno scope presente ma non canonico viene quarantinato
+  come `invalid_scope`, mai promosso nel mondo personale; l'escaping dei valori
+  TAG RediSearch è ora effettivo e coperto da contro-test con spazi, trattini,
+  pipe e parentesi graffe.
+- Il dual-channel può usare una sintesi sperimentale soltanto come locator di
+  un turno verbatim dello stesso scope. History LLM, episodi compressi, log
+  giornaliero, ultimo contesto RAG, note, deduplica e correzioni sono separati.
+  Anche il worker mobile riallinea il proprio ContextVar allo scope Redis
+  attivo prima di rispondere.
+- I loop cognitivi canonici restano personali: Loop 2e, Loop 2f, Loop 2h,
+  plausibility gate, sogni creativi, ipotesi trasversali e Initiative rifiutano
+  input sperimentali. Il Pulse conserva comunque `memory_scope` per audit; le
+  memorie di prova vengono esportate in
+  `EuriVault/Experiments/<scope>/...`, non mischiate al Vault personale.
+- Comandi voce/Silent Chat: `avvia una sessione sperimentale chiamata <nome>`,
+  `in che modalità di memoria siamo?`, `chiudi la sessione sperimentale`.
+  Lo scope attivo scade automaticamente dopo 24 ore come fail-safe; i dati non
+  vengono cancellati e restano disponibili come storico isolato.
+- L'estrattore personale riceve inoltre l'istruzione di non trasformare
+  battute, esempi, ipotesi, simulazioni o dati esplicitamente inventati in
+  fatti. Questa è una protezione semantica aggiuntiva, non una promessa
+  impossibile: una falsità formulata come fatto reale e senza alcun marcatore
+  pragmatico non è distinguibile con certezza da un fatto vero.
+- Migrazione idempotente al boot: documenti legacy `euri:memory:*`,
+  `euri:turn:*` ed `euri:note:*` privi del campo vengono marcati `personal`;
+  contenuto e provenienza non vengono riscritti. Regressioni dedicate e
+  manifest unitario: **64/64**.
+
+#### Correttezza dei risultati e completezza dei candidati: due problemi distinti
+
+Una revisione incrociata ha mostrato che lo scope garantiva finora la
+correttezza di ciò che sopravvive al filtro, ma non la completezza del bacino
+da cui i candidati vengono estratti. Sono due difetti diversi e vanno tenuti
+separati, perché il primo è chiuso e il secondo no.
+
+- **Difetto 1 — chiuso.** `gather_grounded_evidence` (gate di familiarità del
+  briefing) recuperava fino a 800 documenti filtrando solo per `source`, e
+  applicava lo scope dopo, in idratazione. Nessun leak: una memoria
+  sperimentale non veniva mai usata. Ma poteva occupare posti nella finestra e
+  spingerne fuori evidenza personale — e il costo restava anche a sessione
+  chiusa, perché quei documenti restano nell'indice. La clausola di scope è ora
+  nella query, prima del limite; il filtro in idratazione resta come seconda
+  validazione fail-closed contro un indice stale. Un test sull'output non
+  avrebbe visto nulla, quindi la regressione verifica la query inviata a
+  RediSearch e il caso di crowding con la finestra satura.
+- **Guardrail.** `test_memory_scope_query_guard.py` inventaria staticamente le
+  ricerche runtime su `idx:memories`/`idx:notes` e pretende una clausola di
+  scope, con allowlist esplicita e motivata (oggi: la sola ispezione
+  cross-scope della Control Room, vincolata anche nel numero). Non è la
+  primitiva per costruzione — quella sarebbe un'interfaccia di ricerca che non
+  espone l'indice grezzo, e verrà progettata dopo la tabella offline degli
+  operatori. Rende soltanto verificabile una convenzione che finora dipendeva
+  dalla memoria di chi scriveva il codice.
+- **Difetto 2 — APERTO, non risolto da questo intervento.** Il bacino personale
+  è oggi a **667/800** documenti `user|teach|passive|episode|conversation`, e
+  cresce di 3–5 al giorno con il solo uso normale: la saturazione arriva anche
+  senza mai aprire una sessione sperimentale. La query non ha ordinamento, né
+  per rilevanza né per data, quindi oltre la soglia il troncamento è arbitrario
+  e il sintomo a voce sarebbe Euri che dichiara *«di questo non mi pare di
+  avere traccia»* su un tema di cui ha traccia: un falso "non ricordo"
+  indistinguibile da un vero "non so". **Il limite non va alzato**: alzarlo
+  sposta il muro e nasconde che la selezione avviene nel posto sbagliato. La
+  direzione da misurare è calcolare la document frequency nell'indice invece
+  che in Python su una finestra arbitraria, in shadow contro il calcolo legacy
+  perché stemming e stopword divergeranno. Sentinella operativa: **750**, che è
+  un innesco per riaprire, non una soluzione.
+
 ### V2.21 (continua, 29/07/2026) — Il richiamo diventa utilità osservata
 
 - Riscoperta e chiusa una funzione rimasta senza consumer:
@@ -87,6 +166,37 @@ La dichiarazione di versione non migra Redis e non riscrive memorie.
   future chiavi di servizio finite nel namespace memoria vengono ignorate
   senza produrre errori e senza interrompere l'aggiornamento dei documenti
   validi.
+
+### V2.21 (continua, 29/07/2026) — Presenza visiva disponibile anche alla voce
+
+- Chiuso un disallineamento osservato dal vivo: VisualGate riconosceva Stefano
+  e pubblicava già gli eventi di presenza sul pulse, ma il prompt della
+  conversazione vocale non riceveva lo snapshot operativo e poteva quindi
+  negare di possedere la percezione che il daemon stava usando.
+- Voce e Silent Chat condividono ora lo stesso contesto visivo sanitizzato e
+  a TTL breve. Lo stato è sola lettura ed effimero: non diventa memoria, non
+  conserva frame, embedding o similarity e non autorizza azioni sensibili.
+- La percezione distingue volto assente, volto non identificato e proprietario
+  riconosciuto. In mancanza di uno snapshot fresco Euri dichiara che lo stato
+  corrente non è disponibile, senza negare l'esistenza del sensore.
+- Dopo la verifica live della presenza, attivata anche la Fase 2a della
+  percezione sociale: sorriso, contrazione delle sopracciglia e sguardo verso
+  il basso entrano nei prompt locali soltanto come movimenti descrittivi
+  stabilizzati, dopo rivalidazione dell'owner e con TTL breve.
+- Il modello può adattare leggermente tono o brevità quando parole e segnale
+  concordano, ma non può dedurre emozioni, intenzioni, sincerità o approvazione.
+  I segnali restano fuori da memoria, Cognitive Present, Initiative e
+  autorizzazioni. Kill switch:
+  `EURI_SOCIAL_PERCEPTION_CONTEXT_ENABLED=0`.
+- La prova live ha mostrato anche il limite opposto: un seguito pertinente
+  pronunciato 95 secondi dopo la risposta veniva ignorato perché la lease senza
+  wake word durava 45 secondi. La finestra non è stata semplicemente allungata:
+  avrebbe riaperto il caso reale del parlato rivolto a Giada.
+- Entro il focus già esistente di cinque minuti, un turno fuori lease può ora
+  passare senza “Euri” soltanto se voce e volto owner sono verificati e un gate
+  semantico ad alta confidenza lo riconosce come continuazione diretta o risposta
+  all'assistente. Somiglianza tematica, output ambiguo ed errori restano
+  fail-closed. Gli ospiti devono sempre usare il wake word.
 
 ### V2.21 (continua, 28/07/2026) — Thinking selettivo fondato sul verbatim
 

@@ -34,6 +34,9 @@ def is_loop2e_candidate(doc: dict[str, Any], *, now_ts: float | None = None) -> 
     """Replica il gate preliminare del Loop 2e, senza conoscere il dominio specifico."""
     if not doc:
         return False
+    from core.memory_scope import PERSONAL_SCOPE, scope_of
+    if scope_of(doc) != PERSONAL_SCOPE:
+        return False
     if doc.get("source") in LOOP2E_SKIP_SOURCES:
         return False
     if doc.get("memory_kind") in NON_FACTUAL_MEMORY_KINDS:

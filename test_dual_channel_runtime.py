@@ -343,10 +343,10 @@ def test_selective_thinking_stays_off_without_promoted_verbatim():
 
 def test_passive_exclusion_is_a_redis_prefilter_not_a_post_cut_filter():
     assert MemoryManager._source_prefix(None, ["passive"]) == (
-        "-@source:{passive}"
+        "@memory_scope:{personal} -@source:{passive}"
     )
     assert MemoryManager._source_prefix(["user", "teach"], ["passive"]) == (
-        "@source:{user|teach} -@source:{passive}"
+        "@memory_scope:{personal} @source:{user|teach} -@source:{passive}"
     )
 
 
