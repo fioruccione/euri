@@ -21,10 +21,21 @@ Vedi [[project_euri_memory_controller]].
 """
 import re
 
+from loguru import logger
+
 from core.memory_risk import memory_epistemic_rank, memory_verification_suffix
 from core.wide_recall import build_wide_recall_map, _gist
 
-STRATEGIES = ("specific_search", "wide_recall", "subject_recall", "entity_recall", "recent_context")
+STRATEGIES = (
+    "specific_search",
+    "wide_recall",
+    "subject_recall",
+    "entity_recall",
+    "recent_context",
+    "chronological_first",
+    "chronological_last",
+    "chronological_timeline",
+)
 _CONF_FLOOR = 0.6
 
 # Pre-gate cheap: cue di domanda APERTA / panoramica / narrativa. Se NON scatta → si assume
@@ -104,7 +115,32 @@ def _split_rows(rows) -> tuple[list[str], list[str]]:
 
 def _maybe_nonspecific(text: str) -> bool:
     """Pre-gate cheap (0ms): la domanda PUÒ essere non-specifica → vale interpellare Gemma."""
-    return bool(text and _OPEN_RE.search(text))
+    return bool(text and (_OPEN_RE.search(text) or _maybe_chronological(text)))
+
+
+def _maybe_chronological(text: str) -> bool:
+    """Pre-gate lessicale: decide soltanto se consultare il classificatore.
+
+    Non assegna l'intento. La distinzione semantica fra «quando ne abbiamo
+    parlato?» e «quando scade?» resta al modello JSON del controllore.
+    """
+    normalized = "".join(
+        char if char.isalnum() else " "
+        for char in str(text or "").casefold()
+    )
+    tokens = set(normalized.split())
+    speech = {
+        "detto", "dicevo", "discusso", "menzionato", "nominato", "parlato",
+        "raccontato", "ricordato", "scritto",
+    }
+    ordering = {
+        "prima", "primo", "ultima", "ultimo", "inizialmente", "cronologia",
+    }
+    return bool(
+        (tokens & speech and tokens & {"quando", "data", "prima", "ultima", "ultimo"})
+        or ("volta" in tokens and tokens & ordering)
+        or "cronologia" in tokens
+    )
 
 
 def choose_strategy(text: str, brain, recent_history=None) -> tuple[str, str]:
@@ -126,6 +162,24 @@ def choose_strategy(text: str, brain, recent_history=None) -> tuple[str, str]:
         window_days=getattr(config, "RAG_RECENT_MEMORY_WINDOW_DAYS", 14),
     ):
         return "recent_context", ""
+    chronological_gate = _maybe_chronological(text)
+    if chronological_gate and hasattr(brain, "classify_chronological_query"):
+        try:
+            decision = brain.classify_chronological_query(text, recent_history)
+        except Exception:
+            decision = {}
+        kind = str(decision.get("kind") or "").strip().lower()
+        subject = str(decision.get("subject") or "").strip()
+        try:
+            confidence = float(decision.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if kind in {"first", "last", "timeline"} and subject and confidence >= _CONF_FLOOR:
+            return f"chronological_{kind}", subject
+        # Se il pre-gate era esclusivamente cronologico, un `none` chiude qui:
+        # non serve spendere una seconda chiamata per una strategia aperta.
+        if not _OPEN_RE.search(text or ""):
+            return "specific_search", ""
     if not _maybe_nonspecific(text) or not hasattr(brain, "classify_retrieval_strategy"):
         return "specific_search", ""
     res = brain.classify_retrieval_strategy(text, recent_history)
@@ -139,11 +193,85 @@ def choose_strategy(text: str, brain, recent_history=None) -> tuple[str, str]:
         conf = 0.0
     if strat not in STRATEGIES or conf < _CONF_FLOOR:
         return "specific_search", ""
+    if strat.startswith("chronological_") and not subject:
+        return "specific_search", ""
     if _ENTITY_RE.search(text or "") and strat == "subject_recall":
         return "entity_recall", ""
     if strat == "subject_recall" and not subject:
         return "specific_search", ""
     return strat, subject
+
+
+def build_chronological_recall(
+    turn_store,
+    subject: str,
+    strategy: str,
+) -> tuple[str, list]:
+    """Costruisce evidenza cronologica solo da turni originali datati."""
+    if turn_store is None or strategy not in {
+        "chronological_first",
+        "chronological_last",
+        "chronological_timeline",
+    }:
+        return "", []
+
+    if strategy == "chronological_first":
+        turns = turn_store.search_chronological(subject, order="first", limit=1)
+        label = "PRIMA OCCORRENZA TROVATA"
+    elif strategy == "chronological_last":
+        turns = turn_store.search_chronological(subject, order="last", limit=1)
+        label = "ULTIMA OCCORRENZA TROVATA"
+    else:
+        first = turn_store.search_chronological(subject, order="first", limit=3)
+        last = turn_store.search_chronological(subject, order="last", limit=3)
+        by_ref = {turn.turn_ref: turn for turn in [*first, *last]}
+        turns = sorted(by_ref.values(), key=lambda turn: turn.observed_at)
+        label = "CRONOLOGIA DELLE OCCORRENZE TROVATE"
+
+    terms = turn_store.chronology_terms(subject)
+    total = turn_store.count_chronological(subject)
+    header = (
+        "[RISULTATO CRONOLOGICO VERIFICATO SULL'ARCHIVIO VERBATIM]\n"
+        f"Esito richiesto: {label} di «{subject}» "
+        f"(termini congiunti: {', '.join(terms) or 'nessuno'}).\n"
+        "Tipo di data: DATA DEL TURNO ORIGINALE, non data dell'evento e non "
+        "data di creazione di una memoria.\n"
+    )
+    if not turns:
+        return (
+            header
+            + "Esito: nessuna occorrenza verificabile nei turni disponibili.\n"
+            "Per questa domanda dichiara che non hai trovato la data: non "
+            "ricavarla da sintesi, ricordi vicini o date di altri record.",
+            [],
+        )
+
+    rows = "\n".join(f"- {turn.render()}" for turn in turns)
+    # Le righe mostrate sono quante ne abbiamo CHIESTE, non quante ne esistono:
+    # senza il totale il modello legge una riga sola e la verbalizza come «l'unica
+    # occorrenza», trasformando un limite di query in un'affermazione sui dati.
+    if total is None:
+        census = (
+            "\nOccorrenze totali nell'archivio: non verificate. Non dire né che "
+            "questa è l'unica né quante ce ne sono."
+        )
+    elif total > len(turns):
+        census = (
+            f"\nOccorrenze totali nell'archivio: {total}; qui ne vedi {len(turns)} "
+            "perché è quanto è stato richiesto. NON dire «l'unica», «solo questa» "
+            "o «l'unica volta»: le altre esistono e non ti sono state mostrate."
+        )
+    else:
+        census = (
+            f"\nOccorrenze totali nell'archivio: {total}, tutte mostrate qui."
+        )
+    contract = (
+        "\nRispondi usando esclusivamente queste date per la richiesta "
+        "cronologica. Presentale come occorrenze trovate nell'archivio "
+        "disponibile, senza affermare che l'archivio copra necessariamente "
+        "conversazioni anteriori alla sua attivazione."
+    )
+    return header + rows + census + contract, turns
 
 
 def build_subject_recall(
@@ -271,6 +399,9 @@ def augment_context_with_ids(
     memory,
     brain,
     recent_history=None,
+    *,
+    turn_store=None,
+    rag_context=None,
 ) -> tuple[str, str, list[str]]:
     """
     Amplia il context secondo la strategia scelta (Gradino 2). specific_search/recent_context
@@ -281,6 +412,50 @@ def augment_context_with_ids(
         strategy, subject = choose_strategy(text, brain, recent_history)
     except Exception:
         return context, "", []
+
+    if strategy.startswith("chronological_"):
+        try:
+            chronology, turns = build_chronological_recall(
+                turn_store, subject, strategy
+            )
+        except Exception:
+            chronology, turns = "", []
+        if not chronology:
+            return context, "", []
+        context = chronology + ("\n\n" + context if context else "")
+        if rag_context is not None:
+            start_position = len(rag_context.nodes) + 1
+            for position, turn in enumerate(turns, start_position):
+                rag_context.nodes.append({
+                    "kind": "turn",
+                    "id": turn.turn_ref,
+                    "content": turn.content,
+                    "position": position,
+                    "retrieval_path": strategy,
+                    "source": "conversation_verbatim",
+                    "domain": "",
+                    "prompt_region": "chronology_prepend",
+                })
+                if turn.turn_ref not in rag_context.turn_ids:
+                    rag_context.turn_ids.append(turn.turn_ref)
+            rag_context.diagnostics["chronological_query"] = {
+                "strategy": strategy,
+                "subject": subject,
+                "terms": (
+                    turn_store.chronology_terms(subject)
+                    if turn_store is not None else []
+                ),
+                "matches": [turn.turn_ref for turn in turns],
+                "found": bool(turns),
+                "date_semantics": "turn_observed_at",
+            }
+        logger.info(
+            "RAG cronologico: strategy={} subject={!r} occorrenze={}",
+            strategy,
+            subject,
+            len(turns),
+        )
+        return context, f"{strategy} «{subject}» (+{len(turns)} turni)", []
 
     if strategy == "wide_recall":
         try:
@@ -336,10 +511,27 @@ def augment_context_with_ids(
     return context, "", []  # specific_search / recent_context → nessun augmento
 
 
-def augment_context(text: str, context: str, memory, brain, recent_history=None) -> tuple[str, str]:
+def augment_context(
+    text: str,
+    context: str,
+    memory,
+    brain,
+    recent_history=None,
+    *,
+    turn_store=None,
+    rag_context=None,
+) -> tuple[str, str]:
     """
     Compatibilità per chiamanti che non tracciano provenance dell'augment.
     Usa augment_context_with_ids e scarta gli ID.
     """
-    context, note, _ids = augment_context_with_ids(text, context, memory, brain, recent_history)
+    context, note, _ids = augment_context_with_ids(
+        text,
+        context,
+        memory,
+        brain,
+        recent_history,
+        turn_store=turn_store,
+        rag_context=rag_context,
+    )
     return context, note

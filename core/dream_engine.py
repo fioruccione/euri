@@ -2004,9 +2004,13 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
                     if model_called:
                         judge_budget -= 1
                     if verdict is True:
+                        # `score` è la DISTANZA KNN: più è bassa più i vettori sono
+                        # vicini. Loggarla come "score" la fa leggere come un
+                        # punteggio di convergenza, cioè con il segno invertito.
                         logger.debug(
                             f"Dream Engine: judge LLM ha confermato convergenza "
-                            f"(score={score:.2f}, cache={cache_hit})"
+                            f"(distanza_vettoriale={score:.2f}, shortlist<{max_distance:.2f}, "
+                            f"cache={cache_hit})"
                         )
                         convergences += 1
                         n_judge_confirmed += 1

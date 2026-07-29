@@ -12,6 +12,8 @@ import json
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 
 import config
 from loguru import logger
@@ -24,7 +26,21 @@ TURN_SCHEMA_VERSION = 1
 TURN_RENDER_VERSION = "absolute-time-auth-channel-v1"
 VERBATIM_LIFECYCLE_REPORT_KEY = "euri:verbatim:lifecycle:latest"
 VERBATIM_LIFECYCLE_PENDING_KEY = "euri:verbatim:lifecycle:review_pending"
+LEGACY_VOICE_BACKFILL_KEY = "euri:verbatim:legacy_voice_backfill:v1"
 _TURN_REF_RE = re.compile(r"^(?P<conversation>[^:\s]+):(?P<seq>[1-9]\d*)$")
+_LOG_TIME_RE = re.compile(r"^(?P<stamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})")
+_LOG_STT_RE = re.compile(r"\bSTT:\s+'(?P<content>.*)'\s+\(lang=", re.DOTALL)
+_LOG_INTENT_RE = re.compile(
+    r"\bIntent:\s+[A-Z_]+\s+[—-]\s+'(?P<content>.*)'\s*$",
+    re.DOTALL,
+)
+_CHRONOLOGY_STOP_WORDS = {
+    "a", "al", "alla", "alle", "anche", "che", "chi", "come", "con", "cosa",
+    "data", "del", "della", "delle", "detto", "di", "e", "euri", "gli", "hai",
+    "ho", "il", "in", "la", "le", "lo", "mi", "nominato", "parlato", "per",
+    "prima", "quando", "raccontato", "ricordi", "su", "ti", "ultima", "ultimo",
+    "una", "volta",
+}
 
 
 def make_turn_ref(conversation_id: str, seq: int) -> str:
@@ -106,6 +122,10 @@ class ConversationTurnStore:
             "segment_id": message.get("segment_id"),
             "memory_scope": normalize_scope(message.get("memory_scope")),
         }
+        if message.get("archive_origin"):
+            doc["archive_origin"] = str(message["archive_origin"])
+        if message.get("source_locator"):
+            doc["source_locator"] = str(message["source_locator"])
         # Lo stesso ref identifica lo stesso turno: la riscrittura è idempotente.
         self.r.json().set(key, "$", doc)
         return ref
@@ -160,6 +180,268 @@ class ConversationTurnStore:
     def render(self, turn_ref: str) -> str:
         turn = self.get(turn_ref)
         return turn.render() if turn else ""
+
+    @staticmethod
+    def chronology_terms(subject: str) -> list[str]:
+        """Termini sicuri e distintivi per la ricerca full-text sui turni.
+
+        Il soggetto arriva dal classificatore semantico. Qui non se ne deduce il
+        significato: si eliminano soltanto parole di servizio e caratteri che
+        potrebbero alterare la sintassi RediSearch.
+        """
+        terms = []
+        for raw in re.findall(r"[^\W_]+", str(subject or "").casefold()):
+            if (
+                len(raw) >= 2
+                and raw not in _CHRONOLOGY_STOP_WORDS
+                and raw not in terms
+            ):
+                terms.append(raw)
+        return terms[:6]
+
+    def _chronological_query(
+        self,
+        subject: str,
+        memory_scope: str | None = None,
+    ) -> tuple[str, list[str], str]:
+        """Query condivisa da ricerca e conteggio: due forme diverse mentirebbero."""
+        from core.memory_scope import current_scope, redis_tag_value, scope_clause
+
+        terms = self.chronology_terms(subject)
+        scope = normalize_scope(memory_scope or current_scope())
+        if not terms:
+            return "", [], scope
+        query_text = (
+            f"({scope_clause(scope)}) "
+            f"(@role:{{{redis_tag_value('user')}}}) "
+            f"(@content:({' '.join(terms)}))"
+        )
+        return query_text, terms, scope
+
+    def count_chronological(
+        self,
+        subject: str,
+        *,
+        memory_scope: str | None = None,
+    ) -> int | None:
+        """Quante occorrenze esistono, indipendentemente da quante ne mostriamo.
+
+        Serve a impedire che un `limit` venga verbalizzato come unicità: mostrare
+        un turno perché ne è stato chiesto uno non autorizza a dire «l'unica».
+        Il totale viene dall'indice, quindi non rivalida la fiducia sul documento
+        idratato ed è un limite superiore. ``None`` significa "non lo so", che è
+        diverso da zero e va trattato come tale.
+        """
+        query_text, terms, _scope = self._chronological_query(subject, memory_scope)
+        if not terms:
+            return None
+
+        from redis.commands.search.query import Query
+
+        try:
+            return int(
+                self.r.ft("idx:turns").search(Query(query_text).paging(0, 0)).total
+            )
+        except Exception as exc:
+            logger.debug(f"Archivio turni: conteggio cronologico non disponibile ({exc})")
+            return None
+
+    def search_chronological(
+        self,
+        subject: str,
+        *,
+        order: str,
+        limit: int = 3,
+        memory_scope: str | None = None,
+        trusted_only: bool = True,
+    ) -> list[ArchivedTurn]:
+        """Cerca occorrenze verbatim e le ordina sul tempo osservato.
+
+        ``observed_at`` è la data del turno, non la data dell'evento raccontato.
+        Il filtro user+scope avviene nell'indice prima del paging; la fiducia
+        viene verificata sul documento idratato. Su indice assente o query non
+        valida il metodo fallisce chiuso restituendo nessuna evidenza.
+        """
+        if order not in {"first", "last"}:
+            raise ValueError("order deve essere first o last")
+        query_text, terms, scope = self._chronological_query(subject, memory_scope)
+        if not terms:
+            return []
+
+        from redis.commands.search.query import Query
+
+        try:
+            result = self.r.ft("idx:turns").search(
+                Query(query_text)
+                .sort_by("observed_at", asc=order == "first")
+                .paging(0, max(20, int(limit) * 5))
+                .return_fields("turn_ref", "observed_at")
+            )
+        except Exception as exc:
+            logger.warning(f"Archivio turni: ricerca cronologica non disponibile ({exc})")
+            return []
+
+        matches: list[ArchivedTurn] = []
+        seen = set()
+        for row in result.docs:
+            ref = str(getattr(row, "turn_ref", "") or "").strip()
+            if not ref or ref in seen:
+                continue
+            turn = self.get(ref)
+            if (
+                turn is None
+                or turn.role != "user"
+                or turn.memory_scope != scope
+                or (trusted_only and not turn.trusted)
+            ):
+                continue
+            seen.add(ref)
+            matches.append(turn)
+            if len(matches) >= max(1, int(limit)):
+                break
+        return matches
+
+
+def _log_timestamp(line: str) -> float | None:
+    match = _LOG_TIME_RE.match(line)
+    if not match:
+        return None
+    try:
+        naive = datetime.strptime(match.group("stamp"), "%Y-%m-%d %H:%M:%S.%f")
+        if hasattr(config.TIMEZONE, "localize"):
+            return config.TIMEZONE.localize(naive).timestamp()
+        return naive.replace(tzinfo=config.TIMEZONE).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def iter_accepted_voice_turns(path: Path):
+    """Estrae dai log soltanto STT che hanno raggiunto un Intent.
+
+    Le righe STT ignorate dal wake guard o provenienti dal parlato ambientale non
+    entrano quindi nello storico personale. Quando possibile si conserva il
+    timestamp STT; l'Intent è la prova che quel testo è stato accettato.
+    """
+    pending_stt: tuple[str, float] | None = None
+    with Path(path).open("r", encoding="utf-8", errors="replace") as handle:
+        for line_no, line in enumerate(handle, 1):
+            timestamp = _log_timestamp(line)
+            if timestamp is None:
+                continue
+            stt = _LOG_STT_RE.search(line)
+            if stt:
+                pending_stt = (stt.group("content"), timestamp)
+                continue
+            intent = _LOG_INTENT_RE.search(line)
+            if not intent:
+                continue
+            content = intent.group("content")
+            observed_at = timestamp
+            if (
+                pending_stt is not None
+                and pending_stt[0] == content
+                and 0 <= timestamp - pending_stt[1] <= 120
+            ):
+                observed_at = pending_stt[1]
+            pending_stt = None
+            yield {
+                "content": content,
+                "observed_at": observed_at,
+                "line_no": line_no,
+            }
+
+
+def _earliest_archived_turn(redis_client) -> float | None:
+    earliest = None
+    for raw_key in redis_client.scan_iter(match=f"{TURN_KEY_PREFIX}*"):
+        doc = _json_doc(redis_client, _decode_key(raw_key))
+        try:
+            observed_at = float(doc.get("observed_at"))
+        except (TypeError, ValueError):
+            continue
+        earliest = observed_at if earliest is None else min(earliest, observed_at)
+    return earliest
+
+
+def backfill_legacy_voice_turns(
+    redis_client,
+    *,
+    log_paths: list[Path] | None = None,
+) -> dict:
+    """Importa una volta i turni vocali accettati precedenti all'archivio.
+
+    È una migrazione di provenienza, non estrazione di memoria: conserva la frase
+    pronunciata e il suo timestamp. I riferimenti sono hash deterministici,
+    quindi un'interruzione prima del marker resta idempotente.
+    """
+    try:
+        existing = redis_client.get(LEGACY_VOICE_BACKFILL_KEY)
+    except Exception:
+        existing = None
+    if existing:
+        try:
+            return json.loads(_decode_key(existing))
+        except Exception:
+            return {"status": "already_completed"}
+
+    paths = (
+        [Path(path) for path in log_paths]
+        if log_paths is not None
+        else sorted((config.BASE_DIR / "logs").glob("voice_daemon*.log"))
+    )
+    cutoff = _earliest_archived_turn(redis_client)
+    store = ConversationTurnStore(redis_client)
+    imported = parsed = skipped_after_cutoff = 0
+    for path in paths:
+        if not path.is_file():
+            continue
+        for item in iter_accepted_voice_turns(path):
+            parsed += 1
+            if cutoff is not None and item["observed_at"] >= cutoff:
+                skipped_after_cutoff += 1
+                continue
+            identity = (
+                f"{item['observed_at']:.6f}\0{item['content']}"
+            ).encode("utf-8")
+            conversation_id = (
+                "legacy-voice-" + hashlib.sha256(identity).hexdigest()[:20]
+            )
+            store.persist({
+                "conversation_id": conversation_id,
+                "seq": 1,
+                "role": "user",
+                "content": item["content"],
+                "trusted": True,
+                "observed_at": item["observed_at"],
+                "segment_id": None,
+                "memory_scope": PERSONAL_SCOPE,
+                "archive_origin": "legacy_voice_log",
+                "source_locator": f"{path.name}:{item['line_no']}",
+            })
+            imported += 1
+
+    report = {
+        "status": "completed",
+        "schema_version": 1,
+        "completed_at": time.time(),
+        "files": [path.name for path in paths if path.is_file()],
+        "cutoff_observed_at": cutoff,
+        "parsed": parsed,
+        "imported": imported,
+        "skipped_after_cutoff": skipped_after_cutoff,
+    }
+    redis_client.set(
+        LEGACY_VOICE_BACKFILL_KEY,
+        json.dumps(report, ensure_ascii=False, sort_keys=True),
+    )
+    if imported:
+        logger.info(
+            "Archivio turni: backfill storico completato — {} turni accettati "
+            "importati da {} log",
+            imported,
+            len(report["files"]),
+        )
+    return report
 
 
 def _decode_key(value) -> str:

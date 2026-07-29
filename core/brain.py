@@ -1417,6 +1417,9 @@ class Brain:
           - "subject_recall" : tutto su un soggetto nominato in modo aperto → subject = nome.
           - "entity_recall"  : nomi/ruoli/chi fa cosa/relazioni tra entità → subject "".
           - "recent_context" : si risolve con la conversazione recente → subject "".
+          - "chronological_first": prima occorrenza verbatim di un soggetto.
+          - "chronological_last" : ultima occorrenza verbatim di un soggetto.
+          - "chronological_timeline": prime e ultime occorrenze per una cronologia.
         {} su errore/parse fallito (→ il chiamante fa fallback a specific_search).
         """
         convo = self._format_history_for_save(recent_history)
@@ -1440,9 +1443,23 @@ class Brain:
             "(es. 'chi lavora con noi?', 'quali nomi conosci?', 'che ruoli hanno?') → subject = \"\".\n"
             "- \"recent_context\": si risolve con ciò che vi siete detti POCO FA (es. "
             "'ricapitola', 'cosa stavamo dicendo') → subject = \"\".\n\n"
+            "- \"chronological_first\": chiede QUANDO l'utente ha parlato, nominato o "
+            "raccontato per la PRIMA VOLTA un soggetto. subject = poche parole distintive "
+            "che devono comparire insieme nel turno originale.\n"
+            "- \"chronological_last\": stessa richiesta per l'ULTIMA VOLTA. subject = "
+            "poche parole distintive.\n"
+            "- \"chronological_timeline\": chiede una cronologia delle volte in cui un "
+            "soggetto è stato menzionato. subject = poche parole distintive.\n"
+            "Le strategie chronological riguardano la DATA DELLA CONVERSAZIONE, non la "
+            "data di un evento o una scadenza. 'Quando scade la commessa?' resta "
+            "specific_search. Nel subject non inserire Stefano, Euri o parole generiche: "
+            "per una persona ambigua usa anche il ruolo se il dialogo lo rende chiaro "
+            "(es. 'Leonardo collega'), ma soltanto termini attesi nello stesso turno.\n\n"
             "Distingui bene: 'quanto pesa il Poseidon?' è specific_search (un dato preciso), "
             "'parlami di Poseidon' è subject_recall (tutto sul soggetto), "
-            "'quali persone/ruoli conosci?' è entity_recall.\n"
+            "'quali persone/ruoli conosci?' è entity_recall, "
+            "'quando ti ho parlato per la prima volta di Poseidon?' è "
+            "chronological_first.\n"
             "confidence: da 0 a 1, quanto sei sicuro."
         )
         try:
@@ -1463,6 +1480,58 @@ class Brain:
             }
         except Exception as e:
             logger.error(f"Errore classify_retrieval_strategy: {e}")
+            return {}
+
+    def classify_chronological_query(
+        self,
+        query: str,
+        recent_history: list[dict] = None,
+    ) -> dict:
+        """Classificatore rapido per interrogazioni sul diario verbatim.
+
+        Decide soltanto se serve un estremo/una cronologia e quali termini
+        congiunti cercare. Non vede Redis, non risponde alla domanda e non
+        produce date.
+        """
+        convo = self._format_history_for_save(recent_history)
+        convo_block = f"\nDialogo recente per disambiguare il soggetto:\n{convo}\n" if convo else ""
+        prompt = (
+            "Classifica se la richiesta riguarda la DATA IN CUI l'utente ha "
+            "pronunciato o menzionato qualcosa nella conversazione. Non rispondere "
+            "e non inventare date.\n\n"
+            f"Richiesta: \"{query}\"{convo_block}\n"
+            "kind è uno tra first, last, timeline, none:\n"
+            "- first: prima volta in cui l'utente ne ha parlato;\n"
+            "- last: ultima volta;\n"
+            "- timeline: cronologia delle menzioni;\n"
+            "- none: domanda sulla data di un evento, una prova o una scadenza, "
+            "non sul momento della conversazione.\n"
+            "subject deve contenere solo poche parole distintive che ci si aspetta "
+            "insieme nel turno originale. Ometti Stefano ed Euri. Se un nome è "
+            "ambiguo e il dialogo chiarisce il ruolo, aggiungi il ruolo, per esempio "
+            "\"Leonardo collega\".\n"
+            'Rispondi solo JSON: {"kind":"first|last|timeline|none",'
+            '"subject":"","confidence":0.0}'
+        )
+        try:
+            response = chat_client.chat(
+                model=config.OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0, "num_predict": 300},
+                format="json",
+                think=False,
+            )
+            raw = self._clean(response.message.content or "").strip()
+            data = self._extract_json(raw)
+            if not data:
+                return {}
+            return {
+                "kind": str(data.get("kind", "")).strip().lower(),
+                "subject": str(data.get("subject", "")).strip(),
+                "confidence": data.get("confidence", 0.0),
+            }
+        except Exception as e:
+            logger.error(f"Errore classify_chronological_query: {e}")
             return {}
 
     def evaluate_memory_relevance(self, content: str) -> str:

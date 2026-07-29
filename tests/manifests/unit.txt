@@ -8,6 +8,7 @@ test_correction_quarantine.py
 test_cognitive_audit.py
 test_cognitive_pulse.py
 test_cognitive_present.py
+test_chronological_recall.py
 test_convergence_policy.py
 test_cross_episode_hypothesis.py
 test_dream_schedule.py

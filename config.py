@@ -38,6 +38,11 @@ EXECUTOR_ALLOWED_DRIVES: list[str] = []
 REDIS_HOST = os.environ.get("EURI_REDIS_HOST", "localhost").strip() or "localhost"
 REDIS_PORT = int(os.environ.get("EURI_REDIS_PORT", "6379"))
 REDIS_DB = int(os.environ.get("EURI_REDIS_DB", "0"))
+# Migrazione una tantum dei dialoghi vocali anteriori all'archivio verbatim.
+# I runtime benchmark devono restare isolati dai log personali della workstation.
+VERBATIM_LEGACY_BACKFILL_ENABLED = (
+    os.environ.get("EURI_BENCHMARK_MODE") != "1"
+)
 
 # Le sessioni sperimentali sono durevoli abbastanza da attraversare un riavvio,
 # ma scadono fail-safe: una modalità test dimenticata non può catturare per giorni

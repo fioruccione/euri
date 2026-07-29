@@ -61,7 +61,29 @@ La dichiarazione di versione non migra Redis e non riscrive memorie.
 - Migrazione idempotente al boot: documenti legacy `euri:memory:*`,
   `euri:turn:*` ed `euri:note:*` privi del campo vengono marcati `personal`;
   contenuto e provenienza non vengono riscritti. Regressioni dedicate e
-  manifest unitario: **64/64**.
+  manifest unitario: **65/65**.
+
+#### Cronologia verbatim: Euri può cercare quando ne avete parlato
+
+- Le domande «quando te ne ho parlato per la prima/ultima volta?» non vengono
+  più affidate al normale top-k semantico delle memorie. Un classificatore
+  locale JSON distingue la cronologia della conversazione dalle date di eventi
+  e scadenze, estraendo soltanto il soggetto da cercare.
+- Il nuovo indice `idx:turns` cerca esclusivamente turni originali dell'utente
+  nello scope corrente e li ordina per `observed_at`. Il contesto dichiara
+  esplicitamente che questa è la **data del turno**, non la data dell'evento né
+  quella di creazione di una sintesi. Se non esiste evidenza, il percorso
+  fallisce chiuso e vieta di ricavare una data da memorie vicine.
+- Migrazione storica una tantum e idempotente: dai log vocali vengono importati
+  soltanto gli STT che hanno raggiunto un `Intent`; parlato ambientale e turni
+  ignorati dal wake guard restano esclusi. Sulla workstation sono stati
+  recuperati 2.055 turni anteriori all'archivio durevole. Il benchmark è
+  esplicitamente escluso dal backfill, quindi i runtime effimeri non vedono i
+  log personali.
+- Controprova reale: la richiesta su Leonardo seleziona
+  `chronological_first`, cerca `Leonardo + collega` e restituisce la prima
+  occorrenza disponibile del 29/04/2026 alle 17:42 con la frase originale,
+  invece di associare una data presa da un'altra memoria.
 
 #### Correttezza dei risultati e completezza dei candidati: due problemi distinti
 

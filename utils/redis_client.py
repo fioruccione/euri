@@ -20,6 +20,10 @@ def init_indexes(r: redis.Redis):
     backfill_memory_scopes(r)
     _ensure_memory_index(r)
     _ensure_note_index(r)
+    ensure_turn_index(r)
+    if getattr(config, "VERBATIM_LEGACY_BACKFILL_ENABLED", True):
+        from core.conversation_turns import backfill_legacy_voice_turns
+        backfill_legacy_voice_turns(r)
     _create_dream_index(r)
     _create_insight_index(r)
     logger.info("Indici Redis inizializzati")
@@ -28,7 +32,14 @@ def init_indexes(r: redis.Redis):
 def flush_and_reinit(r: redis.Redis):
     """Cancella tutti i dati euri:* e ricrea gli indici da zero."""
     # idx:todos resta nella lista di drop per pulire i DB pre-migrazione impegni.
-    for idx in ("idx:memories", "idx:todos", "idx:notes", "idx:dreams", "idx:insights"):
+    for idx in (
+        "idx:memories",
+        "idx:todos",
+        "idx:notes",
+        "idx:turns",
+        "idx:dreams",
+        "idx:insights",
+    ):
         try:
             r.ft(idx).dropindex()
         except Exception:
@@ -41,6 +52,7 @@ def flush_and_reinit(r: redis.Redis):
 
     _create_memory_index(r)
     _create_note_index(r)
+    _create_turn_index(r)
     _create_dream_index(r)
     _create_insight_index(r)
     logger.info("Indici ricreati con schema aggiornato")
@@ -190,6 +202,49 @@ def _create_note_index(r: redis.Redis):
         )
         r.ft("idx:notes").create_index(schema, definition=definition)
         logger.info("Creato indice idx:notes")
+
+
+def ensure_turn_index(r: redis.Redis):
+    """Crea o migra l'indice cronologico dei turni verbatim.
+
+    I turni esistevano già come RedisJSON durevoli. L'indice aggiunge soltanto
+    un accesso testuale ordinabile: non trasforma i turni in memorie cognitive e
+    non li espone ai loop.
+    """
+    try:
+        r.ft("idx:turns").info()
+        required = {
+            "content": "content",
+            "turn_ref": "turn_ref",
+            "role": "role",
+            "memory_scope": "memory_scope",
+            "observed_at": "observed_at",
+        }
+        missing = [
+            label
+            for field, label in required.items()
+            if not _has_field(r, "idx:turns", field)
+        ]
+        if missing:
+            logger.info(f"Migrazione idx:turns: aggiunta campi {missing}...")
+            r.ft("idx:turns").dropindex()
+            _create_turn_index(r)
+            logger.info("Migrazione idx:turns completata (turni preservati)")
+    except Exception:
+        _create_turn_index(r)
+
+
+def _create_turn_index(r: redis.Redis):
+    definition = IndexDefinition(prefix=["euri:turn:"], index_type=IndexType.JSON)
+    schema = (
+        TextField("$.content", as_name="content"),
+        TagField("$.turn_ref", as_name="turn_ref"),
+        TagField("$.role", as_name="role"),
+        TagField("$.memory_scope", as_name="memory_scope"),
+        NumericField("$.observed_at", as_name="observed_at", sortable=True),
+    )
+    r.ft("idx:turns").create_index(schema, definition=definition)
+    logger.info("Creato indice idx:turns (verbatim + cronologia)")
 
 
 def _create_dream_index(r: redis.Redis):

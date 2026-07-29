@@ -54,7 +54,15 @@ st.markdown("""
 @st.cache_resource
 def get_redis():
     """Connessione Redis condivisa."""
-    return redis.Redis(host='localhost', port=6379, decode_responses=True)
+    client = redis.Redis(host='localhost', port=6379, decode_responses=True)
+    # La UI può essere avviata anche senza Voice Daemon: l'accesso cronologico
+    # ai turni verbatim deve quindi avere il proprio indice anche in Silent Chat.
+    from utils.redis_client import ensure_turn_index
+    from core.conversation_turns import backfill_legacy_voice_turns
+    ensure_turn_index(client)
+    if getattr(config, "VERBATIM_LEGACY_BACKFILL_ENABLED", True):
+        backfill_legacy_voice_turns(client)
+    return client
 
 @st.cache_resource
 def get_embedder():
@@ -1089,7 +1097,13 @@ with main_col:
                             for m in st.session_state.messages
                         ]
                         context_full, _, augment_ids = augment_context_with_ids(
-                            prompt, context_full, memory_manager, brain, _recent_hist
+                            prompt,
+                            context_full,
+                            memory_manager,
+                            brain,
+                            _recent_hist,
+                            turn_store=turn_store,
+                            rag_context=_rag,
                         )
                         # Audit di Coerenza: registra il ctx effettivo del turno corrente.
                         # Include anche gli ID aggiunti dagli augment strategici: sono spesso

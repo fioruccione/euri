@@ -2212,7 +2212,17 @@ class VoiceDaemon:
             from core.retrieval_strategy import augment_context_with_ids
             with self.brain.history_lock:
                 recent = list(self.brain._conversation_history)
-            context, note, augment_ids = augment_context_with_ids(text, context, self.memory, self.brain, recent)
+            local = getattr(self, "_response_rag_local", None)
+            rag = getattr(local, "rag", None) if local is not None else None
+            context, note, augment_ids = augment_context_with_ids(
+                text,
+                context,
+                self.memory,
+                self.brain,
+                recent,
+                turn_store=self.turn_store,
+                rag_context=rag,
+            )
             local = getattr(self, "_response_rag_local", None)
             if local is not None:
                 local.augment_ids = list(augment_ids)
