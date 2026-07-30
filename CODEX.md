@@ -1,3 +1,24 @@
+# Handoff Euri V2.22 - 2026-07-30 - Nuova base e registro unico
+
+- Versione corrente dichiarata: **V2.22 — Memoria osservabile e confinata**.
+- Fotografia: `docs/EURI_V2.22_STATE_2026-07-30.md`.
+- Registro autoritativo del lavoro non concluso: `docs/EURI_OPEN_WORK.md`.
+- Prossima azione unica: **COG-01**, validare Loop 2h sulle vere opportunità di
+  riparazione prima di progettare Loop 2f v3.
+- Git: il branch `experiment/passive-memory-heldout` è una discendenza lineare
+  di `main`; V2.22 lo promuove con fast-forward, senza squash, riscritture o
+  cancellazioni di rami.
+- Runtime: Loop 2f legacy è autorità; structured v2 resta diagnostico dopo
+  `NO_GO_DEV`; Loop 2h è reversibile ma non validato.
+- Sentinelle al 30/07: grounded 668/800 (riaprire a 750); utility 102 risposte
+  ma review non matura; verbatim 2.171 turni, 0 orfani e 0 riferimenti mancanti.
+- Verifica release: manifest unitario **68/68**.
+
+Ogni lavoro nuovo o chiuso deve aggiornare `docs/EURI_OPEN_WORK.md`; non
+ricostruire il backlog cercando note sparse nel resto di questo handoff.
+
+---
+
 # Handoff Euri V2.21 - 2026-07-28 - Memoria fondata sulla fonte
 
 - Versione corrente dichiarata: **V2.21**. La fotografia autonoma

@@ -18,13 +18,14 @@ Nessun modello di linguaggio, da solo, fa questo. Euri lo fa perché sotto non c
 
 *Quello che segue è* come *Euri fa tutto questo. Non è il contorno — è la prova.*
 
-## Architettura Cognitiva (V2.21)
+## Architettura Cognitiva (V2.22)
 
 > **Principio di separazione:** Euri può collegare due esperienze senza
 > confonderle. La somiglianza crea una relazione; solo l'identità autorizza
 > aggiornamento, consolidamento o supersessione.
 >
-> **Fotografia della release:** [Euri V2.21 — Memoria fondata sulla fonte](docs/EURI_V2.21_STATE_2026-07-28.md)
+> **Fotografia della release:** [Euri V2.22 — Memoria osservabile e confinata](docs/EURI_V2.22_STATE_2026-07-30.md)
+> **Lavori aperti:** [registro unico](docs/EURI_OPEN_WORK.md)
 
 ### 1. Intent Classification — Pipeline a Due Layer
 La classificazione dell'intent è a cascata: il layer veloce esaurisce la maggior parte dei casi, il layer lento interviene solo quando necessario.
@@ -471,12 +472,18 @@ salvataggio, registrando l'intervento nel `temporal_context`.
 
 ## Changelog
 
-Versione corrente: **V2.21 — Memoria fondata sulla fonte** (28/07/2026).
+Versione corrente: **V2.22 — Memoria osservabile e confinata** (30/07/2026).
 La fotografia completa della release è in
-[docs/EURI_V2.21_STATE_2026-07-28.md](docs/EURI_V2.21_STATE_2026-07-28.md);
+[docs/EURI_V2.22_STATE_2026-07-30.md](docs/EURI_V2.22_STATE_2026-07-30.md);
+il lavoro ancora aperto è nel
+[registro operativo](docs/EURI_OPEN_WORK.md);
 lo storico integrale delle modifiche è in [CHANGELOG.md](CHANGELOG.md).
 
 Novità recenti:
+- V2.22 (30/07/2026) — Scope personale/sperimentale, richiamo cronologico
+  fondato, utilità osservata, lifecycle verbatim, audit degli operatori e
+  validazioni negative conservate; il branch di sviluppo diventa la nuova base
+  `main`
 - V2.21 (28/07/2026) — Benchmark LoCoMo italiano, memoria passiva dual-channel
   usata come locator verso i turni originali, base RAG protetta, gate selettivo
   e dispatcher condiviso da voce, mobile e Silent Chat

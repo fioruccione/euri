@@ -1,5 +1,25 @@
 # Changelog
 
+## V2.22 (30/07/2026) — Memoria osservabile e confinata
+
+V2.22 promuove a nuova base `main` i 56 commit sviluppati e verificati dopo
+l'ultima base comune. Il passaggio è un fast-forward: nessuno squash, nessuna
+riscrittura della storia e nessuna migrazione Redis.
+
+La release consolida scope personale/sperimentale, fonte verbatim datata,
+richiamo cronologico fondato, utilità osservata, lifecycle audit-only,
+telemetria cognitiva e benchmark preregistrati. Conserva anche i risultati
+negativi: structured Loop 2f resta inerte dopo `NO_GO_DEV`, mentre il legacy
+rimane autorità runtime e Loop 2h resta da validare sulle vere opportunità.
+
+La fotografia è in
+`docs/EURI_V2.22_STATE_2026-07-30.md`. Da questa versione il backlog
+autoritativo non è più disperso fra handoff e report:
+`docs/EURI_OPEN_WORK.md` registra priorità, evidenza, trigger, prossima azione e
+criterio di chiusura. Stato read-only al rilascio: grounded 668/800, utility
+102 risposte ma review non matura, verbatim 2.171 turni con zero orfani e zero
+riferimenti mancanti; manifest unitario 68/68.
+
 ## V2.21 (28/07/2026) — Memoria fondata sulla fonte
 
 V2.21 fissa il passaggio dalla memoria passiva come contenuto concorrente alla
