@@ -29,6 +29,28 @@ cinque requisiti logici, non sette, e il collo di bottiglia osservato è
 correzione esplicita oppure aggiornamento implicito con tutte le guardie forti.
 Il challenge è aperto e COG-02 resta bloccato dalla validazione di Loop 2h.
 
+### V2.22 (continua, 30/07/2026) — Loop 2h fondato sulla prova
+
+- Sostituita la label semantica nuda di Loop 2h con il contratto
+  `loop2h-evidenced-identity-v1`: il modello espone il claim subject di
+  entrambe le memorie, base del giudizio, specificità, tipo ed estratti
+  letterali. Una policy pura autorizza la mutazione soltanto con base esplicita
+  e citazioni verificabili; inferenza, genericità, JSON incompleto, tipo ignoto
+  o prova assente degradano a `UNKNOWN`.
+- Il claim subject è l'entità della quale si aggiorna uno stato, non il nuovo
+  valore. Questa distinzione impedisce di scambiare Elisa e Paola per due
+  progetti diversi quando cambia il responsabile del progetto Nadir, o la
+  scheda per la formulazione F-88.
+- La prova viene conservata nella lineage della reflection o nell'audit
+  `supersession_reversed`. Gli `UNKNOWN` restano ritentabili ma usano un backoff
+  persistente per arco (1→2→4→8→16→30 giorni), evitando che dieci casi
+  irrisolti blocchino la coda manutentiva.
+- Sul banco development già aperto, una replica diagnostica produce 0/12 vere
+  supersessioni riaperte, riconosce 12/12 soggetti distinti e lascia 6/6
+  ambigui senza mutazione. Non è validazione: COG-01 resta aperto su un
+  challenge opportunity-first nuovo e COG-02 resta bloccato.
+- Regressioni pure Loop 2h: 14/14; manifest unitario finale: 68/68.
+
 ## V2.21 (28/07/2026) — Memoria fondata sulla fonte
 
 V2.21 fissa il passaggio dalla memoria passiva come contenuto concorrente alla

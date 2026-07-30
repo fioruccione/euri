@@ -10,18 +10,19 @@ specialistici conservano i dettagli, ma la prossima azione deve comparire qui.
 
 ## Prossima azione unica
 
-**COG-01 — validare Loop 2h sulle vere opportunità di riparazione.**
+**COG-01 — validare il nuovo Loop 2h sulle vere opportunità di riparazione.**
 
 Prima di progettare un altro Loop 2f, congelare coppie che il 2f legacy
 classifica realmente come `contradiction`, includendo omonimi, identità
 insufficienti, target/risultato e supersessioni autentiche. Misurare quante
-false supersessioni 2h riapre e quante vere supersessioni danneggia.
+false supersessioni il contratto `loop2h-evidenced-identity-v1` riapre e quante
+vere supersessioni danneggia.
 
 ## Registro
 
 | ID | Priorità | Stato | Evidenza attuale | Trigger / prossimo passo | Criterio di chiusura |
 |---|---|---|---|---|---|
-| COG-01 | P0 | pronto | 2h non ha avuto opportunità nel primo test; `UNKNOWN` 0/6 sugli ambigui | preregistrare challenge opportunity-first, senza modificare 2h | effetto incrementale misurato su false e vere supersessioni |
+| COG-01 | P0 | correzione implementata, validazione aperta | il vecchio 2h usava una label senza prova e dava `UNKNOWN` 0/6; il nuovo contratto richiede claim subject, base esplicita ed estratti verificabili, con backoff degli irrisolti. Diagnostica sul banco aperto: 0/12 vere supersessioni riaperte, 12/12 soggetti distinti riconosciuti, 6/6 ambigui senza mutazione | preregistrare challenge opportunity-first nuovo; non riusare 42 casi come validazione | effetto incrementale misurato su false e vere supersessioni; zero danno oltre il gate congelato |
 | MEM-01 | P0 | osservazione con sentinella | `gather_grounded_evidence` usa una finestra non ordinata di 800; bacino personale **668/800** al 30/07 | riaprire a **750**; confrontare in shadow document-frequency RediSearch contro calcolo legacy, senza alzare 800 | selezione completa o errore quantificato sull'intero corpus, con rollback |
 | BENCH-01 | P0 | da progettare | tutte le 10 conversazioni LoCoMo sono ormai development set aperto | collegare LongMemEval, privilegiando aggiornamento, temporalità, provenienza e astensione | primo campione indipendente congelato prima di risultati e tuning |
 | OPS-01 | P1 | difetto verificato | `_run_due_idle_cycles` e `_run_dream_cycle` hanno ordine diverso; il forzato chiama due volte entrambi i cleanup | rendere il percorso forzato composizione delle stesse fasi del runtime, prima di altre ablazioni dei loop | stessa sequenza/moltitudine provata da regressione |
@@ -40,7 +41,8 @@ false supersessioni 2h riapre e quante vere supersessioni danneggia.
 - Il Loop 2f legacy resta autorità runtime.
 - `loop2f-structured-affirmative-v2` è diagnostico e **NO-GO**, non una feature
   dormiente da riaccendere.
-- Loop 2h è controllo reversibile plausibile, non rete di sicurezza validata.
+- Loop 2h usa `loop2h-evidenced-identity-v1`, ma resta una rete di sicurezza
+  candidata finché COG-01 non è chiuso su un challenge nuovo.
 - LoCoMo può essere usato per sviluppo e diagnosi, non per una nuova
   validazione indipendente.
 - Il limite 800 di `gather_grounded_evidence` non va semplicemente aumentato.

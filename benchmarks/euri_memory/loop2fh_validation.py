@@ -372,9 +372,7 @@ def production_classify_2h(memory_a: str, memory_b: str) -> dict:
             "raw_sha256": _sha_text(raw),
         }
     try:
-        raw_relation = str(
-            json.loads(raw[start : end + 1]).get("relation") or ""
-        ).strip().lower()
+        raw_data = json.loads(raw[start : end + 1])
     except (json.JSONDecodeError, AttributeError) as exc:
         return {
             "label": relation,
@@ -382,11 +380,37 @@ def production_classify_2h(memory_a: str, memory_b: str) -> dict:
             "diagnostic": f"invalid_json:{type(exc).__name__}",
             "raw_sha256": _sha_text(raw),
         }
-    if raw_relation not in LABELS_2H:
+    required = {
+        "identity",
+        "basis",
+        "claim_subject_a",
+        "claim_subject_b",
+        "subject_specificity_a",
+        "subject_specificity_b",
+        "entity_type_a",
+        "entity_type_b",
+        "related_if_distinct",
+        "note",
+    }
+    contract_ok = (
+        isinstance(raw_data, dict)
+        and set(raw_data) == required
+        and str(raw_data.get("identity") or "").strip().lower()
+        in {"same", "distinct", "unknown"}
+        and str(raw_data.get("basis") or "").strip().lower()
+        in {"explicit", "inferred", "insufficient"}
+        and str(raw_data.get("subject_specificity_a") or "").strip().lower()
+        in {"specific", "generic", "unknown"}
+        and str(raw_data.get("subject_specificity_b") or "").strip().lower()
+        in {"specific", "generic", "unknown"}
+        and str(raw_data.get("related_if_distinct") or "").strip().lower()
+        in {"yes", "no", "unknown", "not_applicable"}
+    )
+    if not contract_ok:
         return {
             "label": relation,
             "contract_ok": False,
-            "diagnostic": "invalid_relation",
+            "diagnostic": "invalid_evidenced_identity_contract",
             "raw_sha256": _sha_text(raw),
         }
     return {
