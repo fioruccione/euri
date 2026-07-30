@@ -1,0 +1,223 @@
+{
+  "schema_version": 1,
+  "fixture_id": "loop2f-structured-v2-challenge-it",
+  "language": "it",
+  "created_at": "2026-07-30",
+  "cases": [
+    {
+      "case_id": "v2_sup_01",
+      "stratum": "explicit_supersession",
+      "memory_a": "Il sensore CO2 S-14 usa un fattore di calibrazione pari a 1,08.",
+      "memory_b": "Il certificato corretto del sensore CO2 S-14 sostituisce il fattore 1,08 con 0,98; il primo valore era un errore.",
+      "expected_action": "supersede_a",
+      "stability_probe": true
+    },
+    {
+      "case_id": "v2_sup_02",
+      "stratum": "explicit_supersession",
+      "memory_a": "La scadenza della fattura FT-882 è il 12 settembre.",
+      "memory_b": "La nota di credito corregge la scadenza della fattura FT-882 al 20 settembre; la data del 12 non è più valida.",
+      "expected_action": "supersede_a"
+    },
+    {
+      "case_id": "v2_sup_03",
+      "stratum": "explicit_supersession",
+      "memory_a": "Il lotto HD-71 ha densità registrata di 0,952 g/cm³.",
+      "memory_b": "Il laboratorio ha corretto la densità dello stesso lotto HD-71 a 0,925 g/cm³: 0,952 era un refuso.",
+      "expected_action": "supersede_a"
+    },
+    {
+      "case_id": "v2_sup_04",
+      "stratum": "explicit_supersession",
+      "memory_a": "Il recapito interno di Sara è 314.",
+      "memory_b": "Sara ha cambiato recapito interno: ora è 418 e il 314 è stato disattivato.",
+      "expected_action": "supersede_a"
+    },
+    {
+      "case_id": "v2_sup_05",
+      "stratum": "explicit_supersession",
+      "memory_a": "Nel progetto Argo il referente acquisti è Marco.",
+      "memory_b": "Dal 15 agosto il referente acquisti del progetto Argo è Elena; Marco ha lasciato l'incarico.",
+      "expected_action": "supersede_a"
+    },
+    {
+      "case_id": "v2_sup_06",
+      "stratum": "explicit_supersession",
+      "memory_a": "Il setpoint della calandra C2 è 148 °C.",
+      "memory_b": "La revisione approvata porta il setpoint della calandra C2 a 153 °C e annulla il precedente valore di 148 °C.",
+      "expected_action": "supersede_a"
+    },
+    {
+      "case_id": "v2_sup_07",
+      "stratum": "explicit_supersession",
+      "memory_a": "La spedizione SP-440 contiene 24 pallet.",
+      "memory_b": "Il documento definitivo della spedizione SP-440 corregge la quantità a 22 pallet, non 24.",
+      "expected_action": "supersede_a"
+    },
+    {
+      "case_id": "v2_sup_08",
+      "stratum": "explicit_supersession",
+      "memory_a": "Il ticket IT-64 risulta ancora aperto.",
+      "memory_b": "Il ticket IT-64 è stato chiuso definitivamente e non risulta più aperto.",
+      "expected_action": "supersede_a"
+    },
+    {
+      "case_id": "v2_type_01",
+      "stratum": "typed_coexistence",
+      "memory_a": "Per il compound Z-4 il target di resistenza a trazione è 28 MPa.",
+      "memory_b": "Sul primo provino del compound Z-4 la resistenza a trazione misurata è 25 MPa.",
+      "expected_action": "keep_both",
+      "stability_probe": true
+    },
+    {
+      "case_id": "v2_type_02",
+      "stratum": "typed_coexistence",
+      "memory_a": "Sulla linea L8 il tempo ciclo obiettivo è inferiore a 42 secondi.",
+      "memory_b": "Durante il pilot della linea L8 il tempo ciclo medio osservato è stato 47 secondi.",
+      "expected_action": "keep_both"
+    },
+    {
+      "case_id": "v2_type_03",
+      "stratum": "typed_coexistence",
+      "memory_a": "Il reparto B punta a mantenere lo scarto sotto l'1,5%.",
+      "memory_b": "Nel turno notturno il reparto B ha registrato uno scarto del 2,2%.",
+      "expected_action": "keep_both"
+    },
+    {
+      "case_id": "v2_type_04",
+      "stratum": "typed_coexistence",
+      "memory_a": "Il piano del progetto Iris prevede la consegna in 18 giorni.",
+      "memory_b": "La prima consegna del progetto Iris ha richiesto 23 giorni.",
+      "expected_action": "keep_both"
+    },
+    {
+      "case_id": "v2_type_05",
+      "stratum": "typed_coexistence",
+      "memory_a": "La previsione commerciale per il prodotto Nilo è di 600 tonnellate annue.",
+      "memory_b": "Nel primo anno il prodotto Nilo ha venduto 510 tonnellate.",
+      "expected_action": "keep_both"
+    },
+    {
+      "case_id": "v2_type_06",
+      "stratum": "typed_coexistence",
+      "memory_a": "La specifica del granulo G9 richiede umidità inferiore allo 0,10%.",
+      "memory_b": "Il campione ricevuto del granulo G9 ha mostrato umidità pari allo 0,16%.",
+      "expected_action": "keep_both"
+    },
+    {
+      "case_id": "v2_type_07",
+      "stratum": "typed_coexistence",
+      "memory_a": "L'obiettivo energetico mensile del sito Nord è 310 MWh.",
+      "memory_b": "A giugno il sito Nord ha consumato 338 MWh.",
+      "expected_action": "keep_both"
+    },
+    {
+      "case_id": "v2_type_08",
+      "stratum": "typed_coexistence",
+      "memory_a": "Per la miscela M12 è prevista una resa del 94%.",
+      "memory_b": "Nel pilot la miscela M12 ha raggiunto una resa dell'89%.",
+      "expected_action": "keep_both"
+    },
+    {
+      "case_id": "v2_dist_01",
+      "stratum": "distinct_entities",
+      "memory_a": "Il materiale Alfa ha MFI 7 g/10 min.",
+      "memory_b": "Il materiale Beta ha MFI 4 g/10 min.",
+      "expected_action": "keep_both",
+      "stability_probe": true
+    },
+    {
+      "case_id": "v2_dist_02",
+      "stratum": "distinct_entities",
+      "memory_a": "La linea P1 lavora a 172 °C.",
+      "memory_b": "La linea P2 lavora a 188 °C.",
+      "expected_action": "keep_both"
+    },
+    {
+      "case_id": "v2_dist_03",
+      "stratum": "distinct_entities",
+      "memory_a": "Il cliente Reno richiede confezioni da 15 kg.",
+      "memory_b": "Il cliente Danubio richiede confezioni da 20 kg.",
+      "expected_action": "keep_both"
+    },
+    {
+      "case_id": "v2_dist_04",
+      "stratum": "distinct_entities",
+      "memory_a": "Giulia coordina il laboratorio del sito Est.",
+      "memory_b": "Paolo coordina il laboratorio del sito Ovest.",
+      "expected_action": "keep_both"
+    },
+    {
+      "case_id": "v2_dist_05",
+      "stratum": "distinct_entities",
+      "memory_a": "Il filtro F10 usa una rete da 120 micron.",
+      "memory_b": "Il filtro F11 usa una rete da 180 micron.",
+      "expected_action": "keep_both"
+    },
+    {
+      "case_id": "v2_comp_01",
+      "stratum": "same_entity_complementary",
+      "memory_a": "Il lotto K-90 ha MFI 5,2 g/10 min.",
+      "memory_b": "Il lotto K-90 ha densità 0,91 g/cm³.",
+      "expected_action": "keep_both",
+      "stability_probe": true
+    },
+    {
+      "case_id": "v2_comp_02",
+      "stratum": "same_entity_complementary",
+      "memory_a": "L'estrusore X3 opera a 184 °C.",
+      "memory_b": "L'estrusore X3 opera con pressione di testa di 68 bar.",
+      "expected_action": "keep_both"
+    },
+    {
+      "case_id": "v2_comp_03",
+      "stratum": "same_entity_complementary",
+      "memory_a": "Davide è il referente qualità del progetto Quercia.",
+      "memory_b": "Il recapito interno di Davide per il progetto Quercia è 522.",
+      "expected_action": "keep_both"
+    },
+    {
+      "case_id": "v2_comp_04",
+      "stratum": "same_entity_complementary",
+      "memory_a": "Il progetto Delta dispone di un budget di 80.000 euro.",
+      "memory_b": "La scadenza prevista del progetto Delta è il 30 novembre.",
+      "expected_action": "keep_both"
+    },
+    {
+      "case_id": "v2_comp_05",
+      "stratum": "same_entity_complementary",
+      "memory_a": "La formulazione R6 contiene il 12% di carica minerale.",
+      "memory_b": "La formulazione R6 è colorata in grigio antracite.",
+      "expected_action": "keep_both"
+    },
+    {
+      "case_id": "v2_amb_01",
+      "stratum": "insufficient_identity",
+      "memory_a": "Il lotto pilota ha dato MFI 3.",
+      "memory_b": "Il lotto pilota ha dato MFI 8.",
+      "expected_action": "keep_both",
+      "stability_probe": true
+    },
+    {
+      "case_id": "v2_amb_02",
+      "stratum": "insufficient_identity",
+      "memory_a": "Leonardo segue la configurazione del server.",
+      "memory_b": "Leonardo è il nome approvato per il nuovo progetto software.",
+      "expected_action": "keep_both"
+    },
+    {
+      "case_id": "v2_amb_03",
+      "stratum": "insufficient_identity",
+      "memory_a": "Aurora utilizza la versione 4 del modulo contabile.",
+      "memory_b": "Aurora si è trasferita nell'ufficio al terzo piano.",
+      "expected_action": "keep_both"
+    },
+    {
+      "case_id": "v2_amb_04",
+      "stratum": "insufficient_identity",
+      "memory_a": "Il cliente tedesco richiede sacchi da 20 kg.",
+      "memory_b": "Il cliente tedesco richiede sacchi da 25 kg.",
+      "expected_action": "keep_both"
+    }
+  ]
+}

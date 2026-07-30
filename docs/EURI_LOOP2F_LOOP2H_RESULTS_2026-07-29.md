@@ -58,6 +58,9 @@ La prima diagnosi è dunque: 2f distingue molto bene entità diverse, claim
 complementari e aggiornamenti reali nel campione, ma non possiede ancora una
 distinzione affidabile fra valore-obiettivo e valore-osservato.
 
+La stabilità misura il determinismo, non la correttezza: `target_01` ripete
+stabilmente lo stesso output malformato tre volte su tre.
+
 ## Il risultato fragile nascosto dal parser
 
 2f ha prodotto sette output fuori contratto su 60 chiamate (**11,7%**), tutti
@@ -70,15 +73,22 @@ Le violazioni riguardano cinque casi unici:
 - `target_01` compare tre volte perché è una sentinella di stabilità.
 
 Il parser fragile ha un effetto misto: causa il falso negativo di `sup_02`, ma
-salva accidentalmente tre casi target-risultato che il giudizio semantico del
-modello avrebbe chiamato contraddizioni.
+il suo fallback fail-closed conserva anche tre coppie target-risultato che il
+giudizio semantico del modello avrebbe chiamato contraddizioni. Le violazioni
+sono concentrate nello strato target-risultato (3/6 casi distinti), mentre sono
+assenti nei due strati `keep_both` più facili. È un'associazione post-hoc
+importante, non la prova che il refuso sia un segnale intenzionale di
+incomparabilità del modello.
 
 Come sola diagnosi post-hoc, non come nuovo verdetto preregistrato: se si
 rendesse il parser tollerante al refuso senza cambiare il giudizio, l'accuratezza
 primaria diventerebbe 32/36 (**88,9%**) e le false supersessioni 4/24
-(**16,7%**). Il `GO_DEV` verrebbe perso. Perciò non va corretto soltanto il
-parser: prima occorre rendere esplicita nel classificatore la distinzione
-target/risultato.
+(**16,7%**). Gli intervalli Wilson sono ampi e sovrapposti; sul confronto
+appaiato un caso migliorerebbe e tre peggiorerebbero (McNemar esatto bilaterale
+`p=0,625`). Non è una differenza statisticamente risolta su 36 casi. È però
+sufficiente per dire che correggere soltanto il refuso non mostra un beneficio
+e suggerisce più false supersessioni. Perciò il parser non va corretto da solo:
+prima occorre rendere esplicita la distinzione target/risultato.
 
 ## Loop 2h
 
@@ -112,6 +122,11 @@ con identità non risolvibile, 2h non ha mai scelto `UNKNOWN`.
 2h è quindi stabile, ma troppo disposto a risolvere l'identità quando le
 descrizioni non contengono abbastanza identificatori. Stabilità non significa
 prudenza.
+
+Il conteggio storico `narrated` non è una stima di accuratezza: 2h riceve coppie
+già selezionate da 2f e i set storici appartengono a lifecycle ed epoche
+diverse. Le narrative esistenti restano riflessioni interne da verificare, non
+conferme esterne.
 
 Un secondo finding riguarda i claim complementari sulla stessa entità: 2h li
 chiama spesso `RELATED` anziché `SAME` (5/6 non-`SAME`). In un percorso di

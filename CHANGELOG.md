@@ -65,6 +65,12 @@ La dichiarazione di versione non migra Redis e non riscrive memorie.
   campione, quindi 2h non cambia alcuna azione; inoltre sceglie `UNKNOWN` in
   0/6 casi volutamente ambigui. Risultati e limiti sono documentati in
   `docs/EURI_LOOP2F_LOOP2H_RESULTS_2026-07-29.md`.
+- Prima di cambiare 2f è stato congelato il protocollo structured v2:
+  supersessione soltanto con prove affermative di stessa entità, stesso claim,
+  stesso tipo, esclusione reciproca e sostituzione esplicita; ogni incertezza
+  conserva entrambe le memorie. Il challenge nuovo contiene 30 casi italiani
+  e cinque sentinelle replicate; i 42 casi precedenti restano sola regressione
+  aperta. Loop 2h è esplicitamente fuori da questo intervento.
 
 ### V2.21 (continua, 29/07/2026) — Memoria personale e scenari non condividono più lo stesso mondo
 
