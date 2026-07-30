@@ -23,6 +23,12 @@ criterio di chiusura. Stato read-only al rilascio: grounded 668/800, utility
 102 risposte ma review non matura, verbatim 2.171 turni con zero orfani e zero
 riferimenti mancanti; manifest unitario 68/68.
 
+Un addendum post-hoc corregge il report structured v2: la supersessione usa
+cinque requisiti logici, non sette, e il collo di bottiglia osservato è
+`mutually_exclusive` (13/20). Due percorsi v3 restano ipotesi, non feature:
+correzione esplicita oppure aggiornamento implicito con tutte le guardie forti.
+Il challenge è aperto e COG-02 resta bloccato dalla validazione di Loop 2h.
+
 ## V2.21 (28/07/2026) — Memoria fondata sulla fonte
 
 V2.21 fissa il passaggio dalla memoria passiva come contenuto concorrente alla
