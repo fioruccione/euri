@@ -35,6 +35,7 @@ vere supersessioni danneggia.
 | ARCH-01 | P2 | guardrail presente | test AST: 14 query runtime scopate, una Control Room esente; lo scope dipende ancora dai call site | progettare un handle di ricerca che richieda lo scope e non esponga l'indice grezzo | query runtime non scopata impossibile per costruzione |
 | MEM-05 | P2 | finding aperto | estrazione passiva accurata ma costosa e frammentata; il canale passivo ora vale soprattutto come locator | ablazione costo/frammentazione senza perdere provenienza e copertura | meno chiamate/nodi con recall e astensione non peggiori |
 | COG-04 | P2 | coppia da trattare insieme | promozione 2c e demozione/cleanup formano l'anello della “reincarnazione” | non ablarli separatamente; definire conseguenza downstream e criterio di rimozione | ciclo misurato come operatore composto o ridisegnato |
+| PV-01 | P2 | parcheggiato intenzionalmente | PlastVision è operativo e il T340 raccoglie decine di milioni di letture; Euri e PlastVision affrontano memoria industriale e osservabilità da prospettive complementari. Decisione e fotografia in `EURI_PLASTVISION_DECISION_2026-07-30.md` | riaprire soltanto dopo il collegamento dei PLC/MES mancanti e un periodo di raccolta stabile; pilot shadow su snapshot giornaliero, memoria separata e zero scritture | due settimane appaiate mostrano informazione incrementale con fonti visibili, senza falsi allarmi o autorità operativa |
 
 ## Decisioni già prese — non riaprire senza nuova evidenza
 
@@ -50,6 +51,8 @@ vere supersessioni danneggia.
   non una scadenza di cancellazione.
 - L'utilità osservata non cambia verità, TTL o gate di promozione.
 - Non costruire un consumer universale `Pulse → comportamento`.
+- Non fondere Euri e PlastVision prima del trigger di `PV-01`; la sospensione è
+  deliberata e documentata, non un'attività dimenticata.
 
 ## Governance
 
