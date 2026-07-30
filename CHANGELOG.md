@@ -2,9 +2,12 @@
 
 ## V2.22 (30/07/2026) — Memoria osservabile e confinata
 
-V2.22 promuove a nuova base `main` i 56 commit sviluppati e verificati dopo
-l'ultima base comune. Il passaggio è un fast-forward: nessuno squash, nessuna
-riscrittura della storia e nessuna migrazione Redis.
+V2.22 promuove a nuova base `main` la linea sviluppata e verificata sul branch
+held-out. Il contenuto era fast-forwardabile; durante il push è emerso il merge
+GitHub concorrente del vecchio ramo `agent/synchronize-euri-runtime`, già
+interamente antenato di V2.22. È stato riconciliato con un merge amministrativo
+senza differenze nel tree: nessun force-push, squash o riscrittura della storia
+e nessuna migrazione Redis.
 
 La release consolida scope personale/sperimentale, fonte verbatim datata,
 richiamo cronologico fondato, utilità osservata, lifecycle audit-only,

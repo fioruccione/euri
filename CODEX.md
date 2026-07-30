@@ -5,9 +5,11 @@
 - Registro autoritativo del lavoro non concluso: `docs/EURI_OPEN_WORK.md`.
 - Prossima azione unica: **COG-01**, validare Loop 2h sulle vere opportunità di
   riparazione prima di progettare Loop 2f v3.
-- Git: il branch `experiment/passive-memory-heldout` è una discendenza lineare
-  di `main`; V2.22 lo promuove con fast-forward, senza squash, riscritture o
-  cancellazioni di rami.
+- Git: `experiment/passive-memory-heldout` è stato promosso sulla nuova
+  `main`. Il contenuto era fast-forwardabile; un merge amministrativo senza
+  differenze nel tree ha riconciliato il merge GitHub concorrente di
+  `agent/synchronize-euri-runtime`. Nessun force-push, squash, riscrittura o
+  ramo cancellato.
 - Runtime: Loop 2f legacy è autorità; structured v2 resta diagnostico dopo
   `NO_GO_DEV`; Loop 2h è reversibile ma non validato.
 - Sentinelle al 30/07: grounded 668/800 (riaprire a 750); utility 102 risposte

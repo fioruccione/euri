@@ -112,8 +112,12 @@ non è trascorso e il lifecycle è audit-only.
 
 ## Base Git
 
-Il branch `experiment/passive-memory-heldout`, 56 commit avanti alla precedente
-`main`, è promosso tramite fast-forward. Nessun ramo viene riscritto o
-cancellato. Il tag annotato `v2.22` identifica questa fotografia.
+Il branch `experiment/passive-memory-heldout` è promosso sulla nuova `main`.
+Il contenuto era una discendenza lineare e localmente è avanzato per
+fast-forward. Un merge GitHub concorrente del vecchio ramo
+`agent/synchronize-euri-runtime`, già interamente contenuto nella linea V2.22,
+ha richiesto un merge amministrativo senza differenze nel tree. Nessun
+force-push, ramo riscritto o cancellato. Il tag annotato `v2.22` identifica
+questa fotografia.
 
 La dichiarazione di versione non modifica Redis e non riscrive memorie.
