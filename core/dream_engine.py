@@ -34,6 +34,12 @@ from core.memory_attention import (
 from core.conversation_turns import run_verbatim_lifecycle_maintenance
 from core.memory_utility_shadow import run_memory_utility_shadow_maintenance
 from core.memory_scope import PERSONAL_SCOPE, scope_of
+from core.loop2f_policy import (
+    POLICY_VERSION as LOOP2F_POLICY_VERSION,
+    audit_basis as loop2f_audit_basis,
+    normalize_assessment as normalize_loop2f_assessment,
+    relation_from_assessment as loop2f_relation_from_assessment,
+)
 
 
 CROSS_EPISODE_SEEN_KEY = "euri:cross_episode:seen"
@@ -2524,10 +2530,11 @@ Rispondi SOLO JSON valido:
             except Exception as exc:
                 logger.debug(f"Loop 2i lineage: metadati non annotati ({exc})")
 
-    def _llm_classify_pair(self, content_a: str, content_b: str) -> str:
+    def _llm_classify_pair_legacy(self, content_a: str, content_b: str) -> str:
         """
-        Classifica la relazione tra due memorie simili. Generale, agnostico al dominio
-        (ragiona su 'stesso soggetto vs soggetti diversi', non su liste cablate):
+        Classificatore distribuito fino al 29/07/2026, conservato per benchmark.
+
+        Generale, agnostico al dominio:
           'contradiction' — STESSO soggetto specifico, valori in conflitto che si
                             escludono (es. "MFI lotto X = 6" vs "= 4") → soft-delete.
           'comparison'    — soggetti/entità DIVERSI ma confrontabili (due impianti, due
@@ -2562,6 +2569,87 @@ Rispondi SOLO con: CONTRADDIZIONE, CONFRONTO, o NESSUNA."""
         except Exception as e:
             logger.debug(f"Loop 2f: errore LLM classify pair — {e}")
             return "none"
+
+    def _llm_assess_pair(self, content_a: str, content_b: str) -> dict:
+        """Giudizio strutturato; ogni incompletezza conserva entrambe le memorie."""
+
+        prompt = f"""\
+MEMORIA A: "{content_a[:600]}"
+MEMORIA B: "{content_b[:600]}"
+
+Valuta se A e B autorizzano una supersessione. Non devi scegliere quale testo
+sembra più plausibile: devi descrivere separatamente le prove disponibili.
+
+Definizioni:
+- entity_relation=same solo se gli identificatori mostrano la stessa entità
+  specifica; se il nome è generico, omonimo o insufficiente usa unknown.
+- claim_relation=same solo se le frasi assegnano due valori/stati alla stessa
+  identica proprietà o ruolo; proprietà complementari sono different.
+- assertion_kind: current_state, measurement, target, requirement, prediction,
+  preference, other oppure unknown.
+- mutually_exclusive=yes solo se le due asserzioni non possono coesistere nello
+  stesso ambito. Target contro risultato, requisito contro misura e previsione
+  contro consuntivo NON sono mutuamente esclusivi.
+- explicit_replacement=yes solo se il testo dice esplicitamente che una voce
+  corregge, sostituisce, annulla o rende non più valida l'altra. Una semplice
+  differenza numerica non basta.
+- useful_comparison=yes solo per entità diverse con una somiglianza tecnica o
+  operativa concreta.
+
+Rispondi esclusivamente con JSON:
+{{
+  "entity_relation":"same|different|unknown",
+  "claim_relation":"same|different|unknown",
+  "assertion_kind_a":"current_state|measurement|target|requirement|prediction|preference|other|unknown",
+  "assertion_kind_b":"current_state|measurement|target|requirement|prediction|preference|other|unknown",
+  "mutually_exclusive":"yes|no|unknown",
+  "explicit_replacement":"yes|no|unknown",
+  "useful_comparison":"yes|no|unknown"
+}}"""
+        try:
+            response = self._ollama_chat(
+                model=config.DREAM_OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0, "num_predict": 350},
+                think=False,
+                format="json",
+                _timeout=60,
+            )
+            raw = re.sub(
+                r"<think>.*?</think>",
+                "",
+                response.message.content or "",
+                flags=re.DOTALL,
+            ).strip()
+            start, end = raw.find("{"), raw.rfind("}")
+            if start < 0 or end <= start:
+                raise ValueError("JSON object assente")
+            payload = json.loads(raw[start : end + 1])
+            assessment = normalize_loop2f_assessment(payload)
+            if assessment is None:
+                raise ValueError("campi structured v2 assenti o fuori contratto")
+            return {
+                "relation": loop2f_relation_from_assessment(assessment),
+                "contract_ok": True,
+                "diagnostic": "",
+                "assessment": assessment,
+            }
+        except Exception as exc:
+            logger.info(
+                "Loop 2f structured: keep_both fail-closed "
+                f"({type(exc).__name__})"
+            )
+            return {
+                "relation": "none",
+                "contract_ok": False,
+                "diagnostic": type(exc).__name__,
+                "assessment": None,
+            }
+
+    def _llm_classify_pair(self, content_a: str, content_b: str) -> str:
+        """API compatibile: l'autorità runtime è la policy structured v2."""
+
+        return self._llm_assess_pair(content_a, content_b)["relation"]
 
     @staticmethod
     def _loop2f_is_comparison_doc(doc: dict) -> bool:
@@ -2826,9 +2914,10 @@ Rispondi solo col confronto."""
                         continue
 
                     # 4. Classifica la relazione: contraddizione / confronto / nessuna
-                    rel = self._llm_classify_pair(
+                    assessment_result = self._llm_assess_pair(
                         seed.get("content", ""), n_doc.get("content", "")
                     )
+                    rel = assessment_result["relation"]
 
                     self._r.sadd(CHECKED_KEY, pair_key)
                     self._r.expire(CHECKED_KEY, 180 * 86400)
@@ -2893,9 +2982,24 @@ Rispondi solo col confronto."""
                         self._r.srem(CHECKED_KEY, pair_key)
                         self._integrity_failure("loop2f-supersede", f"euri:memory:{loser_id}", e)
                         continue
+                    basis = loop2f_audit_basis(
+                        assessment_result.get("assessment")
+                    )
+                    if basis:
+                        try:
+                            self._r.json().set(
+                                f"euri:memory:{loser_id}",
+                                "$.supersession_basis",
+                                basis,
+                            )
+                        except Exception as exc:
+                            logger.debug(
+                                "Loop 2f: basis structured non annotata "
+                                f"({type(exc).__name__})"
+                            )
                     logger.info(
                         f"Loop 2f: {loser_id[:8]}… superseded by {winner_id[:8]}… "
-                        f"(conflitto risolto, tenuto il più recente)"
+                        f"(conflitto risolto, policy={LOOP2F_POLICY_VERSION})"
                     )
                     if seed_is_older:
                         break  # seed è stato superseded, inutile continuare con i suoi vicini

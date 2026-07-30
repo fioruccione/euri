@@ -107,3 +107,23 @@ classificato `contradiction`, congelando prima i gold di identità.
 Superare i gate autorizza l'attivazione development della policy strutturata
 perché non regredisce sul banco controllato. Non dimostra generalizzazione alle
 memorie personali né accuratezza su una popolazione indipendente.
+
+## 8. Sigillo di esecuzione
+
+Compilato dopo l'implementazione e prima di qualunque chiamata reale:
+
+- protocol SHA-256:
+  `b851139f7d79558dfe06e2be54ac0cfc4f44533324638136713dd63fb4c234ee`;
+- fixture v1:
+  `b0b04202253282779cbc092d853dddbeb380a960e761b7f03f49d3b3922b04cc`;
+- challenge v2:
+  `2309caf1b31c89e83cf3c994bf0aff7132d72bad4d63463a10a39b32ae853f13`;
+- legacy classifier:
+  `7b6846052ba0214259ed26afe8e24fef63cca27ba71ca707b7cacc01d94e72b0`;
+- structured classifier:
+  `890ba95e583e4826facb1a5de1529453f1efe4d147dd81e55508a0c180f170b9`;
+- policy pura:
+  `8dbb36b0cab8510cb8e805fd4aafe036fc20e645f133f9ccc799384142bd2d1e`.
+
+Il dry-run prevede 66 casi indipendenti, 76 osservazioni e 152 chiamate:
+37 ordini `legacy→structured` e 39 `structured→legacy`. Nessun accesso Redis.
