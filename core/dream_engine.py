@@ -35,8 +35,6 @@ from core.conversation_turns import run_verbatim_lifecycle_maintenance
 from core.memory_utility_shadow import run_memory_utility_shadow_maintenance
 from core.memory_scope import PERSONAL_SCOPE, scope_of
 from core.loop2f_policy import (
-    POLICY_VERSION as LOOP2F_POLICY_VERSION,
-    audit_basis as loop2f_audit_basis,
     normalize_assessment as normalize_loop2f_assessment,
     relation_from_assessment as loop2f_relation_from_assessment,
 )
@@ -2647,9 +2645,9 @@ Rispondi esclusivamente con JSON:
             }
 
     def _llm_classify_pair(self, content_a: str, content_b: str) -> str:
-        """API compatibile: l'autorità runtime è la policy structured v2."""
+        """API runtime: legacy resta autorità dopo il NO-GO structured v2."""
 
-        return self._llm_assess_pair(content_a, content_b)["relation"]
+        return self._llm_classify_pair_legacy(content_a, content_b)
 
     @staticmethod
     def _loop2f_is_comparison_doc(doc: dict) -> bool:
@@ -2914,10 +2912,9 @@ Rispondi solo col confronto."""
                         continue
 
                     # 4. Classifica la relazione: contraddizione / confronto / nessuna
-                    assessment_result = self._llm_assess_pair(
+                    rel = self._llm_classify_pair(
                         seed.get("content", ""), n_doc.get("content", "")
                     )
-                    rel = assessment_result["relation"]
 
                     self._r.sadd(CHECKED_KEY, pair_key)
                     self._r.expire(CHECKED_KEY, 180 * 86400)
@@ -2982,24 +2979,9 @@ Rispondi solo col confronto."""
                         self._r.srem(CHECKED_KEY, pair_key)
                         self._integrity_failure("loop2f-supersede", f"euri:memory:{loser_id}", e)
                         continue
-                    basis = loop2f_audit_basis(
-                        assessment_result.get("assessment")
-                    )
-                    if basis:
-                        try:
-                            self._r.json().set(
-                                f"euri:memory:{loser_id}",
-                                "$.supersession_basis",
-                                basis,
-                            )
-                        except Exception as exc:
-                            logger.debug(
-                                "Loop 2f: basis structured non annotata "
-                                f"({type(exc).__name__})"
-                            )
                     logger.info(
                         f"Loop 2f: {loser_id[:8]}… superseded by {winner_id[:8]}… "
-                        f"(conflitto risolto, policy={LOOP2F_POLICY_VERSION})"
+                        "(conflitto risolto, policy=legacy-deployed)"
                     )
                     if seed_is_older:
                         break  # seed è stato superseded, inutile continuare con i suoi vicini

@@ -129,6 +129,12 @@ def test_legacy_parser_remains_available_for_paired_baseline():
     assert legacy_exact._llm_classify_pair_legacy("prima", "dopo") == "contradiction"
 
 
+def test_runtime_authority_remains_legacy_after_structured_no_go():
+    engine = _FakeEngine("CONTRADDIZIONE")
+    assert engine._llm_classify_pair("prima", "dopo") == "contradiction"
+    assert "format" not in engine.calls[0]
+
+
 if __name__ == "__main__":
     test_affirmative_evidence_is_required_for_supersession()
     test_different_assertion_kinds_cannot_supersede()
@@ -137,4 +143,5 @@ if __name__ == "__main__":
     test_audit_basis_contains_only_enumerative_contract()
     test_structured_classifier_uses_json_and_fails_closed()
     test_legacy_parser_remains_available_for_paired_baseline()
-    print("test_loop2f_structured: 7/7 OK")
+    test_runtime_authority_remains_legacy_after_structured_no_go()
+    print("test_loop2f_structured: 8/8 OK")

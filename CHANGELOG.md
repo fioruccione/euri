@@ -72,12 +72,18 @@ La dichiarazione di versione non migra Redis e non riscrive memorie.
   e cinque sentinelle replicate; i 42 casi precedenti restano sola regressione
   aperta. Loop 2h è esplicitamente fuori da questo intervento.
 - Implementata la policy pura `loop2f-structured-affirmative-v2` e collegata al
-  runtime: il modello produce sette campi JSON, mentre una funzione
+  runtime soltanto per la validazione preregistrata: il modello produce sette
+  campi JSON, mentre una funzione
   deterministica autorizza `contradiction` soltanto se tutti i requisiti sono
   affermativi. JSON malformato, tipi diversi e identità/claim incerti
-  degradano a `none`; il vecchio classificatore resta richiamabile unicamente
-  come braccio della validazione. Una supersessione structured annota inoltre
-  sul loser la base enumerativa usata, senza testo o chain-of-thought.
+  degradano a `none`; il vecchio classificatore resta il braccio di controllo.
+- La validazione appaiata (66 casi indipendenti, 152 chiamate, zero Redis)
+  termina `NO_GO_DEV`: structured porta il contratto da 62/76 a 76/76 e
+  azzera le false supersessioni, ma dimezza il recall degli aggiornamenti veri
+  sia sulla regressione sia sul challenge (`50%`). La policy structured resta
+  disponibile come diagnostica e risultato negativo; il classificatore legacy
+  viene ripristinato come autorità runtime. Risultati in
+  `docs/EURI_LOOP2F_STRUCTURED_V2_RESULTS_2026-07-30.md`.
 
 ### V2.21 (continua, 29/07/2026) — Memoria personale e scenari non condividono più lo stesso mondo
 
