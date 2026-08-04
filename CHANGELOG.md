@@ -27,6 +27,19 @@
 
 ### Comprensione condivisa fino alla memoria passiva
 
+- Il collaudo successivo ha separato la policy globale dalla semantica dei
+  singoli fatti. Il frame v3 assegna a ogni claim una modalità
+  (`asserted/probable/planned/pending/counterfactual`) e una durata
+  (`reusable/session_only`): una prova industriale, una decisione futura o
+  un'ipotesi tecnica riutilizzabile non vengono più escluse solo perché il
+  turno complessivo era stato classificato `ephemeral`. Una guardia coerente
+  mantiene invece effimeri riavvii e test del runtime dell'assistente.
+- Un'entità risolta ad alta confidenza viene ora proiettata nel testo operativo
+  e nella query web dello stesso turno. La proiezione non apprende alias e non
+  modifica il raw; soltanto `CORRECT_ENTITY` esplicito continua ad aggiornare il
+  registro persistente. Il meccanismo è guidato dal frame, senza nomi o pattern
+  dedicati ad aziende. Regressioni live Gio Style/MFI e manifest **70/70 in
+  81,8 s**.
 - L'estrattore e l'auditor di provenienza ricevono ora, accanto al verbatim, la
   vista accettata del frame semantico. Il frame disambigua identità canoniche e
   modalità (`possibile`, `in prova`, `in attesa`, `confermato`), mentre il raw

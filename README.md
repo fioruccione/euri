@@ -45,9 +45,18 @@ fallback sicuro.
 Le correzioni d'identità esplicite alimentano un registro scoped di alias senza
 nomi cablati: il contesto operativo può passare dalla forma osservata a quella
 canonica, mentre l'archivio `euri:turn:*` conserva sempre ciò che Whisper ha
-realmente trascritto. Il frame classifica inoltre il turno come memoria
-`candidate`, `ephemeral` o `no_store`; queste etichette possono impedire
-l'estrazione passiva, mai salvare direttamente un fatto.
+realmente trascritto. Anche una risoluzione semantica ad alta confidenza può
+proiettare il canonico nel testo operativo e nella query web del turno corrente,
+ma non crea una alias durevole: per quella serve ancora una correzione esplicita.
+
+Ogni fatto del frame conserva separatamente la modalità
+(`asserted`, `probable`, `planned`, `pending`, `counterfactual`) e la durata
+(`reusable` o `session_only`). La policy globale `candidate`, `ephemeral` o
+`no_store` viene ricondotta a questi fatti: un'ipotesi tecnica o una prova
+cliente può essere riutilizzabile senza essere spacciata per certa, mentre un
+riavvio o il test corrente del software resta confinato alla sessione. Le
+etichette possono impedire l'estrazione passiva, mai salvare direttamente un
+fatto.
 
 La classificazione di fallback resta a cascata:
 

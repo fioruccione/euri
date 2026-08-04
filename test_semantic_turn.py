@@ -147,6 +147,53 @@ def test_ordinary_entity_mention_never_creates_an_alias():
     assert redis.events == []
 
 
+def test_resolved_entity_is_projected_only_into_the_current_turn():
+    redis = FakeRedis()
+
+    def model(_prompt):
+        return json.dumps({
+            "interpreted_text": "Torniamo a parlare di Geostyle.",
+            "primary_intent": "WEB_SEARCH",
+            "speech_acts": ["ASK", "REQUEST_WEB_SEARCH"],
+            "entities": [{
+                "observed_form": "Geostyle",
+                "canonical_name": "Gio Style",
+                "entity_type": "organization",
+                "status": "resolved",
+                "evidence": "Il contesto precedente identifica Geostyle come Gio Style",
+                "confidence": 1.0,
+            }],
+            "facts": [],
+            "actions": [],
+            "web_query": "Geostyle materiali plastici",
+            "preservation_mode": "semantic",
+            "requires_clarification": False,
+            "meaning_preserved": True,
+            "confidence": 0.99,
+            "memory_disposition": "no_store",
+        }, ensure_ascii=False)
+
+    service = SemanticTurnService(redis, model_call=model)
+    frame = service.interpret(
+        "Torniamo a parlare di Geostyle.", memory_scope="personal"
+    )
+
+    assert frame["raw_text"] == "Torniamo a parlare di Geostyle."
+    assert frame["interpreted_text"] == "Torniamo a parlare di Gio Style."
+    assert frame["web_query"] == "Gio Style materiali plastici"
+    assert frame["canonical_projections"] == [{
+        "observed_form": "Geostyle",
+        "canonical_name": "Gio Style",
+        "entity_type": "organization",
+        "confidence": 1.0,
+        "scope": "current_turn",
+    }]
+    assert frame["canonicalizations"] == []
+    assert service.registry.canonicalize("Geostyle", "personal") == "Geostyle"
+    assert redis.hashes == {}
+    assert redis.events == []
+
+
 def test_verbatim_mode_keeps_raw_text_even_if_model_rewrites_it():
     redis = FakeRedis()
 
@@ -260,8 +307,10 @@ def test_meta_status_is_ephemeral_chat_and_vetoes_fuzzy_action():
             "speech_acts": ["INFORM"],
             "entities": [],
             "facts": [{
-                "fact": "Euri e' stata riavviata dopo una modifica al codice",
+                "claim": "Euri e' stata riavviata dopo una modifica al codice",
                 "type": "change",
+                "modality": "asserted",
+                "durability": "session_only",
             }],
             "actions": [],
             "web_query": "",
@@ -280,6 +329,54 @@ def test_meta_status_is_ephemeral_chat_and_vetoes_fuzzy_action():
     assert semantic_intent(frame) == "CHAT"
     assert frame_blocks_passive_memory(frame)
     assert frame_vetoes_contextual_action(frame)
+
+
+def test_reusable_industrial_facts_override_an_incoherent_ephemeral_label():
+    def model(_prompt):
+        return json.dumps({
+            "interpreted_text": (
+                "Il materiale ha probabilmente un MFI basso; nella produzione futura "
+                "useremo il grado corretto e la macchina della prova non era ottimizzata."
+            ),
+            "primary_intent": "CHAT",
+            "speech_acts": ["INFORM"],
+            "entities": [],
+            "facts": [{
+                "claim": "Il materiale ha un MFI basso",
+                "modality": "probable",
+                "durability": "reusable",
+            }, {
+                "claim": "Nella produzione futura verra' usato il grado corretto",
+                "modality": "planned",
+                "durability": "reusable",
+            }, {
+                "claim": "La macchina usata nella prova non era ottimizzata",
+                "modality": "asserted",
+                "durability": "reusable",
+            }],
+            "actions": [],
+            "web_query": "",
+            "preservation_mode": "semantic",
+            "requires_clarification": False,
+            "meaning_preserved": True,
+            "confidence": 0.99,
+            "memory_disposition": "ephemeral",
+            "memory_reason": "riflessione tecnica spontanea",
+        }, ensure_ascii=False)
+
+    raw = (
+        "Il materiale ha probabilmente un MFI basso; nella produzione futura "
+        "useremo il grado corretto e la macchina della prova non era ottimizzata."
+    )
+    frame = SemanticTurnService(FakeRedis(), model_call=model).interpret(raw)
+
+    assert frame["memory_disposition"] == "candidate"
+    assert frame["memory_reason"] == "almeno un fatto riutilizzabile nel frame"
+    assert [fact["modality"] for fact in frame["facts"]] == [
+        "probable", "planned", "asserted",
+    ]
+    assert all(fact["durability"] == "reusable" for fact in frame["facts"])
+    assert not frame_blocks_passive_memory(frame)
 
 
 def test_explicit_action_is_never_vetoed_by_contextual_guard():
@@ -365,6 +462,7 @@ def test_pre_gate_frame_does_not_persist_corrections_until_accepted():
 if __name__ == "__main__":
     test_explicit_entity_correction_updates_history_and_passive_journal()
     test_ordinary_entity_mention_never_creates_an_alias()
+    test_resolved_entity_is_projected_only_into_the_current_turn()
     test_verbatim_mode_keeps_raw_text_even_if_model_rewrites_it()
     test_spelled_variant_reuses_the_confirmed_canonical_format()
     test_web_query_uses_shared_frame_without_second_llm_interpretation()
@@ -372,6 +470,7 @@ if __name__ == "__main__":
     test_turn_archive_preserves_raw_and_keeps_interpretation_additive()
     test_web_regex_does_not_match_cerca_inside_ricerca()
     test_meta_status_is_ephemeral_chat_and_vetoes_fuzzy_action()
+    test_reusable_industrial_facts_override_an_incoherent_ephemeral_label()
     test_explicit_action_is_never_vetoed_by_contextual_guard()
     test_ungrounded_action_label_cannot_hijack_a_memory_answer()
     test_memory_answer_is_search_not_an_operational_effect()

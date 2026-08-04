@@ -24,7 +24,7 @@ from core.ollama_client import chat_client
 from core.pulse import cognitive_emit
 
 
-SEMANTIC_FRAME_VERSION = 2
+SEMANTIC_FRAME_VERSION = 3
 ENTITY_SCHEMA_VERSION = 1
 _ALIAS_KEY_PREFIX = "euri:semantic:entity_aliases:"
 _ENTITY_KEY_PREFIX = "euri:semantic:entity:"
@@ -41,6 +41,12 @@ _ALLOWED_SPEECH_ACTS = frozenset({
 })
 _ALLOWED_MEMORY_DISPOSITIONS = frozenset({
     "candidate", "ephemeral", "no_store", "unspecified",
+})
+_ALLOWED_FACT_MODALITIES = frozenset({
+    "asserted", "probable", "planned", "pending", "counterfactual", "unspecified",
+})
+_ALLOWED_FACT_DURABILITY = frozenset({
+    "reusable", "session_only", "unspecified",
 })
 
 
@@ -128,6 +134,7 @@ class SemanticTurnFrame:
     addressed_to_assistant: bool = False
     address_relation: str = "unclear"
     address_confidence: float = 0.0
+    canonical_projections: list[dict] = field(default_factory=list)
     canonicalizations: list[dict] = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -153,6 +160,7 @@ class SemanticTurnFrame:
             "addressed_to_assistant": self.addressed_to_assistant,
             "address_relation": self.address_relation,
             "address_confidence": self.address_confidence,
+            "canonical_projections": list(self.canonical_projections),
             "canonicalizations": list(self.canonicalizations),
         }
 
@@ -385,18 +393,25 @@ class SemanticTurnService:
             "In quel caso actions deve essere non vuoto e descrivere concretamente effetto, "
             "target e capability_class. Se non puoi descrivere tale effetto, non usare "
             "REQUEST_ACTION ne' un intent operativo.\n"
-            "Classifica anche la destinazione mnemonica del turno. Usa candidate SOLO "
-            "per fatti, preferenze, clienti, progetti o impegni dell'utente che potrebbero "
-            "essere utili in conversazioni future. Usa ephemeral per stato temporaneo o "
-            "metaconversazionale (riavvii, test, stato corrente dell'assistente o del codice). "
-            "In particolare, una modifica appena fatta al software dell'assistente, un suo "
-            "riavvio o l'esito del test corrente RESTANO ephemeral anche se potrebbero essere "
-            "utili al debugging: non sono fatti personali durevoli. Diventano candidate solo "
-            "se l'utente chiede esplicitamente di ricordarli/salvarli oppure li presenta come "
-            "decisione tecnica stabile di un progetto. "
-            "Usa no_store per domande, comandi, conferme, convenevoli e pure correzioni di "
-            "identita' gia' gestite dal registro. Questa classificazione puo' soltanto "
-            "candidare o impedire l'estrazione passiva: non salva direttamente nulla.\n"
+            "Rappresenta ogni fatto con claim, modality e durability. modality descrive "
+            "quanto afferma davvero l'utente: asserted per un fatto dichiarato, probable "
+            "per un'ipotesi o una valutazione incerta, planned per una decisione futura, "
+            "pending per un esito ancora atteso, counterfactual per uno scenario non reale. "
+            "Non trasformare mai probabile, pianificato o in attesa in asserted. durability "
+            "e' reusable se il fatto puo' servire in una conversazione futura: comprende "
+            "clienti, prodotti, materiali, prove industriali, processi, progetti e decisioni "
+            "future concrete, anche quando sono probabili, preliminari o pending. Usa "
+            "session_only soltanto per lo stato transitorio della conversazione o del runtime "
+            "dell'assistente (riavvio, modifica software appena testata, codice o test corrente). "
+            "La parola test non rende session_only una prova tecnica del cliente, del prodotto "
+            "o del processo: conta il referente semantico, non il vocabolo.\n"
+            "Classifica poi la destinazione mnemonica globale in modo coerente con i fatti. "
+            "Se il turno INFORMA almeno un fatto reusable usa candidate. Se tutti i fatti "
+            "utili sono session_only usa ephemeral. Usa no_store quando non ci sono fatti "
+            "riutilizzabili (domande, comandi, conferme, convenevoli e correzioni di identita') "
+            "e per una richiesta esplicita di salvataggio, gia' gestita dal flusso attivo e "
+            "da non duplicare passivamente. Questa classificazione puo' soltanto candidare o "
+            "impedire l'estrazione passiva: non salva direttamente nulla.\n"
             "Valuta inoltre se il turno e' linguisticamente rivolto all'assistente. Non "
             "presumerlo dal fatto che il parlante sia il proprietario. Usa direct_address "
             "solo per un saluto, una domanda, un comando o un riferimento diretto allo "
@@ -420,7 +435,9 @@ class SemanticTurnService:
             "DICTATE|TRANSLATE\"],\"entities\":[{\"observed_form\":\"\","
             "\"canonical_name\":\"\",\"entity_type\":\"person|organization|product|"
             "place|project|other\",\"status\":\"mentioned|resolved|explicit_correction\","
-            "\"evidence\":\"\",\"confidence\":0.0}],\"facts\":[],\"actions\":[],"
+            "\"evidence\":\"\",\"confidence\":0.0}],\"facts\":[{\"claim\":\"\","
+            "\"modality\":\"asserted|probable|planned|pending|counterfactual\","
+            "\"durability\":\"reusable|session_only\"}],\"actions\":[],"
             "\"web_query\":\"\",\"preservation_mode\":\"semantic|verbatim\","
             "\"requires_clarification\":false,\"meaning_preserved\":true,"
             "\"confidence\":0.0,\"memory_disposition\":\"candidate|ephemeral|no_store\","
@@ -431,7 +448,100 @@ class SemanticTurnService:
         )
 
     @staticmethod
-    def _validated_frame(data: dict, raw_text: str, baseline: str, scope: str) -> SemanticTurnFrame:
+    def _normalized_facts(data: dict) -> list[dict]:
+        facts: list[dict] = []
+        for item in data.get("facts") or []:
+            if not isinstance(item, dict):
+                continue
+            claim = str(
+                item.get("claim")
+                or item.get("fact")
+                or item.get("description")
+                or item.get("content")
+                or ""
+            ).strip()
+            if not claim:
+                continue
+            modality = str(item.get("modality") or "unspecified").strip().lower()
+            if modality not in _ALLOWED_FACT_MODALITIES:
+                modality = "unspecified"
+            durability = str(item.get("durability") or "unspecified").strip().lower()
+            if durability not in _ALLOWED_FACT_DURABILITY:
+                durability = "unspecified"
+            normalized = dict(item)
+            normalized.update({
+                "claim": claim[:1000],
+                "modality": modality,
+                "durability": durability,
+            })
+            facts.append(normalized)
+        return facts[:24]
+
+    @staticmethod
+    def _replace_entity_form(text: str, observed: str, canonical: str) -> str:
+        """Proietta un'identita' accettata usando soli confini generici."""
+        if not text or not observed or not canonical:
+            return str(text or "")
+        return re.sub(
+            rf"(?<!\w){re.escape(observed)}(?!\w)",
+            lambda _match: canonical,
+            str(text),
+            flags=re.IGNORECASE,
+        )
+
+    @classmethod
+    def _project_current_entities(
+        cls,
+        *,
+        raw_text: str,
+        interpreted_text: str,
+        web_query: str,
+        entities: list[dict],
+    ) -> tuple[str, str, list[dict]]:
+        """Usa la comprensione del frame nel turno corrente senza apprendere alias."""
+        projected_text = interpreted_text
+        projected_query = web_query
+        projections: list[dict] = []
+        for entity in entities:
+            if str(entity.get("status") or "").strip().lower() not in {
+                "mentioned", "resolved",
+            }:
+                continue
+            observed = str(entity.get("observed_form") or "").strip()
+            canonical = _compact_spelled_name(
+                str(entity.get("canonical_name") or "").strip()
+            )
+            evidence = str(entity.get("evidence") or "").strip()
+            if (
+                not observed
+                or not canonical
+                or not evidence
+                or _confidence(entity.get("confidence")) < 0.80
+                or _alias_token(observed) == _alias_token(canonical)
+                or not re.search(
+                    rf"(?<!\w){re.escape(observed)}(?!\w)",
+                    raw_text,
+                    flags=re.IGNORECASE,
+                )
+            ):
+                continue
+            next_text = cls._replace_entity_form(projected_text, observed, canonical)
+            next_query = cls._replace_entity_form(projected_query, observed, canonical)
+            if next_text == projected_text and next_query == projected_query:
+                continue
+            projected_text = next_text
+            projected_query = next_query
+            projections.append({
+                "observed_form": observed,
+                "canonical_name": canonical,
+                "entity_type": str(entity.get("entity_type") or "other")[:64],
+                "confidence": _confidence(entity.get("confidence")),
+                "scope": "current_turn",
+            })
+        return projected_text, projected_query, projections
+
+    @classmethod
+    def _validated_frame(cls, data: dict, raw_text: str, baseline: str, scope: str) -> SemanticTurnFrame:
         intent = str(data.get("primary_intent") or "").upper()
         if intent not in _ALLOWED_INTENTS:
             intent = ""
@@ -449,6 +559,7 @@ class SemanticTurnService:
         if not intent and speech_acts and not (set(speech_acts) & operational_acts):
             intent = "CHAT"
         entities = [item for item in (data.get("entities") or []) if isinstance(item, dict)][:16]
+        facts = cls._normalized_facts(data)
         preservation = str(data.get("preservation_mode") or "semantic").lower()
         if preservation not in {"semantic", "verbatim"}:
             preservation = "semantic"
@@ -459,10 +570,31 @@ class SemanticTurnService:
         ).strip().lower()
         if memory_disposition not in _ALLOWED_MEMORY_DISPOSITIONS:
             memory_disposition = "unspecified"
+        acts = set(speech_acts)
+        has_reusable_fact = any(
+            item.get("durability") == "reusable" for item in facts
+        )
+        has_only_session_facts = bool(facts) and all(
+            item.get("durability") == "session_only" for item in facts
+        )
+        # La granularita' del fatto prevale sull'etichetta globale: nel caso
+        # reale una prova industriale era stata scambiata per un test del runtime.
+        # La richiesta esplicita di salvataggio resta esclusa per non duplicare
+        # il flusso attivo con il learner passivo.
+        if "REQUEST_SAVE" in acts:
+            memory_disposition = "no_store"
+        elif "INFORM" in acts and has_reusable_fact:
+            if memory_disposition != "candidate":
+                data["memory_reason"] = "almeno un fatto riutilizzabile nel frame"
+            memory_disposition = "candidate"
+        elif has_only_session_facts:
+            if memory_disposition != "ephemeral":
+                data["memory_reason"] = "i fatti del turno valgono solo nella sessione corrente"
+            memory_disposition = "ephemeral"
         # Compatibilita' conservativa con output prodotti senza il nuovo campo:
         # richieste e correzioni non diventano memorie passive per duplicazione.
-        if memory_disposition == "unspecified" and (
-            set(speech_acts) & (operational_acts | {"CORRECT_ENTITY", "CORRECT_FACT"})
+        elif memory_disposition == "unspecified" and (
+            acts & (operational_acts | {"CORRECT_ENTITY", "CORRECT_FACT"})
         ):
             memory_disposition = "no_store"
         address_relation = str(
@@ -484,6 +616,15 @@ class SemanticTurnService:
             interpreted = raw_text
         elif not safe_interpretation:
             interpreted = baseline
+        web_query = str(data.get("web_query") or "").strip()[:240]
+        canonical_projections: list[dict] = []
+        if safe_interpretation:
+            interpreted, web_query, canonical_projections = cls._project_current_entities(
+                raw_text=raw_text,
+                interpreted_text=interpreted,
+                web_query=web_query,
+                entities=entities,
+            )
         return SemanticTurnFrame(
             turn_id=str(uuid.uuid4()),
             raw_text=raw_text,
@@ -491,9 +632,9 @@ class SemanticTurnService:
             primary_intent=intent,
             speech_acts=speech_acts,
             entities=entities,
-            facts=[item for item in (data.get("facts") or []) if isinstance(item, dict)][:24],
+            facts=facts,
             actions=[item for item in (data.get("actions") or []) if isinstance(item, dict)][:12],
-            web_query=str(data.get("web_query") or "").strip()[:240],
+            web_query=web_query,
             preservation_mode=preservation,
             requires_clarification=bool(data.get("requires_clarification")),
             confidence=confidence,
@@ -505,6 +646,7 @@ class SemanticTurnService:
             addressed_to_assistant=data.get("addressed_to_assistant") is True,
             address_relation=address_relation,
             address_confidence=_confidence(data.get("address_confidence")),
+            canonical_projections=canonical_projections,
         )
 
     @staticmethod
@@ -632,10 +774,11 @@ class SemanticTurnService:
             self._commit_corrections(frame)
 
         logger.info(
-            "[TIMING] Turno semantico: {:.0f}ms -> {} acts={} canonicalizzazioni={}",
+            "[TIMING] Turno semantico: {:.0f}ms -> {} acts={} proiezioni={} canonicalizzazioni={}",
             (time.perf_counter() - started) * 1000,
             frame.primary_intent or "UNKNOWN",
             ",".join(frame.speech_acts) or "-",
+            len(frame.canonical_projections),
             len(frame.canonicalizations),
         )
         return frame.as_dict()
@@ -748,9 +891,22 @@ def frame_blocks_passive_memory(
         return False
     if _confidence(frame.get("confidence")) < minimum_confidence:
         return False
-    return str(frame.get("memory_disposition") or "").lower() in {
-        "ephemeral", "no_store",
-    }
+    disposition = str(frame.get("memory_disposition") or "").lower()
+    if disposition == "no_store":
+        return True
+    if disposition != "ephemeral":
+        return False
+    # Difesa anche per frame deserializzati o prodotti da versioni intermedie:
+    # un fatto riutilizzabile esplicitamente INFORMato non deve sparire per una
+    # classificazione globale incoerente.
+    acts = {str(item or "").upper() for item in (frame.get("speech_acts") or [])}
+    facts = [item for item in (frame.get("facts") or []) if isinstance(item, dict)]
+    if "INFORM" in acts and any(
+        str(item.get("durability") or "").lower() == "reusable"
+        for item in facts
+    ):
+        return False
+    return True
 
 
 def frame_bootstraps_owner_session(

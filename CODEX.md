@@ -15,6 +15,15 @@ il pending di reazione/verifica sopravvive al processo per il TTL residuo. Il
 learner e l'auditor vedono inoltre identità e modalità del frame semantico
 accettato, continuando a richiedere supporto nel verbatim.
 
+Il secondo pass live ha esposto due micro-confini ora chiusi. Una menzione
+`Geostyle` era già risolta dal frame come `Gio Style` con confidenza 1,00, ma la
+forma canonica non raggiungeva ancora il testo operativo; ora viene proiettata
+nel solo turno corrente e nella query web senza scrivere alias. Nel turno MFI,
+tre fatti tecnici (ipotesi sul basso MFI, grado futuro corretto e macchina di
+prova non ottimizzata) erano stati esclusi da un'unica label `ephemeral`: il
+frame v3 conserva per ciascun claim modalità e durata, e una guardia riconcilia
+la destinazione globale senza innalzare l'incertezza del contenuto.
+
 ## Invarianti
 
 - La capsule è workspace temporaneo, non memoria e non fonte di verità.
@@ -30,10 +39,15 @@ accettato, continuando a richiedere supporto nel verbatim.
   questo un nuovo permesso operativo.
 - Il frame non riscrive una memoria al posto del validator: vincola identità e
   modalità, mentre Buttafuori resta `KEEP/JUNK` e l'audit resta fail-closed.
+- Una proiezione canonica `current_turn` non è apprendimento: non modifica raw,
+  history pregressa o registro alias. Solo `CORRECT_ENTITY` esplicito persiste.
+- La riusabilità è indipendente dalla certezza: un claim `probable`, `planned` o
+  `pending` può essere `reusable`; il learner deve preservarne la modalità.
 
 ## Evidenza e stato aperto
 
-Regressioni capsule/workspace **8/8**; manifest unitario **70/70 in 74,5 s**.
+Regressioni capsule/workspace **8/8**; manifest unitario **70/70 in 81,8 s**
+dopo le regressioni Gio Style/MFI.
 Il primo pass live ha popolato la capsule e ha esposto il confine
 focus/Initiative/passivo ora corretto. Resta da collaudare il riavvio sul nuovo
 codice con una domanda ancora aperta. Initiative non ha acquistato nuovi sensi
@@ -77,7 +91,12 @@ reinterpretazione.
   `SEARCH + ASK + REQUEST_MEMORY_SEARCH`.
 - `candidate` rende un turno eleggibile al learner esistente; non salva nulla da
   sola. `ephemeral` e `no_store`, quando il frame è affidabile, escludono dal
-  learner sia il turno sia la risposta. L'archivio raw viene scritto comunque.
+  learner sia il turno sia la risposta. Un fatto `reusable` informato corregge
+  un'eventuale label globale `ephemeral` incoerente senza perdere la sua
+  modalità epistemica. L'archivio raw viene scritto comunque.
+- Le entità `mentioned/resolved` ad alta confidenza possono essere proiettate
+  nel testo operativo e nella query del turno; non aggiornano il registro alias
+  e lasciano intatti raw e conversazioni precedenti.
 - Il bootstrap del primo turno senza wake è autorizzato solo da speaker owner,
   volto owner e `direct_address` ≥0,92. Il frame pre-gate non produce effetti e
   viene committato/riusato soltanto dopo l'accept. Guest e identità incerte
@@ -91,13 +110,17 @@ reinterpretazione.
   `direct_address=1,00`; una sola interpretazione semantica prima del dispatch.
 - Stato software/riavvio: `ephemeral`, zero memoria passiva. Attività cliente e
   decisione stabile: `candidate`; ricerca web: `no_store`.
+- Pass live successivo: `Geostyle` risolto come `Gio Style` ma non ancora
+  propagato, e tre claim MFI persi da una label globale `ephemeral`. Le
+  regressioni frame v3 coprono ora proiezione locale, assenza di alias implicite
+  e precedenza dei fatti tecnici riutilizzabili.
 - Recall reale prima errato: `ACTION_REASONING + REQUEST_ACTION + actions=[]`,
   con circa 17 secondi persi nel controller. Dopo il contratto nuovo lo stesso
   turno è `SEARCH`, confidenza `0,95`, controller vietato. Controprova GPU:
   `EXECUTE`, azione concreta presente, controller consentito.
 - Suite mirate verdi: `test_semantic_turn.py`, `test_wake_guard.py`,
   `test_addressedness.py`, `test_action_controller.py`; manifest unitario
-  **69/69**, inclusa la nuova regressione semantica.
+  **70/70 in 81,8 s**, incluse le regressioni semantiche Gio Style/MFI.
 
 ## Stato aperto
 

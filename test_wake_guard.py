@@ -135,6 +135,17 @@ def test_passive_policy_excludes_the_whole_ephemeral_exchange():
         "confidence": 1.0,
         "memory_disposition": "no_store",
     }
+    reusable_despite_global_label = {
+        "status": "interpreted",
+        "confidence": 0.98,
+        "speech_acts": ["INFORM"],
+        "facts": [{
+            "claim": "La macchina della prova non era ottimizzata",
+            "modality": "asserted",
+            "durability": "reusable",
+        }],
+        "memory_disposition": "ephemeral",
+    }
     history = [
         {"role": "user", "content": "riavvio", "semantic_frame": ephemeral},
         {"role": "assistant", "content": "ricevuto"},
@@ -142,12 +153,19 @@ def test_passive_policy_excludes_the_whole_ephemeral_exchange():
         {"role": "assistant", "content": "capito"},
         {"role": "user", "content": "fallback", "semantic_frame": uncertain},
         {"role": "assistant", "content": "resta analizzabile"},
+        {
+            "role": "user",
+            "content": "prova industriale",
+            "semantic_frame": reusable_despite_global_label,
+        },
+        {"role": "assistant", "content": "dato tecnico ricevuto"},
     ]
     eligible = vd.VoiceDaemon._passive_memory_eligible_history(history)
     assert [item["content"] for item in eligible] == [
         "cliente", "capito", "fallback", "resta analizzabile",
+        "prova industriale", "dato tecnico ricevuto",
     ]
-    print("OK  policy passiva: scambio effimero escluso, fallback fail-open")
+    print("OK  policy passiva: effimero escluso, fatto riusabile e fallback fail-open")
 
 
 def test_activity_only_after_acceptance():
