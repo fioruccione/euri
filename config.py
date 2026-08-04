@@ -340,6 +340,21 @@ INSIGHT_ACTIVE_SOURCES = {"teach", "user", "reflection"}
 MEMORY_TTL_PASSIVE_DAYS = 90
 # Loop 2d: soglia recalled_count per estendere TTL senza invocare il giudice LLM.
 MEMORY_KEEP_IF_RECALLED = 3
+# Loop 2d budgetato: il giudice e' qualitativo ma non puo' monopolizzare la GPU.
+# I candidati eccedenti restano in una coda durevole sul documento e ricevono
+# una lease Redis sufficiente a sopravvivere fino ai cicli successivi.
+MEMORY_PRUNING_MAX_LLM_CALLS_PER_CYCLE = max(
+    1, int(os.environ.get("EURI_MEMORY_PRUNING_MAX_LLM_CALLS_PER_CYCLE", "16"))
+)
+MEMORY_PRUNING_LLM_TIME_BUDGET_S = max(
+    1.0, float(os.environ.get("EURI_MEMORY_PRUNING_LLM_TIME_BUDGET_S", "60"))
+)
+MEMORY_PRUNING_KEEP_MIN_DAYS = max(
+    8, int(os.environ.get("EURI_MEMORY_PRUNING_KEEP_MIN_DAYS", "30"))
+)
+MEMORY_PRUNING_REVIEW_LEASE_MIN_DAYS = max(
+    8, int(os.environ.get("EURI_MEMORY_PRUNING_REVIEW_LEASE_MIN_DAYS", "30"))
+)
 # Loop 2f — PARAURTI di richiamo (N3): un atomo fattuale con recalled_count >= soglia non
 # viene auto-cancellato via contraddizione (tieni entrambi). Deterministico: nessun segnale
 # economico separa l'assorbimento dannoso dal legittimo, la fidelity-probe LLM sbaglia ~metà

@@ -764,9 +764,20 @@ class MemoryManager:
                 if ttl_days:
                     from datetime import timedelta
                     new_exp_dt = now() + timedelta(days=ttl_days)
-                    self.r.json().set(key, "$.expires_at", to_timestamp(new_exp_dt))
-                    indexed["expires_at"] = to_timestamp(new_exp_dt)
-                    self.r.expireat(key, new_exp_dt)
+                    new_exp_ts = to_timestamp(new_exp_dt)
+                    # Una memoria in coda Loop 2d possiede una review lease:
+                    # un touch sotto soglia non deve accorciarla (episode=7g).
+                    if item.get("pruning_review_pending"):
+                        try:
+                            new_exp_ts = max(
+                                new_exp_ts,
+                                float(item.get("expires_at") or 0.0),
+                            )
+                        except (TypeError, ValueError):
+                            pass
+                    self.r.json().set(key, "$.expires_at", new_exp_ts)
+                    indexed["expires_at"] = new_exp_ts
+                    self.r.expireat(key, int(new_exp_ts))
                 update_loop2e_candidate_index(self.r, indexed)
             except Exception as e:
                 logger.debug(f"Touch memory fallito per {key}: {e}")

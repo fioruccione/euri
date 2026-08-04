@@ -249,7 +249,10 @@ Gli strumenti read-only sono:
 Quando non gli parli per un po', Euri entra in cicli cognitivi offline. Non è più un blocco "notturno": l'orchestratore separa pass leggeri, sogni creativi e manutenzione lenta.
 - **Ciclo leggero** (~20 min di cadenza mentre è idle): valuta insight candidati, metabolizza correzioni pending, genera ipotesi trasversali da episodi ripetuti e propaga la provenienza.
 - **Ciclo creativo** (~90 min): genera nuovi sogni cross-domain e promuove insight per convergenza.
-- **Ciclo manutentivo** (~24h): risoluzione contraddizioni, self-observation, cleanup, pruning e consolidamento semantico.
+- **Ciclo manutentivo** (~24h): risoluzione contraddizioni, self-observation,
+  cleanup, pruning e consolidamento semantico. Il pruning Loop 2d usa un budget
+  LLM per ciclo (16 chiamate/60 s di default): l'eccesso entra in una coda
+  RedisJSON durevole con proroga TTL, non viene eliminato per euristica.
 - Pesca due memorie appartenenti a due domini *completamente diversi*, ma solo da
   fonti dirette o deliberatamente acquisite. Reflection, reaction, consolidamenti,
   anchor/episodi conversazionali, nodi superseded, contestati o da verificare non

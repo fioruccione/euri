@@ -1709,18 +1709,53 @@ class Brain:
             logger.error(f"Errore classify_chronological_query: {e}")
             return {}
 
-    def evaluate_memory_relevance(self, content: str) -> str:
+    @staticmethod
+    def _parse_memory_relevance_verdict(text: str) -> str:
+        """Solo un DROP esplicito autorizza la cancellazione."""
+        normalized = str(text or "").strip().upper().strip(" .,:;!?")
+        if normalized == "DROP":
+            return "DROP"
+        return "KEEP"
+
+    def evaluate_memory_relevance(self, memory: dict | str) -> str:
         """
         Death-row gate: valuta se una memoria in scadenza vale ancora la pena conservare.
         Ritorna 'KEEP' o 'DROP'.
-        Chiamato solo per memorie passive/reflection mai richiamate vicine alla scadenza.
+        Accetta anche una stringa per retrocompatibilita', ma Loop 2d passa il
+        documento completo: il giudice non deve inventare lo stato d'uso.
         """
+        doc = memory if isinstance(memory, dict) else {"content": str(memory or "")}
+        content = str(doc.get("content") or "").strip()
+        try:
+            recalled = max(0, int(doc.get("recalled_count") or 0))
+        except (TypeError, ValueError):
+            recalled = 0
+        try:
+            supported_use = max(0, int(doc.get("supported_use_count") or 0))
+        except (TypeError, ValueError):
+            supported_use = 0
+        last_recalled = doc.get("last_recalled_at")
+        source = str(doc.get("source") or "sconosciuta")
+        memory_kind = str(doc.get("memory_kind") or "semantic_fact")
+        epistemic_status = str(doc.get("epistemic_status") or "non specificato")
         prompt = (
             f"Sei il sistema di gestione memoria di {_ASSISTANT_NAME}, l'assistente "
             f"personale di {_OWNER_NAME}.\n"
-            f"Questa memoria sta per scadere perché non è mai stata richiamata in conversazione:\n\n"
-            f"\"{content}\"\n\n"
-            f"Vale la pena conservarla? Potrebbe essere stagionale, tecnica, o utile in futuro?\n"
+            "Questa memoria sta per scadere. Valuta il contenuto insieme ai metadati "
+            "reali; non presumere che non sia mai stata richiamata.\n\n"
+            f"MEMORIA: \"{content}\"\n"
+            f"sorgente={source}\n"
+            f"tipo={memory_kind}\n"
+            f"richiami_cognitivi={recalled}\n"
+            f"ultimo_richiamo={last_recalled if last_recalled is not None else 'mai'}\n"
+            f"usi_sostenuti_non_provati={supported_use}\n"
+            f"stato_epistemico={epistemic_status}\n"
+            f"richiede_verifica={bool(doc.get('requires_verification'))}\n"
+            f"provenienza_fragile={bool(doc.get('provenance_stale'))}\n\n"
+            "KEEP se conserva un fatto personale, tecnico, progettuale, temporale o "
+            "una relazione che potrebbe servire ancora. DROP soltanto se il contenuto "
+            "e' chiaramente transitorio, privo di valore futuro o rumore ridondante. "
+            "Nel dubbio conserva.\n"
             f"Rispondi SOLO con KEEP o DROP."
         )
         try:
@@ -1731,7 +1766,7 @@ class Brain:
                 think=False,
             )
             text = self._clean(response.message.content or "").strip().upper()
-            return "KEEP" if text.startswith("KEEP") else "DROP"
+            return self._parse_memory_relevance_verdict(text)
         except Exception as e:
             logger.debug(f"Errore evaluate_memory_relevance: {e}")
             return "KEEP"  # In caso di errore, conserva per sicurezza

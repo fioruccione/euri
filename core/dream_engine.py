@@ -3705,6 +3705,10 @@ Rispondi SOLO con JSON valido:
                     doc = d[0]
                     if doc.get("source") not in _EPHEMERAL_SOURCES:
                         continue
+                    if doc.get("pruning_review_pending"):
+                        # La coda Loop 2d ha una lease e deve essere consumata
+                        # dal giudice, non dal fallback privo di tombstone.
+                        continue
                     if doc.get("recalled_count", 0) > 0:
                         continue
                     # Cancella solo ciò che ha superato la propria expires_at (mirror del
@@ -3727,13 +3731,17 @@ Rispondi SOLO con JSON valido:
 
     def _pruning_pass(self):
         """
-        Loop 2d — Death-row gate: memorie in scadenza entro 7 giorni ricevono una
-        valutazione LLM prima di essere eliminate.
+        Loop 2d — Death-row gate budgetato e durevole.
 
         Logica:
         - recalled_count >= MEMORY_KEEP_IF_RECALLED → estendi TTL senza chiamare LLM
-        - recalled_count == 0 → chiedi al LLM: KEEP (estendi) o DROP (elimina)
+        - sotto soglia → chiedi al LLM: KEEP (estendi) o DROP (elimina)
+        - budget/count o tempo esaurito → accoda sul documento e concede una lease
         - Errore LLM → conserva per sicurezza
+
+        La coda vive nei JSON canonici (`pruning_review_pending`), non in RAM:
+        restart e cicli incompleti non fanno perdere i candidati. Nessuna
+        euristica deterministica autorizza DROP.
         """
         if not self._brain:
             return
@@ -3742,12 +3750,60 @@ Rispondi SOLO con JSON valido:
             from datetime import timedelta
             from utils.date_utils import to_timestamp
 
-            keep_threshold = config.MEMORY_KEEP_IF_RECALLED
+            keep_threshold = int(config.MEMORY_KEEP_IF_RECALLED)
+            max_llm_calls = max(
+                1,
+                int(getattr(config, "MEMORY_PRUNING_MAX_LLM_CALLS_PER_CYCLE", 16)),
+            )
+            time_budget_s = max(
+                1.0,
+                float(getattr(config, "MEMORY_PRUNING_LLM_TIME_BUDGET_S", 60.0)),
+            )
+            keep_min_days = max(
+                8,
+                int(getattr(config, "MEMORY_PRUNING_KEEP_MIN_DAYS", 30)),
+            )
+            lease_min_days = max(
+                8,
+                int(getattr(config, "MEMORY_PRUNING_REVIEW_LEASE_MIN_DAYS", 30)),
+            )
+            maintenance_interval_s = max(
+                3600.0,
+                float(getattr(config, "DREAM_MAINTENANCE_CYCLE_INTERVAL_S", 86400)),
+            )
             days_ahead = 7
-            cutoff_near = to_timestamp(now() + timedelta(days=days_ahead))
-            now_ts = to_timestamp(now())
+            now_dt = now()
+            now_ts = to_timestamp(now_dt)
+            cutoff_near = to_timestamp(now_dt + timedelta(days=days_ahead))
+            policy_version = "loop2d-budgeted-v1"
 
-            kept = dropped = extended = 0
+            kept = dropped = extended = deferred = llm_calls = 0
+            llm_seconds = 0.0
+            candidates: list[tuple[float, str, dict]] = []
+
+            def _int_or_zero(value) -> int:
+                try:
+                    return max(0, int(value or 0))
+                except (TypeError, ValueError):
+                    return 0
+
+            def _float_or_zero(value) -> float:
+                try:
+                    return float(value or 0.0)
+                except (TypeError, ValueError):
+                    return 0.0
+
+            def _commit_expiry_and_review(
+                key: str, new_exp_ts: float, fields: dict
+            ) -> None:
+                """Aggiorna mirror, stato review e TTL in una transazione Redis."""
+                pipe = self._r.pipeline(transaction=True)
+                pipe.json().set(key, "$.expires_at", new_exp_ts)
+                for field, value in fields.items():
+                    if field != "expires_at":
+                        pipe.json().set(key, f"$.{field}", value)
+                pipe.expireat(key, int(new_exp_ts))
+                pipe.execute()
 
             for key in self._r.scan_iter("euri:memory:*"):
                 try:
@@ -3755,48 +3811,177 @@ Rispondi SOLO con JSON valido:
                     if not d:
                         continue
                     doc = d[0]
-                    exp = doc.get("expires_at")
-                    if not exp or not (now_ts < exp <= cutoff_near):
-                        continue
-
                     source = doc.get("source", "")
                     if source not in _TTL_BY_SOURCE:
                         continue  # user/teach/obsidian_vault — mai toccare
 
-                    recalled = doc.get("recalled_count", 0)
+                    exp = _float_or_zero(doc.get("expires_at"))
+                    pending = bool(doc.get("pruning_review_pending"))
+                    near_expiry = bool(exp and now_ts < exp <= cutoff_near)
+                    if not (near_expiry or pending):
+                        continue
+
+                    recalled = _int_or_zero(doc.get("recalled_count"))
                     ttl_days = _TTL_BY_SOURCE[source]
 
                     if recalled >= keep_threshold:
-                        # Estendi di almeno 30 giorni — episodi hanno ttl=7 e
-                        # rientrerebbero nella finestra ogni ciclo senza questo floor.
-                        extended_ttl = max(ttl_days, 30)
-                        new_exp_dt = now() + timedelta(days=extended_ttl)
+                        # Anche un episodio usato non deve rientrare ogni giorno
+                        # nella finestra di sette giorni.
+                        extended_ttl = max(ttl_days, keep_min_days)
+                        new_exp_dt = now_dt + timedelta(days=extended_ttl)
                         # TTL Redis = verità operativa, expires_at = mirror di audit:
                         # vanno aggiornati insieme o la chiave muore alla vecchia scadenza.
-                        self._r.json().set(key, "$.expires_at", to_timestamp(new_exp_dt))
-                        self._r.expireat(key, new_exp_dt)
+                        _commit_expiry_and_review(
+                            key,
+                            to_timestamp(new_exp_dt),
+                            {
+                                "pruning_review_pending": False,
+                                "pruning_review_after": None,
+                                "pruning_original_expires_at": None,
+                                "pruning_last_verdict": "EXTEND_RECALLED",
+                                "pruning_last_review_at": now_ts,
+                                "pruning_last_recalled_count": recalled,
+                                "pruning_policy_version": policy_version,
+                            },
+                        )
                         extended += 1
                         continue
 
-                    # Death-row: chiedi al LLM
-                    verdict = self._brain.evaluate_memory_relevance(doc.get("content", ""))
-                    if verdict == "KEEP":
-                        new_exp_dt = now() + timedelta(days=ttl_days)
-                        # TTL Redis = verità operativa, expires_at = mirror di audit.
-                        self._r.json().set(key, "$.expires_at", to_timestamp(new_exp_dt))
-                        self._r.expireat(key, new_exp_dt)
-                        kept += 1
-                        logger.debug(f"Loop 2d: memoria salvata dal giudice LLM ({key[-8:]})")
-                    else:
-                        self._r.delete(key)
-                        dropped += 1
-                        logger.info(f"Loop 2d: memoria eliminata dal giudice LLM ({key[-8:]})")
+                    review_after = _float_or_zero(doc.get("pruning_review_after"))
+                    if pending and review_after > now_ts:
+                        continue
+                    original_exp = _float_or_zero(
+                        doc.get("pruning_original_expires_at")
+                    ) or exp or now_ts
+                    candidates.append((original_exp, str(key), doc))
 
                 except Exception:
                     continue
 
-            if kept or dropped or extended:
-                logger.info(f"Loop 2d: {extended} estese, {kept} salvate LLM, {dropped} eliminate LLM")
+            # Prima chi stava per scadere originariamente; l'ordine non dipende
+            # dallo scan Redis e resta stabile fra restart.
+            candidates.sort(key=lambda item: (item[0], item[1]))
+            remaining: list[tuple[float, str, dict]] = []
+            cycle_llm_started = time.monotonic()
+
+            for index, candidate in enumerate(candidates):
+                if llm_calls >= max_llm_calls or (
+                    llm_calls > 0
+                    and time.monotonic() - cycle_llm_started >= time_budget_s
+                ):
+                    remaining.extend(candidates[index:])
+                    break
+
+                _original_exp, key, doc = candidate
+                recalled = _int_or_zero(doc.get("recalled_count"))
+                source = str(doc.get("source") or "")
+                ttl_days = int(_TTL_BY_SOURCE[source])
+                call_started = time.monotonic()
+                try:
+                    verdict = self._brain.evaluate_memory_relevance(doc)
+                except Exception as exc:
+                    logger.warning(
+                        f"Loop 2d: giudice fallito su {key[-8:]} — KEEP fail-safe ({exc})"
+                    )
+                    verdict = "KEEP"
+                # Difesa in profondita': anche un'implementazione del brain non
+                # conforme non puo' trasformare un output ambiguo in delete.
+                verdict = (
+                    "DROP"
+                    if str(verdict or "").strip().upper() == "DROP"
+                    else "KEEP"
+                )
+                llm_seconds += time.monotonic() - call_started
+                llm_calls += 1
+
+                try:
+                    if verdict == "KEEP":
+                        # Il floor chiude il loop giornaliero degli episode: con
+                        # ttl=7 e finestra=7 un KEEP li ripresentava a ogni pass.
+                        new_ttl_days = max(ttl_days, keep_min_days)
+                        new_exp_dt = now_dt + timedelta(days=new_ttl_days)
+                        _commit_expiry_and_review(
+                            key,
+                            to_timestamp(new_exp_dt),
+                            {
+                                "pruning_review_pending": False,
+                                "pruning_review_after": None,
+                                "pruning_original_expires_at": None,
+                                "pruning_last_verdict": "KEEP",
+                                "pruning_last_review_at": now_ts,
+                                "pruning_last_recalled_count": recalled,
+                                "pruning_policy_version": policy_version,
+                            },
+                        )
+                        kept += 1
+                        logger.debug(
+                            f"Loop 2d: memoria salvata dal giudice LLM ({key[-8:]})"
+                        )
+                    else:
+                        self._r.delete(key)
+                        dropped += 1
+                        logger.info(
+                            f"Loop 2d: memoria eliminata dal giudice LLM ({key[-8:]})"
+                        )
+                except Exception as exc:
+                    # Una scrittura parziale non autorizza la perdita del nodo:
+                    # rimettilo nella coda e dagli una nuova lease sotto.
+                    logger.warning(
+                        f"Loop 2d: commit verdetto fallito su {key[-8:]} — differito ({exc})"
+                    )
+                    remaining.append(candidate)
+
+            # Coda durevole budgetata. Gli slot vengono scaglionati secondo la
+            # cadenza manutentiva; la lease cresce col numero di batch necessari.
+            for offset, (original_exp, key, doc) in enumerate(remaining):
+                try:
+                    batch_number = offset // max_llm_calls + 1
+                    review_after = now_ts + batch_number * maintenance_interval_s
+                    lease_seconds = max(
+                        lease_min_days * 86400.0,
+                        batch_number * maintenance_interval_s
+                        + (days_ahead + 2) * 86400.0,
+                    )
+                    current_exp = _float_or_zero(doc.get("expires_at"))
+                    leased_exp = now_ts + lease_seconds
+                    new_exp_ts = max(current_exp, leased_exp)
+                    _commit_expiry_and_review(
+                        key,
+                        new_exp_ts,
+                        {
+                            "pruning_review_pending": True,
+                            "pruning_review_after": review_after,
+                            "pruning_original_expires_at": (
+                                _float_or_zero(doc.get("pruning_original_expires_at"))
+                                or original_exp
+                            ),
+                            "pruning_deferred_at": now_ts,
+                            "pruning_defer_count": _int_or_zero(
+                                doc.get("pruning_defer_count")
+                            ) + 1,
+                            "pruning_policy_version": policy_version,
+                        },
+                    )
+                    deferred += 1
+                except Exception as exc:
+                    logger.warning(
+                        f"Loop 2d: accodamento fallito su {key[-8:]} ({exc})"
+                    )
+
+            if kept or dropped or extended or deferred or candidates:
+                logger.info(
+                    "Loop 2d: {} estese, {} salvate LLM, {} eliminate LLM, "
+                    "{} differite | llm={}/{} {:.1f}s budget={:.1f}s backlog={}",
+                    extended,
+                    kept,
+                    dropped,
+                    deferred,
+                    llm_calls,
+                    max_llm_calls,
+                    llm_seconds,
+                    time_budget_s,
+                    len(remaining),
+                )
 
         except Exception as e:
             logger.error(f"Errore Loop 2d pruning: {e}")

@@ -13,6 +13,29 @@
   `README.md` e `CODEX.md` dichiarano esplicitamente che va consultata e
   aggiornata prima di ricostruire o cambiare la logica mnemonica.
 
+### Loop 2d budgetato e durevole
+
+- Il giudice `KEEP/DROP` non può più monopolizzare la GPU durante una crescita
+  dell'archivio: ogni maintenance dispone di un budget configurabile, 16
+  chiamate o 60 secondi di default, e lavora per scadenza originaria.
+- I candidati eccedenti sono accodati nel documento RedisJSON con
+  `pruning_review_pending`, `review_after` e audit del rinvio. Ricevono una
+  review lease di almeno 30 giorni, estesa dinamicamente per il backlog, e
+  vengono ripresi anche fuori dalla finestra ordinaria di sette giorni. Stato
+  di review, mirror `expires_at` e TTL sono committati in una transazione Redis.
+- Nessuna pre-euristica elimina dati. Soltanto un `DROP` esatto del giudice può
+  cancellare; errore o output ambiguo diventano `KEEP`. Il giudice riceve ora il
+  documento con richiami, utilizzo shadow, sorgente e stato epistemico invece
+  della falsa premessa “mai richiamata”. Anche un `KEEP` usa il floor di 30
+  giorni, chiudendo il riesame giornaliero degli episodi.
+- Un touch cognitivo non può accorciare la lease di un nodo accodato; il cleanup
+  fallback ignora la coda. Aggiunto `test_loop2d_pruning.py` con regressioni su
+  cap, ordine, restart logico, floor, touch e cancellazione fail-safe.
+- `scripts/audit_memory.py --report` accetta ora anche gli `audit_flag` legacy
+  rappresentati come liste o mappe, invece di interrompere il report con un
+  cast a intero, ed espone il numero e l'ordine della coda. Manifest unitario
+  completo sul codice finale: **71/71 in 75,3 s**.
+
 ### Presente continuo fra i processi
 
 - Aggiunto `core/conversation_continuity.py`: un indice Redis TTL collega gli

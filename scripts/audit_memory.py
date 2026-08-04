@@ -353,6 +353,19 @@ def _short(text: str, width: int = 92) -> str:
     return text if len(text) <= width else text[: width - 1] + "…"
 
 
+def _audit_flag_count(value) -> int:
+    """Normalizza audit_flag legacy: numero oppure collezione di motivi."""
+    if value is None or value is False or value == "":
+        return 0
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value)
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        # Un flag testuale non vuoto segnala comunque una anomalia.
+        return 1
+
+
 def _consolidation_risk(r: redis.Redis, doc: dict) -> dict:
     """Calcola read-only la fragilità delle fonti di un nodo consolidato."""
     source_ids = doc.get("consolidated_from") or []
@@ -373,7 +386,7 @@ def _consolidation_risk(r: redis.Redis, doc: dict) -> dict:
             risk["missing"].append(cid)
             continue
         src = raw[0]
-        if int(src.get("audit_flag") or 0) > 0:
+        if _audit_flag_count(src.get("audit_flag")) > 0:
             risk["audit_flagged"].append(cid)
         if src.get("superseded_by"):
             risk["superseded"].append(cid)
@@ -526,7 +539,8 @@ def read_only_report(r: redis.Redis, expiring_days: int = 14, report_source: str
     expiring = [d for d in temporary if now_ts < float(d.get("expires_at") or 0) <= exp_cutoff]
     requires_verification = [d for d in memories if d.get("requires_verification")]
     superseded = [d for d in memories if d.get("superseded_by")]
-    audit_flagged = [d for d in memories if int(d.get("audit_flag") or 0) > 0]
+    audit_flagged = [d for d in memories if _audit_flag_count(d.get("audit_flag")) > 0]
+    pruning_pending = [d for d in memories if d.get("pruning_review_pending")]
     missing_embedding = [d for d in memories if not d.get("embedding")]
     never_recalled = [d for d in memories if int(d.get("recalled_count") or 0) == 0]
     with_consolidated_from = [d for d in memories if d.get("consolidated_from")]
@@ -569,6 +583,7 @@ def read_only_report(r: redis.Redis, expiring_days: int = 14, report_source: str
     print(f"  Requires verification          {len(requires_verification):>5}")
     print(f"  Soft-deleted/superseded        {len(superseded):>5}")
     print(f"  Audit flag > 0                 {len(audit_flagged):>5}")
+    print(f"  Loop 2d in coda                {len(pruning_pending):>5}")
     print(f"  Senza embedding                {len(missing_embedding):>5}")
     if include_global_sections:
         print(f"  Insight totali                 {len(insights):>5}")
@@ -635,11 +650,29 @@ def read_only_report(r: redis.Redis, expiring_days: int = 14, report_source: str
 
     if audit_flagged:
         print("\nAudit flag")
-        for doc in sorted(audit_flagged, key=lambda d: int(d.get("audit_flag") or 0), reverse=True)[:10]:
+        for doc in sorted(
+            audit_flagged,
+            key=lambda d: _audit_flag_count(d.get("audit_flag")),
+            reverse=True,
+        )[:10]:
             print(
-                f"  flag={int(doc.get('audit_flag') or 0):>2} | "
+                f"  flag={_audit_flag_count(doc.get('audit_flag')):>2} | "
                 f"{doc.get('source', '?'):<12} | {doc.get('domain', '?'):<24} | "
                 f"{_short(doc.get('content', ''))}"
+            )
+
+    if pruning_pending:
+        print("\nLoop 2d in coda")
+        for doc in sorted(
+            pruning_pending,
+            key=lambda d: float(d.get("pruning_original_expires_at") or float("inf")),
+        )[:15]:
+            review_after = float(doc.get("pruning_review_after") or 0)
+            wait_s = max(0, int(review_after - now_ts))
+            print(
+                f"  tra={wait_s // 3600:>3}h | "
+                f"defer={int(doc.get('pruning_defer_count') or 0):<3} | "
+                f"{doc.get('source', '?'):<12} | {_short(doc.get('content', ''))}"
             )
 
     risky_consolidations = [

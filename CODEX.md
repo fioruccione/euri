@@ -10,6 +10,45 @@ aggiornare la mappa nello stesso intervento.
 
 ---
 
+# Handoff Euri - 2026-08-04 - Loop 2d budgetato
+
+## Esito
+
+Il death-row gate non esegue più un numero illimitato di giudizi LLM nello
+stesso ciclo manutentivo. Processa prima le scadenze originarie più vicine,
+entro 16 chiamate o 60 secondi di default; il resto diventa una coda durevole
+nel documento `euri:memory:*` e riceve una review lease Redis di almeno 30
+giorni. Un restart non perde la coda e la lease non nasconde il candidato alla
+maintenance successiva.
+
+Il giudice vede il documento reale, inclusi `recalled_count`, ultimo richiamo,
+utilità shadow, sorgente e stato epistemico. Solo un `DROP` esatto autorizza il
+delete; qualsiasi errore o risposta non conforme conserva. Il floor di 30
+giorni vale anche dopo `KEEP`, non soltanto nel ramo deterministico dei tre
+richiami.
+
+## Invarianti
+
+- Il budget può differire un giudizio, mai sostituirlo con una cancellazione.
+- `pruning_review_pending` e `review_after` sono stato canonico, non una coda in
+  RAM; `expires_at` e TTL Redis vengono prorogati insieme.
+- Un touch sotto soglia incrementa l'uso ma non accorcia una lease già attiva.
+- Il cleanup stale non elimina nodi in attesa del giudice.
+- Un candidato tornato a `recalled_count >= 3` viene esteso senza chiamata LLM e
+  rimosso dalla coda.
+
+## Evidenza
+
+L'archivio osservato prima dell'intervento aveva 1.544 nodi, 1.119 con TTL e
+soltanto 3 candidati LLM entro sette giorni: non era un'emergenza attuale, ma
+il percorso non aveva cap, batch o persistenza del backlog. Le regressioni pure
+coprono budget, priorità, coda fuori finestra, floor episode, touch della lease,
+metadati al giudice e output ambiguo. Lo script di report read-only gestisce ora
+anche gli `audit_flag` legacy a collezione. Manifest unitario completo:
+**71/71 in 75,3 s** sul codice finale.
+
+---
+
 # Handoff Euri - 2026-08-04 - Presente continuo
 
 ## Esito

@@ -231,6 +231,7 @@ secondari passano da `core/memory_outbox.py` e sono replayabili.
 | Provenienza | `temporal_context.source_turn_refs`, `source_memory_ids`, `consolidated_from` | fonti verbatim o nodi genitori |
 | Epistemica | `requires_verification`, `epistemic_status`, `passive_support`, `memory_axes` | solidità, modalità e rischi |
 | Revisione | `superseded_by`, `consolidated_into`, `correction_pending`, `audit_flag`, `provenance_stale` | stato nel lifecycle e nei gate |
+| Coda pruning | `pruning_review_pending`, `pruning_review_after`, `pruning_original_expires_at`, `pruning_defer_count`, `pruning_last_verdict` | lease, priorità e audit del giudizio Loop 2d |
 
 ### Commit e outbox
 
@@ -257,7 +258,7 @@ contenuto rappresenta**. Non sono la stessa dimensione.
 | `obsidian_vault` | file creato/modificato nel Vault | nessuno | ingresso deliberato dal watcher |
 | `passive` | estrazione silenziosa dalla conversazione | 90 giorni | finestra scorrevole al richiamo |
 | `conversation` | conoscenza/sommario conversazionale esplicito | 90 giorni | sorgente distinta dal verbatim |
-| `episode` | episodio conversazionale | 7 giorni | il pruning usa almeno 30 giorni se molto richiamato |
+| `episode` | episodio conversazionale | 7 giorni | un richiamo forte o un `KEEP` Loop 2d rinnova per almeno 30 giorni |
 | `web` | risultato o sintesi Web | 60 giorni | informazione temporalmente fragile |
 | `reflection` | interpretazione interna | 90 giorni di default | Loop 2a forza 7 giorni alla nascita |
 | `reaction` | lezione da correzione/reazione | nessuno | derivata, non fatto owner diretto |
@@ -352,10 +353,14 @@ stateDiagram-v2
     Attiva --> Attiva: retrieval touch / rinnovo finestra
     Attiva --> VicinaAllaScadenza: expires_at entro 7 giorni
     VicinaAllaScadenza --> Estesa: recalled_count >= 3
-    VicinaAllaScadenza --> GiudiceLLM: recalled_count < 3
+    VicinaAllaScadenza --> GiudiceLLM: sotto soglia e budget disponibile
+    VicinaAllaScadenza --> Accodata: budget esaurito
+    Accodata --> GiudiceLLM: review_after raggiunto
+    Accodata --> Estesa: recalled_count sale a 3
     GiudiceLLM --> Estesa: KEEP o errore LLM
     GiudiceLLM --> Eliminata: DROP
     Estesa --> Attiva: nuovo expires_at + EXPIREAT
+    Accodata --> Accodata: review lease + EXPIREAT
     Attiva --> Eliminata: scadenza Redis non intercettata
     Eliminata --> [*]
 ```
@@ -364,19 +369,36 @@ stateDiagram-v2
 
 - guarda i nodi con scadenza entro 7 giorni;
 - con `recalled_count >= 3` estende deterministicamente;
-- per `0`, `1` o `2` richiami chiede `KEEP/DROP` al modello;
-- `KEEP` rinnova la finestra standard della sorgente;
+- per `0`, `1` o `2` richiami chiede `KEEP/DROP` al modello, passando contenuto,
+  sorgente, tipo, richiami, ultimo richiamo, utilità shadow e stato epistemico;
+- ordina il lavoro per scadenza originaria e limita il giudice, di default, a
+  16 chiamate e 60 secondi per ciclo manutentivo;
+- quando uno dei due budget finisce, registra la coda nel JSON canonico e
+  proroga insieme `expires_at` ed `EXPIREAT`: il candidato non resta soltanto in
+  RAM e non può scadere mentre attende il ciclo successivo;
+- i candidati accodati vengono ripresi anche se la lease li ha portati fuori
+  dalla normale finestra dei 7 giorni;
+- `KEEP` rinnova la finestra della sorgente con un floor di 30 giorni;
 - un errore del giudice restituisce `KEEP` per sicurezza;
-- `DROP` usa una cancellazione Redis reale, senza tombstone.
+- soltanto il token esplicito `DROP` autorizza la cancellazione Redis reale,
+  senza tombstone; output vuoti, ambigui o non conformi diventano `KEEP`.
 
-Per sorgenti con TTL inferiore a 30 giorni, il ramo deterministico usa un floor
-di 30 giorni. Una rete di sicurezza elimina eventuali memorie
+La review lease dura almeno 30 giorni e cresce col numero di batch necessari
+rispetto alla cadenza manutentiva. Un retrieval su un nodo accodato può
+incrementarne l'uso, ma non può accorciare la lease. I parametri operativi sono
+`MEMORY_PRUNING_MAX_LLM_CALLS_PER_CYCLE`,
+`MEMORY_PRUNING_LLM_TIME_BUDGET_S`, `MEMORY_PRUNING_KEEP_MIN_DAYS` e
+`MEMORY_PRUNING_REVIEW_LEASE_MIN_DAYS`.
+
+Una rete di sicurezza elimina eventuali memorie
 `passive/reflection/conversation` mai richiamate che abbiano perso il TTL Redis
 ma conservino un `expires_at` già trascorso.
 
 Il TTL Redis è la verità operativa. Se Euri resta spenta e nessun pass di
 manutenzione gira prima della scadenza, Redis può eliminare il nodo senza che il
-giudice Loop 2d lo rivaluti. Il Vault Markdown non viene cancellato
+giudice Loop 2d lo rivaluti. La lease riduce il rischio durante un backlog, ma
+non sostituisce Redis se Euri rimane spenta oltre l'intera proroga. Il Vault
+Markdown non viene cancellato
 automaticamente insieme alla chiave Redis.
 
 Conseguenze pratiche:
@@ -398,6 +420,7 @@ Conseguenze pratiche:
 | `consolidated_into=<id>` | foglia già usata da Loop 2e | non rientra in Loop 2e/Dream, ma resta recuperabile |
 | `audit_flag` | problema rilevato | demozione o esclusione dai gate più forti |
 | `provenance_stale=true` | una fonte derivata è fragile o manca | demozione e richiesta di verifica; può auto-guarire |
+| `pruning_review_pending=true` | giudizio Loop 2d rinviato per budget | TTL in lease; ripresa durevole dopo `review_after` |
 | `epistemic_status=retracted_*` | ritiro esplicito di audit | normalmente accompagnato da `superseded_by` per l'esclusione effettiva |
 
 La quarantena Markdown `.euri-quarantine/` è recuperabile e umana; non è un
@@ -425,7 +448,7 @@ I segnali `proposal_only` non hanno autorità per mutare da soli una memoria.
 | Loop 2a | idle, checkpoint di sessione | memorie di sessione + correlate | `source=reflection`, inizialmente 7 giorni | interpretazione interna |
 | Loop 2b | creative ~90 min | due semi diretti e puliti cross-domain | dream + insight candidate | generazione |
 | Loop 2c | light/creative | insight candidate | hypothesis/promoted | valutazione |
-| Loop 2d | maintenance | memorie vicine alla scadenza | estensione TTL o delete | mietitore |
+| Loop 2d | maintenance | memorie vicine alla scadenza o in coda | estensione TTL, coda con lease o delete esplicito | mietitore budgetato |
 | Loop 2e | maintenance, max 24 h | cluster stesso dominio, recall >=3 e recenti | `source=loop2e`, `consolidated_into` | consolidamento |
 | Loop 2f | maintenance | coppie vicine nello stesso dominio | `superseded_by` o nota di confronto | revisione contraddizioni |
 | Loop 2g | light | correction signals | flag, chiusura quarantena, reaction lesson | audit correzioni |
@@ -551,3 +574,5 @@ Non usare `scripts/audit_memory.py --delete`, `--fix-*`, `--backfill-*` o
 9. Outbox, indici, Pulse e Vault non diventano fonti canoniche concorrenti.
 10. Una richiesta “non memorizzare” non va interpretata oltre l'autorità
     realmente implementata: oggi la policy è per turno.
+11. L'esaurimento del budget Loop 2d può rinviare un giudizio, non autorizzare
+    una cancellazione; la coda deve sopravvivere ai restart insieme al TTL.

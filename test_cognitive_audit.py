@@ -2,6 +2,7 @@
 from datetime import datetime
 
 from scripts.experiments.audit_cognitive_present import audit_entries, parse_log
+from scripts.audit_memory import _audit_flag_count
 
 
 def test_audit_detects_observed_failures(tmp_path=None):
@@ -48,7 +49,16 @@ def test_routed_turn_is_not_overlap():
     assert not report.proactive_overlaps
 
 
+def test_memory_audit_accepts_legacy_flag_collections():
+    assert _audit_flag_count(None) == 0
+    assert _audit_flag_count(2) == 2
+    assert _audit_flag_count(["missing_subject", "weak_provenance"]) == 2
+    assert _audit_flag_count({"weak_provenance": True}) == 1
+    assert _audit_flag_count("legacy_reason") == 1
+
+
 if __name__ == "__main__":
     test_audit_detects_observed_failures()
     test_routed_turn_is_not_overlap()
+    test_memory_audit_accepts_legacy_flag_collections()
     print("PASS")
