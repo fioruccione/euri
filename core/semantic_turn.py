@@ -14,6 +14,7 @@ import time
 import unicodedata
 import uuid
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from typing import Callable
 
 from loguru import logger
@@ -48,6 +49,7 @@ _ALLOWED_FACT_MODALITIES = frozenset({
 _ALLOWED_FACT_DURABILITY = frozenset({
     "reusable", "session_only", "unspecified",
 })
+_MIN_CURRENT_ENTITY_SURFACE_SIMILARITY = 0.72
 
 
 def _decode(value) -> str:
@@ -79,6 +81,15 @@ def _identity_token(value: str) -> str:
         result.append(parts[index])
         index += 1
     return " ".join(result)
+
+
+def _surface_name_similarity(observed: str, canonical: str) -> float:
+    """Somiglianza generica fra due grafie, non risoluzione di coreferenze."""
+    left = "".join(_alias_token(observed).split())
+    right = "".join(_alias_token(canonical).split())
+    if not left or not right:
+        return 0.0
+    return SequenceMatcher(None, left, right, autojunk=False).ratio()
 
 
 def _compact_spelled_name(value: str) -> str:
@@ -378,6 +389,12 @@ class SemanticTurnService:
             "Una entity con status explicit_correction e' ammessa SOLO se l'utente sta "
             "correggendo esplicitamente una forma osservata con un nome canonico. Una "
             "semplice menzione non e' una correzione.\n"
+            "Quando observed_form e' un pronome, un'anafora o una descrizione come loro, "
+            "lei, quello, il cliente o l'officina, puoi rappresentare la coreferenza nelle "
+            "entities ma NON sostituirla con canonical_name dentro interpreted_text. La "
+            "proiezione ortografica e' riservata a una forma nominale realmente pronunciata "
+            "che sia una grafia plausibile dello stesso nome; la conoscenza di un'entita' "
+            "pregressa, da sola, non autorizza la sostituzione.\n"
             "Se l'utente scandisce le lettere per spiegare l'ortografia, canonical_name "
             "deve contenere la grafia finale normale senza trattini, punti o spazi tra "
             "le singole lettere: la sillabazione e' evidenza, non il nome canonico.\n"
@@ -489,6 +506,47 @@ class SemanticTurnService:
             flags=re.IGNORECASE,
         )
 
+    @staticmethod
+    def _contains_entity_form(text: str, value: str) -> bool:
+        if not text or not value:
+            return False
+        return bool(re.search(
+            rf"(?<!\w){re.escape(value)}(?!\w)",
+            str(text),
+            flags=re.IGNORECASE,
+        ))
+
+    @classmethod
+    def _has_non_surface_identity_rewrite(
+        cls,
+        *,
+        raw_text: str,
+        interpreted_text: str,
+        entities: list[dict],
+    ) -> bool:
+        """Rileva quando un pronome/descrizione e' stato riscritto come nome."""
+        for entity in entities:
+            if str(entity.get("status") or "").strip().lower() not in {
+                "mentioned", "resolved",
+            }:
+                continue
+            observed = str(entity.get("observed_form") or "").strip()
+            canonical = _compact_spelled_name(
+                str(entity.get("canonical_name") or "").strip()
+            )
+            if (
+                observed
+                and canonical
+                and _alias_token(observed) != _alias_token(canonical)
+                and _surface_name_similarity(observed, canonical)
+                < _MIN_CURRENT_ENTITY_SURFACE_SIMILARITY
+                and cls._contains_entity_form(raw_text, observed)
+                and not cls._contains_entity_form(interpreted_text, observed)
+                and cls._contains_entity_form(interpreted_text, canonical)
+            ):
+                return True
+        return False
+
     @classmethod
     def _project_current_entities(
         cls,
@@ -518,11 +576,9 @@ class SemanticTurnService:
                 or not evidence
                 or _confidence(entity.get("confidence")) < 0.80
                 or _alias_token(observed) == _alias_token(canonical)
-                or not re.search(
-                    rf"(?<!\w){re.escape(observed)}(?!\w)",
-                    raw_text,
-                    flags=re.IGNORECASE,
-                )
+                or _surface_name_similarity(observed, canonical)
+                < _MIN_CURRENT_ENTITY_SURFACE_SIMILARITY
+                or not cls._contains_entity_form(raw_text, observed)
             ):
                 continue
             next_text = cls._replace_entity_form(projected_text, observed, canonical)
@@ -605,6 +661,12 @@ class SemanticTurnService:
         }:
             address_relation = "unclear"
         interpreted = str(data.get("interpreted_text") or "").strip()
+        if cls._has_non_surface_identity_rewrite(
+            raw_text=raw_text,
+            interpreted_text=interpreted,
+            entities=entities,
+        ):
+            interpreted = baseline
         ratio = len(interpreted) / max(1, len(raw_text))
         safe_interpretation = (
             preservation == "semantic"

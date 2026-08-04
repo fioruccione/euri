@@ -194,6 +194,49 @@ def test_resolved_entity_is_projected_only_into_the_current_turn():
     assert redis.events == []
 
 
+def test_anaphora_is_not_projected_as_a_canonical_name():
+    redis = FakeRedis()
+
+    def model(_prompt):
+        return json.dumps({
+            # Riproduce anche la variante peggiore: il modello ha già riscritto
+            # l'anafora prima che intervenga la proiezione deterministica.
+            "interpreted_text": "Non l'avrei fatta riparare da Gio Style.",
+            "primary_intent": "CHAT",
+            "speech_acts": ["INFORM"],
+            "entities": [{
+                "observed_form": "loro",
+                "canonical_name": "Gio Style",
+                "entity_type": "organization",
+                "status": "resolved",
+                "evidence": "contextual reference to a workshop",
+                "confidence": 0.9,
+            }],
+            "facts": [{
+                "claim": "L'utente portera' l'auto da un'altra officina",
+                "modality": "planned",
+                "durability": "reusable",
+            }],
+            "actions": [],
+            "web_query": "",
+            "preservation_mode": "semantic",
+            "requires_clarification": False,
+            "meaning_preserved": True,
+            "confidence": 0.95,
+            "memory_disposition": "candidate",
+        }, ensure_ascii=False)
+
+    service = SemanticTurnService(redis, model_call=model)
+    frame = service.interpret(
+        "Non l'avrei fatta riparare da loro.", memory_scope="personal"
+    )
+
+    assert frame["interpreted_text"] == "Non l'avrei fatta riparare da loro."
+    assert frame["canonical_projections"] == []
+    assert frame["canonicalizations"] == []
+    assert redis.hashes == {}
+
+
 def test_verbatim_mode_keeps_raw_text_even_if_model_rewrites_it():
     redis = FakeRedis()
 
@@ -463,6 +506,7 @@ if __name__ == "__main__":
     test_explicit_entity_correction_updates_history_and_passive_journal()
     test_ordinary_entity_mention_never_creates_an_alias()
     test_resolved_entity_is_projected_only_into_the_current_turn()
+    test_anaphora_is_not_projected_as_a_canonical_name()
     test_verbatim_mode_keeps_raw_text_even_if_model_rewrites_it()
     test_spelled_variant_reuses_the_confirmed_canonical_format()
     test_web_query_uses_shared_frame_without_second_llm_interpretation()

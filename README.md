@@ -47,7 +47,10 @@ nomi cablati: il contesto operativo può passare dalla forma osservata a quella
 canonica, mentre l'archivio `euri:turn:*` conserva sempre ciò che Whisper ha
 realmente trascritto. Anche una risoluzione semantica ad alta confidenza può
 proiettare il canonico nel testo operativo e nella query web del turno corrente,
-ma non crea una alias durevole: per quella serve ancora una correzione esplicita.
+ma soltanto quando la forma pronunciata è una variante nominale plausibile del
+canonico. Pronomi e descrizioni possono essere compresi come coreferenze, senza
+essere sostituiti nel testo con un nome. La proiezione non crea una alias
+durevole: per quella serve ancora una correzione esplicita.
 
 Ogni fatto del frame conserva separatamente la modalità
 (`asserted`, `probable`, `planned`, `pending`, `counterfactual`) e la durata

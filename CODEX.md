@@ -24,6 +24,16 @@ prova non ottimizzata) erano stati esclusi da un'unica label `ephemeral`: il
 frame v3 conserva per ciascun claim modalità e durata, e una guardia riconcilia
 la destinazione globale senza innalzare l'incertezza del contenuto.
 
+Il pass automotive ha fornito la controprova della proiezione: nel raw
+“non l'avrei fatta riparare da loro”, Gemma ha emesso
+`observed_form=loro → canonical_name=Gio Style` a 0,90. La proiezione ha quindi
+alimentato una memoria passiva falsa e Loop 2a ha costruito una reflection che
+collegava officina Jeep e campionature Gio Style. Il gate richiede ora
+compatibilità superficiale generica fra forma osservata e canonico; una
+coreferenza resta nel testo e, se il modello la riscrive direttamente, il
+validator torna al baseline. Il gate deterministico non contiene elenchi di
+pronomi o nomi specifici.
+
 ## Invarianti
 
 - La capsule è workspace temporaneo, non memoria e non fonte di verità.
@@ -41,13 +51,15 @@ la destinazione globale senza innalzare l'incertezza del contenuto.
   modalità, mentre Buttafuori resta `KEEP/JUNK` e l'audit resta fail-closed.
 - Una proiezione canonica `current_turn` non è apprendimento: non modifica raw,
   history pregressa o registro alias. Solo `CORRECT_ENTITY` esplicito persiste.
+- La proiezione mutante è riservata a varianti della superficie nominale.
+  Risolvere semanticamente un pronome non autorizza a sostituirlo con un nome.
 - La riusabilità è indipendente dalla certezza: un claim `probable`, `planned` o
   `pending` può essere `reusable`; il learner deve preservarne la modalità.
 
 ## Evidenza e stato aperto
 
-Regressioni capsule/workspace **8/8**; manifest unitario **70/70 in 81,8 s**
-dopo le regressioni Gio Style/MFI.
+Regressioni capsule/workspace **8/8**; manifest unitario **70/70 in 84,4 s**
+dopo le regressioni Gio Style/MFI e la controprova anaforica automotive.
 Il primo pass live ha popolato la capsule e ha esposto il confine
 focus/Initiative/passivo ora corretto. Resta da collaudare il riavvio sul nuovo
 codice con una domanda ancora aperta. Initiative non ha acquistato nuovi sensi
@@ -57,6 +69,11 @@ Bonifica dati applicata con
 `scripts/repair_20260804_gio_style_passive.py`: quattro sostituti embedded,
 vecchi record soft-superseded e copie originali spostate nella quarantena
 recuperabile del Vault `2026-08-04-gio-style-passive`.
+
+Seconda bonifica applicata con
+`scripts/repair_20260804_jeep_coreference.py`: `c2f200f1→c8a684ea`,
+`d0933d42` ritratta e Markdown contaminati nella quarantena
+`2026-08-04-jeep-coreference`.
 
 ---
 
@@ -95,8 +112,9 @@ reinterpretazione.
   un'eventuale label globale `ephemeral` incoerente senza perdere la sua
   modalità epistemica. L'archivio raw viene scritto comunque.
 - Le entità `mentioned/resolved` ad alta confidenza possono essere proiettate
-  nel testo operativo e nella query del turno; non aggiornano il registro alias
-  e lasciano intatti raw e conversazioni precedenti.
+  nel testo operativo e nella query del turno soltanto come varianti nominali
+  compatibili; non aggiornano il registro alias e lasciano intatti raw e
+  conversazioni precedenti. Anafore e descrizioni non autorizzano la mutazione.
 - Il bootstrap del primo turno senza wake è autorizzato solo da speaker owner,
   volto owner e `direct_address` ≥0,92. Il frame pre-gate non produce effetti e
   viene committato/riusato soltanto dopo l'accept. Guest e identità incerte
@@ -120,7 +138,8 @@ reinterpretazione.
   `EXECUTE`, azione concreta presente, controller consentito.
 - Suite mirate verdi: `test_semantic_turn.py`, `test_wake_guard.py`,
   `test_addressedness.py`, `test_action_controller.py`; manifest unitario
-  **70/70 in 81,8 s**, incluse le regressioni semantiche Gio Style/MFI.
+  **70/70 in 84,4 s**, incluse le regressioni semantiche Gio Style/MFI e
+  `loro→Gio Style`.
 
 ## Stato aperto
 

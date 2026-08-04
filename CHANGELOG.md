@@ -40,6 +40,20 @@
   registro persistente. Il meccanismo è guidato dal frame, senza nomi o pattern
   dedicati ad aziende. Regressioni live Gio Style/MFI e manifest **70/70 in
   81,8 s**.
+- Il collaudo automotive ha trovato il controesempio necessario: il modello
+  aveva risolto l'anafora “loro” come Gio Style e la proiezione l'aveva
+  trasformata in nome, contaminando una memoria passiva e una reflection. La
+  mutazione implicita richiede ora anche compatibilità fra le superfici
+  nominali; pronomi e descrizioni restano coreferenze contestuali e non vengono
+  riscritti. Se il modello prova a riscriverli direttamente, il validator
+  ripristina il baseline. La guardia è generale e non contiene aziende o regex
+  lessicali dedicate.
+- Riparazione append-only con
+  `scripts/repair_20260804_jeep_coreference.py`: il falso fatto passivo
+  `c2f200f1` è superseded dal fatto owner-grounded `c8a684ea`; la reflection
+  contaminata `d0933d42` è ritirata e le due note originali sono in quarantena
+  recuperabile. Turno raw e due memorie corrette del pass restano invariati.
+  Regressione anaforica mirata e manifest unitario **70/70 in 84,4 s**.
 - L'estrattore e l'auditor di provenienza ricevono ora, accanto al verbatim, la
   vista accettata del frame semantico. Il frame disambigua identità canoniche e
   modalità (`possibile`, `in prova`, `in attesa`, `confermato`), mentre il raw
