@@ -1,3 +1,15 @@
+# Regola di lavoro — mappa mnemonica canonica
+
+Prima di diagnosticare o modificare memoria, archivio turni, continuità, RAG,
+Dream Engine, correzioni o Obsidian, leggere
+[`docs/EURI_MEMORY_ARCHITECTURE.md`](docs/EURI_MEMORY_ARCHITECTURE.md). Il
+documento è la mappa canonica dei flussi, lifecycle, TTL, stati e moduli
+responsabili: non ricostruire l'architettura da letture sparse. Il codice resta
+l'autorità eseguibile; ogni modifica che cambia il comportamento mnemonico deve
+aggiornare la mappa nello stesso intervento.
+
+---
+
 # Handoff Euri - 2026-08-04 - Presente continuo
 
 ## Esito

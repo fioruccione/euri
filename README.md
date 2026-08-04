@@ -27,6 +27,8 @@ Nessun modello di linguaggio, da solo, fa questo. Euri lo fa perché sotto non c
 > **Fotografia della release:** [Euri V2.22 — Memoria osservabile e confinata](docs/EURI_V2.22_STATE_2026-07-30.md)
 > **Lavori aperti:** [registro unico](docs/EURI_OPEN_WORK.md)
 
+> **Mappa canonica della memoria:** [Architettura mnemonica di Euri](docs/EURI_MEMORY_ARCHITECTURE.md). È il punto di partenza per capire o modificare turni verbatim, continuità, memoria passiva, RAG, lifecycle, Dream Engine e Obsidian; non ricostruire questi flussi leggendo ogni volta i moduli separatamente.
+
 ### 1. Comprensione del turno e Intent Classification
 
 Dal 04/08/2026 Euri non lascia più che routing, ricerca web, RAG e memoria

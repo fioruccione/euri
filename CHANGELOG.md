@@ -2,6 +2,17 @@
 
 ## V2.22 (continua, 04/08/2026) — Un solo significato operativo per turno
 
+### Mappa canonica dell'architettura mnemonica
+
+- Aggiunto `docs/EURI_MEMORY_ARCHITECTURE.md` come punto di ingresso stabile per
+  l'intera memoria di Euri: turni verbatim, frame semantico, continuità,
+  estrazione passiva, documento Redis canonico, RAG dual-channel, TTL,
+  correzioni, scope, Obsidian e operatori Dream.
+- La pagina contiene diagrammi Mermaid, tabelle di sorgenti e durate, stati di
+  revisione, invarianti, percorso diagnostico e responsabilità per modulo.
+  `README.md` e `CODEX.md` dichiarano esplicitamente che va consultata e
+  aggiornata prima di ricostruire o cambiare la logica mnemonica.
+
 ### Presente continuo fra i processi
 
 - Aggiunto `core/conversation_continuity.py`: un indice Redis TTL collega gli
