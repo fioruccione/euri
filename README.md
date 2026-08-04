@@ -27,12 +27,42 @@ Nessun modello di linguaggio, da solo, fa questo. Euri lo fa perché sotto non c
 > **Fotografia della release:** [Euri V2.22 — Memoria osservabile e confinata](docs/EURI_V2.22_STATE_2026-07-30.md)
 > **Lavori aperti:** [registro unico](docs/EURI_OPEN_WORK.md)
 
-### 1. Intent Classification — Pipeline a Due Layer
-La classificazione dell'intent è a cascata: il layer veloce esaurisce la maggior parte dei casi, il layer lento interviene solo quando necessario.
+### 1. Comprensione del turno e Intent Classification
+
+Dal 04/08/2026 Euri non lascia più che routing, ricerca web, RAG e memoria
+reinterpretino separatamente la stessa trascrizione. Subito dopo Whisper crea
+un **frame semantico condiviso**: conserva il raw verbatim e rappresenta testo
+operativo, intent, atti linguistici, entità, fatti, azioni, query web,
+addressedness e policy mnemonica. Voce, Mobile e Silent Chat riusano lo stesso
+contratto.
+
+Il frame non è autorità assoluta. Una mutazione resta sotto router e controller
+deterministici; un'azione proposta dal modello deve descrivere un effetto
+operativo concreto. Chiedere cosa Euri sa o ricorda è una ricerca/risposta, non
+un'azione. Se il frame manca o è incerto, la cascata preesistente resta il
+fallback sicuro.
+
+Le correzioni d'identità esplicite alimentano un registro scoped di alias senza
+nomi cablati: il contesto operativo può passare dalla forma osservata a quella
+canonica, mentre l'archivio `euri:turn:*` conserva sempre ciò che Whisper ha
+realmente trascritto. Il frame classifica inoltre il turno come memoria
+`candidate`, `ephemeral` o `no_store`; queste etichette possono impedire
+l'estrazione passiva, mai salvare direttamente un fatto.
+
+La classificazione di fallback resta a cascata:
 
 **Layer 1 — Regex Router (0ms):** ~18 categorie di intent con pattern ordinati per specificità. Copre la quasi totalità dei comandi strutturati (SAVE_MEMORY, SAVE_TODO, WEB_SEARCH, EXECUTE, TEACH, DICTATION…).
 
-**Layer 2 — LLM Fallback Gemma 26B (~600ms):** chiamato *solo* quando il router restituisce CHAT. Classifica 7 intent critici (WEB_SEARCH, SEARCH, SAVE_TODO, SAVE_MEMORY, EXECUTE, COMPLETE, CHAT) con un prompt a definizioni precise. COMPLETE è gestito interamente dal LLM — il contesto conversazionale distingue "l'ho fatto" da narrazioni complesse che il regex non può disambiguare.
+**Layer 2 — LLM Fallback Gemma 26B:** interviene soltanto se il router restituisce
+CHAT e il frame condiviso non è disponibile/affidabile. Classifica gli intent
+critici rimasti; COMPLETE e le altre mutazioni continuano a richiedere il
+controller grounded prima di produrre effetti reali.
+
+**Bootstrap senza wake word:** il primo turno può aprire la sessione soltanto
+quando voce e volto del proprietario sono verificati e il frame riconosce un
+`direct_address` con confidenza almeno 0,92. Un saluto generico, parlato da
+reparto o un comando fisico plausibilmente rivolto a un collega non bastano;
+ospiti e identità incerte richiedono ancora “Euri”.
 
 **Guard manifatturiero:** se la frase contiene termini chimici/analitici (XRF, talco, MFI, carbonato…) senza termini di sistema espliciti, EXECUTE viene bloccato in entrambi i layer.
 

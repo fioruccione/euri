@@ -1,5 +1,45 @@
 # Changelog
 
+## V2.22 (continua, 04/08/2026) — Un solo significato operativo per turno
+
+- Introdotto `core/semantic_turn.py`: dopo Whisper, voce, Mobile e Silent Chat
+  costruiscono un unico frame strutturato con testo raw, interpretazione quasi
+  verbatim, intent, atti linguistici, entità, fatti, azioni, query web,
+  addressedness e destinazione mnemonica. I consumer riusano il frame invece di
+  reinterpretare indipendentemente lo stesso turno.
+- Il raw STT resta la prova immutabile in `euri:turn:*`; testo canonico e frame
+  sono campi additivi. Una correzione esplicita d'identità può aggiornare il
+  registro alias scoped e il contesto ancora in-flight, ma non riscrive il
+  verbatim. Nessun nome di persona o azienda è cablato nel codice.
+- Collaudo live Gio Style: Whisper ha prodotto `Joe Style`; una correzione del
+  proprietario ha creato l'identità canonica e una richiesta successiva ha
+  cercato autonomamente `Gio Style azienda`, senza una seconda interpretazione
+  LLM e senza avviare l'ActionController.
+- Il frame distingue `candidate`, `ephemeral` e `no_store`. Il learner passivo
+  archivia comunque i turni raw, ma non estrae memoria dal messaggio né dalla
+  relativa risposta quando un frame affidabile li classifica effimeri/no-store.
+  Il caso live “riavvio dopo piccola modifica software” è ora `ephemeral`; fatti
+  cliente e decisioni tecniche stabili restano candidati.
+- Il primo turno owner può aprire la sessione senza wake word soltanto con voce
+  autenticata, volto owner presente e `direct_address` semantico ≥0,92. Il
+  frame pre-gate è puro e viene riusato dal dispatch dopo l'accettazione;
+  ospiti, identità dubbie e parlato ambientale restano fail-closed.
+- Separata strutturalmente una risposta da un'esecuzione: il richiamo di ciò che
+  Euri sa usa `SEARCH + ASK + REQUEST_MEMORY_SEARCH`; `REQUEST_ACTION` può
+  autorizzare il fallback contestuale solo se `actions` rappresenta un effetto,
+  target o capability concreti. La frase live prima classificata
+  `ACTION_REASONING` senza azioni ora diventa `SEARCH`; una vera lettura GPU
+  resta `EXECUTE` con effetto grounded.
+- Aggiunte regressioni su alias espliciti, raw/canonico, query web condivisa,
+  policy passiva, bootstrap owner, isolamento guest/ambientale e veto delle
+  azioni non grounded. Verifiche finali: semantic turn, wake guard,
+  addressedness e ActionController verdi; manifest unitario **69/69** e
+  `git diff --check` pulito.
+- Limiti osservati, non mascherati: una verifica speaker a `0,645` contro soglia
+  `0,65` ha perso un follow-up legittimo; addressedness e policy mnemonica
+  restano in rollout osservazionale e richiederanno micro-aggiustamenti su casi
+  organici, non regex lessicali ad hoc.
+
 ## V2.22 (30/07/2026) — Memoria osservabile e confinata
 
 V2.22 promuove a nuova base `main` la linea sviluppata e verificata sul branch

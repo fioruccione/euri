@@ -99,6 +99,37 @@ def test_passive_weak_and_mixed_segment():
     print("OK  segmento misto separato e ambient degradato")
 
 
+def test_passive_policy_excludes_the_whole_ephemeral_exchange():
+    ephemeral = {
+        "status": "interpreted",
+        "confidence": 0.98,
+        "memory_disposition": "ephemeral",
+    }
+    candidate = {
+        "status": "interpreted",
+        "confidence": 0.98,
+        "memory_disposition": "candidate",
+    }
+    uncertain = {
+        "status": "fallback",
+        "confidence": 1.0,
+        "memory_disposition": "no_store",
+    }
+    history = [
+        {"role": "user", "content": "riavvio", "semantic_frame": ephemeral},
+        {"role": "assistant", "content": "ricevuto"},
+        {"role": "user", "content": "cliente", "semantic_frame": candidate},
+        {"role": "assistant", "content": "capito"},
+        {"role": "user", "content": "fallback", "semantic_frame": uncertain},
+        {"role": "assistant", "content": "resta analizzabile"},
+    ]
+    eligible = vd.VoiceDaemon._passive_memory_eligible_history(history)
+    assert [item["content"] for item in eligible] == [
+        "cliente", "capito", "fallback", "resta analizzabile",
+    ]
+    print("OK  policy passiva: scambio effimero escluso, fallback fail-open")
+
+
 def test_activity_only_after_acceptance():
     d = make(last_activity=100.0)
     assert d._accept_voice_transcript("", now_ts=1000.0) is None
@@ -206,6 +237,73 @@ def test_first_utterance_without_wake_does_not_open_a_session():
     assert d._last_activity_ts == 0.0
     assert d._last_auth_voice_ts == 50.0
     print("OK  primo turno senza wake: lease chiusa senza timestamp epoch")
+
+
+def test_owner_semantic_bootstrap_opens_first_session_and_reuses_frame():
+    d = make(last_activity=0.0)
+    d.visual_gate = type(
+        "Gate",
+        (),
+        {"is_owner_present": lambda _self: True},
+    )()
+    frame = {
+        "status": "interpreted",
+        "confidence": 0.99,
+        "requires_clarification": False,
+        "addressed_to_assistant": True,
+        "address_relation": "direct_address",
+        "address_confidence": 0.98,
+    }
+    calls = []
+    d._bootstrap_semantic_interpreter = lambda text: calls.append(text) or frame
+
+    accepted = d._accept_voice_transcript(
+        "Ciao, sono tornato; scusami se ho dovuto fermarti.",
+        now_ts=1000.0,
+        authenticated=True,
+        include_semantic_frame=True,
+    )
+    assert accepted == (
+        "Ciao, sono tornato; scusami se ho dovuto fermarti.",
+        False,
+        frame,
+    )
+    assert calls == ["Ciao, sono tornato; scusami se ho dovuto fermarti."]
+    assert d._last_activity_ts == 1000.0
+    print("OK  bootstrap owner: primo turno diretto accettato e frame riusabile")
+
+
+def test_owner_bootstrap_rejects_ambient_and_never_applies_to_guest():
+    d = make(last_activity=0.0)
+    d.visual_gate = type(
+        "Gate",
+        (),
+        {"is_owner_present": lambda _self: True},
+    )()
+    calls = []
+    d._bootstrap_semantic_interpreter = lambda text: calls.append(text) or {
+        "status": "interpreted",
+        "confidence": 0.99,
+        "requires_clarification": False,
+        "addressed_to_assistant": False,
+        "address_relation": "ambient",
+        "address_confidence": 0.99,
+    }
+    assert d._accept_voice_transcript(
+        "Il bancale e' pronto vicino alla porta.",
+        now_ts=1000.0,
+        authenticated=True,
+    ) is None
+    assert len(calls) == 1
+
+    assert d._accept_voice_transcript(
+        "Puoi controllare il bancale?",
+        now_ts=1010.0,
+        authenticated=False,
+        require_wake_word=True,
+    ) is None
+    assert len(calls) == 1
+    print("OK  bootstrap owner: ambient rifiutato e ospite sempre vincolato alla wake")
 
 
 def test_long_tts_lease_accepts_followup_without_wake_word():
@@ -405,11 +503,14 @@ def test_implicit_read_log_requires_sentence_level_commitment():
 if __name__ == "__main__":
     test_addressed_guard()
     test_passive_weak_and_mixed_segment()
+    test_passive_policy_excludes_the_whole_ephemeral_exchange()
     test_activity_only_after_acceptance()
     test_guest_turn_requires_wake_and_does_not_authenticate()
     test_multimodal_actor_resolution()
     test_owner_confirmation_promotes_guest_claim_with_provenance()
     test_first_utterance_without_wake_does_not_open_a_session()
+    test_owner_semantic_bootstrap_opens_first_session_and_reuses_frame()
+    test_owner_bootstrap_rejects_ambient_and_never_applies_to_guest()
     test_long_tts_lease_accepts_followup_without_wake_word()
     test_long_utterance_keeps_consent_from_speech_start()
     test_adaptive_followup_requires_owner_focus_and_semantic_acceptance()

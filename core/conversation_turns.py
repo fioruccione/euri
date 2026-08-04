@@ -116,12 +116,18 @@ class ConversationTurnStore:
             "seq": int(message.get("seq")),
             "role": str(message.get("role") or ""),
             "speaker": self._speaker(str(message.get("role") or "")),
-            "content": str(message.get("content") or ""),
+            # L'archivio e' la prova verbatim. La versione interpretata resta
+            # additiva e non sostituisce mai cio' che l'utente ha pronunciato.
+            "content": str(message.get("raw_content", message.get("content")) or ""),
             "trusted": bool(message.get("trusted")),
             "observed_at": float(message.get("observed_at")),
             "segment_id": message.get("segment_id"),
             "memory_scope": normalize_scope(message.get("memory_scope")),
         }
+        if message.get("raw_content") is not None:
+            doc["interpreted_content"] = str(message.get("content") or "")
+        if message.get("semantic_frame"):
+            doc["semantic_frame"] = message["semantic_frame"]
         if message.get("archive_origin"):
             doc["archive_origin"] = str(message["archive_origin"])
         if message.get("source_locator"):

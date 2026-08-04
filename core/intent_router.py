@@ -117,7 +117,7 @@ _PATTERNS: list[tuple[Intent, list[str]]] = [
     ]),
     (Intent.WEB_SEARCH, [
         r"cercami\s+(online|sul\s+web|su\s+internet|in\s+rete)\b",
-        r"cerca(?:re)?\s+(online|sul\s+web|nel\s+web|su\s+internet|in\s+rete)\b",
+        r"\bcerca(?:re)?\s+(online|sul\s+web|nel\s+web|su\s+internet|in\s+rete)\b",
         r"cerca\s+su\s+internet\b",
         r"cosa\s+dice\s+il\s+web\s+(su|di|riguardo)",
         r"\b(guarda|controlla|prova\s+a\s+(guardare|cercare|controllare))\s+(nel|sul|in)\s+web\b",

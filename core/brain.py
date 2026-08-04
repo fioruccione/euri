@@ -69,6 +69,8 @@ class Brain:
         *,
         observed_at: float | None = None,
         memory_scope: str | None = None,
+        raw_content: str | None = None,
+        semantic_frame: dict | None = None,
     ) -> None:
         """Aggiunge un messaggio alla history LLM e al journal passivo."""
         at = time.time() if observed_at is None else float(observed_at)
@@ -95,6 +97,14 @@ class Brain:
             "segment_id": self._history_segment_id,
             "memory_scope": memory_scope,
         }
+        if raw_content is not None and raw_content != content:
+            message["raw_content"] = str(raw_content)
+        if semantic_frame:
+            # Snapshot JSON-safe: il frame appartiene al turno e non e' uno
+            # side-channel globale condiviso con altri canali.
+            message["semantic_frame"] = json.loads(json.dumps(
+                semantic_frame, ensure_ascii=False, default=str
+            ))
         self._conversation_history.append(message)
         self._passive_journal.append(dict(message))
         if self._turn_callback:
@@ -126,6 +136,33 @@ class Brain:
             while self._passive_journal and self._passive_journal[0]["seq"] <= through_seq:
                 self._passive_journal.popleft()
 
+    def rewrite_entity_aliases(self, canonicalize) -> int:
+        """Ricalcola il testo operativo dei turni non compressi dalla fonte raw.
+
+        Serve quando una correzione d'identita' arriva dopo alcuni turni: RAG,
+        query web e learner passivo vedono subito il canonico, mentre
+        ``raw_content`` e l'archivio durevole restano fedeli a quanto trascritto.
+        """
+        changed = 0
+        with self.history_lock:
+            rewritten_by_seq: dict[int, str] = {}
+            for message in self._conversation_history:
+                source = str(message.get("raw_content", message.get("content", "")))
+                rewritten = str(canonicalize(source))
+                if rewritten != message.get("content", ""):
+                    message.setdefault("raw_content", source)
+                    message["content"] = rewritten
+                    changed += 1
+                rewritten_by_seq[int(message.get("seq") or 0)] = message.get("content", "")
+            for message in self._passive_journal:
+                seq = int(message.get("seq") or 0)
+                source = str(message.get("raw_content", message.get("content", "")))
+                rewritten = rewritten_by_seq.get(seq, str(canonicalize(source)))
+                if rewritten != message.get("content", ""):
+                    message.setdefault("raw_content", source)
+                    message["content"] = rewritten
+        return changed
+
     def respond(
         self,
         user_text: str,
@@ -136,6 +173,8 @@ class Brain:
         thinking: bool = False,
         thinking_reason: str = "",
         memory_scope: str | None = None,
+        raw_user_text: str | None = None,
+        semantic_frame: dict | None = None,
     ) -> str:
         """
         Genera una risposta per voce: breve, diretta, italiana.
@@ -275,6 +314,8 @@ class Brain:
                     trusted,
                     observed_at=user_observed_at,
                     memory_scope=memory_scope,
+                    raw_content=raw_user_text,
+                    semantic_frame=semantic_frame,
                 )
                 self._append_history_locked(
                     "assistant",
@@ -1631,11 +1672,24 @@ class Brain:
         re.IGNORECASE
     )
 
-    def extract_search_query(self, text: str) -> str:
+    def extract_search_query(self, text: str, semantic_frame: dict | None = None) -> str:
         """
         Estrae la query di ricerca pulita da una frase vocale.
         Se la richiesta è vaga, usa la conversation history per costruire una query contestuale.
         """
+        # Il frame e' gia' la comprensione condivisa del turno: non chiedere a un
+        # secondo modello di reinterpretare nomi e intenzione indipendentemente.
+        if isinstance(semantic_frame, dict):
+            from core.semantic_turn import semantic_intent
+            query = str(semantic_frame.get("web_query") or "").strip()
+            if query and semantic_intent(
+                semantic_frame,
+                minimum_confidence=getattr(
+                    config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72
+                ),
+            ) == "WEB_SEARCH":
+                return query[:240]
+
         # Rimuovi trigger vocali per vedere cosa resta
         trigger_re = re.compile(
             r'\b(cercami\s+(online|sul\s+web|su\s+internet|in\s+rete)'

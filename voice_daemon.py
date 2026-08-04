@@ -70,6 +70,14 @@ from core.cognitive_present import (
     InteractionPhase,
 )
 from core.worker_supervisor import WorkerSupervisor
+from core.semantic_turn import (
+    SemanticTurnService,
+    frame_bootstraps_owner_session,
+    frame_blocks_passive_memory,
+    frame_is_correction,
+    frame_vetoes_contextual_action,
+    semantic_intent,
+)
 from agent.executor import Executor, ToolCall, build_injected_context
 
 
@@ -179,6 +187,7 @@ class VoiceDaemon:
         self.turn_store = ConversationTurnStore(self.r)
         self.guest_claims = GuestClaimStore(self.r)
         self.brain = Brain()
+        self.semantic_turns = SemanticTurnService(self.r)
         Brain._shared_instance = self.brain  # Condivisa col CodeRunner
         self.brain._turn_callback = self.turn_store.persist
         self.brain._episode_callback = lambda summary, temporal_context: self.memory.save_memory(
@@ -1036,7 +1045,8 @@ class VoiceDaemon:
         self._speak(reply)
 
     def _handle_search(
-        self, text: str, *, trusted: bool = False, observed_at: float | None = None
+        self, text: str, *, trusted: bool = False, observed_at: float | None = None,
+        semantic_frame: dict | None = None,
     ):
         """SEARCH path allineato a CHAT: usa _build_context per evitare
         l'allucinazione di assenza ('non ce l'ho' su memorie che invece esistono).
@@ -1048,7 +1058,7 @@ class VoiceDaemon:
         # Prima della V2.16 questo check era solo in _handle_chat: correzioni
         # classificate dal router come SEARCH (es. "qui ti correggo, X non è
         # come ho detto") venivano perse silenziosamente.
-        if self.memory.detect_correction(text):
+        if self.memory.detect_correction(text) or frame_is_correction(semantic_frame):
             try:
                 self.memory.save_correction_signal(
                     prompt_originale=self._last_user_text or "",
@@ -1083,6 +1093,8 @@ class VoiceDaemon:
                     context=context,
                     trusted=trusted,
                     observed_at=observed_at,
+                    raw_user_text=(semantic_frame or {}).get("raw_text"),
+                    semantic_frame=semantic_frame,
                     **self._memory_thinking_kwargs(),
                 )
         except Exception:
@@ -2200,7 +2212,10 @@ class VoiceDaemon:
             self.memory.set_last_rag_ctx(rag.ids)
         except Exception as e:
             logger.debug(f"set_last_rag_ctx fallito: {e}")
-        return rag.text
+        from core.memory_scope import current_scope
+        return self.semantic_turns.registry.canonicalize(
+            rag.text, current_scope()
+        )
 
     def _augment_context_by_strategy(self, text: str, context: str) -> str:
         """
@@ -2233,7 +2248,10 @@ class VoiceDaemon:
                 logger.info(f"Retrieval strategy: {note}")
         except Exception as e:
             logger.debug(f"strategy augment fallito: {e}")
-        return context
+        from core.memory_scope import current_scope
+        return self.semantic_turns.registry.canonicalize(
+            context, current_scope()
+        )
 
     def _memory_thinking_kwargs(self) -> dict:
         """Policy per-turno dal RAG thread-local; nessuno stato globale."""
@@ -2305,7 +2323,7 @@ class VoiceDaemon:
         except Exception as e:
             logger.debug(f"Response lineage finish ignorata: {e}")
 
-    def _handle_web_search(self, text: str):
+    def _handle_web_search(self, text: str, *, semantic_frame: dict | None = None):
         """Cerca sul web, risponde vocalmente, propone di salvare."""
         from core.web_search import is_online, search
         self.memory.log_conversation(_OWNER_NAME, text)
@@ -2314,7 +2332,7 @@ class VoiceDaemon:
             self._speak("Non ho internet adesso. Rispondo solo da quello che ricordo.")
             return
 
-        query = self.brain.extract_search_query(text)
+        query = self.brain.extract_search_query(text, semantic_frame=semantic_frame)
         if not query:
             self._speak("Cosa vuoi che cerchi?")
             return
@@ -2484,11 +2502,12 @@ class VoiceDaemon:
 
 
     def _handle_chat(
-        self, text: str, *, trusted: bool = False, observed_at: float | None = None
+        self, text: str, *, trusted: bool = False, observed_at: float | None = None,
+        semantic_frame: dict | None = None,
     ):
         # Audit di Coerenza: capture correction signal PRIMA di loggare/rispondere,
         # così last_rag_ctx contiene ancora il ctx del turno precedente (corretto).
-        if self.memory.detect_correction(text):
+        if self.memory.detect_correction(text) or frame_is_correction(semantic_frame):
             try:
                 self.memory.save_correction_signal(
                     prompt_originale=self._last_user_text or "",
@@ -2530,6 +2549,8 @@ class VoiceDaemon:
                     context=context,
                     trusted=trusted,
                     observed_at=observed_at,
+                    raw_user_text=(semantic_frame or {}).get("raw_text"),
+                    semantic_frame=semantic_frame,
                     **self._memory_thinking_kwargs(),
                 )
         except Exception:
@@ -2937,6 +2958,7 @@ class VoiceDaemon:
         *,
         trusted: bool = False,
         observed_at: float | None = None,
+        semantic_frame: dict | None = None,
     ):
         """Applica lo scope conversazionale anche ai percorsi anticipati/pending."""
         from core.memory_scope import get_active_scope, use_memory_scope
@@ -2947,6 +2969,54 @@ class VoiceDaemon:
                 detected_lang=detected_lang,
                 trusted=trusted,
                 observed_at=observed_at,
+                semantic_frame=semantic_frame,
+            )
+
+    def _apply_semantic_canonicalizations(self, frame: dict) -> dict:
+        """Propaga nel contesto gli alias gia' confermati dal frame accettato."""
+        if not frame.get("canonicalizations"):
+            return frame
+        from core.memory_scope import normalize_scope
+
+        scope = normalize_scope(frame.get("memory_scope"))
+        changed = self.brain.rewrite_entity_aliases(
+            lambda value: self.semantic_turns.registry.canonicalize(value, scope)
+        )
+        logger.info(
+            "Turno semantico: identita' aggiornata in {} messaggi recenti",
+            changed,
+        )
+        return frame
+
+    def _interpret_semantic_turn(self, text: str) -> dict:
+        """Interpreta una volta il turno e aggiorna gli alias gia' in-flight."""
+        from core.memory_scope import current_scope
+
+        scope = current_scope()
+        with self.brain.history_lock:
+            recent_history = list(self.brain._conversation_history)
+        with self._brain_lock:
+            frame = self.semantic_turns.interpret(
+                text,
+                recent_history=recent_history,
+                memory_scope=scope,
+            )
+        return self._apply_semantic_canonicalizations(frame)
+
+    def _interpret_semantic_bootstrap(self, text: str) -> dict:
+        """Frame pre-gate puro: nessuna correzione viene persistita prima dell'accept."""
+        from core.memory_scope import get_active_scope
+
+        scope = get_active_scope(self.r)
+        with self.brain.history_lock:
+            recent_history = list(self.brain._conversation_history)
+        with self._brain_lock:
+            return self.semantic_turns.interpret(
+                text,
+                recent_history=recent_history,
+                memory_scope=scope,
+                session_bootstrap=True,
+                persist_corrections=False,
             )
 
     def _dispatch_scoped(
@@ -2956,6 +3026,7 @@ class VoiceDaemon:
         *,
         trusted: bool = False,
         observed_at: float | None = None,
+        semantic_frame: dict | None = None,
     ):
         """Smista il testo trascritto all'handler corretto."""
         if self._handle_memory_scope_command(text):
@@ -3077,6 +3148,15 @@ class VoiceDaemon:
             self._handle_teach_continue(text)
             return
 
+        # Unica interpretazione operativa post-STT. Le modalita' pending,
+        # traduzione e dettatura sono gia' uscite sopra per preservare il verbatim.
+        if semantic_frame is None:
+            semantic_frame = self._interpret_semantic_turn(text)
+        else:
+            semantic_frame = self.semantic_turns.commit_precomputed(semantic_frame)
+            semantic_frame = self._apply_semantic_canonicalizations(semantic_frame)
+        text = str(semantic_frame.get("interpreted_text") or text)
+
         # "Scrivilo / salvalo" dopo una risposta lunga → usa il contenuto dell'ultima risposta (TTL 300s)
         if (self._last_speech_content
                 and time.time() - self._last_speech_ts < 300
@@ -3138,10 +3218,49 @@ class VoiceDaemon:
         intent, _ = classify(text)
         logger.info(f"[TIMING] Intent regex: {(time.perf_counter()-_t_classify)*1000:.0f}ms → {intent.value}")
 
+        semantic_label = semantic_intent(
+            semantic_frame,
+            minimum_confidence=getattr(
+                config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72
+            ),
+        )
+        semantic_action_reasoning = semantic_label in {
+            "ACTION_REASONING", "EXECUTE", "COMPLETE", "RESCHEDULE",
+        }
+        # Il frame puo' arbitrare gli intent conversazionali. Mutazioni di stato,
+        # shutdown e tool di sistema restano invece sotto router/controller
+        # deterministici e non acquistano autorita' dal modello.
+        semantic_routable = {
+            "CHAT", "WEB_SEARCH", "SEARCH", "SAVE_MEMORY", "SAVE_TODO",
+            "SAVE_NOTE", "SAVE_LAST", "READ_BACK", "TRANSLATE", "DICTATION",
+        }
+        current_routable = {
+            Intent.CHAT, Intent.WEB_SEARCH, Intent.SEARCH, Intent.SAVE_MEMORY,
+            Intent.SAVE_TODO, Intent.SAVE_NOTE, Intent.SAVE_LAST, Intent.READ_BACK,
+            Intent.TRANSLATE, Intent.DICTATION,
+        }
+        if semantic_label in semantic_routable and intent in current_routable:
+            intent = Intent(semantic_label)
+            logger.info("Intent condiviso dal frame semantico: {}", intent.value)
+
         action_checked = False
         action_veto = False
+        contextual_action_candidate = (
+            looks_actionable(text) or semantic_action_reasoning
+        )
+        if contextual_action_candidate and frame_vetoes_contextual_action(
+            semantic_frame,
+            minimum_confidence=getattr(
+                config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72
+            ),
+        ):
+            contextual_action_candidate = False
+            logger.info(
+                "ActionController evitato dal frame semantico: acts={}",
+                ",".join(semantic_frame.get("speech_acts") or []) or "-",
+            )
         if intent in {Intent.COMPLETE, Intent.RESCHEDULE} or (
-                intent == Intent.CHAT and looks_actionable(text)):
+                intent == Intent.CHAT and contextual_action_candidate):
             action_checked = True
             handled, action_veto = self._try_contextual_action(
                 text, trusted=trusted, observed_at=observed_at
@@ -3156,7 +3275,7 @@ class VoiceDaemon:
                 intent = Intent.CHAT
 
         # Fallback LLM per intent critici non catturati dalle regex
-        if intent == Intent.CHAT:
+        if intent == Intent.CHAT and semantic_frame.get("status") != "interpreted":
             from core.llm_classifier import llm_fallback_classify
             _t_llm_cls = time.perf_counter()
             fallback = llm_fallback_classify(text)
@@ -3219,7 +3338,14 @@ class VoiceDaemon:
         handler = handlers.get(intent, self._handle_chat)
         _t_handler = time.perf_counter()
         if intent in {Intent.CHAT, Intent.SEARCH}:
-            handler(text, trusted=trusted, observed_at=observed_at)
+            handler(
+                text,
+                trusted=trusted,
+                observed_at=observed_at,
+                semantic_frame=semantic_frame,
+            )
+        elif intent == Intent.WEB_SEARCH:
+            handler(text, semantic_frame=semantic_frame)
         else:
             handler(text)
         logger.info(f"[TIMING] Handler {intent.value}: {(time.perf_counter()-_t_handler)*1000:.0f}ms")
@@ -3270,10 +3396,12 @@ class VoiceDaemon:
                 validated = 0
                 rejected = 0
                 duplicates = 0
+                eligible_history = self._passive_memory_eligible_history(new_history)
+                policy_blocked = len(new_history) - len(eligible_history)
                 # Non mischiare nel medesimo prompt scambi rivolti esplicitamente a
                 # Euri e parlato ambient: un solo messaggio trusted non deve rendere
                 # FORTE un fatto estratto dalla parte ambient del batch.
-                for segment_addressed, segment_history in self._passive_extraction_batches(new_history):
+                for segment_addressed, segment_history in self._passive_extraction_batches(eligible_history):
                     from core.memory_scope import normalize_scope
                     segment_scope = normalize_scope(
                         segment_history[0].get("memory_scope")
@@ -3286,6 +3414,14 @@ class VoiceDaemon:
                         support = fact_item.get("support") if isinstance(fact_item, dict) else None
                         weak_support = self._passive_weak_support(support, segment_addressed)
                         fact = fact_item.get("content", "") if isinstance(fact_item, dict) else str(fact_item)
+                        # Ultimo confine contro la race: anche se il batch e' stato
+                        # fotografato prima della correzione, il fatto estratto
+                        # viene ricondotto allo stato entita' corrente prima del save.
+                        fact = self.semantic_turns.registry.canonicalize(
+                            fact, segment_scope
+                        )
+                        if isinstance(fact_item, dict):
+                            fact_item = dict(fact_item, content=fact)
                         clean = validate_passive_payload(fact)
                         if not clean:
                             rejected += 1
@@ -3352,7 +3488,8 @@ class VoiceDaemon:
                     logger.info(f"Passive learner: {saved} fatto/i salvato/i silenziosamente")
                 logger.info(
                     "Passive learner: pass completato "
-                    f"messaggi={new_exchanges} estratti={extracted} "
+                    f"messaggi={new_exchanges} esclusi_policy={policy_blocked} "
+                    f"estratti={extracted} "
                     f"validati={validated} scartati={rejected} "
                     f"duplicati={duplicates} salvati={saved}"
                 )
@@ -4244,11 +4381,12 @@ class VoiceDaemon:
                     authenticated=actor_id == _OWNER_ID,
                     require_wake_word=actor_id == "unknown",
                     track_present=actor_id == _OWNER_ID,
+                    include_semantic_frame=True,
                 )
                 if accepted is None:
                     self._voice_input_inflight.clear()
                     continue
-                text, has_wake_word = accepted
+                text, has_wake_word, bootstrap_frame = accepted
 
                 self.visual_gate.notify_activity()
                 if hasattr(self, 'dream_engine'):
@@ -4263,8 +4401,9 @@ class VoiceDaemon:
                         self._dispatch(
                             text,
                             detected_lang=detected_lang,
-                            trusted=has_wake_word,
+                            trusted=has_wake_word or bootstrap_frame is not None,
                             observed_at=utterance_started_at,
+                            semantic_frame=bootstrap_frame,
                         )
                         if actor_id == _OWNER_ID:
                             self._offer_next_guest_claim()
@@ -4294,6 +4433,35 @@ class VoiceDaemon:
                 order.append(key)
             buckets[key].append(message)
         return [(addressed, buckets[(scope, addressed)]) for scope, addressed in order]
+
+    @staticmethod
+    def _passive_memory_eligible_history(history: list[dict]) -> list[dict]:
+        """Esclude un turno no-store/effimero e la relativa risposta dal learner.
+
+        Il journal raw viene comunque archiviato prima di questo filtro. Il
+        criterio e' fail-open: un frame assente, incerto o di fallback continua
+        a seguire la validazione passiva preesistente.
+        """
+        eligible: list[dict] = []
+        suppress_assistant = False
+        minimum_confidence = getattr(
+            config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72
+        )
+        for message in history:
+            role = str(message.get("role") or "")
+            if role == "user":
+                suppress_assistant = frame_blocks_passive_memory(
+                    message.get("semantic_frame"),
+                    minimum_confidence=minimum_confidence,
+                )
+                if not suppress_assistant:
+                    eligible.append(message)
+                continue
+            if role == "assistant" and suppress_assistant:
+                suppress_assistant = False
+                continue
+            eligible.append(message)
+        return eligible
 
     @classmethod
     def _passive_extraction_batches(cls, history: list[dict]) -> list[tuple[bool, list[dict]]]:
@@ -4379,6 +4547,53 @@ class VoiceDaemon:
             logger.debug(f"Addressedness gate: precondizione fallita ({exc})")
             return False
 
+    def _semantic_owner_bootstrap(
+        self,
+        text: str,
+        *,
+        authenticated: bool,
+        require_wake_word: bool,
+    ) -> dict | None:
+        """Accetta il primo turno senza wake solo con biometria e semantica forti."""
+        if (
+            not getattr(config, "CONVERSATION_SEMANTIC_BOOTSTRAP_ENABLED", True)
+            or not authenticated
+            or require_wake_word
+            or self._translate_bidir
+            or self._dictation_mode
+        ):
+            return None
+        try:
+            if not self.visual_gate.is_owner_present():
+                return None
+            interpreter = getattr(
+                self,
+                "_bootstrap_semantic_interpreter",
+                self._interpret_semantic_bootstrap,
+            )
+            frame = interpreter(text)
+            accepted = frame_bootstraps_owner_session(
+                frame,
+                minimum_confidence=getattr(
+                    config,
+                    "CONVERSATION_SEMANTIC_BOOTSTRAP_MIN_CONFIDENCE",
+                    0.92,
+                ),
+                minimum_frame_confidence=getattr(
+                    config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72
+                ),
+            )
+            logger.info(
+                "Bootstrap semantico owner: {} relation={} conf={:.2f}",
+                "ACCEPT" if accepted else "REJECT",
+                frame.get("address_relation") or "unclear",
+                float(frame.get("address_confidence") or 0.0),
+            )
+            return frame if accepted else None
+        except Exception as exc:
+            logger.debug("Bootstrap semantico owner: fail-closed ({})", exc)
+            return None
+
     @staticmethod
     def _is_garbage_transcript(text: str) -> tuple[bool, float]:
         """Rileva l'allucinazione Whisper composta quasi solo da parole ripetute."""
@@ -4397,7 +4612,8 @@ class VoiceDaemon:
         authenticated: bool = True,
         require_wake_word: bool = False,
         track_present: bool = True,
-    ) -> tuple[str, bool] | None:
+        include_semantic_frame: bool = False,
+    ) -> tuple[str, bool] | tuple[str, bool, dict | None] | None:
         """Valida consenso e STT; solo una voce accettata rinnova l'attività.
 
         Il consenso si valuta quando l'utente ha iniziato a parlare. Un turno
@@ -4422,6 +4638,7 @@ class VoiceDaemon:
         now_ts = time.time() if now_ts is None else now_ts
         guard_at = now_ts if addressed_at is None else min(float(addressed_at), now_ts)
         has_wake_word = bool(_WAKE_WORD_RE.search(text))
+        bootstrap_frame: dict | None = None
         # Prima interazione dopo l'avvio: non esiste un turno precedente. Manteniamo
         # chiusa la lease senza stampare nel log l'intera epoch come durata trascorsa.
         has_previous_activity = self._last_activity_ts > 0
@@ -4444,6 +4661,13 @@ class VoiceDaemon:
                 require_wake_word=require_wake_word,
                 focus_open=focus_open,
             )
+        if not addressed and not has_previous_activity:
+            bootstrap_frame = self._semantic_owner_bootstrap(
+                text,
+                authenticated=authenticated,
+                require_wake_word=require_wake_word,
+            )
+            addressed = bootstrap_frame is not None
         if require_wake_word:
             addressed = has_wake_word
         if not addressed:
@@ -4466,6 +4690,8 @@ class VoiceDaemon:
                 )
             except Exception as e:
                 logger.debug(f"Cognitive Present: accept_user_turn ignorato: {e}")
+        if include_semantic_frame:
+            return text, has_wake_word, bootstrap_frame
         return text, has_wake_word
 
     def _mobile_worker(self):
@@ -4532,6 +4758,11 @@ class VoiceDaemon:
                         from core.memory_scope import bind_memory_scope, get_active_scope
                         bind_memory_scope(get_active_scope(self.r))
                         self._last_activity_ts = time.time()
+                        raw_mobile_text = text
+                        semantic_frame = self._interpret_semantic_turn(raw_mobile_text)
+                        text = str(
+                            semantic_frame.get("interpreted_text") or raw_mobile_text
+                        )
                         self.memory.log_conversation(_OWNER_NAME, text)
 
                         context = self._build_context(text)
@@ -4548,6 +4779,8 @@ class VoiceDaemon:
                                 response = self.brain.respond(
                                     text,
                                     context=context,
+                                    raw_user_text=raw_mobile_text,
+                                    semantic_frame=semantic_frame,
                                     **self._memory_thinking_kwargs(),
                                 )
                         except Exception:
@@ -4572,7 +4805,7 @@ class VoiceDaemon:
 
                         self.r.xadd(STREAM_OUT, {
                             "request_id": req_id,
-                            "text":        text,
+                            "text":        raw_mobile_text,
                             "response":    response,
                             "audio_b64":   audio_b64_out,
                             "sample_rate": str(sample_rate),

@@ -1,0 +1,380 @@
+#!/usr/bin/env python3
+"""Regressioni per frame semantico, identita' canonica e raw verbatim."""
+import json
+from unittest.mock import patch
+
+from core.brain import Brain
+from core.conversation_turns import ConversationTurnStore
+from core.intent_router import Intent, classify
+from core.semantic_turn import (
+    SemanticTurnService,
+    frame_bootstraps_owner_session,
+    frame_blocks_passive_memory,
+    frame_vetoes_contextual_action,
+    semantic_intent,
+)
+
+
+class FakeJSON:
+    def __init__(self, docs):
+        self.docs = docs
+
+    def set(self, key, _path, value):
+        self.docs[key] = value
+
+
+class FakeRedis:
+    def __init__(self):
+        self.values = {}
+        self.hashes = {}
+        self.docs = {}
+        self.events = []
+
+    def get(self, key):
+        return self.values.get(key)
+
+    def set(self, key, value):
+        self.values[key] = value
+        return True
+
+    def hgetall(self, key):
+        return dict(self.hashes.get(key, {}))
+
+    def hset(self, key, mapping=None, **kwargs):
+        values = dict(mapping or {})
+        values.update(kwargs)
+        self.hashes.setdefault(key, {}).update(values)
+        return len(values)
+
+    def xadd(self, stream, fields, **kwargs):
+        self.events.append((stream, fields, kwargs))
+        return f"1-{len(self.events)}"
+
+    def json(self):
+        return FakeJSON(self.docs)
+
+
+def _correction_response(_prompt):
+    return json.dumps({
+        "interpreted_text": (
+            "Correzione: il nome corretto dell'azienda e' Gio Style, non Joe Style; "
+            "cerca sul web informazioni su Gio Style."
+        ),
+        "primary_intent": "WEB_SEARCH",
+        "speech_acts": ["CORRECT_ENTITY", "REQUEST_WEB_SEARCH"],
+        "entities": [{
+            "observed_form": "Joe Style",
+            "canonical_name": "Gio Style",
+            "entity_type": "organization",
+            "status": "explicit_correction",
+            "evidence": "non Joe Style: il nome corretto e' Gio Style",
+            "confidence": 0.99,
+        }],
+        "facts": [],
+        "actions": [{"type": "web_search"}],
+        "web_query": "Gio Style azienda",
+        "preservation_mode": "semantic",
+        "requires_clarification": False,
+        "meaning_preserved": True,
+        "confidence": 0.97,
+    }, ensure_ascii=False)
+
+
+def test_explicit_entity_correction_updates_history_and_passive_journal():
+    redis = FakeRedis()
+    brain = Brain()
+    with brain.history_lock:
+        brain._append_history_locked(
+            "user", "Ieri dal cliente Joe Style abbiamo fatto una prova.", True
+        )
+        brain._append_history_locked(
+            "assistant", "Ricordo la prova da Joe Style.", True
+        )
+
+    service = SemanticTurnService(redis, model_call=_correction_response)
+    frame = service.interpret(
+        "Il nome e' sbagliato: non Joe Style ma Gio Style. Cerca nel web.",
+        recent_history=list(brain._conversation_history),
+        memory_scope="personal",
+    )
+
+    assert semantic_intent(frame) == "WEB_SEARCH"
+    assert frame["web_query"] == "Gio Style azienda"
+    assert len(frame["canonicalizations"]) == 1
+    assert service.registry.canonicalize("novita' da Joe Style", "personal") == (
+        "novita' da Gio Style"
+    )
+
+    changed = brain.rewrite_entity_aliases(
+        lambda value: service.registry.canonicalize(value, "personal")
+    )
+    assert changed == 2
+    assert all("Gio Style" in row["content"] for row in brain._conversation_history)
+    assert all("Joe Style" in row["raw_content"] for row in brain._conversation_history)
+    pending = brain.passive_messages_after(0)
+    assert all("Gio Style" in row["content"] for row in pending)
+    assert any(event[1]["kind"] == "canonicalized" for event in redis.events)
+
+
+def test_ordinary_entity_mention_never_creates_an_alias():
+    redis = FakeRedis()
+
+    def model(_prompt):
+        return json.dumps({
+            "interpreted_text": "Oggi ho visitato Alfa Beta.",
+            "primary_intent": "CHAT",
+            "speech_acts": ["INFORM"],
+            "entities": [{
+                "observed_form": "Alfa Beta",
+                "canonical_name": "Alfa Beta",
+                "entity_type": "organization",
+                "status": "mentioned",
+                "evidence": "Alfa Beta",
+                "confidence": 0.95,
+            }],
+            "facts": [], "actions": [], "web_query": "",
+            "preservation_mode": "semantic",
+            "requires_clarification": False,
+            "meaning_preserved": True,
+            "confidence": 0.96,
+        })
+
+    frame = SemanticTurnService(redis, model_call=model).interpret(
+        "Oggi ho visitato Alfa Beta.", memory_scope="personal"
+    )
+    assert frame["canonicalizations"] == []
+    assert redis.hashes == {}
+    assert redis.events == []
+
+
+def test_verbatim_mode_keeps_raw_text_even_if_model_rewrites_it():
+    redis = FakeRedis()
+
+    def model(_prompt):
+        return json.dumps({
+            "interpreted_text": "testo cambiato",
+            "primary_intent": "DICTATION",
+            "speech_acts": ["DICTATE"],
+            "entities": [], "facts": [], "actions": [], "web_query": "",
+            "preservation_mode": "verbatim",
+            "requires_clarification": False,
+            "meaning_preserved": True,
+            "confidence": 0.99,
+        })
+
+    raw = "Dettatura: lascia EsAttamente QUESTO testo."
+    frame = SemanticTurnService(redis, model_call=model).interpret(raw)
+    assert frame["interpreted_text"] == raw
+
+
+def test_spelled_variant_reuses_the_confirmed_canonical_format():
+    redis = FakeRedis()
+    service = SemanticTurnService(redis, model_call=_correction_response)
+    first = service.interpret(
+        "Il nome corretto e' Gio Style, non Joe Style.", memory_scope="personal"
+    )
+    assert first["canonicalizations"][0]["canonical_name"] == "Gio Style"
+
+    def spelled_model(_prompt):
+        payload = json.loads(_correction_response(_prompt))
+        payload["primary_intent"] = "EXECUTE"
+        payload["speech_acts"] = ["CORRECT_ENTITY", "REQUEST_ACTION"]
+        payload["entities"][0]["canonical_name"] = "G-I-O Style"
+        return json.dumps(payload)
+
+    service._model_call = spelled_model
+    second = service.interpret(
+        "Correggilo da Joe Style a G-I-O Style.", memory_scope="personal"
+    )
+    assert second["canonicalizations"][0]["canonical_name"] == "Gio Style"
+    assert semantic_intent(second) == "CHAT"
+
+
+def test_web_query_uses_shared_frame_without_second_llm_interpretation():
+    brain = Brain()
+    frame = {
+        "status": "interpreted",
+        "confidence": 0.98,
+        "primary_intent": "WEB_SEARCH",
+        "speech_acts": ["REQUEST_WEB_SEARCH"],
+        "web_query": "Gio Style stampaggio plastica",
+    }
+    with patch("core.brain.chat_client.chat", side_effect=AssertionError("no second LLM")):
+        assert brain.extract_search_query(
+            "fai la ricerca", semantic_frame=frame
+        ) == "Gio Style stampaggio plastica"
+
+
+def test_semantic_routing_requires_a_matching_speech_act():
+    frame = {
+        "status": "interpreted",
+        "confidence": 0.99,
+        "primary_intent": "SAVE_MEMORY",
+        "speech_acts": ["INFORM"],
+    }
+    assert semantic_intent(frame) == ""
+    frame["speech_acts"] = ["REQUEST_SAVE"]
+    assert semantic_intent(frame) == "SAVE_MEMORY"
+
+    frame.update({
+        "primary_intent": "EXECUTE",
+        "speech_acts": ["CORRECT_ENTITY", "REQUEST_ACTION"],
+    })
+    assert semantic_intent(frame) == "CHAT"
+
+
+def test_turn_archive_preserves_raw_and_keeps_interpretation_additive():
+    redis = FakeRedis()
+    store = ConversationTurnStore(redis)
+    store.persist({
+        "turn_ref": "conv:1",
+        "conversation_id": "conv",
+        "seq": 1,
+        "role": "user",
+        "content": "Visita a Gio Style",
+        "raw_content": "Visita a Joe Style",
+        "trusted": True,
+        "observed_at": 1.0,
+        "segment_id": 1,
+        "memory_scope": "personal",
+        "semantic_frame": {"turn_id": "t1"},
+    })
+    doc = redis.docs["euri:turn:conv:1"]
+    assert doc["content"] == "Visita a Joe Style"
+    assert doc["interpreted_content"] == "Visita a Gio Style"
+    assert doc["semantic_frame"]["turn_id"] == "t1"
+
+
+def test_web_regex_does_not_match_cerca_inside_ricerca():
+    intent, _ = classify("questa ricerca nel web crea problemi alla conversazione")
+    assert intent == Intent.CHAT
+
+
+def test_meta_status_is_ephemeral_chat_and_vetoes_fuzzy_action():
+    def model(_prompt):
+        return json.dumps({
+            "interpreted_text": (
+                "Ho riavviato Euri dopo una piccola modifica al codice della struttura."
+            ),
+            "primary_intent": "",
+            "speech_acts": ["INFORM"],
+            "entities": [],
+            "facts": [{
+                "fact": "Euri e' stata riavviata dopo una modifica al codice",
+                "type": "change",
+            }],
+            "actions": [],
+            "web_query": "",
+            "preservation_mode": "semantic",
+            "requires_clarification": False,
+            "meaning_preserved": True,
+            "confidence": 0.98,
+            "memory_disposition": "ephemeral",
+            "memory_reason": "stato temporaneo dell'assistente",
+        })
+
+    frame = SemanticTurnService(FakeRedis(), model_call=model).interpret(
+        "Ho riavviato Euri dopo una piccola modifica al codice della struttura."
+    )
+    assert frame["primary_intent"] == "CHAT"
+    assert semantic_intent(frame) == "CHAT"
+    assert frame_blocks_passive_memory(frame)
+    assert frame_vetoes_contextual_action(frame)
+
+
+def test_explicit_action_is_never_vetoed_by_contextual_guard():
+    frame = {
+        "status": "interpreted",
+        "confidence": 0.99,
+        "primary_intent": "EXECUTE",
+        "speech_acts": ["REQUEST_ACTION"],
+        "actions": [{
+            "effect": "read system state",
+            "target": "gpu",
+            "capability_class": "executor.gpu_usage",
+        }],
+        "memory_disposition": "no_store",
+    }
+    assert not frame_vetoes_contextual_action(frame)
+
+
+def test_ungrounded_action_label_cannot_hijack_a_memory_answer():
+    # Riproduce la forma strutturale del frame reale: etichetta operativa ma
+    # nessun effetto/target/capability rappresentato.
+    frame = {
+        "status": "interpreted",
+        "confidence": 1.0,
+        "requires_clarification": False,
+        "primary_intent": "ACTION_REASONING",
+        "speech_acts": ["INFORM", "REQUEST_ACTION"],
+        "actions": [],
+    }
+    assert semantic_intent(frame) == ""
+    assert frame_vetoes_contextual_action(frame)
+
+
+def test_memory_answer_is_search_not_an_operational_effect():
+    frame = {
+        "status": "interpreted",
+        "confidence": 0.98,
+        "requires_clarification": False,
+        "primary_intent": "SEARCH",
+        "speech_acts": ["ASK", "REQUEST_MEMORY_SEARCH"],
+        "actions": [],
+    }
+    assert semantic_intent(frame) == "SEARCH"
+    assert frame_vetoes_contextual_action(frame)
+
+
+def test_owner_bootstrap_requires_direct_high_confidence_address():
+    frame = {
+        "status": "interpreted",
+        "confidence": 0.99,
+        "requires_clarification": False,
+        "addressed_to_assistant": True,
+        "address_relation": "direct_address",
+        "address_confidence": 0.97,
+    }
+    assert frame_bootstraps_owner_session(frame)
+    frame["address_relation"] = "direct_followup"
+    assert not frame_bootstraps_owner_session(frame)
+    frame["address_relation"] = "direct_address"
+    frame["address_confidence"] = 0.80
+    assert not frame_bootstraps_owner_session(frame)
+
+
+def test_pre_gate_frame_does_not_persist_corrections_until_accepted():
+    redis = FakeRedis()
+    service = SemanticTurnService(redis, model_call=_correction_response)
+    frame = service.interpret(
+        "Il nome e' sbagliato: non Joe Style ma Gio Style. Cerca nel web.",
+        memory_scope="personal",
+        session_bootstrap=True,
+        persist_corrections=False,
+    )
+    assert frame["canonicalizations"] == []
+    assert redis.hashes == {}
+    assert redis.events == []
+
+    service.commit_precomputed(frame)
+    assert len(frame["canonicalizations"]) == 1
+    assert redis.hashes
+    assert redis.events
+
+
+if __name__ == "__main__":
+    test_explicit_entity_correction_updates_history_and_passive_journal()
+    test_ordinary_entity_mention_never_creates_an_alias()
+    test_verbatim_mode_keeps_raw_text_even_if_model_rewrites_it()
+    test_spelled_variant_reuses_the_confirmed_canonical_format()
+    test_web_query_uses_shared_frame_without_second_llm_interpretation()
+    test_semantic_routing_requires_a_matching_speech_act()
+    test_turn_archive_preserves_raw_and_keeps_interpretation_additive()
+    test_web_regex_does_not_match_cerca_inside_ricerca()
+    test_meta_status_is_ephemeral_chat_and_vetoes_fuzzy_action()
+    test_explicit_action_is_never_vetoed_by_contextual_guard()
+    test_ungrounded_action_label_cannot_hijack_a_memory_answer()
+    test_memory_answer_is_search_not_an_operational_effect()
+    test_owner_bootstrap_requires_direct_high_confidence_address()
+    test_pre_gate_frame_does_not_persist_corrections_until_accepted()
+    print("OK — semantic turn")

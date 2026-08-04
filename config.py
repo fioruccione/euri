@@ -63,6 +63,16 @@ OLLAMA_MODEL = "gemma4:26b"   # verifica con `ollama list`
 # Separato da OLLAMA_MODEL per poter usare un modello più capace per il ragionamento astratto.
 DREAM_OLLAMA_MODEL = "qwen3.6:35b"
 
+# Un solo frame semantico post-STT per routing, RAG, web e memoria passiva.
+# Il testo Whisper resta verbatim nell'archivio; questo strato costruisce la
+# rappresentazione operativa e apprende soltanto correzioni d'identita' esplicite.
+SEMANTIC_TURN_ENABLED = os.environ.get(
+    "EURI_SEMANTIC_TURN_ENABLED", "1"
+).strip().lower() not in {"0", "false", "no", "off"}
+SEMANTIC_TURN_MIN_CONFIDENCE = float(
+    os.environ.get("EURI_SEMANTIC_TURN_MIN_CONFIDENCE", "0.72")
+)
+
 # STT
 WHISPER_LANGUAGE = "it"
 # Modello: "large-v3-turbo" (veloce, ~800ms) o "large-v3" (più preciso sui nomi propri, ~1500ms)
@@ -560,6 +570,12 @@ CONVERSATION_ADAPTIVE_FOLLOWUP_ENABLED = (
 )
 CONVERSATION_ADAPTIVE_FOLLOWUP_MIN_CONFIDENCE = float(
     os.environ.get("EURI_CONVERSATION_ADAPTIVE_FOLLOWUP_MIN_CONFIDENCE", "0.90")
+)
+CONVERSATION_SEMANTIC_BOOTSTRAP_ENABLED = (
+    os.environ.get("EURI_CONVERSATION_SEMANTIC_BOOTSTRAP_ENABLED", "1") == "1"
+)
+CONVERSATION_SEMANTIC_BOOTSTRAP_MIN_CONFIDENCE = float(
+    os.environ.get("EURI_CONVERSATION_SEMANTIC_BOOTSTRAP_MIN_CONFIDENCE", "0.92")
 )
 
 # Propagazione di provenienza (invariante A della primitiva cognitiva).

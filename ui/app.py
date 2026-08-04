@@ -79,6 +79,12 @@ def get_brain():
     return Brain()
 
 @st.cache_resource
+def get_semantic_turns(_redis_client):
+    """Frame condiviso anche nel canale testuale; Redis conserva le identita'."""
+    from core.semantic_turn import SemanticTurnService
+    return SemanticTurnService(_redis_client)
+
+@st.cache_resource
 def get_executor():
     """Istanza condivisa dell'Executor — dà alla Silent Chat l'esecuzione dei tool
     (read_document, run_code, analyze_image…), come il voice daemon."""
@@ -192,6 +198,7 @@ from core.memory_scope import (
 bind_memory_scope(get_active_scope(r))
 embedder = get_embedder()
 brain = get_brain()
+semantic_turns = get_semantic_turns(r)
 memory_manager = MemoryManager(r, embedder)
 from core.conversation_turns import ConversationTurnStore
 turn_store = ConversationTurnStore(r)
@@ -773,7 +780,7 @@ with main_col:
         # Mostra messaggi precedenti
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
-                st.markdown(message["content"])
+                st.markdown(message.get("display_content", message["content"]))
 
         current_uploads = _load_chat_upload_registry()
         if current_uploads:
@@ -969,10 +976,34 @@ with main_col:
                         st.session_state["sc_awaiting"] = {"insight": insight}
                     st.stop()
 
+            # Stesso frame della voce: il testo digitato resta disponibile per
+            # la UI e l'archivio, mentre routing/RAG/memoria usano una sola
+            # interpretazione canonica. Le correzioni aggiornano anche la coda
+            # del learner passivo ancora non processata.
+            from core.memory_scope import current_scope
+            from core.semantic_turn import frame_is_correction
+            raw_prompt = prompt
+            with brain.history_lock:
+                _semantic_history = list(brain._conversation_history)
+            semantic_frame = semantic_turns.interpret(
+                raw_prompt,
+                recent_history=_semantic_history,
+                memory_scope=current_scope(),
+            )
+            if semantic_frame.get("canonicalizations"):
+                brain.rewrite_entity_aliases(
+                    lambda value: semantic_turns.registry.canonicalize(
+                        value, current_scope()
+                    )
+                )
+            prompt = str(semantic_frame.get("interpreted_text") or raw_prompt)
+
             # ── Audit di Coerenza: capture correction signal ─────────────
             # Se il prompt è una correzione, salva il signal PRIMA del retrieval
             # del turno corrente (last_rag_ctx contiene ancora il ctx del turno corretto).
-            if memory_manager.detect_correction(prompt):
+            if memory_manager.detect_correction(prompt) or frame_is_correction(
+                semantic_frame
+            ):
                 prev_user_turn = ""
                 for m in reversed(st.session_state.messages):
                     if m["role"] == "user":
@@ -988,10 +1019,12 @@ with main_col:
 
             # Mostra utente
             st.session_state.messages.append({
-                "role": "user", "content": prompt, "observed_at": time.time()
+                "role": "user", "content": prompt,
+                "display_content": raw_prompt,
+                "observed_at": time.time(),
             })
             with st.chat_message("user"):
-                st.markdown(prompt)
+                st.markdown(raw_prompt)
 
             # Ricerca veloce su Redis per iniettare contesto — stesso builder della voce.
             with st.spinner("Cerco nella memoria..."):
@@ -1012,6 +1045,9 @@ with main_col:
                     recent_history=_recent_hist,
                 )
                 context = _rag.text
+                context = semantic_turns.registry.canonicalize(
+                    context, current_scope()
+                )
                 ctx_ids_now = list(_rag.ids)
                 memory_manager.set_last_rag_ctx(ctx_ids_now)
 
@@ -1105,6 +1141,9 @@ with main_col:
                             turn_store=turn_store,
                             rag_context=_rag,
                         )
+                        context_full = semantic_turns.registry.canonicalize(
+                            context_full, current_scope()
+                        )
                         # Audit di Coerenza: registra il ctx effettivo del turno corrente.
                         # Include anche gli ID aggiunti dagli augment strategici: sono spesso
                         # proprio quelli che causano una risposta poi corretta da Stefano.
@@ -1145,6 +1184,8 @@ with main_col:
                                     prompt,
                                     context=context_full,
                                     trusted=True,
+                                    raw_user_text=raw_prompt,
+                                    semantic_frame=semantic_frame,
                                     thinking=_thinking["enabled"],
                                     thinking_reason=_thinking["reason"],
                                 )

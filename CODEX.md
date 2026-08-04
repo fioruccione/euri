@@ -1,3 +1,65 @@
+# Handoff Euri - 2026-08-04 - Frame semantico condiviso
+
+## Esito
+
+Voce, Mobile e Silent Chat usano ora una sola interpretazione strutturata del
+turno. Whisper resta evidenza verbatim; il frame è una vista operativa additiva
+e contiene intent, speech acts, entità, fatti, azioni, query web, policy memoria
+e addressedness. Non esistono regex o liste di aziende per canonicalizzare i
+nomi.
+
+Il caso che ha aperto l'intervento era una catena reale su Gio Style: Whisper
+aveva prodotto `Joe Style`; dopo la correzione esplicita del proprietario Euri
+comprendeva il canonico, ma consumer successivi potevano ancora usare versioni
+divergenti del turno. `core/semantic_turn.py` mantiene ora un registro alias per
+scope, aggiorna la history ancora in-flight e lascia intatto il raw archiviato.
+La successiva richiesta web ha cercato `Gio Style azienda` senza una seconda
+reinterpretazione.
+
+## Invarianti
+
+- `raw_text`/`raw_content` non vengono riscritti; `interpreted_text` e
+  `semantic_frame` sono additivi in `euri:turn:*`.
+- Soltanto `CORRECT_ENTITY` esplicito, con evidenza e confidenza, può aggiornare
+  il registro identità. Una menzione ordinaria non crea alias.
+- Il modello propone routing conversazionale; mutazioni, shutdown e tool
+  restano sotto router/ActionController deterministici.
+- `REQUEST_ACTION` senza un effetto, target o capability rappresentati non può
+  aprire il controller fuzzy. Una richiesta di risposta/richiamo usa
+  `SEARCH + ASK + REQUEST_MEMORY_SEARCH`.
+- `candidate` rende un turno eleggibile al learner esistente; non salva nulla da
+  sola. `ephemeral` e `no_store`, quando il frame è affidabile, escludono dal
+  learner sia il turno sia la risposta. L'archivio raw viene scritto comunque.
+- Il bootstrap del primo turno senza wake è autorizzato solo da speaker owner,
+  volto owner e `direct_address` ≥0,92. Il frame pre-gate non produce effetti e
+  viene committato/riusato soltanto dopo l'accept. Guest e identità incerte
+  richiedono ancora la wake word.
+- Su fallback, errore o bassa confidenza, canonicalizzazione, memoria e
+  addressedness non acquistano autorità nuova.
+
+## Evidenza live e regressioni
+
+- Bootstrap reale senza “Euri”: volto `0,750`, voce `0,720`,
+  `direct_address=1,00`; una sola interpretazione semantica prima del dispatch.
+- Stato software/riavvio: `ephemeral`, zero memoria passiva. Attività cliente e
+  decisione stabile: `candidate`; ricerca web: `no_store`.
+- Recall reale prima errato: `ACTION_REASONING + REQUEST_ACTION + actions=[]`,
+  con circa 17 secondi persi nel controller. Dopo il contratto nuovo lo stesso
+  turno è `SEARCH`, confidenza `0,95`, controller vietato. Controprova GPU:
+  `EXECUTE`, azione concreta presente, controller consentito.
+- Suite mirate verdi: `test_semantic_turn.py`, `test_wake_guard.py`,
+  `test_addressedness.py`, `test_action_controller.py`; manifest unitario
+  **69/69**, inclusa la nuova regressione semantica.
+
+## Stato aperto
+
+`docs/EURI_OPEN_WORK.md` registra il rollout `SEM-01`. Non trasformare i casi
+successivi in regex lessicali: si correggono contratti generali e si conservano
+controprove operative. `VOICE-01` conserva separatamente il near-miss speaker
+`0,645 < 0,65`; non abbassare la soglia sulla base di un solo episodio.
+
+---
+
 # Handoff Euri V2.22 - 2026-07-30 - Nuova base e registro unico
 
 - Versione corrente dichiarata: **V2.22 — Memoria osservabile e confinata**.
