@@ -125,8 +125,14 @@ def temporal_prompt_contract() -> str:
 
 
 def _temporal_expression(text: str) -> str:
-    match = _TEMPORAL_EXPRESSION_RE.search(text or "")
-    return match.group(0) if match else ""
+    matches = [match.group(0) for match in _TEMPORAL_EXPRESSION_RE.finditer(text or "")]
+    if not matches:
+        return ""
+    # Il testo sorgente può contenere metadiscorso recente ("poco fa") e la
+    # data dell'evento ("lunedì 3 agosto"). Vince l'espressione più precisa,
+    # non quella incontrata per prima.
+    rank = {"unspecified": 0, "relative_day": 1, "part_of_day": 2, "explicit_day": 3}
+    return max(matches, key=lambda value: rank[_event_precision(value)])
 
 
 def _event_precision(expression: str) -> str:

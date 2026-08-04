@@ -492,6 +492,13 @@ INITIATIVE_COOLDOWN_S = 3 * 3600
 CONVERSATION_LEASE_SECONDS = 45
 CONVERSATION_FOCUS_SECONDS = 5 * 60
 CONVERSATION_FOCUS_MAX_TURNS = 4
+# Ponte fra processi: indice TTL dei turni originali, mai memoria cognitiva.
+CONVERSATION_CONTINUITY_TTL_SECONDS = int(
+    os.environ.get("EURI_CONVERSATION_CONTINUITY_TTL_SECONDS", str(6 * 3600))
+)
+CONVERSATION_CONTINUITY_MAX_TURNS = int(
+    os.environ.get("EURI_CONVERSATION_CONTINUITY_MAX_TURNS", "12")
+)
 AUDIT_MEMORY_MAX_CANDIDATES = 40
 AUDIT_MEMORY_BATCH_SIZE = 10
 # Oltre questa pausa la history resta disponibile, ma viene marcata come un nuovo

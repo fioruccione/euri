@@ -2,6 +2,50 @@
 
 ## V2.22 (continua, 04/08/2026) — Un solo significato operativo per turno
 
+### Presente continuo fra i processi
+
+- Aggiunto `core/conversation_continuity.py`: un indice Redis TTL collega gli
+  ultimi turni verbatim a una capsule temporanea per scope e ne deriva focus,
+  entità attive e fili conversazionali aperti senza chiamate LLM o sintesi.
+- Voice Daemon e Silent Chat reidratano il Brain dopo un riavvio. I turni
+  ripristinati mantengono `turn_ref`, tempo, autenticazione e frame semantico,
+  ma non entrano nel journal passivo, non vengono riarchiviati e non possono
+  riaprire da soli la lease vocale.
+- I fili distinguono `user_request` e `assistant_question`. Una risposta può
+  segnare soltanto `assistant_replied`: non equivale a tool eseguito o risultato
+  verificato. Il rilevamento di una domanda dell'assistente usa soltanto il
+  segno finale `?`, non regex su nomi, aziende o frasi.
+- La capsule scade dopo sei ore per default, è separata per scope ed esclude
+  backfill e turni individualmente scaduti. Suite unitaria completa: **70/70**.
+- Il collaudo live Gio Style ha mostrato che una chiusura `no_store` poteva
+  rimpiazzare il focus sostanziale. Il workspace ora aggiorna il focus usando
+  fatti, entità, azioni e richieste del frame, non liste lessicali o regex.
+- Le domande pronunciate da Initiative e le relative risposte entrano nello
+  storico/archivio come contesto non eleggibile al learner passivo. Lo stato
+  operativo breve di reazione o verifica memoria è inoltre salvato con TTL e
+  riarmato dopo un riavvio, senza trasformarsi in memoria a lungo termine.
+
+### Comprensione condivisa fino alla memoria passiva
+
+- L'estrattore e l'auditor di provenienza ricevono ora, accanto al verbatim, la
+  vista accettata del frame semantico. Il frame disambigua identità canoniche e
+  modalità (`possibile`, `in prova`, `in attesa`, `confermato`), mentre il raw
+  continua a dover sostenere ogni proposizione. Una prova svolta non può più
+  essere promossa a “esito ottenuto”.
+- Separata la wake word dalla provenienza: un follow-up vocale autenticato e
+  accettato nella conversazione è marcato `accepted_owner_turn`. I fatti forti
+  che provengono da questi turni diventano `owner_asserted`; il parlato
+  ambientale o semanticamente debole resta `tacit_acceptance` da verificare.
+  Nessun nome di azienda e nessuna correzione lessicale sono cablati.
+- Il resolver temporale sceglie l'espressione più precisa dell'evento: in una
+  fonte contenente sia “poco fa” sia “3 agosto”, la data esplicita prevale sul
+  marcatore metaconversazionale recente.
+- Riparazione append-only live con
+  `scripts/repair_20260804_gio_style_passive.py`: quattro memorie Gio Style
+  sostituite con identità, modalità e tempo corretti; vecchi nodi
+  soft-superseded e Markdown in quarantena recuperabile. Verifiche mirate verdi
+  e manifest unitario **70/70 in 74,5 s**.
+
 - Introdotto `core/semantic_turn.py`: dopo Whisper, voce, Mobile e Silent Chat
   costruiscono un unico frame strutturato con testo raw, interpretazione quasi
   verbatim, intent, atti linguistici, entità, fatti, azioni, query web,

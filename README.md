@@ -64,6 +64,24 @@ quando voce e volto del proprietario sono verificati e il frame riconosce un
 reparto o un comando fisico plausibilmente rivolto a un collega non bastano;
 ospiti e identità incerte richiedono ancora “Euri”.
 
+**Continuità del presente (V2.22):** gli ultimi 12 turni archiviati alimentano
+anche una capsule Redis separata per scope, con TTL predefinito di sei ore. Da
+quei soli turni Euri deriva focus corrente, entità nominate e fili aperti; non
+genera un riassunto né trasforma la capsule in memoria. Dopo un riavvio, Voice
+Daemon e Silent Chat reidratano il Brain con testo, tempo e `turn_ref` originali,
+ma non ripubblicano i turni, non riattivano il learner passivo e non riaprono la
+lease vocale. Una risposta chiude un filo conversazionale come
+`assistant_replied`, mai come prova che un'azione sia stata eseguita. Il ponte è
+configurabile con `EURI_CONVERSATION_CONTINUITY_TTL_SECONDS` e
+`EURI_CONVERSATION_CONTINUITY_MAX_TURNS`.
+
+Il focus non coincide semplicemente con l'ultima frase: conferme, saluti e
+chiusure `no_store` non cancellano il tema sostanziale individuato dal frame.
+Anche le domande dirette di Initiative vengono archiviate come contesto (mai
+ricandidate al learner) e il loro pending breve sopravvive a un riavvio per il
+solo TTL residuo. Euri può quindi collegare una risposta come “sì, confermo”
+alla domanda realmente pronunciata prima dello stop.
+
 **Guard manifatturiero:** se la frase contiene termini chimici/analitici (XRF, talco, MFI, carbonato…) senza termini di sistema espliciti, EXECUTE viene bloccato in entrambi i layer.
 
 > **AdaptiveClassifier — in ricostruzione (V2: plasticità ancorata):** la versione Welford è sospesa (`ADAPTIVE_CLASSIFIER_ENABLED = False`) — con e5-large 1024-dim l'encoding (~400ms) eguagliava il fallback LLM e i centroidi non erano calibrati (falsi positivi). Limite strutturale più sottile: il **selection bias**, il layer impara solo dalle utterance che *non* sa già classificare (le sole che raggiungono il maestro LLM), derivando verso la coda ambigua. La V2 è un **dimostratore di plasticità ancorata**: per ogni classe un *anchor* congelato + un *delta* vivo col guinzaglio (deriva massima vincolata), embedding statico sub-millisecondo, e un'**omeostasi in idle** — canary set + rollback automatico — che misura e ripristina l'integrità. In corso la **Fase −1**: l'harvest persistente delle etichette del maestro LLM (`euri:aclf:harvest`) accumula il dataset reale su cui costruire e validare, prima di riattivare il fast path.
@@ -454,7 +472,7 @@ cd /home/fio/Euri
 - **Memoria su un soggetto discusso (V2.19):** *"ricordati il macinato di Seari"* — il modello caldo capisce che rimandi a un tema appena affrontato e cattura la **sostanza** della conversazione su quel soggetto, invece di salvare la sola etichetta presente nel comando.
 - **Arricchimento (merge):** se aggiungi un dettaglio nuovo a qualcosa di già salvato, Euri **arricchisce** la memoria esistente e te lo annuncia ("Ho aggiornato la memoria: …") invece di scartarlo come duplicato o crearne uno doppio. Se invece è un soggetto diverso, salva separato.
 - **Impegni con scadenza:** *"Devo fare X fra 5 minuti"* — un impegno è una **memoria di prima classe** con `due_at` e stato pending/done (niente più silo separato): passa dallo stesso path hardened delle memorie, il piano conversazionale lo vede sempre (*"che impegni ho?"*, *"cosa è scaduto?"* rispondono col contenuto reale, anche per scadenze future), e il promemoria viene consegnato **una volta sola, quando sei presente**, formulato naturalmente. Gli scaduti vengono nominati, non contati.
-- **Passive Learner:** Euri ascolta passivamente e dopo 45 secondi di silenzio salva informazioni utili in background. La deduplicazione è conservativa: la similarità semantica propone soltanto candidati e un fatto viene eliminato solo se il contenuto è già coperto e il giudice restituisce un verdetto esplicito. In caso di dubbio Euri conserva il fatto, perché un doppione è correggibile mentre un'informazione persa no. Prima del salvataggio, un audit separato verifica inoltre che ogni affermazione sia sostenuta dai turni dichiarati e ripara gli ID sorgente incompleti; il gate di utilità passivo decide solo `KEEP/JUNK` e non riscrive più il testo.
+- **Passive Learner:** Euri ascolta passivamente e dopo 45 secondi di silenzio salva informazioni utili in background. La deduplicazione è conservativa: la similarità semantica propone soltanto candidati e un fatto viene eliminato solo se il contenuto è già coperto e il giudice restituisce un verdetto esplicito. In caso di dubbio Euri conserva il fatto, perché un doppione è correggibile mentre un'informazione persa no. Estrattore e audit ricevono ora anche il frame semantico accettato del turno: usano l'identità canonica compresa da Euri e preservano modalità come “in prova” o “in attesa”, ma il verbatim resta la fonte obbligatoria. Un follow-up owner autenticato è `owner_asserted` anche senza ripetere la wake word; parlato ambientale e supporto debole restano da verificare. Il gate di utilità passivo decide solo `KEEP/JUNK` e non riscrive il testo.
 - **Stessa cosa in Silent Chat:** i comandi di salvataggio funzionano identici nella chat testuale (stesso coordinatore), senza più fingere il salvataggio.
 
 ### Salvataggio via Dropzone (Obsidian)

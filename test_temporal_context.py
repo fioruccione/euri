@@ -167,6 +167,20 @@ def test_generic_memories_resolve_numeric_and_relative_time():
     assert relative["event_start"] < _ts(15, 19) < relative["event_end"]
 
 
+def test_event_date_beats_incidental_recent_discourse_marker():
+    asserted_at = _date_ts(2026, 8, 4, 12, 43)
+    resolved = resolve_text_event_time(
+        "Poco fa abbiamo ricordato la prova effettuata lunedì 3 agosto.",
+        asserted_at=asserted_at,
+    )
+    event_date = datetime.fromtimestamp(
+        resolved["event_start"], tz=config.TIMEZONE
+    ).date()
+    assert resolved["temporal_expression"].lower() == "3 agosto"
+    assert resolved["event_precision"] == "explicit_day"
+    assert event_date.isoformat() == "2026-08-03"
+
+
 def test_passive_relative_date_overrides_wrong_llm_absolute_date():
     asserted_at = _date_ts(2022, 1, 23, 14, 1, 2)
     conversation = [
@@ -290,6 +304,7 @@ if __name__ == "__main__":
     test_passive_fact_requires_user_only_source_turns()
     test_passive_anchor_resolves_this_morning_against_assertion_time()
     test_generic_memories_resolve_numeric_and_relative_time()
+    test_event_date_beats_incidental_recent_discourse_marker()
     test_passive_relative_date_overrides_wrong_llm_absolute_date()
     test_passive_extractor_uses_full_italian_anchor_and_forbids_date_math()
     test_brain_prompt_exposes_time_but_marks_it_internal()

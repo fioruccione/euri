@@ -1,3 +1,51 @@
+# Handoff Euri - 2026-08-04 - Presente continuo
+
+## Esito
+
+Euri conserva ora fra i riavvii il filo immediato della conversazione. Ogni
+turno già scritto in `euri:turn:*` viene indicizzato per scope in una capsule
+Redis v1 con TTL di sei ore. Al boot il Brain reidrata fino a dodici turni con
+fonte, tempo e frame; il Semantic Turn li vede già quando interpreta il primo
+nuovo messaggio. La proiezione espone focus utente, entità osservate e domande o
+richieste ancora aperte, senza generare sintesi.
+
+Il pass live Gio Style ha aggiunto il livello mancante: il focus ignora le
+chiusure `no_store`, le domande Initiative sono turni durevoli ma non passivi e
+il pending di reazione/verifica sopravvive al processo per il TTL residuo. Il
+learner e l'auditor vedono inoltre identità e modalità del frame semantico
+accettato, continuando a richiedere supporto nel verbatim.
+
+## Invarianti
+
+- La capsule è workspace temporaneo, non memoria e non fonte di verità.
+- Il raw resta soltanto in `euri:turn:*`; la capsule conserva riferimenti TTL.
+- Il restore non scrive archivio, journal passivo o episodi e non riapre la
+  lease vocale: addressedness e autenticazione restano invariate.
+- `assistant_replied` non significa `action_executed`. Il risultato operativo
+  richiederà la lineage ActionController/tool già esistente.
+- Scope personale e sperimentale non si mescolano; backfill e turni oltre TTL
+  non diventano presente.
+- Wake/bootstrap e provenienza owner sono dimensioni diverse: un follow-up
+  autenticato accettato nella lease è `accepted_owner_turn` senza diventare per
+  questo un nuovo permesso operativo.
+- Il frame non riscrive una memoria al posto del validator: vincola identità e
+  modalità, mentre Buttafuori resta `KEEP/JUNK` e l'audit resta fail-closed.
+
+## Evidenza e stato aperto
+
+Regressioni capsule/workspace **8/8**; manifest unitario **70/70 in 74,5 s**.
+Il primo pass live ha popolato la capsule e ha esposto il confine
+focus/Initiative/passivo ora corretto. Resta da collaudare il riavvio sul nuovo
+codice con una domanda ancora aperta. Initiative non ha acquistato nuovi sensi
+o autorità: conserva soltanto il proprio scambio diretto e il pending breve.
+
+Bonifica dati applicata con
+`scripts/repair_20260804_gio_style_passive.py`: quattro sostituti embedded,
+vecchi record soft-superseded e copie originali spostate nella quarantena
+recuperabile del Vault `2026-08-04-gio-style-passive`.
+
+---
+
 # Handoff Euri - 2026-08-04 - Frame semantico condiviso
 
 ## Esito

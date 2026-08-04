@@ -35,10 +35,60 @@ class Brain:
         # sequence ID stabili e fa ack dopo l'estrazione.
         self._passive_journal: deque[dict] = deque(maxlen=2048)
         self._episodes: list[dict] = []      # episodi compressi con confini temporali
+        self._continuity_prompt_by_scope: dict[str, str] = {}
+        self._continuity_restored_scopes: set[str] = set()
         self._compress_lock = threading.Lock()
         self.history_lock = threading.Lock()  # protegge _conversation_history da accessi concorrenti
         self._episode_callback = None        # fn(summary, temporal_context) -> salva in Redis
         self._turn_callback = None           # fn(message) -> archivia il turno originale
+
+    def restore_continuity(
+        self,
+        turn_documents: list[dict],
+        *,
+        memory_scope: str | None = None,
+        prompt_context: str = "",
+    ) -> int:
+        """Ripristina contesto temporaneo senza riarchiviarlo o riapprenderlo."""
+        scope = normalize_scope(memory_scope or current_scope())
+        with self.history_lock:
+            if scope in self._continuity_restored_scopes:
+                return 0
+            # Non sovrascrivere una conversazione che il processo ha già iniziato.
+            if any(
+                normalize_scope(message.get("memory_scope")) == scope
+                and not message.get("restored_context")
+                for message in self._conversation_history
+            ):
+                self._continuity_restored_scopes.add(scope)
+                return 0
+            restored = []
+            for doc in turn_documents[-self._max_history:]:
+                if normalize_scope(doc.get("memory_scope")) != scope:
+                    continue
+                role = str(doc.get("role") or "")
+                if role not in {"user", "assistant"}:
+                    continue
+                content = str(doc.get("interpreted_content", doc.get("content")) or "").strip()
+                if not content:
+                    continue
+                restored.append({
+                    "seq": int(doc.get("seq") or 0),
+                    "turn_ref": str(doc.get("turn_ref") or ""),
+                    "role": role,
+                    "content": content,
+                    "trusted": bool(doc.get("trusted")),
+                    "observed_at": float(doc.get("observed_at") or 0),
+                    "conversation_id": str(doc.get("conversation_id") or ""),
+                    "segment_id": doc.get("segment_id"),
+                    "memory_scope": scope,
+                    "semantic_frame": doc.get("semantic_frame") or {},
+                    "restored_context": True,
+                })
+            self._conversation_history = restored + self._conversation_history
+            self._continuity_prompt_by_scope[scope] = str(prompt_context or "").strip()
+            self._continuity_restored_scopes.add(scope)
+            return len(restored)
 
     @staticmethod
     def _clean(text: str) -> str:
@@ -71,8 +121,9 @@ class Brain:
         memory_scope: str | None = None,
         raw_content: str | None = None,
         semantic_frame: dict | None = None,
+        passive_eligible: bool = True,
     ) -> None:
-        """Aggiunge un messaggio alla history LLM e al journal passivo."""
+        """Aggiunge un messaggio alla history; opzionalmente al journal passivo."""
         at = time.time() if observed_at is None else float(observed_at)
         memory_scope = normalize_scope(memory_scope or current_scope())
         if role == "user":
@@ -105,8 +156,11 @@ class Brain:
             message["semantic_frame"] = json.loads(json.dumps(
                 semantic_frame, ensure_ascii=False, default=str
             ))
+        if not passive_eligible:
+            message["passive_eligible"] = False
         self._conversation_history.append(message)
-        self._passive_journal.append(dict(message))
+        if passive_eligible:
+            self._passive_journal.append(dict(message))
         if self._turn_callback:
             try:
                 self._turn_callback(dict(message))
@@ -118,6 +172,31 @@ class Brain:
                     turn_ref,
                     exc,
                 )
+
+    def record_context_message(
+        self,
+        role: str,
+        content: str,
+        *,
+        trusted: bool = True,
+        observed_at: float | None = None,
+        memory_scope: str | None = None,
+    ) -> None:
+        """Archivia un turno diretto senza candidarlo a nuova memoria passiva.
+
+        Serve per domande/risposte gestite fuori da ``respond`` (per esempio
+        Initiative): devono sopravvivere a un riavvio come contesto, ma non
+        essere estratte una seconda volta come fatti.
+        """
+        with self.history_lock:
+            self._append_history_locked(
+                role,
+                str(content or "").strip(),
+                trusted,
+                observed_at=observed_at,
+                memory_scope=memory_scope,
+                passive_eligible=False,
+            )
 
     def passive_messages_after(self, last_seq: int) -> list[dict]:
         """Snapshot dei messaggi non ancora processati, immune alla compressione."""
@@ -211,6 +290,18 @@ class Brain:
         ctx_parts = [dt_line]
         if context:
             ctx_parts.append(context)
+        with self.history_lock:
+            recent_scope_history = [
+                message for message in self._conversation_history
+                if normalize_scope(message.get("memory_scope")) == memory_scope
+            ][-self._max_history:]
+        continuity_context = (
+            self._continuity_prompt_by_scope.get(memory_scope, "")
+            if any(message.get("restored_context") for message in recent_scope_history)
+            else ""
+        )
+        if continuity_context:
+            ctx_parts.append(continuity_context)
         messages.append({
             "role": "system",
             "content": "Contesto disponibile:\n" + "\n".join(ctx_parts)
@@ -233,20 +324,21 @@ class Brain:
 
         # Aggiungi storico recente sotto lock — evita race con _compress_episode
         with self.history_lock:
-            history = [
-                message for message in self._conversation_history
-                if normalize_scope(message.get("memory_scope")) == memory_scope
-            ][-self._max_history:]
+            history = [dict(message) for message in recent_scope_history]
         if history:
             timeline = []
             for index, message in enumerate(history, start=1):
                 role = _OWNER_NAME if message["role"] == "user" else _ASSISTANT_NAME
                 segment = message.get("segment_id")
                 segment_text = f"; segmento {segment}" if segment is not None else ""
+                restored_text = (
+                    f"; continuità ripristinata, fonte {message.get('turn_ref')}"
+                    if message.get("restored_context") else ""
+                )
                 timeline.append(
                     f"Turno storico {index}: {role}; "
                     f"{turn_time_label(message.get('observed_at'), user_observed_at)}"
-                    f"{segment_text}"
+                    f"{segment_text}{restored_text}"
                 )
             messages.append({
                 "role": "system",
@@ -327,6 +419,7 @@ class Brain:
                 scoped_count = sum(
                     1 for message in self._conversation_history
                     if normalize_scope(message.get("memory_scope")) == memory_scope
+                    and not message.get("restored_context")
                 )
                 trigger_compress = scoped_count >= config.EPISODE_COMPRESSION_THRESHOLD
 
@@ -374,6 +467,7 @@ class Brain:
                 scoped = [
                     message for message in self._conversation_history
                     if normalize_scope(message.get("memory_scope")) == memory_scope
+                    and not message.get("restored_context")
                 ]
                 if len(scoped) < config.EPISODE_COMPRESSION_THRESHOLD:
                     return  # un altro thread ha già compresso
@@ -699,6 +793,21 @@ class Brain:
             else:
                 turn_time = "tempo non registrato"
             lines.append(f"[T{index} | {turn_time}] {role}: {msg['content']}")
+            frame = msg.get("semantic_frame")
+            if msg.get("role") == "user" and isinstance(frame, dict):
+                frame_view = {
+                    "status": frame.get("status"),
+                    "confidence": frame.get("confidence"),
+                    "speech_acts": frame.get("speech_acts") or [],
+                    "entities": frame.get("entities") or [],
+                    "facts": frame.get("facts") or [],
+                    "memory_disposition": frame.get("memory_disposition"),
+                    "accepted_owner_turn": frame.get("accepted_owner_turn") is True,
+                }
+                lines.append(
+                    f"[FRAME T{index} | interpretazione accettata] "
+                    + json.dumps(frame_view, ensure_ascii=False, default=str)
+                )
         dialogue = "\n".join(lines)
         from core.memory_scope import is_experimental, normalize_scope
         memory_scope = normalize_scope(conversation[0].get("memory_scope"))
@@ -729,6 +838,14 @@ class Brain:
             f"(persona, azienda, cliente, prodotto, macchina, progetto, materiale...).\n"
             f"Risolvi il soggetto dal contesto conversazionale solo quando è chiaro; NON "
             f"defaultare mai a {owner_name}. Se il soggetto non è risolvibile con certezza, scarta il fatto.\n\n"
+            f"I FRAME associati ai turni UTENTE sono la comprensione semantica già accettata "
+            f"da Euri per quel turno, non nuovi fatti. Usali per disambiguare identità e "
+            f"modalità: quando un'entità del frame corrisponde chiaramente al soggetto, usa "
+            f"esattamente canonical_name senza re-interpretarne la grafia. Conserva sempre "
+            f"lo stato epistemico espresso (possibile, previsto, in prova, in attesa, "
+            f"confermato). Non trasformare una prova svolta in un esito ottenuto e non "
+            f"trasformare un risultato atteso in un risultato già noto. Il verbatim del "
+            f"turno resta la fonte che deve sostenere il contenuto.\n\n"
             f"Priorità operativa: se le parole di {owner_name} contengono numeri, quantità, "
             f"risultati preliminari, decisioni di prova o piani concreti (per esempio 'preparo 100 kg', "
             f"'i primi 20 pezzi sono dubbi', 'il cliente richiede una finitura opaca'), estrai questi "
@@ -1044,6 +1161,19 @@ class Brain:
                 f"[T{turn_id} | {role_label} | PARLANTE={speaker}] "
                 f"{str(message.get('content') or '').strip()}"
             )
+            frame = message.get("semantic_frame")
+            if role == "user" and isinstance(frame, dict):
+                frame_view = {
+                    "status": frame.get("status"),
+                    "confidence": frame.get("confidence"),
+                    "entities": frame.get("entities") or [],
+                    "facts": frame.get("facts") or [],
+                    "accepted_owner_turn": frame.get("accepted_owner_turn") is True,
+                }
+                lines.append(
+                    f"[FRAME T{turn_id} | interpretazione accettata] "
+                    + json.dumps(frame_view, ensure_ascii=False, default=str)
+                )
         if not lines:
             return None
 
@@ -1064,6 +1194,10 @@ class Brain:
             "Il campo PARLANTE stabilisce l'identità di quell'io. "
             "Una data assoluta prodotta dal resolver locale può corrispondere a "
             "un'espressione relativa presente nella fonte; non fare tu nuovi calcoli.\n"
+            "Il FRAME del turno UTENTE serve soltanto a disambiguare la stessa fonte: "
+            "se identifica il soggetto, la grafia canonical_name deve coincidere; se "
+            "esprime possibilità, prova, piano o attesa, la MEMORIA non può anticipare "
+            "un esito o una certezza. Il verbatim deve comunque sostenere il fatto.\n"
             f"{allowed_roles}\n"
             "Se OGNI affermazione è sostenuta, restituisci tutti e soli i TURNI "
             "necessari, anche aggiungendo quelli dimenticati dall'estrattore. "

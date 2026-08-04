@@ -94,6 +94,26 @@ def test_passive_weak_and_mixed_segment():
     assert all(bool(msg["trusted"]) is addressed for addressed, batch in batches for msg in batch)
     assert [len(batch) for _, batch in batches] == [4, 4]
 
+    owner_followups = [
+        {
+            "role": "user",
+            "content": "Il cliente sta ancora provando il blend.",
+            "trusted": False,
+            "semantic_frame": {"accepted_owner_turn": True},
+        },
+        {"role": "assistant", "content": "Capito.", "trusted": False},
+        {
+            "role": "user",
+            "content": "Aspettiamo ancora il risultato.",
+            "trusted": False,
+            "semantic_frame": {"accepted_owner_turn": True},
+        },
+        {"role": "assistant", "content": "Va bene.", "trusted": False},
+    ]
+    assert vd.VoiceDaemon._passive_extraction_batches(owner_followups) == [
+        (True, owner_followups)
+    ]
+
     short_mixed = history[:4]
     assert vd.VoiceDaemon._passive_extraction_batches(short_mixed) == [(False, short_mixed)]
     print("OK  segmento misto separato e ambient degradato")

@@ -10,18 +10,20 @@ specialistici conservano i dettagli, ma la prossima azione deve comparire qui.
 
 ## Prossima azione unica
 
-**COG-01 — validare il nuovo Loop 2h sulle vere opportunità di riparazione.**
+**PRESENT-01 — completare il collaudo live attraverso un riavvio.**
 
-Prima di progettare un altro Loop 2f, congelare coppie che il 2f legacy
-classifica realmente come `contradiction`, includendo omonimi, identità
-insufficienti, target/risultato e supersessioni autentiche. Misurare quante
-false supersessioni il contratto `loop2h-evidenced-identity-v1` riapre e quante
-vere supersessioni danneggia.
+Il primo pass live ha popolato la capsule e ha verificato il learner, ma ha
+esposto focus spostato da `no_store`, pending Initiative solo RAM e perdita di
+modalità nel passivo: tutti corretti. Ora riavviare con una domanda ancora
+aperta e rispondere senza rispiegare il soggetto. Verificare restore del pending,
+focus sostanziale, identità canonica, zero duplicati e zero memoria dal contesto
+reidratato. Poi COG-01 torna la prossima azione del filone cognitivo di memoria.
 
 ## Registro
 
 | ID | Priorità | Stato | Evidenza attuale | Trigger / prossimo passo | Criterio di chiusura |
 |---|---|---|---|---|---|
+| PRESENT-01 | P0 | primo pass live riuscito, restart finale da validare | capsule v1 popolata; focus frame-based; turni diretti Initiative context-only; pending TTL; passivo usa identità/modalità del frame; bonifica Gio Style append-only; regressioni workspace 8/8 e unit 70/70 | domanda Initiative o assistant ancora aperta → stop/restart → risposta ellittica; ispezionare restore e nuove memorie | pending/focus ripresi al primo turno, fonti visibili, 0 duplicati e 0 apprendimento dal restore; scadenza e scope fail-closed |
 | COG-01 | P0 | correzione implementata, validazione aperta | il vecchio 2h usava una label senza prova e dava `UNKNOWN` 0/6; il nuovo contratto richiede claim subject, base esplicita ed estratti verificabili, con backoff degli irrisolti. Diagnostica sul banco aperto: 0/12 vere supersessioni riaperte, 12/12 soggetti distinti riconosciuti, 6/6 ambigui senza mutazione | preregistrare challenge opportunity-first nuovo; non riusare 42 casi come validazione | effetto incrementale misurato su false e vere supersessioni; zero danno oltre il gate congelato |
 | MEM-01 | P0 | osservazione con sentinella | `gather_grounded_evidence` usa una finestra non ordinata di 800; bacino personale **668/800** al 30/07 | riaprire a **750**; confrontare in shadow document-frequency RediSearch contro calcolo legacy, senza alzare 800 | selezione completa o errore quantificato sull'intero corpus, con rollback |
 | BENCH-01 | P0 | da progettare | tutte le 10 conversazioni LoCoMo sono ormai development set aperto | collegare LongMemEval, privilegiando aggiornamento, temporalità, provenienza e astensione | primo campione indipendente congelato prima di risultati e tuning |

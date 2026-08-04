@@ -120,6 +120,56 @@ def test_extractor_preserves_explicit_dataset_speaker_identity():
     assert "identificatori LOCALI T1, T2" in prompt
 
 
+def test_extractor_and_auditor_receive_accepted_semantic_identity_and_modality():
+    conversation = [
+        {
+            "seq": 5,
+            "role": "user",
+            "speaker": "Stefano",
+            "content": "Geostyle sta ancora provando il blend; aspettiamo il risultato.",
+            "semantic_frame": {
+                "status": "interpreted",
+                "confidence": 0.97,
+                "speech_acts": ["INFORM"],
+                "entities": [{
+                    "observed_form": "Geostyle",
+                    "canonical_name": "Gio Style",
+                    "entity_type": "organization",
+                }],
+                "facts": [{
+                    "fact": "Gio Style sta provando il blend",
+                    "modality": "pending",
+                }],
+                "memory_disposition": "candidate",
+                "accepted_owner_turn": True,
+            },
+        },
+        {"seq": 6, "role": "assistant", "speaker": "Euri", "content": "Va bene."},
+    ]
+    with patch("core.brain.chat_client.chat", return_value=_Response("NOTHING")) as chat:
+        Brain().extract_passive_memories(conversation)
+    extraction_prompt = chat.call_args.kwargs["messages"][0]["content"]
+    assert "[FRAME T1 | interpretazione accettata]" in extraction_prompt
+    assert '"canonical_name": "Gio Style"' in extraction_prompt
+    assert '"modality": "pending"' in extraction_prompt
+    assert "Non trasformare una prova svolta in un esito ottenuto" in extraction_prompt
+
+    item = {
+        "content": "Gio Style sta ancora provando il blend e il risultato è in attesa.",
+        "support": "strong",
+        "memory_kind": "semantic_fact",
+        "source_turn_ids": [5],
+    }
+    with patch(
+        "core.brain.chat_client.chat",
+        return_value=_Response('{"verdict":"SUPPORTED","source_turn_ids":[5]}'),
+    ) as chat:
+        assert Brain().audit_passive_memory_provenance(item, conversation) is not None
+    audit_prompt = chat.call_args.kwargs["messages"][0]["content"]
+    assert "[FRAME T5 | interpretazione accettata]" in audit_prompt
+    assert "la grafia canonical_name deve coincidere" in audit_prompt
+
+
 def test_passive_windows_are_overlapping_and_cover_the_tail():
     conversation = [
         {"seq": index, "role": "user", "content": f"Turno {index}"}
@@ -346,6 +396,7 @@ if __name__ == "__main__":
     test_audit_repairs_incomplete_source_turn_union()
     test_audit_restores_the_owner_turn_that_resolves_an_anaphora()
     test_extractor_preserves_explicit_dataset_speaker_identity()
+    test_extractor_and_auditor_receive_accepted_semantic_identity_and_modality()
     test_passive_windows_are_overlapping_and_cover_the_tail()
     test_windowed_extractor_has_no_global_six_fact_cap()
     test_windowed_extractor_maps_prefixed_local_ids_to_session_ids()

@@ -95,6 +95,8 @@ class ConversationTurnStore:
 
     def __init__(self, redis_client):
         self.r = redis_client
+        from core.conversation_continuity import ConversationContinuityStore
+        self.continuity = ConversationContinuityStore(redis_client)
 
     @staticmethod
     def _speaker(role: str) -> str:
@@ -134,7 +136,38 @@ class ConversationTurnStore:
             doc["source_locator"] = str(message["source_locator"])
         # Lo stesso ref identifica lo stesso turno: la riscrittura è idempotente.
         self.r.json().set(key, "$", doc)
+        try:
+            self.continuity.record(doc)
+        except Exception as exc:
+            # L'archivio verbatim ha precedenza assoluta: una cache temporanea
+            # non deve mai trasformare una scrittura riuscita in un fallimento.
+            logger.debug(f"Continuità conversazionale non aggiornata per {ref} ({exc})")
         return ref
+
+    def restore_into(self, brain, memory_scope: str | None = None) -> int:
+        """Reidrata il Brain da una capsule recente, senza journal o nuove scritture."""
+        try:
+            snapshot = self.continuity.load(memory_scope)
+        except Exception as exc:
+            logger.debug(f"Continuità conversazionale non disponibile ({exc})")
+            return 0
+        if snapshot is None:
+            return 0
+        restored = brain.restore_continuity(
+            list(snapshot.turns),
+            memory_scope=snapshot.memory_scope,
+            prompt_context=snapshot.render_for_prompt(),
+        )
+        if restored:
+            logger.info(
+                "Continuità conversazionale: {} turni, {} entità, {} fili aperti "
+                "ripristinati per scope {}",
+                restored,
+                len(snapshot.active_entities),
+                len(snapshot.open_loops),
+                snapshot.memory_scope,
+            )
+        return restored
 
     def persist_many(self, messages: list[dict]) -> int:
         persisted = 0

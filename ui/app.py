@@ -207,6 +207,7 @@ executor.brain = brain
 executor.memory = memory_manager
 if brain._turn_callback is None:
     brain._turn_callback = turn_store.persist
+turn_store.restore_into(brain, get_active_scope(r))
 if brain._episode_callback is None:
     brain._episode_callback = lambda summary, temporal_context: memory_manager.save_memory(
         summary,
@@ -990,6 +991,8 @@ with main_col:
                 recent_history=_semantic_history,
                 memory_scope=current_scope(),
             )
+            semantic_frame = dict(semantic_frame)
+            semantic_frame["accepted_owner_turn"] = True
             if semantic_frame.get("canonicalizations"):
                 brain.rewrite_entity_aliases(
                     lambda value: semantic_turns.registry.canonicalize(
@@ -1281,6 +1284,14 @@ with main_col:
                                     {
                                         "requires_verification": True,
                                         "passive_support": "tacit_acceptance",
+                                    }
+                                )
+                            else:
+                                final_fields.update(
+                                    {
+                                        "requires_verification": False,
+                                        "passive_support": "owner_asserted",
+                                        "epistemic_status": "user_asserted",
                                     }
                                 )
                             mid = memory_manager.save_memory(

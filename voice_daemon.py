@@ -261,6 +261,9 @@ class VoiceDaemon:
             focus_window_s=getattr(config, "CONVERSATION_FOCUS_SECONDS", 5 * 60),
             max_focus_turns=getattr(config, "CONVERSATION_FOCUS_MAX_TURNS", 4),
         )
+        from core.memory_scope import get_active_scope
+        self.turn_store.restore_into(self.brain, get_active_scope(self.r))
+        self._restore_pending_continuity(get_active_scope(self.r))
         self._last_social_baseline_ts = 0.0
         self.social_perception = build_social_perception(self._handle_social_snapshot)
         self.visual_gate.set_social_perception(self.social_perception)
@@ -286,6 +289,54 @@ class VoiceDaemon:
             (re.compile(r'\b(controllo|verifico)\b.{0,20}\b(cpu|ram|disco|spazio)\b', re.IGNORECASE),
              lambda t, r: self._handle_execute("controlla la cpu")),
         ]
+
+    def _persist_pending_continuity(self, kind: str, state: _PendingState) -> None:
+        try:
+            from core.memory_scope import get_active_scope
+            self.turn_store.continuity.set_pending(
+                kind,
+                state.data,
+                get_active_scope(self.r),
+                timeout_s=max(1, int(state._timeout)),
+            )
+        except Exception as exc:
+            logger.debug("Continuità pending non persistita ({})", exc)
+
+    def _clear_pending_continuity(self) -> None:
+        try:
+            from core.memory_scope import get_active_scope
+            self.turn_store.continuity.clear_pending(get_active_scope(self.r))
+        except Exception as exc:
+            logger.debug("Continuità pending non rimossa ({})", exc)
+
+    def _restore_pending_continuity(self, memory_scope: str) -> None:
+        """Ri-arma una domanda proattiva pronunciata prima del riavvio."""
+        try:
+            payload = self.turn_store.continuity.load_pending(memory_scope)
+        except Exception as exc:
+            logger.debug("Continuità pending non disponibile ({})", exc)
+            return
+        if not payload:
+            return
+        data = payload.get("data") or {}
+        question = str(data.get("question") or "").strip()
+        question_id = str(data.get("question_id") or "").strip()
+        remaining = max(1.0, float(payload["expires_at"]) - time.time())
+        if not question or not question_id:
+            return
+        state = _PendingState(data, timeout=remaining)
+        if payload.get("kind") == "reaction" and isinstance(data.get("insight"), dict):
+            self._awaiting_reaction = state
+        elif payload.get("kind") == "memory_verification" and data.get("memory_id"):
+            self._awaiting_memory_verification = state
+        else:
+            return
+        self.present.set_pending_question(question_id, question)
+        logger.info(
+            "Continuità pending: domanda {} ripristinata ({}s residui)",
+            payload.get("kind"),
+            round(remaining),
+        )
 
     def _read_face_enrollment_request(self) -> dict | None:
         """Canale locale UI->VisualGate; contiene comandi, mai frame o embedding."""
@@ -881,6 +932,7 @@ class VoiceDaemon:
         Chat); qui si parla a voce e si mette in attesa-reazione via _PendingState (30 min)."""
         from core.reaction import run_briefing
         text, insight = run_briefing(self.r, self.embedder, topic)
+        self.brain.record_context_message("assistant", text)
         self.memory.log_conversation(_ASSISTANT_NAME, text)
         self._speak(text)
         if insight is not None:
@@ -889,6 +941,7 @@ class VoiceDaemon:
                 {"insight": insight, "question": text, "question_id": question_id},
                 timeout=300,
             )
+            self._persist_pending_continuity("reaction", self._awaiting_reaction)
             self.present.set_pending_question(question_id, text)
 
     def _handle_reaction(self, text: str) -> bool:
@@ -907,6 +960,7 @@ class VoiceDaemon:
         from core.utterance_pragmatics import classify_reply_type
         reply_type = classify_reply_type(pending.data.get("question", ""), text)
         if reply_type == "CLARIFICATION":
+            self.brain.record_context_message("user", text)
             self.memory.log_conversation(_OWNER_NAME, text)
             ins = pending.data.get("insight", {})
             question = pending.data.get("question", "")
@@ -915,6 +969,7 @@ class VoiceDaemon:
                 {"insight": ins, "question": question, "question_id": question_id},
                 timeout=300,
             )
+            self._persist_pending_continuity("reaction", self._awaiting_reaction)
             self.present.set_pending_question(question_id, question)
             content = (ins.get("content") or "").strip()
             if content:
@@ -927,6 +982,7 @@ class VoiceDaemon:
             else:
                 snippet = "il pensiero che ti ho appena condiviso"
             reply = f"Mi riferivo a questo: {snippet}. Secondo te regge, o è una forzatura?"
+            self.brain.record_context_message("assistant", reply)
             self.memory.log_conversation(_ASSISTANT_NAME, reply)
             self._speak(reply)
             return True
@@ -934,13 +990,16 @@ class VoiceDaemon:
         if reply_type == "OFF_TOPIC":
             question_id = pending.data.get("question_id")
             self._awaiting_reaction = None
+            self._clear_pending_continuity()
             self.present.clear_pending_question(question_id)
             logger.info("Reaction pending chiusa: replica OFF_TOPIC, turno restituito al dispatch")
             return False
 
         self._awaiting_reaction = None
+        self._clear_pending_continuity()
         self.present.clear_pending_question(pending.data.get("question_id"))
         insight = pending.data["insight"]
+        self.brain.record_context_message("user", text)
         self.memory.log_conversation(_OWNER_NAME, text)
 
         def _bg(ins=insight, reaction=text):
@@ -951,6 +1010,7 @@ class VoiceDaemon:
                 logger.error(f"Cattura reazione fallita: {e}")
 
         threading.Thread(target=_bg, daemon=True).start()
+        self.brain.record_context_message("assistant", _REACTION_ACK)
         self._speak(_REACTION_ACK)
         return True
 
@@ -966,13 +1026,16 @@ class VoiceDaemon:
             data.get("question", ""), data.get("claim", ""), text
         )
         if verdict == "CLARIFICATION":
+            self.brain.record_context_message("user", text)
             self.memory.log_conversation(_OWNER_NAME, text)
             reply = f"Mi riferivo a questa informazione: {data.get('claim', '')}. È corretta?"
+            self.brain.record_context_message("assistant", reply)
             self.memory.log_conversation(_ASSISTANT_NAME, reply)
             self._speak(reply)
             return True
         if verdict == "OFF_TOPIC":
             self._awaiting_memory_verification = None
+            self._clear_pending_continuity()
             self.present.clear_pending_question(data.get("question_id"))
             logger.info("Verifica memoria passiva chiusa: replica OFF_TOPIC")
             return False
@@ -1022,7 +1085,10 @@ class VoiceDaemon:
             return True
 
         self._awaiting_memory_verification = None
+        self._clear_pending_continuity()
         self.present.clear_pending_question(data.get("question_id"))
+        self.brain.record_context_message("user", text)
+        self.brain.record_context_message("assistant", reply)
         self.memory.log_conversation(_OWNER_NAME, text)
         self.memory.log_conversation(_ASSISTANT_NAME, reply)
         self._speak(reply)
@@ -2896,6 +2962,8 @@ class VoiceDaemon:
                     "Dammi un nome per la sessione sperimentale, per esempio Progetto Alfa."
                 )
                 return True
+            if self._awaiting_reaction or self._awaiting_memory_verification:
+                self._clear_pending_continuity()
             state = start_experiment(
                 self.r,
                 command.label,
@@ -2903,6 +2971,7 @@ class VoiceDaemon:
                     config, "MEMORY_EXPERIMENT_SCOPE_TTL_SECONDS", 24 * 3600
                 ),
             )
+            self.turn_store.restore_into(self.brain, state.get("scope"))
             # Una domanda proattiva o una verifica nata nella memoria personale
             # non può ricevere risposta dentro lo scenario appena aperto.
             if self._awaiting_reaction:
@@ -2928,6 +2997,7 @@ class VoiceDaemon:
             return True
         if command.action == "stop":
             previous = stop_experiment(self.r)
+            self.turn_store.restore_into(self.brain, "personal")
             if previous.get("active"):
                 logger.info(
                     "Scope memoria: sessione sperimentale chiusa scope={}",
@@ -2959,6 +3029,7 @@ class VoiceDaemon:
         trusted: bool = False,
         observed_at: float | None = None,
         semantic_frame: dict | None = None,
+        owner_authenticated: bool = False,
     ):
         """Applica lo scope conversazionale anche ai percorsi anticipati/pending."""
         from core.memory_scope import get_active_scope, use_memory_scope
@@ -2970,6 +3041,7 @@ class VoiceDaemon:
                 trusted=trusted,
                 observed_at=observed_at,
                 semantic_frame=semantic_frame,
+                owner_authenticated=owner_authenticated,
             )
 
     def _apply_semantic_canonicalizations(self, frame: dict) -> dict:
@@ -3027,6 +3099,7 @@ class VoiceDaemon:
         trusted: bool = False,
         observed_at: float | None = None,
         semantic_frame: dict | None = None,
+        owner_authenticated: bool = False,
     ):
         """Smista il testo trascritto all'handler corretto."""
         if self._handle_memory_scope_command(text):
@@ -3107,6 +3180,7 @@ class VoiceDaemon:
                     self._awaiting_reaction.data.get("question_id")
                 )
                 self._awaiting_reaction = None
+                self._clear_pending_continuity()
                 logger.debug("Reaction pending scaduta")
             else:
                 if self._handle_reaction(text):
@@ -3118,6 +3192,7 @@ class VoiceDaemon:
                     self._awaiting_memory_verification.data.get("question_id")
                 )
                 self._awaiting_memory_verification = None
+                self._clear_pending_continuity()
                 logger.debug("Verifica memoria passiva scaduta")
             elif self._handle_memory_verification(text):
                 return
@@ -3155,6 +3230,12 @@ class VoiceDaemon:
         else:
             semantic_frame = self.semantic_turns.commit_precomputed(semantic_frame)
             semantic_frame = self._apply_semantic_canonicalizations(semantic_frame)
+        if owner_authenticated:
+            # È un attributo del canale accettato, distinto dalla wake word:
+            # un follow-up del proprietario dentro la lease resta una sua
+            # asserzione anche se non ripete "Euri".
+            semantic_frame = dict(semantic_frame)
+            semantic_frame["accepted_owner_turn"] = True
         text = str(semantic_frame.get("interpreted_text") or text)
 
         # "Scrivilo / salvalo" dopo una risposta lunga → usa il contenuto dell'ultima risposta (TTL 300s)
@@ -3467,6 +3548,14 @@ class VoiceDaemon:
                                 {
                                     "requires_verification": True,
                                     "passive_support": "tacit_acceptance",
+                                }
+                            )
+                        else:
+                            final_fields.update(
+                                {
+                                    "requires_verification": False,
+                                    "passive_support": "owner_asserted",
+                                    "epistemic_status": "user_asserted",
                                 }
                             )
                         mid = self.memory.save_memory(
@@ -4049,6 +4138,7 @@ class VoiceDaemon:
                 },
                 timeout=300,
             )
+            self._persist_pending_continuity("reaction", self._awaiting_reaction)
             self.present.set_pending_question(event_id, question)
         elif (
             str(candidate.event.get("sense") or "") == "memory"
@@ -4063,11 +4153,15 @@ class VoiceDaemon:
                 },
                 timeout=300,
             )
+            self._persist_pending_continuity(
+                "memory_verification", self._awaiting_memory_verification
+            )
             self.present.set_pending_question(event_id, question)
 
         record_candidate(self.r, candidate, decision="spoken", proposal=proposal)
         clear_pending(self.r, event_id)
         mark_seen(self.r, event_id)
+        self.brain.record_context_message("assistant", question)
         self.memory.log_conversation(_ASSISTANT_NAME, question)
         self._speak(question)
         return True
@@ -4404,6 +4498,7 @@ class VoiceDaemon:
                             trusted=has_wake_word or bootstrap_frame is not None,
                             observed_at=utterance_started_at,
                             semantic_frame=bootstrap_frame,
+                            owner_authenticated=actor_id == _OWNER_ID,
                         )
                         if actor_id == _OWNER_ID:
                             self._offer_next_guest_claim()
@@ -4425,9 +4520,20 @@ class VoiceDaemon:
 
         buckets: dict[tuple[str, bool], list[dict]] = {}
         order: list[tuple[str, bool]] = []
+        current_exchange: dict[str, bool] = {}
         for message in history:
-            addressed = bool(message.get("trusted"))
-            key = (normalize_scope(message.get("memory_scope")), addressed)
+            scope = normalize_scope(message.get("memory_scope"))
+            role = str(message.get("role") or "")
+            if role == "user":
+                frame = message.get("semantic_frame")
+                addressed = bool(message.get("trusted")) or bool(
+                    isinstance(frame, dict)
+                    and frame.get("accepted_owner_turn") is True
+                )
+                current_exchange[scope] = addressed
+            else:
+                addressed = bool(message.get("trusted")) or current_exchange.get(scope, False)
+            key = (scope, addressed)
             if key not in buckets:
                 buckets[key] = []
                 order.append(key)
