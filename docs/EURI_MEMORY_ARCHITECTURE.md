@@ -86,6 +86,7 @@ La distinzione fondamentale è questa:
 | Piano | Persistenza | Fonte di verità | Funzione | Può entrare nel prompt? |
 |---|---:|---|---|---|
 | Presente cognitivo | secondi/minuti, in processo | stato runtime | presenza, focus e pending immediati | sì, come stato corrente |
+| Artefatto documentale di sessione | 30 minuti, in processo | ultimo testo completo letto | sorgente operativa per revisioni TXT/DOCX/PDF | solo tramite tool, con estratto breve in history |
 | Continuità conversazionale | 6 ore, max 12 turni per scope | puntatori Redis verso i turni | ripristina il filo dopo un riavvio | sì, come contesto temporaneo |
 | Archivio turni | durevole, senza TTL | `euri:turn:*` | evidenza raw indirizzabile e cronologica | sì, tramite history o dual-channel |
 | Memoria cognitiva | variabile per sorgente | `euri:memory:*` | fatti, episodi, riflessioni, lezioni e consolidati | sì, tramite RAG |
@@ -100,6 +101,25 @@ La distinzione fondamentale è questa:
 `core/cognitive_present.py` mantiene lo stato di secondi e minuti. È separato
 dalla memoria a lungo termine. Gli snapshot sensoriali o sociali non diventano
 fatti mnemonici soltanto perché sono presenti in questo stato.
+
+### Artefatto documentale di sessione (non è memoria)
+
+`agent.executor.Executor` conserva per 30 minuti la sorgente completa dell'ultimo
+testo letto da `clipboard_read`/`clipboard_analyze` oppure da `read_document`. La UI
+usa già quest'ultimo percorso per PDF, DOCX, PPTX e gli altri formati caricati
+interamente: non esiste un secondo uploader o un secondo archivio.
+
+- `context_extra` resta un estratto limitato destinato alla history del modello;
+- `artifact_content` è la sorgente operativa completa, mantenuta solo in RAM;
+- `compose_document` usa la sorgente e la conversazione recente per risolvere
+  richieste come “applica le modifiche suggerite”;
+- TXT, DOCX e PDF vengono renderizzati deterministicamente in
+  `~/Scrivania/scambio_dati`, senza sovrascrittura, poi riaperti e validati;
+- la conferma contiene una ricevuta reale (`filepath`, byte, SHA-256 e controlli di
+  struttura); senza sorgente o senza ricevuta il turno fallisce chiuso;
+- l'artefatto non entra in `euri:memory:*`, non alimenta il passive learner e si
+  perde al riavvio o dopo la scadenza. Una persistenza cognitiva richiede i normali
+  percorsi SAVE/Teach.
 
 ### Continuità conversazionale
 

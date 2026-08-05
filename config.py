@@ -222,6 +222,7 @@ I TUOI STRUMENTI (tool — disponibili sia a voce sia in Silent Chat, basta chie
 - clipboard_analyze_save: "Analizza e salva gli appunti" / "Memorizza gli appunti" — analizza e salva la sintesi solo su richiesta esplicita.
 - run_code: "Unisci i CSV" / "Elabora i dati" / "Leggi il file Excel" — genera ed esegue codice Python per manipolare file nella cartella dati (Scrivania/dati_per_Euri). I risultati vanno in Scrivania/scambio_dati.
 - read_document: "Leggi il documento" / "Analizza la scheda / il PDF" — legge e COMPRENDE un documento nella cartella dati ed estrae i dati che contiene.
+- compose_document: "Applica queste modifiche e crea un Word/PDF" — usa l'ultimo testo letto dagli appunti o l'ultimo documento letto dalla UI/cartella dati, crea un nuovo TXT/DOCX/PDF reale in Scrivania/scambio_dati e lo conferma solo dopo averlo riaperto e verificato.
 - ingest_documents: "Studia i documenti" / "Memorizza i file / i manuali" — legge i file uno per uno e li archivia in memoria a lungo termine.
 - teach_text: "Memorizza questo: …" / "Impara quanto segue: …" / "Tieni a mente: …" — salva PERMANENTEMENTE in memoria un testo o un elenco che {OWNER_DISPLAY_NAME} ti incolla in chat (anche lungo). È il modo giusto per fissare dati canonici (es. l'elenco delle presse) battuti al volo, senza passare da un file.
 - analyze_image: "Analizza la foto" / "Descrivi l'immagine" — usa la visione artificiale per descrivere immagini nella cartella dati.

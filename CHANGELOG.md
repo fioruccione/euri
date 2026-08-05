@@ -2,6 +2,28 @@
 
 ## V2.22 (continua, 04/08/2026) — Un solo significato operativo per turno
 
+### Documenti completi come artefatti operativi verificati
+
+- Clipboard, `read_document` e uploader già esistente della Silent Chat convergono
+  ora nello stesso artefatto di sessione completo. Il blob operativo resta separato
+  dall'estratto breve iniettato nella history, scade dopo 30 minuti e non diventa
+  memoria Redis.
+- Nuova capability contestuale `compose_document`: il controller semantico sceglie
+  l'azione dal catalogo reale senza frasi o aziende hardcoded; la richiesta verbatim
+  dell'utente, la sorgente integra e il contesto recente alimentano un piano JSON di
+  heading, paragrafi, liste e tabelle.
+- Renderer deterministici producono TXT, DOCX e PDF in
+  `~/Scrivania/scambio_dati`, non sovrascrivono file esistenti e riaprono sempre
+  l'output. Solo una ricevuta con percorso, byte, SHA-256 e validazione autorizza la
+  conferma “creato”. PDF e Word sono quindi file strutturati reali, non testo finto
+  narrato dal modello.
+- Voce e Silent Chat falliscono chiuse su un `REQUEST_ACTION` non grounded: un veto,
+  un timeout o una proposta vuota non possono più degradare a CHAT e generare frasi
+  come “sto preparando/salvando” senza esecuzione. Regressioni pure in
+  `test_document_composer.py` coprono sorgente completa, output TXT/DOCX/PDF,
+  anti-overwrite, invalidazione della sorgente stale, richiesta verbatim, ricevuta
+  e astensione fail-closed. Manifest unitario completo: **74/74 in 80,8 s**.
+
 ### Mappa canonica dell'architettura mnemonica
 
 - Aggiunto `docs/EURI_MEMORY_ARCHITECTURE.md` come punto di ingresso stabile per

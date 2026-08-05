@@ -8,6 +8,7 @@ import re
 import time
 import threading
 import concurrent.futures
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -139,8 +140,74 @@ class Executor:
     def __init__(self):
         self._registry: dict[str, ToolSpec] = {}
         self._guard = SandboxGuard()
+        self._session_artifact_lock = threading.Lock()
+        self._session_artifact: dict | None = None
         self.stop_event = threading.Event()  # interruzione vocale per processi lunghi
         self._register_default_tools()
+
+    def _capture_session_artifact(self, tool_name: str, result: ToolResult) -> None:
+        """Conserva la sorgente completa dell'ultimo documento letto nella sessione.
+
+        ``context_extra`` puo' restare corto per il prompt conversazionale; il campo
+        separato ``artifact_content`` e' invece la sorgente operativa integra usata
+        dai tool documentali successivi.
+        """
+        raw = result.raw_data or {}
+        content = raw.get("artifact_content")
+        if not isinstance(content, str) or not content.strip():
+            if tool_name in {
+                "clipboard_read", "clipboard_analyze", "clipboard_analyze_save",
+                "read_document",
+            }:
+                # Una nuova lettura vuota/fallita invalida la sorgente precedente:
+                # e' più sicuro chiedere di rileggere che modificare il file sbagliato.
+                with self._session_artifact_lock:
+                    self._session_artifact = None
+                logger.info(
+                    "Executor: artefatto di sessione invalidato dopo {} senza sorgente",
+                    tool_name,
+                )
+            return
+        artifact = {
+            "id": f"artifact:{uuid.uuid4()}",
+            "kind": str(raw.get("artifact_kind") or tool_name),
+            "source": str(raw.get("artifact_source") or tool_name),
+            "filenames": list(raw.get("artifact_filenames") or []),
+            "content": content,
+            "captured_at": time.time(),
+        }
+        with self._session_artifact_lock:
+            self._session_artifact = artifact
+        logger.info(
+            "Executor: artefatto di sessione acquisito da {} ({} caratteri, id={})",
+            tool_name, len(content), artifact["id"].split(":", 1)[-1][:8],
+        )
+
+    def get_session_artifact(self, *, max_age_seconds: int = 1800) -> dict | None:
+        """Ritorna una copia dell'artefatto recente, senza esporre stato mutabile."""
+        with self._session_artifact_lock:
+            artifact = dict(self._session_artifact) if self._session_artifact else None
+        if not artifact:
+            return None
+        if time.time() - float(artifact.get("captured_at") or 0) > max_age_seconds:
+            return None
+        return artifact
+
+    def _recent_document_context(self, max_chars: int = 7000) -> str:
+        """Estratto recente utile a risolvere 'applica le modifiche suggerite'."""
+        brain = getattr(self, "brain", None)
+        if brain is None:
+            return ""
+        try:
+            with brain.history_lock:
+                messages = list(brain._conversation_history)[-8:]
+            rendered = "\n".join(
+                f"{str(item.get('role') or '').upper()}: {item.get('content') or ''}"
+                for item in messages
+            )
+            return rendered[-max_chars:]
+        except Exception:
+            return ""
 
     def _register_default_tools(self):
         from agent.tools.system_monitor import (
@@ -344,7 +411,13 @@ class Executor:
             return ToolResult(
                 success=True,
                 output=comprehension,
-                raw_data={"context_extra": raw_blob[:6000]} if raw_blob else {},
+                raw_data={
+                    "context_extra": raw_blob[:6000],
+                    "artifact_content": raw_blob,
+                    "artifact_kind": "uploaded_documents",
+                    "artifact_source": str(input_dir),
+                    "artifact_filenames": sorted(documents),
+                } if raw_blob else {},
             )
 
         def _tool_ingest_documents(params: dict, **kwargs) -> ToolResult:
@@ -622,6 +695,17 @@ class Executor:
                 output=f"Nella cartella dati ci sono {summary}.{hint}",
             )
 
+        def _tool_compose_document(params: dict, **kwargs) -> ToolResult:
+            """Crea un file reale a partire dall'ultima sorgente letta in sessione."""
+            from agent.tools.document_composer import compose_document_tool
+            return compose_document_tool(
+                params,
+                artifact=self.get_session_artifact(),
+                recent_context=self._recent_document_context(),
+                brain=getattr(self, "brain", None),
+                output_dir=Path(config.CODE_RUNNER_OUTPUT_DIR),
+            )
+
         code_tools = [
             ToolSpec(
                 name="run_code",
@@ -641,6 +725,28 @@ class Executor:
                 # pre-extract (pypdf, eventuale Vision) + 1 chiamata di comprensione.
                 timeout_seconds=config.CODE_RUNNER_TOOL_TIMEOUT,
                 effect="read_only",
+                contextual=True,
+            ),
+            ToolSpec(
+                name="compose_document",
+                description=(
+                    "Crea DAVVERO un nuovo documento strutturato usando l'ultimo testo "
+                    "letto dagli appunti o l'ultimo documento letto dalla UI/cartella dati. "
+                    "Applica revisioni richieste e produce TXT, DOCX Word o PDF nella cartella "
+                    "Scrivania/scambio_dati. Parametri: instruction (richiesta completa), "
+                    "format (txt, docx o pdf), filename opzionale."
+                ),
+                parameters_schema={
+                    "instruction": {"type": "str", "required": True},
+                    "format": {
+                        "type": "str", "required": False,
+                        "values": ["txt", "docx", "pdf"],
+                    },
+                    "filename": {"type": "str", "required": False},
+                },
+                handler=_tool_compose_document,
+                timeout_seconds=180,
+                effect="local_write",
                 contextual=True,
             ),
             ToolSpec(
@@ -726,6 +832,81 @@ class Executor:
             for name, spec in self._registry.items()
             if spec.contextual
         ]
+
+    def dispatch_contextual_action(
+        self,
+        text: str,
+        *,
+        previous_euri_turn: str = "",
+        controller=None,
+    ) -> dict:
+        """Percorso semantico channel-agnostic per un REQUEST_ACTION gia' accertato.
+
+        E' usato dalla Silent Chat, che possiede gia' il frame semantico ma non il
+        daemon vocale. Nessuna regex decide la capability: il controller puo'
+        scegliere soltanto dal catalogo Executor e la policy rivalida l'effetto.
+        Qualunque incertezza ritorna un esito fail-closed, mai una risposta CHAT.
+        """
+        from core.action_controller import (
+            ActionController, ActionDisposition, build_capability_snapshot,
+        )
+
+        action_controller = controller or ActionController()
+        capabilities, state_context, targets = build_capability_snapshot(
+            [], self.get_contextual_capabilities()
+        )
+        proposal = action_controller.propose(
+            text,
+            previous_euri_turn=previous_euri_turn,
+            capabilities=capabilities,
+            state_context=state_context,
+            targets_by_id=targets,
+        )
+        decision = action_controller.decide(proposal, capabilities)
+        if decision.disposition != ActionDisposition.EXECUTE or proposal is None:
+            logger.info(
+                "Executor contextual: {} cap={} reason={}",
+                decision.disposition.value,
+                proposal.capability if proposal else "-",
+                decision.reason,
+            )
+            return {
+                "tool_name": proposal.capability if proposal else "",
+                "output": (
+                    "Non ho eseguito nulla: ho capito la richiesta operativa, ma "
+                    "non riesco a collegarla con sufficiente certezza a uno strumento reale."
+                ),
+                "raw_data": {},
+                "success": False,
+                "fail_closed": True,
+            }
+
+        tool_name = proposal.capability.removeprefix("executor.")
+        parameters = dict(proposal.args)
+        if tool_name == "compose_document":
+            parameters["instruction"] = text
+            if parameters.get("format") not in {"txt", "docx", "pdf"}:
+                lowered = text.lower()
+                if re.search(r"\b(word|docx)\b", lowered):
+                    parameters["format"] = "docx"
+                elif re.search(r"\bpdf\b", lowered):
+                    parameters["format"] = "pdf"
+                else:
+                    parameters["format"] = "txt"
+        result = self.execute(ToolCall(tool_name=tool_name, parameters=parameters))
+        if getattr(self, "brain", None) is not None:
+            try:
+                self.brain.inject_tool_result(
+                    text, build_injected_context(result.output, result.raw_data)
+                )
+            except Exception as exc:
+                logger.debug(f"dispatch_contextual_action: inject fallito — {exc}")
+        return {
+            "tool_name": tool_name,
+            "output": result.output,
+            "raw_data": result.raw_data or {},
+            "success": result.success,
+        }
 
     # Patterns ordinati dal più specifico al più generico
     _TOOL_PATTERNS: list[tuple[re.Pattern, str, dict]] = [
@@ -968,6 +1149,7 @@ class Executor:
                     memory=getattr(self, "memory", None),
                 )
                 result = future.result(timeout=spec.timeout_seconds)
+            self._capture_session_artifact(call.tool_name, result)
             logger.info(f"Executor: {call.tool_name}({call.parameters}) → {'OK' if result.success else 'FAIL'}")
             return result
         except concurrent.futures.TimeoutError:
@@ -1028,7 +1210,7 @@ class Executor:
 
         # Continuità: inietta il contenuto fedele nella history del Brain, così i
         # turn successivi leggono i valori esatti invece di confabularli.
-        if call.tool_name in ("analyze_image", "clipboard_analyze", "clipboard_analyze_save", "run_code", "read_document", "ingest_documents", "read_url", "teach_text") \
+        if call.tool_name in ("analyze_image", "clipboard_read", "clipboard_analyze", "clipboard_analyze_save", "run_code", "read_document", "ingest_documents", "read_url", "teach_text", "compose_document") \
                 and getattr(self, "brain", None) is not None:
             try:
                 self.brain.inject_tool_result(text, build_injected_context(result.output, result.raw_data))

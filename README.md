@@ -367,6 +367,16 @@ Euri può ora **manipolare file locali** tramite comandi vocali. Genera script P
 - Input: `~/Scrivania/dati_per_Euri/`
 - Output: `~/Scrivania/scambio_dati/`
 
+**Documenti di sessione e output verificati:** la clipboard, i documenti caricati
+interamente dalla Silent Chat e i file letti dalla cartella dati alimentano un'unica
+sorgente operativa temporanea. Un follow-up naturale come *“applica le modifiche e
+fammi un Word/PDF”* passa dal controller semantico alla capability
+`compose_document`: Gemma produce un piano strutturale, mentre renderer deterministici
+scrivono TXT, DOCX o PDF. Il file non viene mai sovrascritto e Euri lo dichiara creato
+solo dopo riapertura, validazione, dimensione e hash reali. L'output resta in
+`~/Scrivania/scambio_dati/`; la sorgente di sessione scade dopo 30 minuti e non è una
+memoria Redis.
+
 ### 6. Visione Artificiale ⭐ Nuovo in V2.1
 Euri può analizzare immagini locali usando **Gemma 4 Vision** (multimodale), senza nessun servizio esterno. Basta mettere un'immagine nella cartella dati e chiedere: *"Analizza la foto"*.
 

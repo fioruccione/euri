@@ -1317,7 +1317,21 @@ class VoiceDaemon:
                          else "Non riesco a spostarlo: quell'impegno non è più disponibile.")
         elif capability.startswith("executor."):
             tool_name = capability.split(".", 1)[1]
-            call = ToolCall(tool_name=tool_name, parameters=dict(proposal.args))
+            parameters = dict(proposal.args)
+            if tool_name == "compose_document":
+                # Il modello seleziona la capability, ma la richiesta che guida
+                # l'editor resta il turno utente verbatim: nessuna parafrasi del
+                # controller puo' cambiare il documento da produrre.
+                parameters["instruction"] = text
+                if parameters.get("format") not in {"txt", "docx", "pdf"}:
+                    lowered = text.lower()
+                    if re.search(r"\b(word|docx)\b", lowered):
+                        parameters["format"] = "docx"
+                    elif re.search(r"\bpdf\b", lowered):
+                        parameters["format"] = "pdf"
+                    else:
+                        parameters["format"] = "txt"
+            call = ToolCall(tool_name=tool_name, parameters=parameters)
             self.executor.stop_event.clear()
             result = self.executor.execute(call)
             ok = bool(result.success)
@@ -1327,7 +1341,9 @@ class VoiceDaemon:
                 self.memory.set_last_rag_ctx([])
             except Exception as exc:
                 logger.debug(f"clear last_rag_ctx contextual action fallito: {exc}")
-            if not integrate_response and tool_name in {"analyze_image", "read_document"}:
+            if not integrate_response and tool_name in {
+                "analyze_image", "read_document", "clipboard_read", "compose_document"
+            }:
                 self.brain.inject_tool_result(
                     text, build_injected_context(reply, result.raw_data)
                 )
@@ -1972,7 +1988,7 @@ class VoiceDaemon:
         # (es. "cosa ne pensi?" subito dopo un'analisi). log_conversation scrive su
         # Redis, ma respond() costruisce il contesto solo da _conversation_history:
         # senza questo inject il CodeRunner risponderebbe "non vedo nulla".
-        if call.tool_name in ("analyze_image", "clipboard_analyze", "clipboard_analyze_save", "run_code", "read_document", "ingest_documents", "read_url", "teach_text"):
+        if call.tool_name in ("analyze_image", "clipboard_read", "clipboard_analyze", "clipboard_analyze_save", "run_code", "read_document", "ingest_documents", "read_url", "teach_text", "compose_document"):
             # Disaccoppia "cosa dice" da "cosa ricorda": nel contesto va anche il
             # contenuto FEDELE (run_code → CSV prodotto; read_document → testo grezzo
             # del documento), così le domande quantitative successive ("quanto era
@@ -3357,6 +3373,10 @@ class VoiceDaemon:
             )
             if handled:
                 return
+            if semantic_action_reasoning:
+                # Anche un guasto/risposta vuota del controller e' un veto quando
+                # il frame ha gia' accertato REQUEST_ACTION: mai degradare a CHAT.
+                action_veto = True
             if intent in {Intent.COMPLETE, Intent.RESCHEDULE}:
                 # Una mutazione non ricade mai sugli handler legacy se il
                 # controller non ha prodotto/eseguito una decisione grounded.
@@ -3398,6 +3418,25 @@ class VoiceDaemon:
                         action_veto = True
                         fallback_intent = Intent.CHAT
                 intent = fallback_intent
+
+        if (
+            intent == Intent.CHAT
+            and action_veto
+            and semantic_action_reasoning
+        ):
+            # Un REQUEST_ACTION compreso semanticamente non puo' degradare a CHAT:
+            # Gemma altrimenti puo' narrare al futuro un'operazione che nessun tool
+            # ha eseguito. Il fallimento resta osservabile e senza effetti.
+            reply = (
+                "Non ho eseguito nulla: ho capito che mi stai chiedendo un'azione, "
+                "ma non sono riuscito a collegarla con sufficiente certezza a uno "
+                "strumento reale. Riformula il risultato che vuoi ottenere."
+            )
+            self.memory.log_conversation(_OWNER_NAME, text)
+            self.memory.log_conversation(_ASSISTANT_NAME, reply)
+            self._speak(reply)
+            logger.info("REQUEST_ACTION fail-closed dopo veto del controller")
+            return
 
         logger.info(f"Intent: {intent.value} — '{text}'")
 

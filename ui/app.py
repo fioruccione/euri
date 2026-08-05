@@ -1057,14 +1057,55 @@ with main_col:
             # Risposta Euri
             with st.chat_message("assistant"):
                 with st.spinner("Euri sta pensando..."):
-                    # Prima prova a ESEGUIRE un tool (read_document, run_code, analyze_image…).
-                    # Solo regex (llm_fallback=False): cheap su ogni messaggio, e una frase
-                    # normale non matcha → ricade sulla chat. Se un tool matcha si mostra il
-                    # SUO output reale (anche "non ci sono file") — fine della confabulazione
-                    # sui file in chat testuale (vedi project_euri_silentchat_no_tools).
+                    # Un REQUEST_ACTION gia' compreso dal frame passa prima dal catalogo
+                    # semantico delle capability reali. Questo permette follow-up come
+                    # "applica le modifiche e fammi un Word" sull'intero file appena
+                    # caricato, senza codificare le formulazioni in una regex. Se il
+                    # controller non trova un tool grounded, il turno fallisce chiuso e
+                    # non ricade nella chat che potrebbe fingere l'operazione.
                     tool_res = None
+                    _semantic_action = (
+                        semantic_frame.get("status") == "interpreted"
+                        and float(semantic_frame.get("confidence") or 0) >= getattr(
+                            config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72
+                        )
+                        and "REQUEST_ACTION" in set(semantic_frame.get("speech_acts") or [])
+                        and str(semantic_frame.get("primary_intent") or "").upper()
+                        in {"EXECUTE", "ACTION_REASONING"}
+                    )
+                    if _semantic_action:
+                        _previous_euri = next(
+                            (
+                                str(item.get("content") or "")
+                                for item in reversed(st.session_state.messages[:-1])
+                                if item.get("role") == "assistant"
+                            ),
+                            "",
+                        )
+                        try:
+                            tool_res = executor.dispatch_contextual_action(
+                                prompt, previous_euri_turn=_previous_euri
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Silent Chat: dispatch contestuale fallito — {}", exc
+                            )
+                            tool_res = {
+                                "tool_name": "",
+                                "output": (
+                                    "Non ho eseguito nulla: il collegamento allo "
+                                    "strumento reale non è riuscito."
+                                ),
+                                "raw_data": {},
+                                "success": False,
+                                "fail_closed": True,
+                            }
+
+                    # Compatibilita' con i comandi storici semplici: solo se il frame
+                    # non ha gia' qualificato un'azione, resta il fast-path regex cheap.
                     try:
-                        tool_res = executor.dispatch_text(prompt, llm_fallback=False)
+                        if tool_res is None:
+                            tool_res = executor.dispatch_text(prompt, llm_fallback=False)
                     except Exception:
                         tool_res = None
 

@@ -157,7 +157,14 @@ def tool_clipboard_read(params: dict, **kwargs) -> ToolResult:
         return ToolResult(
             success=True,
             output=f"Negli appunti c'è: {preview}{suffix}",
-            raw_data={"length": len(text), "truncated": truncated}
+            raw_data={
+                "length": len(text),
+                "truncated": truncated,
+                "context_extra": text[:6000],
+                "artifact_content": text,
+                "artifact_kind": "clipboard_text",
+                "artifact_source": "clipboard",
+            }
         )
     except Exception as e:
         return ToolResult(success=False, output="Non riesco a leggere gli appunti.", error=str(e))
@@ -334,6 +341,10 @@ def _tool_clipboard_analyze(params: dict, *, persist: bool, **kwargs) -> ToolRes
                         "persisted": False,
                         "type": "text",
                         "original_length": len(text),
+                        "context_extra": text[:6000],
+                        "artifact_content": text,
+                        "artifact_kind": "clipboard_text",
+                        "artifact_source": "clipboard",
                     },
                 )
         persistence_note = " Ho salvato la sintesi in memoria." if persist \
@@ -346,6 +357,10 @@ def _tool_clipboard_analyze(params: dict, *, persist: bool, **kwargs) -> ToolRes
                 "persisted": persist,
                 "type": "text",
                 "original_length": len(text),
+                "context_extra": text[:6000],
+                "artifact_content": text,
+                "artifact_kind": "clipboard_text",
+                "artifact_source": "clipboard",
             },
         )
     except Exception as e:
