@@ -25,6 +25,9 @@ CASES = [
     ("claim elimina senza azione", "L'ho eliminato come mi avevi chiesto.", set(), True),
     ("claim a prefisso", "Salvato: la lezione sul settore plastiche.", set(), True),
     ("claim creato senza azione", "Ho creato il documento e te l'ho messo nella cartella.", set(), True),
+    ("claim generato reale 05/08", "Ho generato il documento Word con l'intestazione aziendale.", set(), True),
+    ("claim prodotto senza azione", "Ho prodotto ed esportato il nuovo PDF.", set(), True),
+    ("promessa preparando reale 05/08", "Sto preparando il documento nella cartella scambio dati.", set(), True),
     ("promessa live studio codice", "Vado a dare un'occhiata al codice, specialmente alla gestione dei cicli.", set(), True),
     ("promessa immediata controllo", "Ora controllo il codice e ti dico.", set(), True),
     ("claim agenda presente live", "Ricevuto. Lo tolgo dai sospesi.", set(), True),
@@ -92,6 +95,13 @@ SCRUB_CASES = [
     ("claim agenda presente → coda onesta",
      "Ricevuto. Lo tolgo dai sospesi.", set(),
      lambda out: "tolgo" not in out.lower() and out.endswith(_COMMITMENT_TAIL)),
+    ("claim generato → coda onesta",
+     "Ho generato il documento Word. Lo trovi in scambio_dati.", set(),
+     lambda out: "ho generato" not in out.lower() and "scambio_dati" not in out
+     and out == _TAIL),
+    ("sto preparando → niente background finto",
+     "Sto preparando il documento.", set(),
+     lambda out: out == _COMMITMENT_TAIL),
 ]
 
 

@@ -24,7 +24,11 @@ dell'altro processo prima di interpretarli.
 ## Invarianti
 
 - `context_extra` abbreviato e sorgente operativa completa sono due canali distinti.
-- Più file senza selezione restano ambigui e non vengono fusi.
+- Per gli upload Streamlit il registro UI è l'unica lista autorevole: la cartella
+  dati non viene scandita come workspace, l'ultimo file caricato diventa attivo e
+  i precedenti restano in coda (massimo 12 artefatti operativi).
+- Una selezione manuale nel pannello prevale sulla precedenza temporale; più file
+  non vengono mai fusi come sorgente di una revisione.
 - La richiesta verbatim dell'utente prevale sugli argomenti parafrasati dal controller.
 - Nessun file esistente viene sovrascritto.
 - Un DOCX reale viene revisionato su copia e conserva struttura, layout e footer;
@@ -33,16 +37,28 @@ dell'altro processo prima di interpretarli.
 - La voce non rigenera nome/percorso/stato con il modello: pronuncia la ricevuta del tool.
 - Un `REQUEST_ACTION` senza capability grounded fallisce chiuso in voce e Silent Chat;
   non raggiunge Gemma come CHAT.
+- `EXECUTE` non è un bypass del controller contestuale: quando il frame contiene
+  `REQUEST_ACTION` ed effetto concreto, il controller precede il legacy handler.
+  La creazione Word deve quindi usare `compose_document`, mai `run_code` per caduta.
+- Per il routing operativo contano `REQUEST_ACTION` e l'effetto strutturato: un
+  `primary_intent` vuoto/UNKNOWN non annulla un comando concreto come “crealo in
+  Word”. Senza effetto strutturato il controller resta invece vietato.
+- I claim “generato/prodotto/esportato/preparato” e le indicazioni di disponibilità
+  del file sono pronunciabili soltanto quando un tool reale copre il turno.
 - Workspace e ricevute durano 30 minuti in Redis, non sono memoria cognitiva e non
   alimentano il passive learner.
+- Lo stesso workspace espone l'ultima operazione documentale come stato effimero
+  `running/completed/failed`. La UI lo pubblica già all'upload; il tool reale lo
+  prende in carico e lo chiude. Questo stato può entrare nel contesto operativo
+  della voce, ma non nel RAG o nella memoria.
 
 ## Evidenza
 
 `test_document_composer.py` copre renderer, revisione conservativa e stale guard;
-`test_document_workspace.py` copre visibilità fra due Executor, selezione, ricevuta
-e sync live idempotente senza journal passivo. La mappa canonica distingue questo
+`test_document_workspace.py` copre visibilità fra due Executor, selezione, coda
+upload, esclusione dei file estranei, ricevuta e sync live idempotente senza journal passivo. La mappa canonica distingue questo
 control plane temporaneo dalla memoria cognitiva. Manifest unitario completo:
-**75/75 in 90,0 s**.
+**75/75 in 83,5 s**.
 
 ---
 

@@ -336,6 +336,10 @@ Regole:
     richiesta corrente (es. "controlla la GPU"). Usa response_mode=integrated se resta
     da dare una spiegazione, valutazione, raccomandazione o risposta conversazionale.
     Ogni mode=alternative e ogni azione proposta da Euri richiede integrated.
+11. clipboard_read/clipboard_analyze sono ammesse soltanto se il TESTO CORRENTE
+    nomina esplicitamente gli appunti o la clipboard. Se nello stato esiste un
+    workspace_documenti attivo, "questo documento" indica quello: usa read_document
+    per leggerlo e compose_document per modificarlo o produrne una nuova versione.
 
 Rispondi SOLO con JSON:
 {{"mode":"direct|alternative|none","response_mode":"tool_result|integrated","capability":"nome o null","args":{{}},"target_id":"id o null","authority":"user_explicit|euri_proposed|none","confidence":0.0,"unmet_intent":"breve o vuoto","reason":"breve"}}"""

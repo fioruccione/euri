@@ -173,6 +173,12 @@ class Executor:
                         documents,
                         active_filename=active_filename,
                         source_channel=str(raw.get("artifact_source_channel") or ""),
+                        preserve_existing=bool(
+                            raw.get("artifact_preserve_existing", False)
+                        ),
+                        allowed_existing_paths=list(
+                            raw.get("artifact_allowed_source_paths") or []
+                        ),
                     )
                 except Exception as exc:
                     logger.warning("Workspace documentale: pubblicazione fallita ({})", exc)
@@ -284,6 +290,49 @@ class Executor:
             return rendered[-max_chars:]
         except Exception:
             return ""
+
+    @staticmethod
+    def _streamlit_upload_paths(input_dir: Path) -> list[Path]:
+        """Coda autorevole dei soli file acquisiti dalla Silent Chat.
+
+        La cartella dati e' un data plane condiviso e puo' contenere file estranei
+        al lavoro corrente. Il registro UI, invece, descrive esplicitamente gli
+        upload dell'utente e il suo ordine e' la precedenza (ultimo = attivo).
+        """
+        registry = input_dir / ".silent_chat_uploads.json"
+        try:
+            entries = json.loads(registry.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        if not isinstance(entries, list):
+            return []
+        try:
+            root = input_dir.resolve()
+        except Exception:
+            return []
+        ordered: list[tuple[float, int, Path]] = []
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                continue
+            try:
+                path = Path(str(entry.get("path") or "")).expanduser().resolve()
+                path.relative_to(root)
+            except Exception:
+                continue
+            if not path.is_file() or path.name.startswith("."):
+                continue
+            try:
+                uploaded_at = float(entry.get("uploaded_at") or 0)
+            except (TypeError, ValueError):
+                uploaded_at = 0.0
+            ordered.append((uploaded_at, index, path))
+        ordered.sort(key=lambda item: (item[0], item[1]))
+        deduped: dict[str, Path] = {}
+        for _uploaded_at, _index, path in ordered:
+            key = str(path).casefold()
+            deduped.pop(key, None)
+            deduped[key] = path
+        return list(deduped.values())[-12:]
 
     def resolve_document_format(self, requested: str, instruction: str) -> str:
         """Formato esplicito, altrimenti conserva quello del documento attivo."""
@@ -481,11 +530,52 @@ class Executor:
             if not input_dir.exists() or not any(input_dir.iterdir()):
                 return ToolResult(success=False, output="Non ci sono file nella cartella dati.")
 
+            question = params.get("question", "") or ""
+            upload_queue = self._streamlit_upload_paths(input_dir)
+            q_fold = question.casefold()
+            named_uploads = [
+                path for path in upload_queue
+                if path.name.casefold() in q_fold
+                or (
+                    len(path.stem) >= 5
+                    and path.stem.casefold() in q_fold
+                )
+            ]
+            shared_active_name = ""
+            workspace = getattr(self, "document_workspace", None)
+            if workspace is not None:
+                try:
+                    active = workspace.get_active()
+                    shared_active_name = str((active or {}).get("filename") or "")
+                except Exception:
+                    shared_active_name = ""
+            active_upload = next(
+                (
+                    path for path in upload_queue
+                    if path.name.casefold() == shared_active_name.casefold()
+                ),
+                None,
+            )
+            # Se il turno arriva dalla UI, il prompt contiene i nomi appena
+            # caricati. Nei follow-up vocali senza nome resta attivo il piu'
+            # recente della coda Streamlit. Nessun altro file della cartella entra.
+            selected_paths = named_uploads or (
+                [active_upload]
+                if active_upload is not None
+                else (upload_queue[-1:] if upload_queue else [])
+            )
+            scan_paths = selected_paths or [
+                path for path in input_dir.iterdir()
+                if path.is_file() and not path.name.startswith(".")
+            ]
+
             # 1. PDF/DOCX/PPTX/immagini → cascata pre-extract (pypdf → Vision)
-            documents = dict(self._code_runner._preextract_files(brain))
+            documents = dict(
+                self._code_runner._preextract_files(brain, paths=scan_paths)
+            )
             # 2. File testuali strutturati → lettura diretta
             TEXT_EXT = {".csv", ".txt", ".md", ".json", ".tsv"}
-            for p in sorted(input_dir.iterdir()):
+            for p in scan_paths:
                 if p.is_file() and p.suffix.lower() in TEXT_EXT and p.name not in documents:
                     try:
                         documents[p.name] = p.read_text(encoding="utf-8", errors="replace")
@@ -494,11 +584,9 @@ class Executor:
             if not any((t or "").strip() for t in documents.values()):
                 return ToolResult(success=False, output="Non sono riuscito a leggere testo dai documenti.")
 
-            question = params.get("question", "") or ""
             # Ogni file resta un artefatto distinto. La domanda puo' nominare
             # esplicitamente un file; se non lo fa, un solo file e' selezionabile
             # automaticamente, mentre N file restano deliberatamente ambigui.
-            q_fold = question.casefold()
             selected_names = []
             for filename in documents:
                 name_fold = filename.casefold()
@@ -507,7 +595,7 @@ class Executor:
                     selected_names.append(filename)
             if not selected_names and len(documents) == 1:
                 selected_names = list(documents)
-            active_filename = selected_names[0] if len(selected_names) == 1 else ""
+            active_filename = selected_names[-1] if selected_names else ""
             comprehension_docs = (
                 {active_filename: documents[active_filename]}
                 if active_filename else documents
@@ -541,7 +629,13 @@ class Executor:
                     "context_extra": raw_blob[:6000],
                     "artifact_documents": artifact_documents,
                     "artifact_active_filename": active_filename,
-                    "artifact_source_channel": "read_document",
+                    "artifact_source_channel": (
+                        "silent_chat" if upload_queue else "read_document"
+                    ),
+                    "artifact_preserve_existing": bool(upload_queue),
+                    "artifact_allowed_source_paths": [
+                        str(path.resolve()) for path in upload_queue
+                    ],
                 } if raw_blob else {},
             )
 
@@ -844,7 +938,7 @@ class Executor:
             ),
             ToolSpec(
                 name="read_document",
-                description="Legge e COMPRENDE un documento (PDF, DOCX, scheda tecnica, CSV, testo) nella cartella dati ed estrae i dati che contiene, senza generare codice. Parametro opzionale: question (str) — cosa cercare nel documento.",
+                description="Legge e COMPRENDE il documento attivo caricato dalla UI (PDF, DOCX, scheda tecnica, CSV, testo) ed estrae i dati che contiene, senza generare codice. Se non esiste una coda UI usa il percorso legacy della cartella dati. Parametro opzionale: question (str) — cosa cercare nel documento.",
                 parameters_schema={"question": {"type": "str", "required": False}},
                 handler=_tool_read_document,
                 # pre-extract (pypdf, eventuale Vision) + 1 chiamata di comprensione.
@@ -959,6 +1053,62 @@ class Executor:
             if spec.contextual
         ]
 
+    def document_action_state_context(self) -> str:
+        """Stato operativo esposto al controller, non alla memoria cognitiva."""
+        workspace = getattr(self, "document_workspace", None)
+        if workspace is None:
+            return ""
+        try:
+            snapshot = workspace.snapshot()
+        except Exception:
+            return ""
+        documents = list(snapshot.get("documents") or [])
+        operation = dict(snapshot.get("operation") or {})
+        state_lines = []
+        if operation:
+            status = str(operation.get("status") or "")
+            channel = str(operation.get("source_channel") or "sconosciuto")
+            filename = str(operation.get("filename") or "documento")
+            tool_name = str(operation.get("tool_name") or "")
+            if status == "running":
+                state_lines.append(
+                    f"- operazione_documentale: IN_CORSO sul canale {channel}; "
+                    f"file={filename}; tool={tool_name or 'in selezione'}. "
+                    "Se rispondi da un altro canale, descrivi il lavoro come eseguito "
+                    "dalla UI/canale indicato: non affermare di averlo già completato."
+                )
+            elif status in {"completed", "failed"}:
+                outcome = "COMPLETATA" if status == "completed" else "FALLITA"
+                message = str(operation.get("message") or "")[:300]
+                state_lines.append(
+                    f"- operazione_documentale: {outcome} sul canale {channel}; "
+                    f"file={filename}; tool={tool_name or 'non indicato'}; esito={message or '-'}"
+                )
+        if not documents:
+            return "\n".join(state_lines)
+        active_id = str(snapshot.get("active_artifact_id") or "")
+        active = next(
+            (
+                item for item in documents
+                if str(item.get("id") or "") == active_id
+            ),
+            None,
+        )
+        if active is None:
+            state_lines.append(
+                f"- workspace_documenti: {len(documents)} documenti, nessuno attivo; "
+                "serve una selezione prima di modificarne uno"
+            )
+            return "\n".join(state_lines)
+        queue = ", ".join(str(item.get("filename") or "documento") for item in documents)
+        state_lines.append(
+            f"- workspace_documenti: documento attivo={active.get('filename')} | "
+            f"origine={snapshot.get('source_channel') or 'sconosciuta'} | coda={queue}. "
+            "I riferimenti 'questo documento'/'il documento' indicano il documento "
+            "attivo; non indicano la clipboard."
+        )
+        return "\n".join(state_lines)
+
     def dispatch_contextual_action(
         self,
         text: str,
@@ -980,6 +1130,10 @@ class Executor:
         action_controller = controller or ActionController()
         capabilities, state_context, targets = build_capability_snapshot(
             [], self.get_contextual_capabilities()
+        )
+        document_state = self.document_action_state_context()
+        state_context = "\n".join(
+            part for part in (state_context, document_state) if part
         )
         proposal = action_controller.propose(
             text,
@@ -1260,6 +1414,40 @@ class Executor:
         if not ok:
             return ToolResult(success=False, output=f"Parametri non validi: {err_msg}", error=err_msg)
 
+        # Le operazioni documentali sono visibili anche all'altro processo mentre
+        # sono in corso. Un upload UI può aver pubblicato il lavoro prima che il
+        # controller abbia finito di scegliere il tool: in quel caso lo prendiamo
+        # in carico invece di aprire una seconda operazione.
+        document_operation_id = ""
+        workspace = getattr(self, "document_workspace", None)
+        if call.tool_name in {"read_document", "compose_document"} and workspace is not None:
+            try:
+                current = workspace.get_operation(max_age_seconds=300)
+                if (
+                    call.tool_name == "read_document"
+                    and current
+                    and current.get("status") == "running"
+                    and current.get("kind") == "document_analysis"
+                    and not current.get("tool_name")
+                ):
+                    document_operation_id = str(current.get("id") or "")
+                    workspace.claim_operation(
+                        document_operation_id, tool_name=call.tool_name
+                    )
+                else:
+                    active = workspace.get_active()
+                    operation = workspace.start_operation(
+                        call.tool_name,
+                        source_channel=str(
+                            getattr(self, "operation_channel", "executor") or "executor"
+                        ),
+                        filename=str((active or {}).get("filename") or ""),
+                        tool_name=call.tool_name,
+                    )
+                    document_operation_id = str(operation.get("id") or "")
+            except Exception as exc:
+                logger.warning("Workspace documentale: stato operazione non avviato ({})", exc)
+
         # Esecuzione in thread con timeout
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
@@ -1271,13 +1459,31 @@ class Executor:
                 )
                 result = future.result(timeout=spec.timeout_seconds)
             self._capture_session_artifact(call.tool_name, result)
+            if document_operation_id and workspace is not None:
+                workspace.finish_operation(
+                    document_operation_id,
+                    success=bool(result.success),
+                    message=result.output,
+                )
             logger.info(f"Executor: {call.tool_name}({call.parameters}) → {'OK' if result.success else 'FAIL'}")
             return result
         except concurrent.futures.TimeoutError:
             logger.error(f"Executor: timeout su {call.tool_name}")
+            if document_operation_id and workspace is not None:
+                workspace.finish_operation(
+                    document_operation_id,
+                    success=False,
+                    message="Timeout durante l'operazione documentale.",
+                )
             return ToolResult(success=False, output="Il controllo ha impiegato troppo tempo, riprova.", error="timeout")
         except Exception as e:
             logger.error(f"Executor: eccezione su {call.tool_name} — {e}")
+            if document_operation_id and workspace is not None:
+                workspace.finish_operation(
+                    document_operation_id,
+                    success=False,
+                    message="Errore interno durante l'operazione documentale.",
+                )
             return ToolResult(success=False, output="Errore interno durante il controllo.", error=str(e))
 
     def execute_safe(self, call: ToolCall) -> str:

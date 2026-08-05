@@ -54,6 +54,10 @@ class DocumentWorkspace:
     def _receipt_key(memory_scope: str | None = None) -> str:
         return DocumentWorkspace._key(memory_scope) + ":receipts"
 
+    @staticmethod
+    def _operation_key(memory_scope: str | None = None) -> str:
+        return DocumentWorkspace._key(memory_scope) + ":operation"
+
     def _load_manifest(self, memory_scope: str | None = None) -> dict:
         raw = self.r.get(self._key(memory_scope))
         if not raw:
@@ -97,6 +101,8 @@ class DocumentWorkspace:
         *,
         active_filename: str = "",
         source_channel: str = "",
+        preserve_existing: bool = False,
+        allowed_existing_paths: list[str] | None = None,
         memory_scope: str | None = None,
     ) -> dict:
         now = self._clock()
@@ -120,6 +126,33 @@ class DocumentWorkspace:
             item["version"] = int(old.get("version") or 1) + int(
                 str(old.get("sha256") or "") != item["sha256"]
             )
+        if preserve_existing:
+            # Gli upload Streamlit formano una coda: i documenti nuovi sostituiscono
+            # l'eventuale versione omonima e finiscono in fondo (piu' recenti). Non
+            # trasciniamo invece sorgenti eterogenee come clipboard o scansioni libere.
+            incoming = {
+                str(item.get("source_path") or item.get("filename") or "").casefold()
+                for item in cleaned
+            }
+            allowed = (
+                {str(path).casefold() for path in allowed_existing_paths}
+                if allowed_existing_paths is not None
+                else None
+            )
+            queued = []
+            for item in previous.get("documents") or []:
+                identity = str(
+                    item.get("source_path") or item.get("filename") or ""
+                ).casefold()
+                if (
+                    identity
+                    and identity not in incoming
+                    and (allowed is None or identity in allowed)
+                    and not str(item.get("filename") or "").startswith(".")
+                    and str(item.get("kind") or "") == "uploaded_document"
+                ):
+                    queued.append(item)
+            cleaned = queued + cleaned
         active_fold = active_filename.casefold().strip()
         active_id = ""
         if active_fold:
@@ -150,8 +183,14 @@ class DocumentWorkspace:
 
     def snapshot(self, memory_scope: str | None = None) -> dict:
         manifest = self._load_manifest(memory_scope)
+        operation = self.get_operation(memory_scope=memory_scope)
         if not manifest:
-            return {"documents": [], "receipts": [], "active_artifact_id": ""}
+            return {
+                "documents": [],
+                "receipts": [],
+                "active_artifact_id": "",
+                "operation": operation or {},
+            }
         receipts = []
         try:
             raw_items = self.r.lrange(self._receipt_key(memory_scope), 0, 9)
@@ -163,7 +202,116 @@ class DocumentWorkspace:
             receipts = []
         result = _json_copy(manifest)
         result["receipts"] = receipts
+        result["operation"] = operation or {}
         return result
+
+    def get_operation(
+        self,
+        *,
+        max_age_seconds: int | None = None,
+        memory_scope: str | None = None,
+    ) -> dict | None:
+        """Ultima operazione documentale, condivisa fra processi ma non memorizzata."""
+        raw = self.r.get(self._operation_key(memory_scope))
+        if not raw:
+            return None
+        try:
+            operation = json.loads(_decode(raw))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(operation, dict):
+            return None
+        now = self._clock()
+        if now >= float(operation.get("expires_at") or 0):
+            return None
+        if max_age_seconds is not None and (
+            now - float(operation.get("updated_at") or 0) > max_age_seconds
+        ):
+            return None
+        return _json_copy(operation)
+
+    def start_operation(
+        self,
+        kind: str,
+        *,
+        source_channel: str,
+        filename: str = "",
+        tool_name: str = "",
+        memory_scope: str | None = None,
+    ) -> dict:
+        """Pubblica subito un lavoro in corso, prima dell'inferenza o del tool."""
+        now = self._clock()
+        operation = {
+            "id": f"document-operation:{uuid.uuid4()}",
+            "kind": str(kind or "document_operation"),
+            "status": "running",
+            "source_channel": str(source_channel or "unknown"),
+            "filename": str(filename or ""),
+            "tool_name": str(tool_name or ""),
+            "message": "",
+            "started_at": now,
+            "updated_at": now,
+            "expires_at": now + self.ttl_s,
+        }
+        self.r.set(
+            self._operation_key(memory_scope),
+            json.dumps(operation, ensure_ascii=False),
+            ex=self.ttl_s,
+        )
+        return _json_copy(operation)
+
+    def claim_operation(
+        self,
+        operation_id: str,
+        *,
+        tool_name: str,
+        memory_scope: str | None = None,
+    ) -> dict | None:
+        """Associa il tool reale a un lavoro UI già annunciato."""
+        operation = self.get_operation(memory_scope=memory_scope)
+        if (
+            not operation
+            or operation.get("status") != "running"
+            or str(operation.get("id") or "") != str(operation_id or "")
+        ):
+            return None
+        now = self._clock()
+        operation["tool_name"] = str(tool_name or "")
+        operation["updated_at"] = now
+        operation["expires_at"] = now + self.ttl_s
+        self.r.set(
+            self._operation_key(memory_scope),
+            json.dumps(operation, ensure_ascii=False),
+            ex=self.ttl_s,
+        )
+        return _json_copy(operation)
+
+    def finish_operation(
+        self,
+        operation_id: str,
+        *,
+        success: bool,
+        message: str = "",
+        memory_scope: str | None = None,
+    ) -> dict | None:
+        """Chiude soltanto l'operazione ancora corrente; esiti vecchi non la sovrascrivono."""
+        operation = self.get_operation(memory_scope=memory_scope)
+        if not operation or str(operation.get("id") or "") != str(operation_id or ""):
+            return None
+        now = self._clock()
+        operation.update({
+            "status": "completed" if success else "failed",
+            "message": str(message or "")[:800],
+            "updated_at": now,
+            "finished_at": now,
+            "expires_at": now + self.ttl_s,
+        })
+        self.r.set(
+            self._operation_key(memory_scope),
+            json.dumps(operation, ensure_ascii=False),
+            ex=self.ttl_s,
+        )
+        return _json_copy(operation)
 
     def get_active(
         self,
@@ -216,7 +364,11 @@ class DocumentWorkspace:
         pipe.execute()
 
     def clear(self, memory_scope: str | None = None) -> None:
-        self.r.delete(self._key(memory_scope), self._receipt_key(memory_scope))
+        self.r.delete(
+            self._key(memory_scope),
+            self._receipt_key(memory_scope),
+            self._operation_key(memory_scope),
+        )
 
     @staticmethod
     def file_document(path: Path, content: str, *, kind: str = "uploaded_document") -> dict:

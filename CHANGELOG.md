@@ -2,6 +2,26 @@
 
 ## 2026-08-05 - Tavolo documentale condiviso UI/voce
 
+- Corretto il confine degli upload: il workspace usa esclusivamente i file registrati
+  dalla Silent Chat, non l'intero contenuto di `dati_per_Euri`; il registro nascosto
+  non può più diventare un falso terzo documento. L'ultimo upload è attivo, i
+  precedenti restano in coda e la selezione manuale continua a prevalere.
+- Il controller riceve ora lo stato reale del documento attivo: riferimenti come
+  “questo documento” vengono instradati a lettura/revisione documentale e non alla
+  clipboard. I log distinguono inoltre un'azione eseguita da una fallita.
+- Chiuso il follow-up vocale PDF→Word osservato alle 17:00: un frame affidabile con
+  `REQUEST_ACTION` e un effetto strutturato raggiunge l'ActionController anche se
+  `primary_intent` è vuoto/UNKNOWN. Il percorso resta fail-closed se manca l'effetto.
+- Esteso il pavimento di onestà a “ho generato/prodotto/esportato/preparato” e
+  “sto preparando”: senza tool reale vengono rimosse anche le conseguenti false
+  indicazioni “lo trovi/il file si trova/puoi scaricarlo”.
+- Chiuso il raccordo emerso nel collaudo serale: anche un intento regex `EXECUTE`
+  con `REQUEST_ACTION` passa prima dall'ActionController. “Crea un documento Word”
+  raggiunge quindi `compose_document` e non degrada più al `run_code` generico.
+- Il workspace pubblica ora anche il lifecycle effimero dell'operazione
+  (`running/completed/failed`, canale, file e tool). L'upload UI annuncia il lavoro
+  prima dell'inferenza, l'Executor lo prende in carico e voce/UI osservano lo stesso
+  esito; la voce può dire che la UI sta analizzando senza attribuirsi il tool.
 - Aggiunto `DocumentWorkspace`: manifest Redis owner-scoped e TTL di 30 minuti con
   documenti separati, selezione attiva, hash/versione e ricevute. UI e Voice Daemon
   non dipendono più da due `_session_artifact` RAM incompatibili.

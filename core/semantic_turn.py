@@ -932,6 +932,27 @@ def frame_is_correction(frame: dict | None) -> bool:
     return bool(acts & {"CORRECT_ENTITY", "CORRECT_FACT"})
 
 
+def frame_requests_contextual_action(
+    frame: dict | None,
+    *,
+    minimum_confidence: float = 0.72,
+) -> bool:
+    """True se speech act ed effetto descrivono un'azione grounded.
+
+    ``primary_intent`` e' una sintesi fallibile: nel caso reale "Crealo in
+    formato Word" era vuoto, mentre REQUEST_ACTION e ``actions`` descrivevano
+    correttamente l'effetto operativo.
+    """
+    if not isinstance(frame, dict) or frame.get("status") != "interpreted":
+        return False
+    if frame.get("requires_clarification"):
+        return False
+    if _confidence(frame.get("confidence")) < minimum_confidence:
+        return False
+    acts = {str(item or "").upper() for item in (frame.get("speech_acts") or [])}
+    return "REQUEST_ACTION" in acts and _frame_has_concrete_action(frame)
+
+
 def frame_vetoes_contextual_action(
     frame: dict | None,
     *,
@@ -953,12 +974,9 @@ def frame_vetoes_contextual_action(
         return False
     intent = str(frame.get("primary_intent") or "").upper()
     if "REQUEST_ACTION" in acts:
-        # Etichetta d'azione senza alcun effetto rappresentato: il frame non e'
-        # abbastanza grounded per giustificare il fallback fuzzy.
-        return not (
-            intent in {"EXECUTE", "COMPLETE", "RESCHEDULE", "ACTION_REASONING"}
-            and _frame_has_concrete_action(frame)
-        )
+        # Un primary intent vuoto/UNKNOWN non annulla un effetto operativo
+        # strutturato. Senza effetto, invece, il gate resta fail-closed.
+        return not _frame_has_concrete_action(frame)
     return intent not in {"EXECUTE", "COMPLETE", "RESCHEDULE", "ACTION_REASONING"}
 
 

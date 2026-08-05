@@ -205,6 +205,7 @@ turn_store = ConversationTurnStore(r)
 executor = get_executor()
 executor.brain = brain
 executor.memory = memory_manager
+executor.operation_channel = "silent_chat"
 from core.document_workspace import DocumentWorkspace
 document_workspace = DocumentWorkspace(r)
 executor.document_workspace = document_workspace
@@ -226,10 +227,24 @@ def render_document_workspace_panel():
     snapshot = document_workspace.snapshot()
     documents = list(snapshot.get("documents") or [])
     receipts = list(snapshot.get("receipts") or [])
-    if not documents and not receipts:
+    operation = dict(snapshot.get("operation") or {})
+    if not documents and not receipts and not operation:
         return
     with st.container(border=True):
         st.subheader("📄 Tavolo documenti")
+        if operation:
+            _op_status = str(operation.get("status") or "")
+            _op_file = str(operation.get("filename") or "documento")
+            _op_channel = str(operation.get("source_channel") or "")
+            if _op_status == "running":
+                st.info(f"Operazione in corso su {_op_file} ({_op_channel}).")
+            elif _op_status == "failed":
+                st.error(
+                    f"Operazione fallita su {_op_file}: "
+                    f"{operation.get('message') or 'errore non specificato'}"
+                )
+            elif _op_status == "completed":
+                st.success(f"Operazione completata su {_op_file}.")
         active_id = str(snapshot.get("active_artifact_id") or "")
         if documents:
             labels = {
@@ -656,6 +671,24 @@ with main_col:
                 return
             registry.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
 
+        def _append_chat_upload_registry(entries: list[dict]) -> None:
+            """Accoda upload UI; l'ultimo elemento e' il documento prioritario."""
+            merged = _load_chat_upload_registry()
+            for entry in entries:
+                raw_path = str(entry.get("path") or "")
+                if not raw_path:
+                    continue
+                path_key = str(Path(raw_path).resolve()).casefold()
+                merged = [
+                    old for old in merged
+                    if not old.get("path")
+                    or str(Path(str(old["path"])).resolve()).casefold() != path_key
+                ]
+                merged.append(entry)
+            # Il registro conserva il lifecycle completo per la pulizia TTL;
+            # DocumentWorkspace limita autonomamente la coda operativa a 12.
+            _write_chat_upload_registry(merged)
+
         def _cleanup_chat_uploads(
             *, delete_all: bool = False, keep_paths: set[Path] | None = None
         ) -> int:
@@ -690,7 +723,7 @@ with main_col:
             if not uploaded_files:
                 return [], []
             data_dir = _chat_upload_dir()
-            _cleanup_chat_uploads(delete_all=True)
+            _cleanup_chat_uploads()
             saved, errors = [], []
             for upload in uploaded_files:
                 original_name = Path(getattr(upload, "name", "upload")).name
@@ -709,7 +742,7 @@ with main_col:
                     "size": target.stat().st_size,
                 })
             if saved:
-                _write_chat_upload_registry(saved)
+                _append_chat_upload_registry(saved)
             return saved, errors
 
         def _allowed_pasted_path_roots() -> list[Path]:
@@ -787,7 +820,7 @@ with main_col:
                 return [], errors
 
             keep_paths = {p for p in sources if _is_inside_dir(p, data_dir)}
-            _cleanup_chat_uploads(delete_all=True, keep_paths=keep_paths)
+            _cleanup_chat_uploads(keep_paths=keep_paths)
 
             saved = []
             for source in sources:
@@ -810,7 +843,7 @@ with main_col:
                 })
 
             if saved:
-                _write_chat_upload_registry(saved)
+                _append_chat_upload_registry(saved)
             return saved, errors
 
         def _split_chat_value(value) -> tuple[str, list]:
@@ -830,9 +863,13 @@ with main_col:
 
         def _compose_upload_prompt(user_text: str, uploads: list[dict]) -> str:
             names = ", ".join(u["name"] for u in uploads)
+            active_name = uploads[-1]["name"]
             has_spreadsheet = any(Path(u["name"]).suffix.lower() in _SPREADSHEET_EXTS for u in uploads)
             action = "Elabora" if has_spreadsheet else "Leggi e analizza"
-            upload_request = f"{action} i file appena caricati: {names}."
+            upload_request = (
+                f"{action} i file appena caricati: {names}. "
+                f"Considera come documento attivo: {active_name}."
+            )
             user_text = (user_text or "").strip()
             if user_text:
                 return f"{user_text}\n\n{upload_request}"
@@ -858,10 +895,14 @@ with main_col:
             names = ", ".join(entry.get("name", "?") for entry in current_uploads)
             c_upload_info, c_upload_del = st.columns([4, 1])
             with c_upload_info:
-                st.caption(f"File chat temporanei: {names}")
+                st.caption(
+                    f"Coda file chat: {names} · attivo: "
+                    f"{current_uploads[-1].get('name', '?')}"
+                )
             with c_upload_del:
                 if st.button("Elimina", key="sc_delete_uploads", use_container_width=True):
                     removed = _cleanup_chat_uploads(delete_all=True)
+                    document_workspace.clear()
                     st.success(f"File rimossi: {removed}")
                     st.rerun()
 
@@ -884,6 +925,9 @@ with main_col:
             prompt = st.session_state.pop("sc_pending_upload_prompt", "")
             if not prompt:
                 prompt = st.chat_input("Scrivi a Euri...")
+        upload_operation_id = st.session_state.pop(
+            "sc_pending_document_operation_id", ""
+        )
 
         if incoming_uploads:
             saved_uploads, upload_errors = _save_chat_uploads(incoming_uploads)
@@ -891,8 +935,17 @@ with main_col:
                 st.error(f"Upload non riuscito: {err}")
             if saved_uploads:
                 prompt = _compose_upload_prompt(prompt, saved_uploads)
+                upload_operation = document_workspace.start_operation(
+                    "document_analysis",
+                    source_channel="silent_chat",
+                    filename=saved_uploads[-1]["name"],
+                )
+                upload_operation_id = str(upload_operation.get("id") or "")
                 if not _chat_input_supports_files:
                     st.session_state.sc_pending_upload_prompt = prompt
+                    st.session_state.sc_pending_document_operation_id = (
+                        upload_operation_id
+                    )
                     st.session_state.sc_upload_key += 1
                     st.rerun()
             elif not prompt:
@@ -907,6 +960,12 @@ with main_col:
                 if staged_paths:
                     user_text = "" if _is_path_only_prompt(prompt, pasted_paths) else prompt
                     prompt = _compose_upload_prompt(user_text, staged_paths)
+                    staged_operation = document_workspace.start_operation(
+                        "document_analysis",
+                        source_channel="silent_chat",
+                        filename=staged_paths[-1]["name"],
+                    )
+                    upload_operation_id = str(staged_operation.get("id") or "")
 
         # Input utente
         if prompt:
@@ -1137,14 +1196,12 @@ with main_col:
                     # controller non trova un tool grounded, il turno fallisce chiuso e
                     # non ricade nella chat che potrebbe fingere l'operazione.
                     tool_res = None
-                    _semantic_action = (
-                        semantic_frame.get("status") == "interpreted"
-                        and float(semantic_frame.get("confidence") or 0) >= getattr(
+                    from core.semantic_turn import frame_requests_contextual_action
+                    _semantic_action = frame_requests_contextual_action(
+                        semantic_frame,
+                        minimum_confidence=getattr(
                             config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72
-                        )
-                        and "REQUEST_ACTION" in set(semantic_frame.get("speech_acts") or [])
-                        and str(semantic_frame.get("primary_intent") or "").upper()
-                        in {"EXECUTE", "ACTION_REASONING"}
+                        ),
                     )
                     if _semantic_action:
                         _previous_euri = next(
@@ -1339,6 +1396,12 @@ with main_col:
                         response = scrub_unbacked_action_claim(response, set())
                         finish_response_turn(
                             r, response_lineage, response=response
+                        )
+                    if upload_operation_id:
+                        document_workspace.finish_operation(
+                            upload_operation_id,
+                            success=bool(tool_res and tool_res.get("success")),
+                            message=response,
                         )
                     st.markdown(response)
 

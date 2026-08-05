@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import threading
+from pathlib import Path
 
-from agent.executor import Executor, ToolResult
+from agent.executor import Executor, ToolCall, ToolResult, ToolSpec
 from core.brain import Brain
 from core.document_workspace import DocumentWorkspace
 
@@ -86,6 +88,75 @@ def test_two_processes_share_selection_and_receipt():
     assert ui.snapshot()["receipts"][0]["filename"] == "revisionato.docx"
 
 
+def test_two_processes_share_document_operation_lifecycle():
+    redis = _Redis()
+    ui = DocumentWorkspace(redis)
+    voice = DocumentWorkspace(redis)
+    operation = ui.start_operation(
+        "document_analysis",
+        source_channel="silent_chat",
+        filename="setup.pdf",
+    )
+    observed = voice.get_operation()
+    assert observed["status"] == "running"
+    assert observed["source_channel"] == "silent_chat"
+    assert voice.claim_operation(
+        operation["id"], tool_name="read_document"
+    )["tool_name"] == "read_document"
+    finished = ui.finish_operation(
+        operation["id"], success=True, message="Documento letto."
+    )
+    assert finished["status"] == "completed"
+    assert voice.snapshot()["operation"]["message"] == "Documento letto."
+
+
+def test_executor_claims_ui_operation_and_publishes_real_outcome():
+    redis = _Redis()
+    ui = DocumentWorkspace(redis)
+    voice = DocumentWorkspace(redis)
+    operation = ui.start_operation(
+        "document_analysis",
+        source_channel="silent_chat",
+        filename="setup.pdf",
+    )
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _read(_params, **_kwargs):
+        entered.set()
+        assert release.wait(timeout=2)
+        return ToolResult(True, "Analisi completata.")
+
+    executor = Executor()
+    executor.document_workspace = voice
+    executor.operation_channel = "silent_chat"
+    executor._registry["read_document"] = ToolSpec(
+        "read_document", "legge", {}, _read, timeout_seconds=3,
+        effect="read_only", contextual=True,
+    )
+    result_box = []
+    worker = threading.Thread(
+        target=lambda: result_box.append(
+            executor.execute(ToolCall("read_document", {}))
+        )
+    )
+    worker.start()
+    assert entered.wait(timeout=2)
+    running = ui.get_operation()
+    assert running["id"] == operation["id"]
+    assert running["tool_name"] == "read_document"
+    assert running["status"] == "running"
+    shared_context = executor.document_action_state_context()
+    assert "IN_CORSO sul canale silent_chat" in shared_context
+    assert "non affermare di averlo già completato" in shared_context
+    release.set()
+    worker.join(timeout=3)
+    assert result_box[0].success is True
+    completed = ui.get_operation()
+    assert completed["status"] == "completed"
+    assert completed["message"] == "Analisi completata."
+
+
 def test_executor_artifact_crosses_process_boundary():
     redis = _Redis()
     first = Executor.__new__(Executor)
@@ -111,6 +182,131 @@ def test_executor_artifact_crosses_process_boundary():
     ))
     assert second.get_session_artifact()["content"] == "testo completo"
     assert second.get_session_artifact()["filename"] == "conformita.docx"
+
+
+def test_streamlit_upload_queue_keeps_latest_active():
+    redis = _Redis()
+    workspace = DocumentWorkspace(redis)
+    first = workspace.publish_documents([
+        {
+            "filename": "prima.docx",
+            "source_path": "/tmp/prima.docx",
+            "content": "PRIMA",
+            "kind": "uploaded_document",
+        },
+    ], active_filename="prima.docx", source_channel="silent_chat")
+    first_id = first["active_artifact_id"]
+    second = workspace.publish_documents([
+        {
+            "filename": "seconda.docx",
+            "source_path": "/tmp/seconda.docx",
+            "content": "SECONDA",
+            "kind": "uploaded_document",
+        },
+    ], active_filename="seconda.docx", source_channel="silent_chat",
+       preserve_existing=True)
+    assert [item["filename"] for item in second["documents"]] == [
+        "prima.docx", "seconda.docx",
+    ]
+    assert second["documents"][0]["id"] == first_id
+    assert workspace.get_active()["filename"] == "seconda.docx"
+
+
+def test_new_ui_registry_drops_legacy_workspace_noise():
+    redis = _Redis()
+    workspace = DocumentWorkspace(redis)
+    workspace.publish_documents([
+        {
+            "filename": ".silent_chat_uploads.json",
+            "source_path": "/tmp/.silent_chat_uploads.json",
+            "content": "registro interno",
+            "kind": "uploaded_document",
+        },
+        {
+            "filename": "estraneo.docx",
+            "source_path": "/tmp/estraneo.docx",
+            "content": "vecchia scansione cartella",
+            "kind": "uploaded_document",
+        },
+    ])
+    manifest = workspace.publish_documents([
+        {
+            "filename": "corrente.docx",
+            "source_path": "/tmp/corrente.docx",
+            "content": "upload corrente",
+            "kind": "uploaded_document",
+        },
+    ], active_filename="corrente.docx", preserve_existing=True,
+       allowed_existing_paths=["/tmp/corrente.docx"])
+    assert [item["filename"] for item in manifest["documents"]] == [
+        "corrente.docx"
+    ]
+
+
+def test_only_registered_streamlit_uploads_enter_precedence_queue():
+    with tempfile.TemporaryDirectory() as raw_dir:
+        data_dir = Path(raw_dir)
+        old = data_dir / "vecchio.docx"
+        current = data_dir / "corrente.docx"
+        unrelated = data_dir / "non_caricato.docx"
+        for path in (old, current, unrelated):
+            path.write_text(path.stem, encoding="utf-8")
+        (data_dir / ".silent_chat_uploads.json").write_text(json.dumps([
+            {"path": str(current), "uploaded_at": 20},
+            {"path": str(old), "uploaded_at": 10},
+            {"path": str(data_dir / ".silent_chat_uploads.json"), "uploaded_at": 30},
+            {"path": "/tmp/fuori.docx", "uploaded_at": 40},
+        ]), encoding="utf-8")
+        queue = Executor._streamlit_upload_paths(data_dir)
+        assert [path.name for path in queue] == ["vecchio.docx", "corrente.docx"]
+        assert unrelated not in queue
+
+
+def test_read_document_uses_current_ui_upload_not_directory_contents():
+    class _ReadBrain:
+        def read_and_extract(self, documents, question):
+            assert list(documents) == ["corrente.docx"]
+            return "Documento corrente letto."
+
+    with tempfile.TemporaryDirectory() as raw_dir:
+        data_dir = Path(raw_dir)
+        current = data_dir / "corrente.docx"
+        unrelated = data_dir / "non_caricato.docx"
+        current.write_text("corrente", encoding="utf-8")
+        unrelated.write_text("estraneo", encoding="utf-8")
+        (data_dir / ".silent_chat_uploads.json").write_text(json.dumps([
+            {"path": str(current), "uploaded_at": 20},
+        ]), encoding="utf-8")
+
+        redis = _Redis()
+        executor = Executor()
+        executor.document_workspace = DocumentWorkspace(redis)
+        executor._code_runner._input_dir = data_dir
+        seen_paths = []
+        executor._code_runner._preextract_files = lambda _brain, paths=None: (
+            seen_paths.extend(paths or [])
+            or {path.name: path.read_text(encoding="utf-8") for path in (paths or [])}
+        )
+        had_shared = hasattr(Brain, "_shared_instance")
+        old_shared = getattr(Brain, "_shared_instance", None)
+        Brain._shared_instance = _ReadBrain()
+        try:
+            result = executor.execute(ToolCall(
+                "read_document",
+                {"question": "Leggi il file appena caricato: corrente.docx"},
+            ))
+        finally:
+            if had_shared:
+                Brain._shared_instance = old_shared
+            else:
+                delattr(Brain, "_shared_instance")
+        assert result.success is True
+        assert seen_paths == [current]
+        assert executor.document_workspace.get_active()["filename"] == "corrente.docx"
+        assert unrelated.name not in [
+            item["filename"]
+            for item in executor.document_workspace.snapshot()["documents"]
+        ]
 
 
 def test_live_continuity_merge_is_idempotent_and_not_passive():
@@ -146,6 +342,12 @@ def test_live_continuity_merge_is_idempotent_and_not_passive():
 
 if __name__ == "__main__":
     test_two_processes_share_selection_and_receipt()
+    test_two_processes_share_document_operation_lifecycle()
+    test_executor_claims_ui_operation_and_publishes_real_outcome()
     test_executor_artifact_crosses_process_boundary()
+    test_streamlit_upload_queue_keeps_latest_active()
+    test_new_ui_registry_drops_legacy_workspace_noise()
+    test_only_registered_streamlit_uploads_enter_precedence_queue()
+    test_read_document_uses_current_ui_upload_not_directory_contents()
     test_live_continuity_merge_is_idempotent_and_not_passive()
     print("test_document_workspace: OK")

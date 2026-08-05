@@ -24,6 +24,7 @@ from core.action_controller import (
 )
 from core.brain import Brain
 from core import llm_classifier
+from core.intent_router import Intent
 from core.memory_manager import MemoryManager
 
 
@@ -58,7 +59,7 @@ _stub_module(
     ENROLL_UTTERANCES=3,
 )
 
-from voice_daemon import VoiceDaemon
+from voice_daemon import VoiceDaemon, _should_try_contextual_action
 
 
 POSEIDON_ID = "f621c34c-710a-48b8-a360-5eb527d73d13"
@@ -148,6 +149,10 @@ class _Executor:
         self.calls.append(call)
         return ToolResult(True, "GPU libera: 7.8 GiB")
 
+    @staticmethod
+    def resolve_document_format(_requested, _text):
+        return "docx"
+
 
 class _PulseRedis:
     def __init__(self):
@@ -203,6 +208,41 @@ def test_policy_boundaries():
     assert controller.decide(
         self_read, [readonly], allow_euri_read_only=True
     ).disposition == ActionDisposition.EXECUTE
+
+
+def test_execute_intent_enters_contextual_controller_before_legacy_handler():
+    assert _should_try_contextual_action(Intent.EXECUTE, True) is True
+    assert _should_try_contextual_action(Intent.EXECUTE, False) is False
+
+
+def test_contextual_word_request_selects_compose_document():
+    contextual = [{
+        "name": "compose_document",
+        "description": "Crea un Word dal documento attivo",
+        "parameters_schema": {
+            "instruction": {"type": "str", "required": True},
+            "format": {"type": "str", "required": False},
+            "filename": {"type": "str", "required": False},
+        },
+        "effect": "local_write",
+        "requires_confirm": False,
+    }]
+    daemon = _daemon({
+        "mode": "direct",
+        "response_mode": "tool_result",
+        "capability": "executor.compose_document",
+        "args": {"format": "docx", "filename": "densificatore.docx"},
+        "target_id": None,
+        "authority": "user_explicit",
+        "confidence": 1.0,
+        "reason": "richiesta esplicita di creare un Word dal PDF attivo",
+    }, contextual=contextual)
+    handled, veto = daemon._try_contextual_action(
+        "Crea un documento Word con le informazioni del PDF attivo."
+    )
+    assert handled is True and veto is False
+    assert [call.tool_name for call in daemon.executor.calls] == ["compose_document"]
+    assert daemon.executor.calls[0].parameters["format"] == "docx"
 
 
 def test_poseidon_chat_intent_executes_grounded_target():
@@ -567,6 +607,8 @@ def test_semantic_gate_can_request_reasoning_without_regex():
 
 if __name__ == "__main__":
     test_policy_boundaries()
+    test_execute_intent_enters_contextual_controller_before_legacy_handler()
+    test_contextual_word_request_selects_compose_document()
     test_poseidon_chat_intent_executes_grounded_target()
     test_ambiguous_target_clarifies_without_mutation()
     test_clarification_reasons_again_and_executes_only_resolved_target()
@@ -584,4 +626,4 @@ if __name__ == "__main__":
     test_suspend_todo_keeps_it_pending_without_due_date()
     test_overdue_wording_uses_calendar_days()
     test_semantic_gate_can_request_reasoning_without_regex()
-    print("test_action_controller: 18/18 OK")
+    print("test_action_controller: 20/20 OK")

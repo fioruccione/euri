@@ -263,7 +263,9 @@ class CodeRunner:
         return [f for f in self._input_dir.iterdir()
                 if f.is_file() and f.suffix.lower() in IMAGE_EXTS]
 
-    def _preextract_files(self, brain) -> dict[str, str]:
+    def _preextract_files(
+        self, brain, *, paths: list[Path] | None = None
+    ) -> dict[str, str]:
         """
         Pre-estrae il testo da tutti i file gestiti nella cartella di input
         (PDF, DOCX, PPTX, immagini). Per i formati strutturati direttamente
@@ -285,8 +287,13 @@ class CodeRunner:
         from agent.file_extractors import extract_any, IMAGE_EXTS
 
         HANDLED = {".pdf", ".docx", ".pptx"} | IMAGE_EXTS
-        files = [f for f in self._input_dir.iterdir()
-                 if f.is_file() and f.suffix.lower() in HANDLED]
+        candidates = paths if paths is not None else list(self._input_dir.iterdir())
+        files = [
+            f for f in candidates
+            if f.is_file()
+            and not f.name.startswith(".")
+            and f.suffix.lower() in HANDLED
+        ]
         if not files:
             return {}
 

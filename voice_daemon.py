@@ -75,6 +75,7 @@ from core.semantic_turn import (
     frame_bootstraps_owner_session,
     frame_blocks_passive_memory,
     frame_is_correction,
+    frame_requests_contextual_action,
     frame_vetoes_contextual_action,
     semantic_intent,
 )
@@ -88,6 +89,13 @@ _REACTION_ACK = (
     "Ricevuto. Registro la tua risposta e aggiorno lo stato della connessione "
     "in base a ciò che hai detto."
 )
+
+
+def _should_try_contextual_action(intent: Intent, candidate: bool) -> bool:
+    """Il controller precede i legacy handler anche quando regex dice EXECUTE."""
+    return intent in {Intent.COMPLETE, Intent.RESCHEDULE} or (
+        intent in {Intent.CHAT, Intent.EXECUTE} and candidate
+    )
 
 
 # ──────────────────────────────────────────
@@ -199,6 +207,7 @@ class VoiceDaemon:
         self.executor = Executor()
         self.executor.brain  = self.brain
         self.executor.memory = self.memory
+        self.executor.operation_channel = "voice"
         from core.document_workspace import DocumentWorkspace
         self.document_workspace = DocumentWorkspace(self.r)
         self.executor.document_workspace = self.document_workspace
@@ -1193,10 +1202,18 @@ class VoiceDaemon:
 
     def _action_snapshot(self):
         """Catalogo vivo + bersagli ammessi per il controller intenzione→azione."""
-        return build_capability_snapshot(
+        capabilities, state_context, targets = build_capability_snapshot(
             self.memory.get_pending_todos(),
             self.executor.get_contextual_capabilities(),
         )
+        state_provider = getattr(
+            self.executor, "document_action_state_context", None
+        )
+        document_state = state_provider() if callable(state_provider) else ""
+        state_context = "\n".join(
+            part for part in (state_context, document_state) if part
+        )
+        return capabilities, state_context, targets
 
     def _emit_action_transition(self, proposal, kind: str, **payload) -> str | None:
         """Timeline causale dell'azione; osservazionale e sempre fail-open."""
@@ -1385,7 +1402,8 @@ class VoiceDaemon:
         self.memory.log_conversation(_ASSISTANT_NAME, reply)
         self._speak(reply)
         logger.info(
-            f"ActionController: eseguita {capability} target={proposal.target_id or '-'}"
+            f"ActionController: {'eseguita' if ok else 'fallita'} {capability} "
+            f"target={proposal.target_id or '-'}"
         )
         return True
 
@@ -2298,9 +2316,16 @@ class VoiceDaemon:
         except Exception as e:
             logger.debug(f"set_last_rag_ctx fallito: {e}")
         from core.memory_scope import current_scope
-        return self.semantic_turns.registry.canonicalize(
+        context = self.semantic_turns.registry.canonicalize(
             rag.text, current_scope()
         )
+        state_provider = getattr(
+            self.executor, "document_action_state_context", None
+        )
+        document_state = state_provider() if callable(state_provider) else ""
+        if document_state:
+            context = "\n\n".join((context, "[STATO OPERATIVO CONDIVISO]\n" + document_state))
+        return context
 
     def _augment_context_by_strategy(self, text: str, context: str) -> str:
         """
@@ -3328,7 +3353,12 @@ class VoiceDaemon:
         )
         semantic_action_reasoning = semantic_label in {
             "ACTION_REASONING", "EXECUTE", "COMPLETE", "RESCHEDULE",
-        }
+        } or frame_requests_contextual_action(
+            semantic_frame,
+            minimum_confidence=getattr(
+                config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72
+            ),
+        )
         # Il frame puo' arbitrare gli intent conversazionali. Mutazioni di stato,
         # shutdown e tool di sistema restano invece sotto router/controller
         # deterministici e non acquistano autorita' dal modello.
@@ -3366,12 +3396,13 @@ class VoiceDaemon:
             ),
         ):
             contextual_action_candidate = False
+            if semantic_action_reasoning:
+                action_veto = True
             logger.info(
                 "ActionController evitato dal frame semantico: acts={}",
                 ",".join(semantic_frame.get("speech_acts") or []) or "-",
             )
-        if intent in {Intent.COMPLETE, Intent.RESCHEDULE} or (
-                intent == Intent.CHAT and contextual_action_candidate):
+        if _should_try_contextual_action(intent, contextual_action_candidate):
             action_checked = True
             handled, action_veto = self._try_contextual_action(
                 text, trusted=trusted, observed_at=observed_at
@@ -3382,6 +3413,11 @@ class VoiceDaemon:
                 # Anche un guasto/risposta vuota del controller e' un veto quando
                 # il frame ha gia' accertato REQUEST_ACTION: mai degradare a CHAT.
                 action_veto = True
+                if intent == Intent.EXECUTE:
+                    # Un EXECUTE già compreso semanticamente non torna al router
+                    # legacy/regex: altrimenti "crea un Word" può degradare da
+                    # compose_document al generatore di codice generico.
+                    intent = Intent.CHAT
             if intent in {Intent.COMPLETE, Intent.RESCHEDULE}:
                 # Una mutazione non ricade mai sugli handler legacy se il
                 # controller non ha prodotto/eseguito una decisione grounded.
@@ -3425,7 +3461,7 @@ class VoiceDaemon:
                 intent = fallback_intent
 
         if (
-            intent == Intent.CHAT
+            intent in {Intent.CHAT, Intent.EXECUTE}
             and action_veto
             and semantic_action_reasoning
         ):

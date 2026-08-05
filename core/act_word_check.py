@@ -20,7 +20,10 @@ modi di dire di dominio).
 import re
 
 # Verbi-azione che Euri può affermare di aver compiuto (participio passato).
-_VERBS = r"(?:salvat|aggiornat|memorizzat|segnat|annotat|registrat|creat|elimina|cancellat|rimoss|complet)\w*"
+_VERBS = (
+    r"(?:salvat|aggiornat|modificat|memorizzat|segnat|annotat|registrat|"
+    r"creat|generat|prodot|esportat|preparat|scritt|elimina|cancellat|rimoss|complet)\w*"
+)
 
 # Claim = prima persona passata: "ho salvato", "l'ho aggiornato", "li ho memorizzati".
 # Ammette avverbi tra ausiliare e participio ("ho appena/già/anche salvato").
@@ -78,9 +81,21 @@ _DIRECT_PRESENT_ACTION_RE = re.compile(
     r"|lascio\b[^.!?\n]{0,50}\bin\s+sospeso\b)",
     re.IGNORECASE,
 )
+_IN_PROGRESS_COMMITMENT_RE = re.compile(
+    r"\b(?:sto|stiamo)\s+(?:ora\s+|adesso\s+|già\s+)?"
+    r"(?:preparando|generando|creando|scrivendo|esportando|salvando|"
+    r"modificando|aggiornando|analizzando|controllando|verificando)\b",
+    re.IGNORECASE,
+)
 _CONDITIONAL_OFFER_RE = re.compile(
     r"\b(?:se\s+vuoi|se\s+preferisci|se\s+mi\s+dici|quando\s+vuoi|"
     r"appena\s+confermi|dimmi\s+e)\b",
+    re.IGNORECASE,
+)
+_ARTIFACT_AVAILABILITY_RE = re.compile(
+    r"\b(?:il\s+(?:file|documento)\s+(?:si\s+trova|è\s+(?:già\s+)?"
+    r"(?:pronto|disponibile|salvato))|lo\s+trovi\b|la\s+trovi\b|"
+    r"puoi\s+(?:scaricarlo|scaricarla|aprirlo|aprirla)\b|ecco\s+il\s+file\b)",
     re.IGNORECASE,
 )
 
@@ -109,6 +124,7 @@ def claims_immediate_action_commitment(text: str) -> bool:
     return bool(
         _IMMEDIATE_COMMITMENT_RE.search(text)
         or _DIRECT_PRESENT_ACTION_RE.search(text)
+        or _IN_PROGRESS_COMMITMENT_RE.search(text)
     )
 
 
@@ -155,7 +171,9 @@ def scrub_unbacked_action_claim(reply: str, turn_actions: set) -> str:
     sentences = re.split(r"(?<=[.!?…])\s+", reply.strip())
     kept = [
         s for s in sentences
-        if not claims_completed_action(s) and not claims_immediate_action_commitment(s)
+        if not claims_completed_action(s)
+        and not claims_immediate_action_commitment(s)
+        and not _ARTIFACT_AVAILABILITY_RE.search(s)
     ]
     cleaned = " ".join(kept).strip()
     tail = honest_correction() if completed else honest_commitment_correction()

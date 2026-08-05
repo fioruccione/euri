@@ -11,6 +11,7 @@ from core.semantic_turn import (
     SemanticTurnService,
     frame_bootstraps_owner_session,
     frame_blocks_passive_memory,
+    frame_requests_contextual_action,
     frame_vetoes_contextual_action,
     semantic_intent,
 )
@@ -439,6 +440,26 @@ def test_explicit_action_is_never_vetoed_by_contextual_guard():
     assert not frame_vetoes_contextual_action(frame)
 
 
+def test_grounded_request_action_survives_empty_primary_intent():
+    # Regressione 05/08 17:00: "Crealo in formato Word" non raggiungeva il
+    # controller nonostante REQUEST_ACTION e un effetto completo.
+    frame = {
+        "status": "interpreted",
+        "confidence": 1.0,
+        "requires_clarification": False,
+        "primary_intent": "",
+        "speech_acts": ["REQUEST_ACTION"],
+        "actions": [{
+            "effect": "Creazione di un documento in formato .docx",
+            "target": "document",
+            "capability_class": "document_generation",
+        }],
+    }
+    assert semantic_intent(frame) == ""
+    assert frame_requests_contextual_action(frame)
+    assert not frame_vetoes_contextual_action(frame)
+
+
 def test_ungrounded_action_label_cannot_hijack_a_memory_answer():
     # Riproduce la forma strutturale del frame reale: etichetta operativa ma
     # nessun effetto/target/capability rappresentato.
@@ -542,6 +563,7 @@ if __name__ == "__main__":
     test_meta_status_is_ephemeral_chat_and_vetoes_fuzzy_action()
     test_reusable_industrial_facts_override_an_incoherent_ephemeral_label()
     test_explicit_action_is_never_vetoed_by_contextual_guard()
+    test_grounded_request_action_survives_empty_primary_intent()
     test_ungrounded_action_label_cannot_hijack_a_memory_answer()
     test_memory_answer_is_search_not_an_operational_effect()
     test_shared_frame_routes_natural_remember_request_without_magic_phrase()
