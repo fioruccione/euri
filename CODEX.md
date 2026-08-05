@@ -10,6 +10,53 @@ aggiornare la mappa nello stesso intervento.
 
 ---
 
+# Handoff Euri - 2026-08-05 - Save semantico e anti-eco Obsidian
+
+## Esito
+
+Una richiesta naturale di correzione seguita da “ricordalo” non resta più nel
+ramo CHAT dopo che il frame l'ha già classificata `SAVE_MEMORY`. Voce e Silent
+Chat arbitrano ora l'intento semantico entro una lista sicura e chiamano il
+save service condiviso prima di produrre la risposta. La conferma visibile è
+quindi una ricevuta del commit reale, non una promessa generata dal modello.
+
+Un fatto identico già presente come `passive` non può impedire l'elevazione
+epistemica: il save esplicito crea un nodo permanente `source=user` e
+soft-supersede la base debole. Il watcher Obsidian distingue inoltre una vera
+modifica esterna da una replica prodotta da Euri mediante confronto canonico
+del corpo, valido anche fra processi diversi.
+
+## Invarianti
+
+- Il frame propone l'azione, ma soltanto il dispatcher la esegue e soltanto il
+  risultato del servizio può autorizzare la conferma.
+- L'arbitraggio semantico non può attraversare intenti fuori dalla allowlist
+  del canale e non introduce nomi o frasi speciali.
+- Un'uguaglianza testuale non equivale a uguaglianza di autorità: `passive` e
+  `user` restano livelli epistemici diversi.
+- L'H1 generato da Obsidian è presentazione, non contenuto mnemonico.
+- Una self-write o un evento filesystem duplicato non modifica Redis, non
+  ricalcola embedding e non genera Pulse `extero`.
+
+## Riparazione dati
+
+`scripts/repair_obsidian_echo_headers.py --apply` ha ripulito 296 memorie con
+H1 generato serializzato nel contenuto, lasciando invariati fonte, TTL e
+provenienza. `scripts/repair_20260804_silent_save.py --apply` ha sostituito il
+passivo `05095a79` con il nodo utente `e87c2ff1`, conservando i riferimenti al
+turno; la vecchia nota è stata spostata in quarantena recuperabile. Entrambi i
+dry-run sono ora idempotenti e non propongono altre mutazioni.
+
+## Evidenza
+
+Regressioni dedicate in `test_silent_save.py`, `test_obsidian_sync.py` e
+`test_semantic_turn.py`; compatibilità del coordinatore verificata anche con
+`test_named_save.py`. La mappa canonica è aggiornata con il confine fra frame,
+azione, ricevuta e replica Vault. Manifest unitario completo: **73/73 in
+81,3 s**.
+
+---
+
 # Handoff Euri - 2026-08-04 - Loop 2d budgetato
 
 ## Esito

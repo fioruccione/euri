@@ -906,6 +906,27 @@ def semantic_intent(frame: dict | None, *, minimum_confidence: float = 0.72) -> 
     return value
 
 
+def arbitrate_routable_intent(
+    frame: dict | None,
+    current_intent,
+    *,
+    allowed: set[str] | frozenset[str],
+    minimum_confidence: float = 0.72,
+) -> str:
+    """Condivide l'intent semantico solo fra route gia' autorizzate.
+
+    Il frame puo' correggere un router lessicale che ha restituito CHAT, ma non
+    puo' trasformare una route mutante/non ammessa in una capability diversa.
+    Accetta sia enum con ``.value`` sia stringhe per restare channel-agnostic.
+    """
+    current = str(getattr(current_intent, "value", current_intent) or "").upper()
+    safe_allowed = {str(value or "").upper() for value in allowed}
+    shared = semantic_intent(frame, minimum_confidence=minimum_confidence)
+    if shared in safe_allowed and current in safe_allowed:
+        return shared
+    return current
+
+
 def frame_is_correction(frame: dict | None) -> bool:
     acts = set(frame.get("speech_acts") or []) if isinstance(frame, dict) else set()
     return bool(acts & {"CORRECT_ENTITY", "CORRECT_FACT"})

@@ -31,6 +31,70 @@ def _mark_ignored(filepath: str):
     threading.Timer(2.0, lambda: _ignore_files.discard(filepath)).start()
 
 
+def parse_vault_markdown(content: str) -> tuple[dict, str]:
+    """Separa frontmatter e corpo senza attribuire significato al Markdown."""
+    frontmatter = {}
+    body = str(content or "").strip()
+    if body.startswith("---"):
+        parts = body.split("---", 2)
+        if len(parts) >= 3:
+            try:
+                frontmatter = yaml.safe_load(parts[1]) or {}
+                body = parts[2].strip()
+            except Exception:
+                pass
+    return frontmatter, body
+
+
+def canonical_memory_body(frontmatter: dict, body: str) -> str:
+    """Rimuove soltanto l'H1 generato da ``write_memory``.
+
+    Il confronto usa i metadati del file, non una regex generica: un titolo
+    Markdown scritto dall'utente e diverso da quello atteso resta contenuto.
+    """
+    value = str(body or "").strip()
+    title = str(frontmatter.get("memory_title") or "").strip()
+    if not title:
+        created_at = str(frontmatter.get("created_at") or "").strip()
+        if created_at:
+            title = f"Memoria ({created_at})"
+    if not title:
+        return value
+    lines = value.splitlines()
+    if lines and lines[0].strip() == f"# {title}":
+        return "\n".join(lines[1:]).strip()
+    return value
+
+
+def generated_memory_heading(doc: dict) -> str:
+    """Titolo H1 usato dalla serializzazione Euri → Vault."""
+    title = str(doc.get("memory_title") or "").strip()
+    if title:
+        return title
+    created = from_timestamp(doc.get("created_at"))
+    if not created:
+        return ""
+    return f"Memoria ({created.strftime('%Y-%m-%d %H:%M:%S')})"
+
+
+def unwrap_generated_memory_content(doc: dict) -> tuple[str, bool]:
+    """Rimuove dal content Redis soltanto l'H1 prodotto per quel documento."""
+    content = str(doc.get("content") or "").strip()
+    heading = generated_memory_heading(doc)
+    if not heading:
+        return content, False
+    lines = content.splitlines()
+    if lines and lines[0].strip() == f"# {heading}":
+        return "\n".join(lines[1:]).strip(), True
+    return content, False
+
+
+def _json_scalar(raw):
+    if isinstance(raw, list):
+        return raw[0] if raw else None
+    return raw
+
+
 # ── SYNC OUT (Euri → Obsidian) ───────────────────────────────────────────
 
 def write_memory(doc: dict):
@@ -87,7 +151,7 @@ def write_memory(doc: dict):
     if doc.get("tags"):
         frontmatter["tags"] = doc["tags"]
         
-    heading = doc.get("memory_title") or f"Memoria ({date_str})"
+    heading = generated_memory_heading(doc) or f"Memoria ({date_str})"
     content = f"""---
 {yaml.dump(frontmatter, default_flow_style=False, sort_keys=False)}---
 # {heading}
@@ -234,11 +298,6 @@ class ObsidianSyncManager:
         if filepath in _ignore_files:
             return
 
-        # Senso "vault": una modifica dal mondo (Stefano edita una nota), non un
-        # self-write di Euri (già filtrato sopra). source=extero.
-        pulse_emit(self.r, "vault", "extero", "change",
-                   payload={"file": os.path.basename(filepath)}, salience=0.6)
-
         # Per evitare colli di bottiglia da salvataggi continui dell'editor,
         # facciamo un debounce o eseguiamo in un thread staccato.
         threading.Thread(target=self._process_file_locked, args=(filepath,), daemon=True).start()
@@ -261,24 +320,26 @@ class ObsidianSyncManager:
             if not content:
                 return
                 
-            # Parsiamo eventuale YAML frontmatter
-            frontmatter = {}
-            body = content
-            if content.startswith("---"):
-                parts = content.split("---", 2)
-                if len(parts) >= 3:
-                    try:
-                        frontmatter = yaml.safe_load(parts[1]) or {}
-                        body = parts[2].strip()
-                    except Exception:
-                        pass
+            frontmatter, body = parse_vault_markdown(content)
                         
             doc_id = frontmatter.get("id")
             doc_type = frontmatter.get("type")
             
             # 1. È una memory esistente modificata a mano
             if doc_type == "memory" and doc_id:
-                logger.info(f"Obsidian Sync: Rilevata modifica manuale alla memoria {doc_id[:8]}")
+                body = canonical_memory_body(frontmatter, body)
+                memory_key = f"euri:memory:{doc_id}"
+                try:
+                    current = _json_scalar(
+                        self.r.json().get(memory_key, "$.content")
+                    )
+                except Exception:
+                    current = None
+                if current is not None and str(current).strip() == body:
+                    logger.debug(
+                        f"Obsidian Sync: self-write/duplicato ignorato ({doc_id[:8]})"
+                    )
+                    return
                 # Aggiorniamo Redis
                 vec = self.embedder.encode(body)
                 if vec is not None:
@@ -287,9 +348,23 @@ class ObsidianSyncManager:
                     # vector un altro). Pipeline transazionale: vanno insieme o niente.
                     try:
                         pipe = self.r.pipeline(transaction=True)
-                        pipe.json().set(f"euri:memory:{doc_id}", "$.content", body)
-                        pipe.json().set(f"euri:memory:{doc_id}", "$.embedding", vec.tolist())
+                        pipe.json().set(memory_key, "$.content", body)
+                        pipe.json().set(memory_key, "$.embedding", vec.tolist())
                         pipe.execute()
+                        logger.info(
+                            f"Obsidian Sync: Rilevata modifica manuale alla memoria {doc_id[:8]}"
+                        )
+                        # Solo una mutazione effettiva proveniente dal Vault è
+                        # percezione esterna. I self-write cross-process non
+                        # generano Pulse extero.
+                        pulse_emit(
+                            self.r,
+                            "vault",
+                            "extero",
+                            "change",
+                            payload={"file": os.path.basename(filepath)},
+                            salience=0.6,
+                        )
                     except Exception as e:
                         logger.warning(
                             f"INTEGRITÀ Obsidian sync: content/embedding di {doc_id[:8]} "
@@ -326,6 +401,11 @@ class ObsidianSyncManager:
                         else None
                     ),
                 )
+                if not mid:
+                    logger.warning(
+                        f"Obsidian Sync: ingestion non pubblicata per {path.name}"
+                    )
+                    return
                 
                 # Se non proviene da una directory di dominio, usa l'assegnazione
                 # canonica già pubblicata dal MemoryManager.
@@ -348,6 +428,14 @@ class ObsidianSyncManager:
                 _mark_ignored(str(path.absolute()))
                 path.write_text(new_content, encoding="utf-8")
                 logger.success(f"Obsidian Sync: Ingestion completata per {path.name} (dominio: {domain})")
+                pulse_emit(
+                    self.r,
+                    "vault",
+                    "extero",
+                    "change",
+                    payload={"file": os.path.basename(filepath)},
+                    salience=0.6,
+                )
 
         except Exception as e:
             logger.error(f"Obsidian Sync: errore processamento {filepath}: {e}")

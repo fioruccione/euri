@@ -1077,10 +1077,29 @@ with main_col:
                     if tool_res is None:
                         from core.intent_router import classify, Intent
                         from core.save_service import save_memory_command
+                        from core.semantic_turn import arbitrate_routable_intent
                         try:
                             _intent, _ = classify(prompt)
                         except Exception:
-                            _intent = None
+                            _intent = Intent.CHAT
+                        _shared_label = arbitrate_routable_intent(
+                            semantic_frame,
+                            _intent,
+                            allowed={
+                                "CHAT", "WEB_SEARCH", "SEARCH", "SAVE_MEMORY",
+                                "SAVE_TODO", "SAVE_NOTE", "SAVE_LAST", "READ_BACK",
+                                "TRANSLATE", "DICTATION",
+                            },
+                            minimum_confidence=getattr(
+                                config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72
+                            ),
+                        )
+                        if _shared_label != _intent.value:
+                            _intent = Intent(_shared_label)
+                            logger.info(
+                                "Silent Chat: intent condiviso dal frame semantico: {}",
+                                _intent.value,
+                            )
                         if _intent == Intent.SAVE_MEMORY:
                             # Sorgente anaforica = ultimo scambio PRIMA del prompt corrente
                             # (messages[-1] è il "memorizza…" appena appeso).

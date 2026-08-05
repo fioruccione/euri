@@ -2,7 +2,7 @@
 
 Stato: **mappa canonica del comportamento corrente**
 
-Verificata contro il codice: **4 agosto 2026**
+Verificata contro il codice: **5 agosto 2026**
 
 Versione runtime di riferimento: **V2.22**
 
@@ -35,6 +35,8 @@ flowchart TB
     S -->|solo CORRECT_ENTITY esplicito| AR[(Registro identità scoped)]
     AR --> S
     S --> H[History operativa e journal passivo]
+    S -->|REQUEST_SAVE affidabile| SV[Save service condiviso]
+    SV --> M
     T --> C[Capsule di continuità<br/>12 turni, TTL 6 ore]
     C --> H
 
@@ -155,7 +157,7 @@ sequenceDiagram
     MM-->>MM: dominio, embedding, axes, TTL, outbox
 ```
 
-### Il frame non salva
+### Il frame non salva da solo
 
 `core/semantic_turn.py` assegna a ogni turno:
 
@@ -173,6 +175,25 @@ Effetti:
 - un fatto `reusable` informato impedisce che una label globale `ephemeral`
   incoerente lo faccia sparire;
 - il raw viene archiviato comunque.
+
+Il frame può però **instradare** un'azione mnemonica esplicita. Se riconosce ad
+alta confidenza `intent=SAVE_MEMORY` e `REQUEST_SAVE`, il dispatcher del canale
+passa il turno a `core/save_service.py` prima di generare la risposta. Vale
+anche per formulazioni naturali come una correzione seguita da “ricordalo”:
+
+1. il frame propone l'intento condiviso;
+2. l'arbitraggio può sostituire soltanto un altro intento appartenente alla
+   stessa lista sicura, quindi non può promuovere un comando distruttivo;
+3. il save service risolve il fatto nel contesto recente e committa davvero la
+   memoria;
+4. la risposta mostrata o pronunciata deriva dall'esito reale del commit.
+
+Un salvataggio esplicito nasce con `source=user` ed è permanente. Se lo stesso
+testo esiste già soltanto come nodo passivo o epistemicamente debole, il save
+esplicito crea la versione autorevole e soft-supersede la precedente; l'uguaglianza
+testuale non deve impedire la promozione di autorità. Il learner passivo può
+continuare a osservare il turno, ma la deduplica vedrà il fatto già fissato e
+non diventa il surrogato ritardato di un'azione richiesta dall'utente.
 
 **Limite corrente:** `no_store` è una decisione per turno, non esiste ancora
 una modalità persistente “questa intera conversazione è off-record”. Una frase
@@ -511,6 +532,22 @@ Per una bonifica completa occorre quindi trattare separatamente:
 3. copia Vault, preferibilmente spostandola in quarantena recuperabile;
 4. eventuali derivati che citano il nodo.
 
+Il corpo canonico vive in RedisJSON e **non contiene** l'intestazione Markdown
+generata `# Memoria (...)`. Il watcher rilegge il frontmatter, rimuove soltanto
+l'intestazione esatta attesa per quel documento e confronta il corpo
+normalizzato con il contenuto Redis corrente:
+
+- se sono uguali, l'evento è una self-write o un duplicato del filesystem: non
+  ricalcola embedding, non riscrive Redis e non emette Pulse;
+- se differiscono davvero, aggiorna contenuto ed embedding e soltanto dopo il
+  commit emette `vault/extero/change`;
+- un titolo Markdown manuale diverso da quello generato viene preservato.
+
+Questo confronto è il confine di correttezza anche quando writer e watcher
+vivono in processi diversi. L'eventuale ignore-set in RAM è soltanto
+un'ottimizzazione: non può essere usato per distinguere il mondo esterno da una
+replica prodotta da Euri stessa.
+
 ## 12. Come diagnosticare senza ricostruire tutto
 
 Ordine consigliato:
@@ -542,7 +579,8 @@ Non usare `scripts/audit_memory.py --delete`, `--fix-*`, `--backfill-*` o
 
 | Responsabilità | Modulo/simbolo principale |
 |---|---|
-| frame semantico e policy del turno | `core/semantic_turn.py` |
+| frame semantico, policy e arbitraggio sicuro | `core/semantic_turn.py` |
+| risoluzione e commit del salvataggio esplicito | `core/save_service.py` |
 | history e risposta | `core/brain.py` |
 | archivio verbatim | `core/conversation_turns.py::ConversationTurnStore` |
 | continuità fra processi | `core/conversation_continuity.py` |
@@ -576,3 +614,7 @@ Non usare `scripts/audit_memory.py --delete`, `--fix-*`, `--backfill-*` o
     realmente implementata: oggi la policy è per turno.
 11. L'esaurimento del budget Loop 2d può rinviare un giudizio, non autorizzare
     una cancellazione; la coda deve sopravvivere ai restart insieme al TTL.
+12. Comprensione, esecuzione e risposta di un'azione esplicita devono chiudersi
+    sullo stesso esito reale: un LLM non può dichiarare un save non committato.
+13. Una replica Redis → Vault riletta dal watcher non è percezione esterna e non
+    può produrre una mutazione Redis o un Pulse `extero`.

@@ -3320,8 +3320,17 @@ class VoiceDaemon:
             Intent.SAVE_TODO, Intent.SAVE_NOTE, Intent.SAVE_LAST, Intent.READ_BACK,
             Intent.TRANSLATE, Intent.DICTATION,
         }
-        if semantic_label in semantic_routable and intent in current_routable:
-            intent = Intent(semantic_label)
+        from core.semantic_turn import arbitrate_routable_intent
+        shared_label = arbitrate_routable_intent(
+            semantic_frame,
+            intent,
+            allowed=semantic_routable,
+            minimum_confidence=getattr(
+                config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72
+            ),
+        )
+        if shared_label != intent.value and intent in current_routable:
+            intent = Intent(shared_label)
             logger.info("Intent condiviso dal frame semantico: {}", intent.value)
 
         action_checked = False

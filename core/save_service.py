@@ -190,16 +190,12 @@ def _save_or_merge(content: str, memory, brain, *, memory_title: str = "") -> di
         if not new_id:
             return {"saved": False, "merged": False, "reply": "Non sono riuscito a salvare.", "content": None}
         return {"saved": True, "merged": False, "reply": brain.confirm_save("memory", content), "content": content}
-    # Identico TESTUALE → niente da fare. Skip SOLO su uguaglianza esatta normalizzata,
-    # non più su una soglia cosine: "molto simile" può voler dire "stesso tema + dettaglio
-    # nuovo" (lezione Poseidon), quindi tutto il resto passa dal merge → niente più gate
-    # cieco sui save espliciti.
-    if _norm(content) == _norm(match["content"]):
-        return {"saved": False, "merged": False, "reply": "Lo avevo già segnato, ma grazie per la conferma.", "content": content}
     if _match_is_epistemically_weak(match):
         # Save esplicito > memoria debole. Non fondere: il merge LLM tende a conservare
         # dettagli vecchi anche quando l'utente sta restringendo il fatto (caso nastro
         # adesivizzato: una memoria passiva ha reintrodotto "impostazioni macchina").
+        # Questo ramo precede anche l'identita' testuale: "ricordalo" promuove la
+        # provenienza passive→user pure quando le parole del fatto non cambiano.
         fields = {"memory_title": memory_title} if memory_title else None
         new_id = memory.save_memory(
             content, source="user", idempotent=True, final_fields=fields
@@ -209,6 +205,10 @@ def _save_or_merge(content: str, memory, brain, *, memory_title: str = "") -> di
         if not memory.supersede_memory(match["id"], new_id):
             logger.warning(f"Merge evitato su base debole, ma supersede di {match['id']} fallito")
         return {"saved": True, "merged": False, "reply": brain.confirm_save("memory", content), "content": content}
+    # Identico TESTUALE su una base gia' autorevole → niente da fare. Skip SOLO
+    # su uguaglianza esatta normalizzata, non su una soglia cosine.
+    if _norm(content) == _norm(match["content"]):
+        return {"saved": False, "merged": False, "reply": "Lo avevo già segnato, ma grazie per la conferma.", "content": content}
     # Zona grigia → fusione costruttiva a 3 vie (sostituisce il vecchio probe sì/no)
     merged = (brain.merge_memories(match["content"], content) or "").strip()
     mu = merged.upper()

@@ -13,6 +13,35 @@
   `README.md` e `CODEX.md` dichiarano esplicitamente che va consultata e
   aggiornata prima di ricostruire o cambiare la logica mnemonica.
 
+### Azione mnemonica chiusa sul proprio esito
+
+- Il collaudo Silent Chat ha mostrato un confine incoerente: il frame aveva
+  compreso `SAVE_MEMORY` con `CORRECT_FACT,REQUEST_SAVE`, ma il router lessicale
+  lasciava il turno in `CHAT`. Il modello dichiarava quindi di aver rinforzato
+  la separazione Jeep/Gio Style senza aver ancora eseguito il save; soltanto il
+  learner passivo lo fissava più tardi.
+- `core/semantic_turn.py` espone ora un arbitraggio condiviso e conservativo:
+  un intento semantico ad alta confidenza può sostituire il router del canale
+  soltanto entro una lista di intenti sicuri. Voce e Silent Chat usano la stessa
+  decisione; una correzione naturale seguita da “ricordalo” raggiunge
+  `core/save_service.py` prima della risposta, senza regex dedicate a nomi,
+  aziende o alla frase osservata.
+- La conferma deriva dall'esito reale del save. Inoltre un match testuale
+  identico ma `passive` o epistemicamente debole non blocca più la promozione:
+  nasce una memoria permanente `source=user` e il nodo debole viene
+  soft-superseded.
+- Chiuso anche il feedback spurio Redis → Obsidian → Redis. Il watcher
+  canonicalizza il Markdown, rimuove soltanto l'H1 generato atteso e confronta
+  il corpo con Redis: una self-write cross-process o il secondo evento del
+  filesystem diventano no-op, mentre una vera modifica manuale aggiorna
+  contenuto/embedding ed emette `vault/extero/change` solo dopo il commit.
+- Bonifica live idempotente: `scripts/repair_obsidian_echo_headers.py` ha
+  eliminato l'H1 serializzato da 296 nodi senza cambiarne provenienza o TTL;
+  `scripts/repair_20260804_silent_save.py` ha sostituito il passivo `05095a79`
+  con il fatto esplicito `e87c2ff1`, preservando turn refs e quarantinando la
+  vecchia nota. I dry-run successivi riportano zero interventi residui. Suite
+  unitaria completa sul codice finale: **73/73 in 81,3 s**.
+
 ### Loop 2d budgetato e durevole
 
 - Il giudice `KEEP/DROP` non può più monopolizzare la GPU durante una crescita

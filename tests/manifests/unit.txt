@@ -46,6 +46,7 @@ test_memory_scope.py
 test_memory_scope_query_guard.py
 test_memory_utility_shadow.py
 test_named_save.py
+test_obsidian_sync.py
 test_passive_provenance.py
 test_prompt_ablation.py
 test_prompt_ablation_v2.py
@@ -59,6 +60,7 @@ test_save_service_merge_guard.py
 test_self_model_provenance.py
 test_self_observation.py
 test_semantic_turn.py
+test_silent_save.py
 test_social_perception.py
 test_start_euri_lifecycle.py
 test_stt_gpu_selection.py

@@ -7,6 +7,7 @@ from core.brain import Brain
 from core.conversation_turns import ConversationTurnStore
 from core.intent_router import Intent, classify
 from core.semantic_turn import (
+    arbitrate_routable_intent,
     SemanticTurnService,
     frame_bootstraps_owner_session,
     frame_blocks_passive_memory,
@@ -466,6 +467,31 @@ def test_memory_answer_is_search_not_an_operational_effect():
     assert frame_vetoes_contextual_action(frame)
 
 
+def test_shared_frame_routes_natural_remember_request_without_magic_phrase():
+    frame = {
+        "status": "interpreted",
+        "confidence": 0.98,
+        "requires_clarification": False,
+        "primary_intent": "SAVE_MEMORY",
+        "speech_acts": ["INFORM", "CORRECT_FACT", "REQUEST_SAVE"],
+    }
+    allowed = {
+        "CHAT", "WEB_SEARCH", "SEARCH", "SAVE_MEMORY", "SAVE_TODO",
+        "SAVE_NOTE", "SAVE_LAST", "READ_BACK", "TRANSLATE", "DICTATION",
+    }
+    assert arbitrate_routable_intent(
+        frame, Intent.CHAT, allowed=allowed
+    ) == "SAVE_MEMORY"
+    # Il frame non puo' scavalcare una route mutante fuori dal perimetro.
+    assert arbitrate_routable_intent(
+        frame, "SHUTDOWN", allowed=allowed
+    ) == "SHUTDOWN"
+    frame["confidence"] = 0.40
+    assert arbitrate_routable_intent(
+        frame, Intent.CHAT, allowed=allowed
+    ) == "CHAT"
+
+
 def test_owner_bootstrap_requires_direct_high_confidence_address():
     frame = {
         "status": "interpreted",
@@ -518,6 +544,7 @@ if __name__ == "__main__":
     test_explicit_action_is_never_vetoed_by_contextual_guard()
     test_ungrounded_action_label_cannot_hijack_a_memory_answer()
     test_memory_answer_is_search_not_an_operational_effect()
+    test_shared_frame_routes_natural_remember_request_without_magic_phrase()
     test_owner_bootstrap_requires_direct_high_confidence_address()
     test_pre_gate_frame_does_not_persist_corrections_until_accepted()
     print("OK — semantic turn")
