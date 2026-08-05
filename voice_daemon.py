@@ -199,6 +199,9 @@ class VoiceDaemon:
         self.executor = Executor()
         self.executor.brain  = self.brain
         self.executor.memory = self.memory
+        from core.document_workspace import DocumentWorkspace
+        self.document_workspace = DocumentWorkspace(self.r)
+        self.executor.document_workspace = self.document_workspace
         self.action_controller = ActionController()
         self.vad = VAD()
         self.stt = STT()
@@ -1317,20 +1320,20 @@ class VoiceDaemon:
                          else "Non riesco a spostarlo: quell'impegno non è più disponibile.")
         elif capability.startswith("executor."):
             tool_name = capability.split(".", 1)[1]
+            if tool_name == "compose_document":
+                # Nome, percorso, stato e riepilogo provengono dalla ricevuta reale.
+                # Un secondo testo generativo potrebbe contraddirli (per esempio
+                # dicendo "sto ancora creando" dopo un salvataggio gia' verificato).
+                integrate_response = False
             parameters = dict(proposal.args)
             if tool_name == "compose_document":
                 # Il modello seleziona la capability, ma la richiesta che guida
                 # l'editor resta il turno utente verbatim: nessuna parafrasi del
                 # controller puo' cambiare il documento da produrre.
                 parameters["instruction"] = text
-                if parameters.get("format") not in {"txt", "docx", "pdf"}:
-                    lowered = text.lower()
-                    if re.search(r"\b(word|docx)\b", lowered):
-                        parameters["format"] = "docx"
-                    elif re.search(r"\bpdf\b", lowered):
-                        parameters["format"] = "pdf"
-                    else:
-                        parameters["format"] = "txt"
+                parameters["format"] = self.executor.resolve_document_format(
+                    str(parameters.get("format") or ""), text
+                )
             call = ToolCall(tool_name=tool_name, parameters=parameters)
             self.executor.stop_event.clear()
             result = self.executor.execute(call)
@@ -3241,6 +3244,8 @@ class VoiceDaemon:
 
         # Unica interpretazione operativa post-STT. Le modalita' pending,
         # traduzione e dettatura sono gia' uscite sopra per preservare il verbatim.
+        from core.memory_scope import current_scope as _current_memory_scope
+        self.turn_store.sync_into(self.brain, _current_memory_scope())
         if semantic_frame is None:
             semantic_frame = self._interpret_semantic_turn(text)
         else:

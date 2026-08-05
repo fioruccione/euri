@@ -205,6 +205,9 @@ turn_store = ConversationTurnStore(r)
 executor = get_executor()
 executor.brain = brain
 executor.memory = memory_manager
+from core.document_workspace import DocumentWorkspace
+document_workspace = DocumentWorkspace(r)
+executor.document_workspace = document_workspace
 if brain._turn_callback is None:
     brain._turn_callback = turn_store.persist
 turn_store.restore_into(brain, get_active_scope(r))
@@ -215,6 +218,68 @@ if brain._episode_callback is None:
         memory_kind="conversation_episode", temporal_context=temporal_context,
         memory_scope=temporal_context.get("memory_scope"),
     )
+
+
+@st.fragment(run_every="2s")
+def render_document_workspace_panel():
+    """Aggiorna artefatti e download anche mentre la voce lavora in parallelo."""
+    snapshot = document_workspace.snapshot()
+    documents = list(snapshot.get("documents") or [])
+    receipts = list(snapshot.get("receipts") or [])
+    if not documents and not receipts:
+        return
+    with st.container(border=True):
+        st.subheader("📄 Tavolo documenti")
+        active_id = str(snapshot.get("active_artifact_id") or "")
+        if documents:
+            labels = {
+                str(item.get("id") or ""): str(item.get("filename") or "documento")
+                for item in documents
+            }
+            ids = list(labels)
+            default_index = ids.index(active_id) if active_id in ids else 0
+            selected_id = st.selectbox(
+                "Documento attivo",
+                ids,
+                index=default_index,
+                format_func=lambda value: labels.get(value, value),
+                key="document_workspace_active",
+            )
+            if selected_id != active_id and st.button(
+                "Usa questo documento", key="document_workspace_select"
+            ):
+                if document_workspace.select(selected_id):
+                    st.success(f"Documento attivo: {labels[selected_id]}")
+                    st.rerun(scope="fragment")
+        if receipts:
+            receipt = receipts[0]
+            output_path = Path(str(receipt.get("filepath") or ""))
+            output_root = Path(config.CODE_RUNNER_OUTPUT_DIR).resolve()
+            try:
+                safe_output = (
+                    output_path.resolve().is_relative_to(output_root)
+                    and output_path.is_file()
+                )
+            except Exception:
+                safe_output = False
+            st.markdown(f"**Ultimo risultato:** `{receipt.get('filename', 'file')}`")
+            if receipt.get("edit_summary"):
+                st.caption(str(receipt["edit_summary"]))
+            for warning in receipt.get("warnings") or []:
+                st.warning(str(warning))
+            if safe_output:
+                mime = {
+                    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    "pdf": "application/pdf",
+                    "txt": "text/plain",
+                }.get(str(receipt.get("format") or "").lower(), "application/octet-stream")
+                st.download_button(
+                    "Scarica il file generato",
+                    data=output_path.read_bytes(),
+                    file_name=str(receipt.get("filename") or output_path.name),
+                    mime=mime,
+                    key=f"document_workspace_download_{receipt.get('sha256', '')[:12]}",
+                )
 
 # Layout generale: 2 colonne (Main a sinistra, Terminale a destra)
 main_col, term_col = st.columns([2.5, 1.5], gap="large")
@@ -514,7 +579,12 @@ with main_col:
     # ── PAGE 2: SILENT CHAT ───────────────────────────────────────────────────────
     elif page == "Silent Chat":
         st.title("💬 Silent Chat")
-        st.markdown("Chatta con Euri usando la tastiera. Nessun Voice Daemon, no TTS. La sessione LLM è condivisa.")
+        st.markdown(
+            "Chatta con Euri usando la tastiera. Nessun TTS. Conversazione e "
+            "workspace documentale sono condivisi in tempo reale con la voce."
+        )
+
+        render_document_workspace_panel()
 
         _CHAT_UPLOAD_TYPES = [
             "pdf", "docx", "pptx", "txt", "md", "csv", "tsv", "json",
@@ -984,6 +1054,9 @@ with main_col:
             from core.memory_scope import current_scope
             from core.semantic_turn import frame_is_correction
             raw_prompt = prompt
+            # Pull-on-turn: importa i turni vocali arrivati dopo il boot senza
+            # riapprenderli o riscriverli. Il turn_ref rende l'operazione idempotente.
+            turn_store.sync_into(brain, current_scope())
             with brain.history_lock:
                 _semantic_history = list(brain._conversation_history)
             semantic_frame = semantic_turns.interpret(

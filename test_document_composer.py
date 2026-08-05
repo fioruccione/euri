@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import tempfile
 import threading
 from pathlib import Path
@@ -197,6 +198,128 @@ def test_semantic_abstain_is_fail_closed_not_chat():
     assert "Non ho eseguito nulla" in result["output"]
 
 
+def test_conservative_docx_revision_preserves_layout_footer_and_lists():
+    from docx import Document
+    from docx.shared import Cm
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source = root / "originale.docx"
+        doc = Document()
+        section = doc.sections[0]
+        section.page_width = Cm(21)
+        section.page_height = Cm(29.7)
+        section.left_margin = Cm(1.9)
+        section.footer.paragraphs[0].text = "Lucy Plast — footer legale"
+        doc.add_heading("Conformità", level=1)
+        doc.add_paragraph("Testo originale da aggiornare.")
+        doc.add_paragraph("Voce elenco intatta", style="List Bullet")
+        table = doc.add_table(rows=2, cols=2)
+        table.cell(0, 0).text = "Parametro"
+        table.cell(0, 1).text = "Valore"
+        table.cell(1, 0).text = "Temperatura"
+        table.cell(1, 1).text = "40 °C"
+        doc.save(source)
+        source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
+        receipt = document_composer.revise_docx(
+            source,
+            {
+                "summary": "Aggiornato il solo passaggio autorizzato",
+                "warnings": ["Misura formulata come proposta"],
+                "edits": [{
+                    "paragraph_index": 1,
+                    "replacement": "Testo revisionato come proposta, non come fatto operativo.",
+                    "reason": "richiesta utente",
+                }],
+                "table_edits": [{
+                    "table_index": 0,
+                    "row": 1,
+                    "column": 1,
+                    "replacement": "42 °C",
+                    "reason": "dato autorizzato",
+                }],
+            },
+            root / "output",
+            expected_sha256=source_sha,
+        )
+        revised = Document(receipt["filepath"])
+        assert revised.sections[0].page_width == section.page_width
+        assert revised.sections[0].page_height == section.page_height
+        assert revised.sections[0].left_margin == section.left_margin
+        assert revised.sections[0].footer.paragraphs[0].text == "Lucy Plast — footer legale"
+        assert revised.paragraphs[2].style.name == "List Bullet"
+        assert revised.paragraphs[1].text.startswith("Testo revisionato")
+        assert revised.tables[0].cell(1, 1).text == "42 °C"
+        assert receipt["validation"]["structure_preserved"] is True
+        assert Document(source).paragraphs[1].text == "Testo originale da aggiornare."
+
+
+def test_conservative_docx_revision_rejects_stale_source():
+    from docx import Document
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source = root / "originale.docx"
+        doc = Document()
+        doc.add_paragraph("Originale")
+        doc.save(source)
+        try:
+            document_composer.revise_docx(
+                source,
+                {"edits": [{"paragraph_index": 1, "replacement": "Nuovo"}]},
+                root / "output",
+                expected_sha256="0" * 64,
+            )
+        except ValueError as exc:
+            assert "cambiato dopo la lettura" in str(exc)
+        else:
+            raise AssertionError("stale source non bloccata")
+
+
+def test_compose_tool_uses_conservative_path_for_real_docx():
+    from docx import Document
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source = root / "lettera.docx"
+        doc = Document()
+        doc.add_paragraph("Testo iniziale")
+        doc.save(source)
+        original_builder = document_composer.build_docx_edit_plan
+        try:
+            document_composer.build_docx_edit_plan = lambda *args, **kwargs: {
+                "summary": "Una modifica puntuale",
+                "warnings": [],
+                "edits": [{
+                    "paragraph_index": 0,
+                    "replacement": "Testo revisionato",
+                    "reason": "test",
+                }],
+                "table_edits": [],
+            }
+            result = document_composer.compose_document_tool(
+                {"instruction": "Aggiorna il testo", "format": "docx"},
+                artifact={
+                    "id": "artifact:docx",
+                    "filename": source.name,
+                    "source_path": str(source),
+                    "content": "Testo iniziale",
+                    "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    "version": 3,
+                    "kind": "uploaded_document",
+                },
+                output_dir=root / "output",
+            )
+        finally:
+            document_composer.build_docx_edit_plan = original_builder
+        assert result.success is True
+        assert result.raw_data["mode"] == "conservative_revision"
+        assert result.raw_data["source_version"] == 3
+        assert "revisionato e verificato" in result.output
+        assert Document(result.raw_data["filepath"]).paragraphs[0].text == "Testo revisionato"
+        assert Document(source).paragraphs[0].text == "Testo iniziale"
+
+
 if __name__ == "__main__":
     test_plan_is_structured_and_grounded_in_full_source()
     test_txt_docx_pdf_are_reopened_and_verified()
@@ -204,4 +327,7 @@ if __name__ == "__main__":
     test_clipboard_preview_keeps_complete_operational_artifact()
     test_semantic_dispatch_uses_exact_request_and_returns_real_receipt()
     test_semantic_abstain_is_fail_closed_not_chat()
+    test_conservative_docx_revision_preserves_layout_footer_and_lists()
+    test_conservative_docx_revision_rejects_stale_source()
+    test_compose_tool_uses_conservative_path_for_real_docx()
     print("test_document_composer: OK")

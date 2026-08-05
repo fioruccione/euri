@@ -142,6 +142,9 @@ class Executor:
         self._guard = SandboxGuard()
         self._session_artifact_lock = threading.Lock()
         self._session_artifact: dict | None = None
+        # Iniettato da UI/Voice quando Redis e' disponibile. Il fallback RAM
+        # mantiene Executor utilizzabile nei test puri e in modalita' offline.
+        self.document_workspace = None
         self.stop_event = threading.Event()  # interruzione vocale per processi lunghi
         self._register_default_tools()
 
@@ -153,6 +156,49 @@ class Executor:
         dai tool documentali successivi.
         """
         raw = result.raw_data or {}
+        receipt = raw.get("artifact_receipt")
+        workspace = getattr(self, "document_workspace", None)
+        if isinstance(receipt, dict) and workspace is not None:
+            try:
+                workspace.record_receipt(receipt)
+            except Exception as exc:
+                logger.warning("Workspace documentale: ricevuta non condivisa ({})", exc)
+
+        documents = raw.get("artifact_documents")
+        if isinstance(documents, list) and documents:
+            active_filename = str(raw.get("artifact_active_filename") or "")
+            if workspace is not None:
+                try:
+                    workspace.publish_documents(
+                        documents,
+                        active_filename=active_filename,
+                        source_channel=str(raw.get("artifact_source_channel") or ""),
+                    )
+                except Exception as exc:
+                    logger.warning("Workspace documentale: pubblicazione fallita ({})", exc)
+            active = next(
+                (
+                    item for item in documents
+                    if str(item.get("filename") or "").casefold()
+                    == active_filename.casefold()
+                ),
+                documents[0] if len(documents) == 1 else None,
+            )
+            if active:
+                active = {
+                    **active,
+                    "id": str(active.get("id") or f"artifact:{uuid.uuid4()}"),
+                    "filenames": [str(active.get("filename") or "documento")],
+                    "captured_at": float(active.get("captured_at") or time.time()),
+                }
+            with self._session_artifact_lock:
+                self._session_artifact = dict(active) if active else None
+            logger.info(
+                "Executor: workspace documentale acquisito ({} file, attivo={})",
+                len(documents), active_filename or "ambiguo",
+            )
+            return
+
         content = raw.get("artifact_content")
         if not isinstance(content, str) or not content.strip():
             if tool_name in {
@@ -178,6 +224,22 @@ class Executor:
         }
         with self._session_artifact_lock:
             self._session_artifact = artifact
+        if workspace is not None:
+            try:
+                workspace.publish_documents(
+                    [{
+                        **artifact,
+                        "filename": (
+                            artifact["filenames"][0]
+                            if len(artifact["filenames"]) == 1
+                            else artifact["kind"]
+                        ),
+                        "source_path": str(raw.get("artifact_path") or ""),
+                    }],
+                    source_channel=str(raw.get("artifact_source_channel") or tool_name),
+                )
+            except Exception as exc:
+                logger.warning("Workspace documentale: sorgente non condivisa ({})", exc)
         logger.info(
             "Executor: artefatto di sessione acquisito da {} ({} caratteri, id={})",
             tool_name, len(content), artifact["id"].split(":", 1)[-1][:8],
@@ -185,6 +247,20 @@ class Executor:
 
     def get_session_artifact(self, *, max_age_seconds: int = 1800) -> dict | None:
         """Ritorna una copia dell'artefatto recente, senza esporre stato mutabile."""
+        workspace = getattr(self, "document_workspace", None)
+        if workspace is not None:
+            try:
+                shared = workspace.get_active(
+                    max_age_seconds=max_age_seconds
+                )
+                if shared:
+                    return shared
+                # Un manifest valido ma ambiguo e' una decisione esplicita: non
+                # riutilizzare l'ultimo documento RAM di questo processo.
+                if workspace.snapshot().get("documents"):
+                    return None
+            except Exception as exc:
+                logger.warning("Workspace documentale: lettura fallita ({})", exc)
         with self._session_artifact_lock:
             artifact = dict(self._session_artifact) if self._session_artifact else None
         if not artifact:
@@ -208,6 +284,25 @@ class Executor:
             return rendered[-max_chars:]
         except Exception:
             return ""
+
+    def resolve_document_format(self, requested: str, instruction: str) -> str:
+        """Formato esplicito, altrimenti conserva quello del documento attivo."""
+        if requested in {"txt", "docx", "pdf"}:
+            return requested
+        lowered = str(instruction or "").lower()
+        if re.search(r"\b(word|docx)\b", lowered):
+            return "docx"
+        if re.search(r"\bpdf\b", lowered):
+            return "pdf"
+        artifact = self.get_session_artifact()
+        filename = str(
+            (artifact or {}).get("filename")
+            or ((artifact or {}).get("filenames") or [""])[0]
+            or (artifact or {}).get("source_path")
+            or ""
+        )
+        suffix = Path(filename).suffix.lower().lstrip(".")
+        return suffix if suffix in {"txt", "docx", "pdf"} else "txt"
 
     def _register_default_tools(self):
         from agent.tools.system_monitor import (
@@ -400,23 +495,53 @@ class Executor:
                 return ToolResult(success=False, output="Non sono riuscito a leggere testo dai documenti.")
 
             question = params.get("question", "") or ""
-            comprehension = brain.read_and_extract(documents, question)
+            # Ogni file resta un artefatto distinto. La domanda puo' nominare
+            # esplicitamente un file; se non lo fa, un solo file e' selezionabile
+            # automaticamente, mentre N file restano deliberatamente ambigui.
+            q_fold = question.casefold()
+            selected_names = []
+            for filename in documents:
+                name_fold = filename.casefold()
+                stem_fold = Path(filename).stem.casefold()
+                if name_fold in q_fold or (len(stem_fold) >= 5 and stem_fold in q_fold):
+                    selected_names.append(filename)
+            if not selected_names and len(documents) == 1:
+                selected_names = list(documents)
+            active_filename = selected_names[0] if len(selected_names) == 1 else ""
+            comprehension_docs = (
+                {active_filename: documents[active_filename]}
+                if active_filename else documents
+            )
+            comprehension = brain.read_and_extract(comprehension_docs, question)
 
             # context_extra = testo GREZZO dei documenti, iniettato nel contesto
             # (non nel parlato) per il richiamo fedele dei valori esatti nei turn
             # successivi — stesso disaccoppiamento parla/ricorda del fix run_code.
             raw_blob = "\n\n".join(
-                f"=== {f} ===\n{t.strip()}" for f, t in documents.items() if t and t.strip()
+                f"=== {f} ===\n{t.strip()}"
+                for f, t in comprehension_docs.items() if t and t.strip()
             )
+            from core.document_workspace import DocumentWorkspace
+            artifact_documents = []
+            for filename, text in documents.items():
+                if not text or not text.strip():
+                    continue
+                path = input_dir / filename
+                artifact_documents.append(DocumentWorkspace.file_document(path, text))
+            ambiguity_note = ""
+            if len(artifact_documents) > 1 and not active_filename:
+                ambiguity_note = (
+                    " Ho registrato i file separatamente, ma prima di modificarne uno "
+                    "devi indicarmi quale documento vuoi usare."
+                )
             return ToolResult(
                 success=True,
-                output=comprehension,
+                output=comprehension + ambiguity_note,
                 raw_data={
                     "context_extra": raw_blob[:6000],
-                    "artifact_content": raw_blob,
-                    "artifact_kind": "uploaded_documents",
-                    "artifact_source": str(input_dir),
-                    "artifact_filenames": sorted(documents),
+                    "artifact_documents": artifact_documents,
+                    "artifact_active_filename": active_filename,
+                    "artifact_source_channel": "read_document",
                 } if raw_blob else {},
             )
 
@@ -730,11 +855,12 @@ class Executor:
             ToolSpec(
                 name="compose_document",
                 description=(
-                    "Crea DAVVERO un nuovo documento strutturato usando l'ultimo testo "
-                    "letto dagli appunti o l'ultimo documento letto dalla UI/cartella dati. "
-                    "Applica revisioni richieste e produce TXT, DOCX Word o PDF nella cartella "
-                    "Scrivania/scambio_dati. Parametri: instruction (richiesta completa), "
-                    "format (txt, docx o pdf), filename opzionale."
+                    "Revisiona DAVVERO il documento attivo condiviso fra UI e voce, oppure "
+                    "crea un nuovo documento strutturato dagli appunti. Su un DOCX sorgente "
+                    "modifica una copia preservando layout e struttura; produce TXT, Word o "
+                    "PDF verificati in Scrivania/scambio_dati e li rende scaricabili nella UI. "
+                    "Parametri: instruction (richiesta completa), format (txt, docx o pdf), "
+                    "filename opzionale."
                 ),
                 parameters_schema={
                     "instruction": {"type": "str", "required": True},
@@ -885,14 +1011,9 @@ class Executor:
         parameters = dict(proposal.args)
         if tool_name == "compose_document":
             parameters["instruction"] = text
-            if parameters.get("format") not in {"txt", "docx", "pdf"}:
-                lowered = text.lower()
-                if re.search(r"\b(word|docx)\b", lowered):
-                    parameters["format"] = "docx"
-                elif re.search(r"\bpdf\b", lowered):
-                    parameters["format"] = "pdf"
-                else:
-                    parameters["format"] = "txt"
+            parameters["format"] = self.resolve_document_format(
+                str(parameters.get("format") or ""), text
+            )
         result = self.execute(ToolCall(tool_name=tool_name, parameters=parameters))
         if getattr(self, "brain", None) is not None:
             try:

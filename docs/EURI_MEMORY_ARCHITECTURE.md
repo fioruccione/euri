@@ -104,22 +104,34 @@ fatti mnemonici soltanto perché sono presenti in questo stato.
 
 ### Artefatto documentale di sessione (non è memoria)
 
-`agent.executor.Executor` conserva per 30 minuti la sorgente completa dell'ultimo
-testo letto da `clipboard_read`/`clipboard_analyze` oppure da `read_document`. La UI
-usa già quest'ultimo percorso per PDF, DOCX, PPTX e gli altri formati caricati
-interamente: non esiste un secondo uploader o un secondo archivio.
+`core/document_workspace.py::DocumentWorkspace` conserva per 30 minuti in Redis il
+manifest owner-scoped del tavolo documentale condiviso da UI e voce. I file reali
+restano sul filesystem; Redis contiene selezione, testo estratto, path, hash,
+versione e ricevute. La UI usa l'uploader già esistente per PDF, DOCX, PPTX e gli
+altri formati: non esiste un secondo archivio cognitivo.
 
 - `context_extra` resta un estratto limitato destinato alla history del modello;
-- `artifact_content` è la sorgente operativa completa, mantenuta solo in RAM;
+- ogni file letto è un artefatto distinto: più documenti non vengono concatenati
+  come sorgente di una revisione;
+- con un solo file la selezione è automatica; con più file e nessun riferimento
+  univoco il workspace resta senza artefatto attivo e la modifica fallisce chiusa;
+- voce e Silent Chat vedono lo stesso artefatto attivo tramite
+  `euri:document_workspace:v1:<scope>`;
 - `compose_document` usa la sorgente e la conversazione recente per risolvere
   richieste come “applica le modifiche suggerite”;
-- TXT, DOCX e PDF vengono renderizzati deterministicamente in
-  `~/Scrivania/scambio_dati`, senza sovrascrittura, poi riaperti e validati;
+- un DOCX sorgente viene revisionato conservativamente su una copia: soltanto i
+  paragrafi autorizzati cambiano e il controllo post-scrittura preserva sezioni,
+  pagina, margini, header/footer, tabelle, stili e numero di paragrafi;
+- l'hash della sorgente è un optimistic guard: se il file è cambiato dopo la
+  lettura, la revisione viene rifiutata;
+- TXT/PDF e documenti nuovi usano i renderer strutturali; ogni output va in
+  `~/Scrivania/scambio_dati`, senza sovrascrittura, poi viene riaperto e validato;
 - la conferma contiene una ricevuta reale (`filepath`, byte, SHA-256 e controlli di
-  struttura); senza sorgente o senza ricevuta il turno fallisce chiuso;
+  struttura). La voce pronuncia questa ricevuta deterministica e la UI la mostra
+  entro due secondi con un download diretto;
 - l'artefatto non entra in `euri:memory:*`, non alimenta il passive learner e si
-  perde al riavvio o dopo la scadenza. Una persistenza cognitiva richiede i normali
-  percorsi SAVE/Teach.
+  perde alla scadenza. Il riavvio dei processi non lo cancella finché il TTL è vivo;
+  una persistenza cognitiva richiede i normali percorsi SAVE/Teach.
 
 ### Continuità conversazionale
 
@@ -132,6 +144,9 @@ scope un indice degli ultimi turni:
 - deriva focus, entità attive e fili aperti senza sintesi LLM;
 - al boot reidrata il Brain, ma non riscrive l'archivio e non riattiva il
   passive learner;
+- prima di ogni nuovo turno accettato, voce e Silent Chat eseguono un pull
+  idempotente dei nuovi `turn_ref` creati dall'altro processo. I turni importati
+  sono marcati `restored_context`: entrano nel prompt, non nel journal passivo;
 - usa `interpreted_content` quando disponibile per derivare il workspace,
   mantenendo però il raw nel documento sorgente.
 

@@ -222,7 +222,7 @@ I TUOI STRUMENTI (tool — disponibili sia a voce sia in Silent Chat, basta chie
 - clipboard_analyze_save: "Analizza e salva gli appunti" / "Memorizza gli appunti" — analizza e salva la sintesi solo su richiesta esplicita.
 - run_code: "Unisci i CSV" / "Elabora i dati" / "Leggi il file Excel" — genera ed esegue codice Python per manipolare file nella cartella dati (Scrivania/dati_per_Euri). I risultati vanno in Scrivania/scambio_dati.
 - read_document: "Leggi il documento" / "Analizza la scheda / il PDF" — legge e COMPRENDE un documento nella cartella dati ed estrae i dati che contiene.
-- compose_document: "Applica queste modifiche e crea un Word/PDF" — usa l'ultimo testo letto dagli appunti o l'ultimo documento letto dalla UI/cartella dati, crea un nuovo TXT/DOCX/PDF reale in Scrivania/scambio_dati e lo conferma solo dopo averlo riaperto e verificato.
+- compose_document: "Applica queste modifiche e crea un Word/PDF" — usa il documento attivo nel workspace condiviso UI/voce. Se la sorgente è DOCX, revisiona una copia preservandone struttura e layout; altrimenti crea un TXT/DOCX/PDF strutturato in Scrivania/scambio_dati. Conferma soltanto la ricevuta reale dopo riapertura e verifica; il file compare anche nella UI.
 - ingest_documents: "Studia i documenti" / "Memorizza i file / i manuali" — legge i file uno per uno e li archivia in memoria a lungo termine.
 - teach_text: "Memorizza questo: …" / "Impara quanto segue: …" / "Tieni a mente: …" — salva PERMANENTEMENTE in memoria un testo o un elenco che {OWNER_DISPLAY_NAME} ti incolla in chat (anche lungo). È il modo giusto per fissare dati canonici (es. l'elenco delle presse) battuti al volo, senza passare da un file.
 - analyze_image: "Analizza la foto" / "Descrivi l'immagine" — usa la visione artificiale per descrivere immagini nella cartella dati.
@@ -621,6 +621,7 @@ CROSS_EPISODE_MIN_INTERVAL_S = 12 * 3600
 CODE_RUNNER_ENABLED = True
 CODE_RUNNER_INPUT_DIR = str(Path.home() / "Scrivania" / "dati_per_Euri")
 CODE_RUNNER_OUTPUT_DIR = str(Path.home() / "Scrivania" / "scambio_dati")
+DOCUMENT_WORKSPACE_TTL_SECONDS = 30 * 60
 CODE_RUNNER_SANDBOX_DIR = str(Path(__file__).parent / "sandbox")
 CODE_RUNNER_TIMEOUT = 30           # secondi max per esecuzione script
 # Confinamento OS del subprocess via bubblewrap (difesa runtime oltre lo scanner AST):

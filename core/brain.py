@@ -37,6 +37,7 @@ class Brain:
         self._episodes: list[dict] = []      # episodi compressi con confini temporali
         self._continuity_prompt_by_scope: dict[str, str] = {}
         self._continuity_restored_scopes: set[str] = set()
+        self._continuity_seen_turn_refs: set[str] = set()
         self._compress_lock = threading.Lock()
         self.history_lock = threading.Lock()  # protegge _conversation_history da accessi concorrenti
         self._episode_callback = None        # fn(summary, temporal_context) -> salva in Redis
@@ -86,9 +87,73 @@ class Brain:
                     "restored_context": True,
                 })
             self._conversation_history = restored + self._conversation_history
+            self._continuity_seen_turn_refs.update(
+                str(item.get("turn_ref") or "") for item in restored
+            )
             self._continuity_prompt_by_scope[scope] = str(prompt_context or "").strip()
             self._continuity_restored_scopes.add(scope)
             return len(restored)
+
+    def sync_continuity(
+        self,
+        turn_documents: list[dict],
+        *,
+        memory_scope: str | None = None,
+        prompt_context: str = "",
+    ) -> int:
+        """Importa soltanto i nuovi turni recenti prodotti da altri processi.
+
+        I messaggi sono ``restored_context``: partecipano al contesto del modello,
+        ma non entrano nel journal passivo, non richiamano callback e non vengono
+        riarchiviati. I ``turn_ref`` rendono il pull idempotente.
+        """
+        scope = normalize_scope(memory_scope or current_scope())
+        with self.history_lock:
+            existing = {
+                str(item.get("turn_ref") or "")
+                for item in self._conversation_history
+                if item.get("turn_ref")
+            }
+            existing.update(self._continuity_seen_turn_refs)
+            added = []
+            for doc in turn_documents:
+                ref = str(doc.get("turn_ref") or "")
+                role = str(doc.get("role") or "")
+                content = str(doc.get("interpreted_content", doc.get("content")) or "").strip()
+                if (
+                    not ref or ref in existing or role not in {"user", "assistant"}
+                    or normalize_scope(doc.get("memory_scope")) != scope or not content
+                ):
+                    continue
+                added.append({
+                    "seq": int(doc.get("seq") or 0),
+                    "turn_ref": ref,
+                    "role": role,
+                    "content": content,
+                    "trusted": bool(doc.get("trusted")),
+                    "observed_at": float(doc.get("observed_at") or 0),
+                    "conversation_id": str(doc.get("conversation_id") or ""),
+                    "segment_id": doc.get("segment_id"),
+                    "memory_scope": scope,
+                    "semantic_frame": doc.get("semantic_frame") or {},
+                    "restored_context": True,
+                })
+                existing.add(ref)
+            if not added:
+                return 0
+            self._continuity_seen_turn_refs.update(
+                str(item["turn_ref"]) for item in added
+            )
+            self._conversation_history.extend(added)
+            self._conversation_history.sort(
+                key=lambda item: (
+                    float(item.get("observed_at") or 0),
+                    str(item.get("turn_ref") or ""),
+                )
+            )
+            if prompt_context:
+                self._continuity_prompt_by_scope[scope] = str(prompt_context).strip()
+            return len(added)
 
     @staticmethod
     def _clean(text: str) -> str:
@@ -159,6 +224,7 @@ class Brain:
         if not passive_eligible:
             message["passive_eligible"] = False
         self._conversation_history.append(message)
+        self._continuity_seen_turn_refs.add(turn_ref)
         if passive_eligible:
             self._passive_journal.append(dict(message))
         if self._turn_callback:

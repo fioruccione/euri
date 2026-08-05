@@ -21,6 +21,7 @@ test_dual_channel_pipeline.py
 test_dream_timeout.py
 test_dream_trace_paired.py
 test_document_composer.py
+test_document_workspace.py
 test_epistemic_ranking.py
 test_executor_routing.py
 test_face_gate.py

@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-08-05 - Tavolo documentale condiviso UI/voce
+
+- Aggiunto `DocumentWorkspace`: manifest Redis owner-scoped e TTL di 30 minuti con
+  documenti separati, selezione attiva, hash/versione e ricevute. UI e Voice Daemon
+  non dipendono più da due `_session_artifact` RAM incompatibili.
+- La continuità è ora anche live: prima di un turno, ciascun processo importa i nuovi
+  `turn_ref` dell'altro in modo idempotente e come solo contesto, senza riarchivio o
+  apprendimento passivo.
+- I DOCX sorgente vengono revisionati su una copia con sostituzioni puntuali e guard
+  sull'hash. La verifica preserva sezioni, pagina/margini, header/footer, tabelle,
+  stili e numero di paragrafi; documenti nuovi e altri formati mantengono i renderer
+  strutturali esistenti.
+- La ricevuta del tool è la sola autorità su nome, path e stato finale: la voce non
+  può più trasformare “creato” in “sto creando”. Il pannello Silent Chat si aggiorna
+  ogni due secondi e offre selezione, riepilogo, warning e download del file reale.
+- Nuove regressioni in `test_document_workspace.py` e ampliamento di
+  `test_document_composer.py`; manifest unitario portato a 75 test script.
+
 ## V2.22 (continua, 04/08/2026) — Un solo significato operativo per turno
 
 ### Documenti completi come artefatti operativi verificati

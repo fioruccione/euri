@@ -10,33 +10,39 @@ aggiornare la mappa nello stesso intervento.
 
 ---
 
-# Handoff Euri - 2026-08-05 - Artefatti documentali verificati
+# Handoff Euri - 2026-08-05 - Tavolo documentale condiviso UI/voce
 
 ## Esito
 
-La UI non aveva bisogno di un altro uploader: i documenti completi già passati a
-`read_document`, insieme alla clipboard, diventano ora una sorgente operativa di
-sessione. `compose_document` può revisionarla e produrre TXT, DOCX o PDF strutturati
-in `~/Scrivania/scambio_dati`. Il modello propone contenuto e struttura; solo codice
-deterministico scrive e riapre il file.
+UI e voce condividono ora il presente operativo dei documenti, non soltanto
+l'archivio dei turni e il filesystem. `DocumentWorkspace` pubblica in Redis ogni
+file separatamente, la selezione attiva, hash/versione e ricevute. Il processo voce
+può revisionare il documento caricato dalla UI e il risultato compare nella UI con
+download automatico. Il pull live della continuità importa inoltre i nuovi turni
+dell'altro processo prima di interpretarli.
 
 ## Invarianti
 
 - `context_extra` abbreviato e sorgente operativa completa sono due canali distinti.
+- Più file senza selezione restano ambigui e non vengono fusi.
 - La richiesta verbatim dell'utente prevale sugli argomenti parafrasati dal controller.
 - Nessun file esistente viene sovrascritto.
+- Un DOCX reale viene revisionato su copia e conserva struttura, layout e footer;
+  l'hash della sorgente blocca gli stale write.
 - “Creato” richiede percorso reale, byte, SHA-256 e validazione post-scrittura.
+- La voce non rigenera nome/percorso/stato con il modello: pronuncia la ricevuta del tool.
 - Un `REQUEST_ACTION` senza capability grounded fallisce chiuso in voce e Silent Chat;
   non raggiunge Gemma come CHAT.
-- L'artefatto dura 30 minuti in RAM, non è memoria e non sopravvive al riavvio.
+- Workspace e ricevute durano 30 minuti in Redis, non sono memoria cognitiva e non
+  alimentano il passive learner.
 
 ## Evidenza
 
-`test_document_composer.py` esercita piano strutturale, renderer TXT/DOCX/PDF,
-anti-overwrite, clipboard completa, dispatch semantico con istruzione verbatim e
-astensione fail-closed. Manifest unitario completo: **74/74 in 80,8 s**. La mappa
-canonica descrive esplicitamente il nuovo piano temporaneo per evitare di
-confonderlo con Redis o con la continuità conversazionale.
+`test_document_composer.py` copre renderer, revisione conservativa e stale guard;
+`test_document_workspace.py` copre visibilità fra due Executor, selezione, ricevuta
+e sync live idempotente senza journal passivo. La mappa canonica distingue questo
+control plane temporaneo dalla memoria cognitiva. Manifest unitario completo:
+**75/75 in 90,0 s**.
 
 ---
 

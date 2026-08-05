@@ -169,6 +169,28 @@ class ConversationTurnStore:
             )
         return restored
 
+    def sync_into(self, brain, memory_scope: str | None = None) -> int:
+        """Pull idempotente dei turni recenti creati da UI/voce dopo il boot."""
+        try:
+            snapshot = self.continuity.load(memory_scope)
+        except Exception as exc:
+            logger.debug(f"Sync continuità non disponibile ({exc})")
+            return 0
+        if snapshot is None:
+            return 0
+        synced = brain.sync_continuity(
+            list(snapshot.turns),
+            memory_scope=snapshot.memory_scope,
+            prompt_context=snapshot.render_for_prompt(),
+        )
+        if synced:
+            logger.info(
+                "Continuità conversazionale live: {} nuovi turni importati per scope {}",
+                synced,
+                snapshot.memory_scope,
+            )
+        return synced
+
     def persist_many(self, messages: list[dict]) -> int:
         persisted = 0
         for message in messages:
