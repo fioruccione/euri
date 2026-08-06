@@ -86,7 +86,7 @@ La distinzione fondamentale è questa:
 | Piano | Persistenza | Fonte di verità | Funzione | Può entrare nel prompt? |
 |---|---:|---|---|---|
 | Presente cognitivo | secondi/minuti, in processo | stato runtime | presenza, focus e pending immediati | sì, come stato corrente |
-| Artefatto documentale di sessione | 30 minuti, in processo | ultimo testo completo letto | sorgente operativa per revisioni TXT/DOCX/PDF | solo tramite tool, con estratto breve in history |
+| Workspace/artefatto documentale | 30 minuti, Redis + filesystem | documento attivo o turni reali selezionati | sorgente operativa per revisioni/generazioni TXT/DOCX/PDF | solo tramite tool; non come memoria RAG |
 | Continuità conversazionale | 6 ore, max 12 turni per scope | puntatori Redis verso i turni | ripristina il filo dopo un riavvio | sì, come contesto temporaneo |
 | Archivio turni | durevole, senza TTL | `euri:turn:*` | evidenza raw indirizzabile e cronologica | sì, tramite history o dual-channel |
 | Memoria cognitiva | variabile per sorgente | `euri:memory:*` | fatti, episodi, riflessioni, lezioni e consolidati | sì, tramite RAG |
@@ -129,6 +129,14 @@ cognitivo.
   un lavoro UI concorrente senza fingere di averlo avviato o completato;
 - `compose_document` usa la sorgente e la conversazione recente per risolvere
   richieste come “applica le modifiche suggerite”;
+- il frame semantico può scegliere esplicitamente `active_document`,
+  `recent_conversation` o `instruction_only`. Non esiste fallback implicito fra
+  queste sorgenti. Per `recent_conversation`, l'Executor materializza
+  `last_exchange`, `current_thread` o `recent_turns` dalla history reale e allega
+  i `turn_ref` come provenienza; questa vista effimera non duplica né modifica
+  l'archivio durevole dei turni;
+- una trascrizione conserva i ruoli: le risposte di Euri sono interpretazioni o
+  ipotesi, non fatti attribuibili a Stefano senza una sua conferma nei turni;
 - un DOCX sorgente viene revisionato conservativamente su una copia: soltanto i
   paragrafi autorizzati cambiano e il controllo post-scrittura preserva sezioni,
   pagina, margini, header/footer, tabelle, stili e numero di paragrafi;
@@ -138,7 +146,8 @@ cognitivo.
   `~/Scrivania/scambio_dati`, senza sovrascrittura, poi viene riaperto e validato;
 - la conferma contiene una ricevuta reale (`filepath`, byte, SHA-256 e controlli di
   struttura). La voce pronuncia questa ricevuta deterministica e la UI la mostra
-  entro due secondi con un download diretto;
+  entro due secondi con provenienza, anteprima e download diretto, anche quando
+  non esiste un manifest di documenti caricati;
 - l'artefatto non entra in `euri:memory:*`, non alimenta il passive learner e si
   perde alla scadenza. Il riavvio dei processi non lo cancella finché il TTL è vivo;
   una persistenza cognitiva richiede i normali percorsi SAVE/Teach.

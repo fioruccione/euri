@@ -4,12 +4,13 @@ Il LLM genera un JSON con tool + parametri, il sandbox valida ed esegue.
 Nessun codice arbitrario — solo tool pre-approvati in whitelist.
 """
 import json
+import hashlib
 import re
 import time
 import threading
 import concurrent.futures
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dataclass_replace
 from pathlib import Path
 from typing import Callable
 from loguru import logger
@@ -290,6 +291,174 @@ class Executor:
             return rendered[-max_chars:]
         except Exception:
             return ""
+
+    def build_conversation_artifact(
+        self,
+        source_scope: str = "current_thread",
+        *,
+        max_turns: int = 24,
+        max_chars: int = 40_000,
+    ) -> dict | None:
+        """Materializza turni reali recenti come sorgente documentale effimera.
+
+        Il modello sceglie l'ambito semantico; qui la selezione usa soltanto
+        history, tempi e turn_ref reali. Non crea memoria cognitiva e non
+        sostituisce il documento attivo nel workspace.
+        """
+        brain = getattr(self, "brain", None)
+        if brain is None:
+            return None
+        try:
+            from core.memory_scope import current_scope, normalize_scope
+
+            scope = normalize_scope(current_scope())
+            with brain.history_lock:
+                history = [
+                    dict(item) for item in brain._conversation_history
+                    if str(item.get("role") or "") in {"user", "assistant"}
+                    and normalize_scope(item.get("memory_scope")) == scope
+                    and str(item.get("content") or "").strip()
+                ]
+        except Exception:
+            return None
+        if not history:
+            return None
+
+        source_scope = str(source_scope or "current_thread").strip().lower()
+        if source_scope == "last_exchange":
+            selected = []
+            seen_roles = set()
+            for item in reversed(history):
+                selected.append(item)
+                seen_roles.add(str(item.get("role") or ""))
+                if seen_roles == {"user", "assistant"}:
+                    break
+            selected.reverse()
+        elif source_scope == "recent_turns":
+            selected = history[-min(max_turns, 12):]
+        else:
+            source_scope = "current_thread"
+            gap_limit = float(
+                getattr(config, "TEMPORAL_EPISODE_GAP_SECONDS", 30 * 60)
+            )
+            selected_reversed = [history[-1]]
+            newer_at = float(history[-1].get("observed_at") or 0)
+            for item in reversed(history[:-1]):
+                item_at = float(item.get("observed_at") or 0)
+                if newer_at and item_at and newer_at - item_at > gap_limit:
+                    break
+                selected_reversed.append(item)
+                newer_at = item_at or newer_at
+                if len(selected_reversed) >= max_turns:
+                    break
+            selected = list(reversed(selected_reversed))
+
+        rendered = []
+        refs = []
+        for index, item in enumerate(selected, start=1):
+            role = str(item.get("role") or "")
+            speaker = (
+                config.OWNER_DISPLAY_NAME
+                if role == "user" else config.ASSISTANT_DISPLAY_NAME
+            )
+            ref = str(item.get("turn_ref") or "").strip()
+            if ref:
+                refs.append(ref)
+            provenance = ref or f"turno-recente-{index}"
+            rendered.append(
+                f"[{provenance}] {speaker}: {str(item.get('content') or '').strip()}"
+            )
+        content = "\n\n".join(rendered)
+        if len(content) > max_chars:
+            # Conserva i turni più recenti interi; nessun taglio dentro una frase.
+            kept = []
+            size = 0
+            for block in reversed(rendered):
+                if kept and size + len(block) + 2 > max_chars:
+                    break
+                kept.append(block)
+                size += len(block) + 2
+            content = "\n\n".join(reversed(kept))
+            kept_count = len(kept)
+            selected = selected[-kept_count:]
+            refs = [
+                str(item.get("turn_ref") or "").strip()
+                for item in selected if str(item.get("turn_ref") or "").strip()
+            ]
+        if not content.strip():
+            return None
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        return {
+            "id": f"conversation:{digest[:24]}",
+            "kind": "recent_conversation",
+            "source": "conversation_turn_archive",
+            "filename": "conversazione_recente.md",
+            "filenames": ["conversazione_recente.md"],
+            "source_path": "",
+            "content": content,
+            "sha256": digest,
+            "bytes": len(content.encode("utf-8")),
+            "captured_at": time.time(),
+            "source_scope": source_scope,
+            "source_turn_refs": refs,
+        }
+
+    def resolve_document_artifact(self, params: dict) -> tuple[dict | None, str]:
+        """Lega una sorgente semantica a dati reali, senza fallback impliciti."""
+        source_mode = str(params.get("source_mode") or "auto").strip().lower()
+        source_scope = str(
+            params.get("source_scope") or "current_thread"
+        ).strip().lower()
+        if source_mode in {"", "auto", "active_document"}:
+            artifact = self.get_session_artifact()
+            if artifact:
+                return artifact, ""
+            return None, (
+                "Non ho un documento sorgente attivo. Puoi indicare esplicitamente "
+                "la conversazione recente come sorgente oppure caricare un file dalla UI."
+            )
+        if source_mode == "recent_conversation":
+            artifact = self.build_conversation_artifact(source_scope)
+            if artifact:
+                return artifact, ""
+            return None, "Non trovo turni recenti verificabili da usare come sorgente."
+        if source_mode == "instruction_only":
+            instruction = str(params.get("instruction") or "").strip()
+            if not instruction:
+                return None, "La richiesta non contiene materiale sufficiente per il documento."
+            content = f"Richiesta e contenuto forniti dall'utente:\n{instruction}"
+            digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            return {
+                "id": f"instruction:{digest[:24]}",
+                "kind": "instruction_only",
+                "source": "current_user_instruction",
+                "filename": "istruzione_corrente.md",
+                "filenames": ["istruzione_corrente.md"],
+                "source_path": "",
+                "content": content,
+                "sha256": digest,
+                "bytes": len(content.encode("utf-8")),
+                "captured_at": time.time(),
+                "source_scope": "current_turn",
+                "source_turn_refs": [],
+            }, ""
+        return None, "Il tipo di sorgente documentale richiesto non è supportato."
+
+    @staticmethod
+    def merge_document_source_hint(params: dict, semantic_frame: dict | None) -> dict:
+        """Applica la sorgente del frame condiviso come scelta canonica del turno."""
+        merged = dict(params or {})
+        try:
+            from core.semantic_turn import frame_document_source
+
+            hint = frame_document_source(semantic_frame)
+        except Exception:
+            hint = {}
+        if hint.get("source_mode"):
+            merged["source_mode"] = hint["source_mode"]
+        if hint.get("source_scope"):
+            merged["source_scope"] = hint["source_scope"]
+        return merged
 
     @staticmethod
     def _streamlit_upload_paths(input_dir: Path) -> list[Path]:
@@ -915,11 +1084,18 @@ class Executor:
             )
 
         def _tool_compose_document(params: dict, **kwargs) -> ToolResult:
-            """Crea un file reale a partire dall'ultima sorgente letta in sessione."""
+            """Crea un file reale dalla sorgente esplicita legata al turno."""
             from agent.tools.document_composer import compose_document_tool
+            artifact, source_error = self.resolve_document_artifact(params)
+            if artifact is None:
+                return ToolResult(
+                    False,
+                    source_error,
+                    "missing_document_source",
+                )
             return compose_document_tool(
                 params,
-                artifact=self.get_session_artifact(),
+                artifact=artifact,
                 recent_context=self._recent_document_context(),
                 brain=getattr(self, "brain", None),
                 output_dir=Path(config.CODE_RUNNER_OUTPUT_DIR),
@@ -949,15 +1125,29 @@ class Executor:
             ToolSpec(
                 name="compose_document",
                 description=(
-                    "Revisiona DAVVERO il documento attivo condiviso fra UI e voce, oppure "
-                    "crea un nuovo documento strutturato dagli appunti. Su un DOCX sorgente "
+                    "Crea o revisiona DAVVERO un documento usando una sorgente esplicita: "
+                    "active_document per il file attivo condiviso fra UI e voce, "
+                    "recent_conversation per i turni reali appena discussi, oppure "
+                    "instruction_only quando la richiesta contiene gia' il materiale. "
+                    "Su un DOCX sorgente "
                     "modifica una copia preservando layout e struttura; produce TXT, Word o "
                     "PDF verificati in Scrivania/scambio_dati e li rende scaricabili nella UI. "
-                    "Parametri: instruction (richiesta completa), format (txt, docx o pdf), "
-                    "filename opzionale."
+                    "Parametri: instruction (richiesta completa), source_mode, source_scope "
+                    "per la conversazione, format (txt, docx o pdf), filename opzionale."
                 ),
                 parameters_schema={
                     "instruction": {"type": "str", "required": True},
+                    "source_mode": {
+                        "type": "str", "required": False,
+                        "values": [
+                            "auto", "active_document", "recent_conversation",
+                            "instruction_only",
+                        ],
+                    },
+                    "source_scope": {
+                        "type": "str", "required": False,
+                        "values": ["last_exchange", "current_thread", "recent_turns"],
+                    },
                     "format": {
                         "type": "str", "required": False,
                         "values": ["txt", "docx", "pdf"],
@@ -1084,6 +1274,15 @@ class Executor:
                     f"- operazione_documentale: {outcome} sul canale {channel}; "
                     f"file={filename}; tool={tool_name or 'non indicato'}; esito={message or '-'}"
                 )
+        conversation_artifact = self.build_conversation_artifact("current_thread")
+        if conversation_artifact:
+            refs = list(conversation_artifact.get("source_turn_refs") or [])
+            state_lines.append(
+                "- sorgente_conversazione: DISPONIBILE come recent_conversation; "
+                f"scope=current_thread; turni={len(refs) or 'recenti senza ref'}; "
+                "usala soltanto quando l'utente indica intenzionalmente ciò che vi "
+                "siete detti come contenuto del documento"
+            )
         if not documents:
             return "\n".join(state_lines)
         active_id = str(snapshot.get("active_artifact_id") or "")
@@ -1115,6 +1314,7 @@ class Executor:
         *,
         previous_euri_turn: str = "",
         controller=None,
+        semantic_frame: dict | None = None,
     ) -> dict:
         """Percorso semantico channel-agnostic per un REQUEST_ACTION gia' accertato.
 
@@ -1143,6 +1343,13 @@ class Executor:
             state_context=state_context,
             targets_by_id=targets,
         )
+        if proposal is not None and proposal.capability == "executor.compose_document":
+            proposal = dataclass_replace(
+                proposal,
+                args=self.merge_document_source_hint(
+                    proposal.args, semantic_frame
+                ),
+            )
         decision = action_controller.decide(proposal, capabilities)
         if decision.disposition == ActionDisposition.CONVERSE:
             logger.info("Executor contextual: gesto linguistico → ritorno a CHAT")

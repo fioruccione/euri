@@ -11,6 +11,7 @@ from core.semantic_turn import (
     SemanticTurnService,
     frame_bootstraps_owner_session,
     frame_blocks_passive_memory,
+    frame_document_source,
     frame_requests_contextual_action,
     frame_vetoes_contextual_action,
     semantic_intent,
@@ -496,11 +497,38 @@ def test_grounded_request_action_survives_empty_primary_intent():
             "capability_class": "document_generation",
             "effect_scope": "write",
             "polarity": "requested",
+            "source_kind": "active_document",
+            "source_scope": "unspecified",
         }],
     }
     assert semantic_intent(frame) == ""
     assert frame_requests_contextual_action(frame)
     assert not frame_vetoes_contextual_action(frame)
+    assert frame_document_source(frame) == {"source_mode": "active_document"}
+
+
+def test_conversation_document_source_is_semantic_and_scoped():
+    frame = {
+        "status": "interpreted",
+        "confidence": 0.99,
+        "requires_clarification": False,
+        "primary_intent": "EXECUTE",
+        "speech_acts": ["REQUEST_ACTION"],
+        "actions": [{
+            "effect": "Creare una relazione Word dalla discussione corrente",
+            "target": "documento Word",
+            "capability_class": "document_creation",
+            "effect_scope": "write",
+            "polarity": "requested",
+            "source_kind": "recent_conversation",
+            "source_scope": "current_thread",
+        }],
+    }
+    assert frame_requests_contextual_action(frame)
+    assert frame_document_source(frame) == {
+        "source_mode": "recent_conversation",
+        "source_scope": "current_thread",
+    }
 
 
 def test_conversational_imperative_does_not_request_a_tool():
@@ -647,6 +675,9 @@ if __name__ == "__main__":
     test_reusable_industrial_facts_override_an_incoherent_ephemeral_label()
     test_explicit_action_is_never_vetoed_by_contextual_guard()
     test_grounded_request_action_survives_empty_primary_intent()
+    test_conversation_document_source_is_semantic_and_scoped()
+    test_conversational_imperative_does_not_request_a_tool()
+    test_negated_tool_request_cannot_become_execute()
     test_ungrounded_action_label_cannot_hijack_a_memory_answer()
     test_memory_answer_is_search_not_an_operational_effect()
     test_shared_frame_routes_natural_remember_request_without_magic_phrase()

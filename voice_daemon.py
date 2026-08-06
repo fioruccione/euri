@@ -10,6 +10,7 @@ import sys
 import signal
 import threading
 import time
+from dataclasses import replace as dataclass_replace
 import numpy as np
 from loguru import logger
 import config
@@ -1465,6 +1466,7 @@ class VoiceDaemon:
         *,
         trusted: bool = False,
         observed_at: float | None = None,
+        semantic_frame: dict | None = None,
     ) -> tuple[bool, bool]:
         """Ritorna (turno_gestito, veto_semantico_su_azione).
 
@@ -1486,6 +1488,16 @@ class VoiceDaemon:
             # Il controller non ha prodotto un giudizio valido: una richiesta
             # realmente operativa deve restare fail-closed.
             return False, True
+        if (
+            proposal.capability == "executor.compose_document"
+            and hasattr(self.executor, "merge_document_source_hint")
+        ):
+            proposal = dataclass_replace(
+                proposal,
+                args=self.executor.merge_document_source_hint(
+                    proposal.args, semantic_frame
+                ),
+            )
         self._emit_action_transition(proposal, "proposed", reason=proposal.reason)
         decision = self.action_controller.decide(
             proposal,
@@ -3419,7 +3431,10 @@ class VoiceDaemon:
         if _should_try_contextual_action(intent, contextual_action_candidate):
             action_checked = True
             handled, action_veto = self._try_contextual_action(
-                text, trusted=trusted, observed_at=observed_at
+                text,
+                trusted=trusted,
+                observed_at=observed_at,
+                semantic_frame=semantic_frame,
             )
             if handled:
                 return
@@ -3447,7 +3462,10 @@ class VoiceDaemon:
                     fallback_intent = Intent.CHAT
                     if not action_checked:
                         handled, veto = self._try_contextual_action(
-                            text, trusted=trusted, observed_at=observed_at
+                            text,
+                            trusted=trusted,
+                            observed_at=observed_at,
+                            semantic_frame=semantic_frame,
                         )
                         action_checked = True
                         if handled:
@@ -3460,7 +3478,10 @@ class VoiceDaemon:
                         fallback_intent = Intent.CHAT
                     elif not action_checked:
                         handled, veto = self._try_contextual_action(
-                            text, trusted=trusted, observed_at=observed_at
+                            text,
+                            trusted=trusted,
+                            observed_at=observed_at,
+                            semantic_frame=semantic_frame,
                         )
                         action_checked = True
                         if handled:

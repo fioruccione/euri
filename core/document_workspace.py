@@ -184,13 +184,6 @@ class DocumentWorkspace:
     def snapshot(self, memory_scope: str | None = None) -> dict:
         manifest = self._load_manifest(memory_scope)
         operation = self.get_operation(memory_scope=memory_scope)
-        if not manifest:
-            return {
-                "documents": [],
-                "receipts": [],
-                "active_artifact_id": "",
-                "operation": operation or {},
-            }
         receipts = []
         try:
             raw_items = self.r.lrange(self._receipt_key(memory_scope), 0, 9)
@@ -200,6 +193,13 @@ class DocumentWorkspace:
                     receipts.append(item)
         except Exception:
             receipts = []
+        if not manifest:
+            return {
+                "documents": [],
+                "receipts": receipts,
+                "active_artifact_id": "",
+                "operation": operation or {},
+            }
         result = _json_copy(manifest)
         result["receipts"] = receipts
         result["operation"] = operation or {}

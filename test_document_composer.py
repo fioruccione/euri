@@ -47,7 +47,24 @@ class _Brain:
     def __init__(self):
         self.history_lock = threading.Lock()
         self._conversation_history = [
-            {"role": "assistant", "content": "Renderei più chiara la sintesi."}
+            {
+                "role": "user",
+                "content": "Il test ha separato correttamente risposta e azione.",
+                "turn_ref": "conversation-test:1",
+                "conversation_id": "conversation-test",
+                "segment_id": 0,
+                "memory_scope": "personal",
+                "observed_at": 100.0,
+            },
+            {
+                "role": "assistant",
+                "content": "Renderei più chiara la sintesi.",
+                "turn_ref": "conversation-test:2",
+                "conversation_id": "conversation-test",
+                "segment_id": 0,
+                "memory_scope": "personal",
+                "observed_at": 101.0,
+            },
         ]
         self.injected = []
 
@@ -81,6 +98,7 @@ def test_plan_is_structured_and_grounded_in_full_source():
         source,
         "Riorganizza senza aggiungere fatti.",
         recent_context="ASSISTANT: usa sezioni più chiare",
+        source_kind="recent_conversation",
         chat=chat,
         model="fake",
     )
@@ -88,6 +106,8 @@ def test_plan_is_structured_and_grounded_in_full_source():
     prompt = chat.calls[0]["messages"][0]["content"]
     assert source in prompt
     assert "usa sezioni più chiare" in prompt
+    assert "marcate Stefano sono" in prompt
+    assert "NON diventano fatti dell'utente" in prompt
     assert chat.calls[0]["format"] == "json"
 
 
@@ -186,6 +206,73 @@ def test_semantic_dispatch_uses_exact_request_and_returns_real_receipt():
         assert Path(result["raw_data"]["filepath"]).exists()
         assert result["raw_data"]["validation"]["nonempty"] is True
         assert executor.brain.injected
+
+
+def test_conversation_source_is_bound_to_real_turn_refs_and_reaches_ui_receipt():
+    with tempfile.TemporaryDirectory() as tmp:
+        executor = Executor()
+        executor.brain = _Brain()
+        captured = {}
+        original_builder = document_composer.build_document_plan
+        original_handler = executor._registry["compose_document"].handler
+        try:
+            document_composer.build_document_plan = lambda source, instruction, **kwargs: (
+                captured.update({"source": source, "instruction": instruction}) or PLAN
+            )
+
+            def _conversation_handler(params, **_kwargs):
+                artifact, error = executor.resolve_document_artifact(params)
+                assert not error and artifact is not None
+                return document_composer.compose_document_tool(
+                    params,
+                    artifact=artifact,
+                    recent_context=executor._recent_document_context(),
+                    output_dir=Path(tmp),
+                )
+
+            executor._registry["compose_document"].handler = _conversation_handler
+            proposal = ActionProposal(
+                capability="executor.compose_document",
+                args={
+                    "format": "docx",
+                    "filename": "analisi_router.docx",
+                    "source_mode": "active_document",
+                    "source_scope": "last_exchange",
+                },
+                target_id=None,
+                authority=ActionAuthority.USER_EXPLICIT,
+                confidence=0.99,
+            )
+            frame = {
+                "status": "interpreted",
+                "actions": [{
+                    "effect_scope": "write",
+                    "polarity": "requested",
+                    "source_kind": "recent_conversation",
+                    "source_scope": "current_thread",
+                }],
+            }
+            utterance = "Crea un Word dalla conversazione che abbiamo appena fatto."
+            result = executor.dispatch_contextual_action(
+                utterance,
+                previous_euri_turn="Abbiamo analizzato il nuovo router.",
+                controller=_DirectController(proposal),
+                semantic_frame=frame,
+            )
+        finally:
+            document_composer.build_document_plan = original_builder
+            executor._registry["compose_document"].handler = original_handler
+
+        assert result["success"] is True
+        assert "conversation-test:1" in captured["source"]
+        assert "conversation-test:2" in captured["source"]
+        assert result["raw_data"]["source_kind"] == "recent_conversation"
+        assert result["raw_data"]["source_scope"] == "current_thread"
+        assert result["raw_data"]["source_turn_refs"] == [
+            "conversation-test:1", "conversation-test:2",
+        ]
+        assert "Relazione di prova" in result["raw_data"]["preview_text"]
+        assert Path(result["raw_data"]["filepath"]).is_file()
 
 
 def test_semantic_abstain_is_fail_closed_not_chat():
@@ -356,6 +443,8 @@ if __name__ == "__main__":
     test_clipboard_preview_keeps_complete_operational_artifact()
     test_semantic_dispatch_uses_exact_request_and_returns_real_receipt()
     test_semantic_abstain_is_fail_closed_not_chat()
+    test_contextual_conversation_returns_to_chat_without_tool_claim()
+    test_conversation_source_is_bound_to_real_turn_refs_and_reaches_ui_receipt()
     test_conservative_docx_revision_preserves_layout_footer_and_lists()
     test_conservative_docx_revision_rejects_stale_source()
     test_compose_tool_uses_conservative_path_for_real_docx()

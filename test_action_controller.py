@@ -636,6 +636,8 @@ def test_semantic_gate_can_request_reasoning_without_regex():
 
 if __name__ == "__main__":
     test_policy_boundaries()
+    test_controller_can_return_an_explicit_conversation_decision()
+    test_voice_contextual_probe_returns_to_chat_only_on_explicit_conversation()
     test_execute_intent_enters_contextual_controller_before_legacy_handler()
     test_contextual_word_request_selects_compose_document()
     test_poseidon_chat_intent_executes_grounded_target()
@@ -655,4 +657,4 @@ if __name__ == "__main__":
     test_suspend_todo_keeps_it_pending_without_due_date()
     test_overdue_wording_uses_calendar_days()
     test_semantic_gate_can_request_reasoning_without_regex()
-    print("test_action_controller: 20/20 OK")
+    print("test_action_controller: 22/22 OK")

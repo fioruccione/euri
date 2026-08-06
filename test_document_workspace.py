@@ -88,6 +88,28 @@ def test_two_processes_share_selection_and_receipt():
     assert ui.snapshot()["receipts"][0]["filename"] == "revisionato.docx"
 
 
+def test_conversation_receipt_is_visible_without_source_manifest():
+    redis = _Redis()
+    workspace = DocumentWorkspace(redis)
+    workspace.record_receipt({
+        "filepath": "/tmp/analisi_conversazione.docx",
+        "filename": "analisi_conversazione.docx",
+        "format": "docx",
+        "source_kind": "recent_conversation",
+        "source_scope": "current_thread",
+        "source_turn_refs": ["conversation:1", "conversation:2"],
+        "preview_text": "Sintesi verificabile della conversazione.",
+    })
+    snapshot = workspace.snapshot()
+    assert snapshot["documents"] == []
+    assert snapshot["active_artifact_id"] == ""
+    assert snapshot["receipts"][0]["source_kind"] == "recent_conversation"
+    assert snapshot["receipts"][0]["source_turn_refs"] == [
+        "conversation:1", "conversation:2",
+    ]
+    assert "Sintesi verificabile" in snapshot["receipts"][0]["preview_text"]
+
+
 def test_two_processes_share_document_operation_lifecycle():
     redis = _Redis()
     ui = DocumentWorkspace(redis)
@@ -342,6 +364,7 @@ def test_live_continuity_merge_is_idempotent_and_not_passive():
 
 if __name__ == "__main__":
     test_two_processes_share_selection_and_receipt()
+    test_conversation_receipt_is_visible_without_source_manifest()
     test_two_processes_share_document_operation_lifecycle()
     test_executor_claims_ui_operation_and_publishes_real_outcome()
     test_executor_artifact_crosses_process_boundary()

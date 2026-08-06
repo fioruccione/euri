@@ -2,6 +2,17 @@
 
 ## 2026-08-06 - Confine semantico risposta/azione condiviso
 
+- `compose_document` può ora usare intenzionalmente tre sorgenti distinte:
+  documento attivo, conversazione recente o contenuto della richiesta. Il frame
+  semantico condiviso sceglie sorgente e ampiezza (`last_exchange`,
+  `current_thread`, `recent_turns`) e prevale su eventuali parametri divergenti
+  del controller; non esiste un fallback silenzioso dal file alla conversazione.
+- La conversazione viene materializzata come artefatto effimero con i reali
+  `turn_ref`, senza trasformarla in memoria cognitiva. Nel piano documentale le
+  affermazioni di Stefano restano distinte dalle ipotesi/interpretazioni di Euri.
+- La ricevuta contiene sorgente, ambito, provenienza e anteprima. La Silent Chat
+  mostra anteprima e download anche quando il risultato nasce soltanto dalla
+  conversazione e non esiste un documento caricato nel workspace.
 - Il frame distingue ora il gesto linguistico dalla sua eventuale esecuzione:
   ogni azione porta `effect_scope=response|read|write|state_change|external` e
   `polarity=requested|negated|hypothetical`. Soltanto un effetto operativo

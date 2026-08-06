@@ -375,12 +375,16 @@ Euri può ora **manipolare file locali** tramite comandi vocali. Genera script P
 **Tavolo documentale condiviso e output verificati:** la clipboard e ogni documento
 letto dalla Silent Chat diventano artefatti temporanei distinti in un workspace Redis
 condiviso con la voce. Si può quindi discutere vocalmente, caricare o selezionare il
-file dalla UI e impartire la revisione da uno dei due canali. Un DOCX viene modificato
+file dalla UI e impartire la revisione da uno dei due canali. In alternativa si può
+chiedere un documento basato su questa conversazione: il modello sceglie
+semanticamente fra documento attivo, filo corrente, ultimi turni o sola istruzione,
+mentre l'Executor lega la scelta ai turni reali e non effettua fallback impliciti.
+Un DOCX viene modificato
 su una copia preservando layout, margini, header/footer, stili, liste e tabelle;
 documenti nuovi, TXT e PDF usano renderer strutturali. Nessun file viene sovrascritto,
 un hash impedisce revisioni su sorgenti cambiate e “creato” richiede una riapertura
 riuscita con ricevuta reale. Entro due secondi il risultato compare nel tavolo della
-UI con riepilogo, avvertenze e download. Workspace e ricevute scadono dopo 30 minuti,
+UI con provenienza, anteprima, avvertenze e download. Workspace e ricevute scadono dopo 30 minuti,
 non sono memoria cognitiva e non alimentano il learner passivo.
 
 ### 6. Visione Artificiale ⭐ Nuovo in V2.1

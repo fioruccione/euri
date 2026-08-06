@@ -10,6 +10,40 @@ aggiornare la mappa nello stesso intervento.
 
 ---
 
+# Handoff Euri - 2026-08-06 - Conversazione come sorgente documentale
+
+## Esito
+
+Una conversazione analitica può diventare direttamente un TXT, DOCX o PDF reale
+senza richiedere prima un file caricato. Il frame semantico condiviso sceglie
+`active_document`, `recent_conversation` o `instruction_only`; per la conversazione
+sceglie anche `last_exchange`, `current_thread` o `recent_turns`. L'Executor
+materializza solo turni reali, conserva i `turn_ref` come provenienza e pubblica
+ricevuta, anteprima e download nel tavolo documenti della Silent Chat.
+
+## Invarianti
+
+- Il frame semantico è canonico per sorgente e ambito; il controller seleziona la
+  capability, ma non può sostituire una sorgente esplicitamente compresa dal frame.
+- Non esiste fallback implicito: se è richiesto il documento attivo e manca, il
+  tool fallisce; la conversazione viene usata solo quando il turno la indica.
+- L'artefatto `recent_conversation` è effimero e operativo: non è una memoria RAG
+  né una nuova copia dell'archivio durevole.
+- Le righe sorgente conservano ruolo e `turn_ref`. Nel documento, ciò che Euri ha
+  ipotizzato non diventa un fatto di Stefano senza una conferma presente nei turni.
+- Una ricevuta deve restare visibile in UI anche quando non esiste un manifest di
+  file caricati. Anteprima e download derivano dalla ricevuta del file verificato.
+
+## Evidenza
+
+Le regressioni sono in `test_semantic_turn.py`, `test_document_composer.py` e
+`test_document_workspace.py`. Il replay sul modello locale classifica “crea un
+Word che contenga la conversazione” come `EXECUTE` con sorgente
+`recent_conversation`; l'ActionController sceglie `executor.compose_document`.
+Manifest unitario completo: **75/75 in 82,2 s**.
+
+---
+
 # Handoff Euri - 2026-08-05 - Tavolo documentale condiviso UI/voce
 
 ## Esito

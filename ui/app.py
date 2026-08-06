@@ -278,10 +278,34 @@ def render_document_workspace_panel():
             except Exception:
                 safe_output = False
             st.markdown(f"**Ultimo risultato:** `{receipt.get('filename', 'file')}`")
+            source_kind = str(receipt.get("source_kind") or "")
+            source_scope = str(receipt.get("source_scope") or "")
+            source_refs = list(receipt.get("source_turn_refs") or [])
+            if source_kind == "recent_conversation":
+                st.caption(
+                    "Sorgente: conversazione verificata"
+                    + (f" · ambito: {source_scope}" if source_scope else "")
+                    + f" · turni con provenienza: {len(source_refs)}"
+                )
+            elif receipt.get("source_filename"):
+                st.caption(f"Sorgente: {receipt.get('source_filename')}")
             if receipt.get("edit_summary"):
                 st.caption(str(receipt["edit_summary"]))
             for warning in receipt.get("warnings") or []:
                 st.warning(str(warning))
+            preview_text = str(receipt.get("preview_text") or "").strip()
+            if preview_text:
+                with st.expander("Anteprima del contenuto", expanded=False):
+                    st.text_area(
+                        "Contenuto generato",
+                        value=preview_text,
+                        height=320,
+                        disabled=True,
+                        key=(
+                            "document_workspace_preview_"
+                            f"{str(receipt.get('sha256') or '')[:12]}"
+                        ),
+                    )
             if safe_output:
                 mime = {
                     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1227,7 +1251,9 @@ with main_col:
                         )
                         try:
                             tool_res = executor.dispatch_contextual_action(
-                                prompt, previous_euri_turn=_previous_euri
+                                prompt,
+                                previous_euri_turn=_previous_euri,
+                                semantic_frame=semantic_frame,
                             )
                             if tool_res.get("route_to_chat"):
                                 tool_res = None

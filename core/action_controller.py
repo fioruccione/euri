@@ -347,6 +347,16 @@ Regole:
     nomina esplicitamente gli appunti o la clipboard. Se nello stato esiste un
     workspace_documenti attivo, "questo documento" indica quello: usa read_document
     per leggerlo e compose_document per modificarlo o produrne una nuova versione.
+12. Per compose_document scegli sempre la sorgente intenzionale: source_mode=
+    active_document se il turno indica il file/documento attivo;
+    recent_conversation se chiede un documento da "questa conversazione", "quanto
+    ci siamo detti" o dal filo corrente; instruction_only soltanto quando il turno
+    contiene gia' il materiale da trasformare. Per recent_conversation indica anche
+    source_scope=last_exchange|current_thread|recent_turns. Usa current_thread per
+    "questa conversazione", "la traccia della conversazione" o "quanto ci siamo detti";
+    last_exchange soltanto se l'utente nomina l'ultimo scambio o l'ultima risposta;
+    recent_turns per un intervallo recente generico. Non pretendere un file
+    attivo quando l'utente ha scelto esplicitamente la conversazione come sorgente.
 
 Rispondi SOLO con JSON:
 {{"request_kind":"conversation|operation","mode":"direct|alternative|none","response_mode":"tool_result|integrated","capability":"nome o null","args":{{}},"target_id":"id o null","authority":"user_explicit|euri_proposed|none","confidence":0.0,"unmet_intent":"breve o vuoto","reason":"breve"}}"""
