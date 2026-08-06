@@ -2,6 +2,11 @@
 
 ## 2026-08-06 - Latenza realtime senza riduzione della logica
 
+- Corretto il falso positivo live del guard atto-parola: “ho aggiornato
+  mentalmente il dato” descrive ora una comprensione interna e non apre più
+  l'ActionController né genera una falsa smentita. Gli aggiornamenti operativi
+  di file/memoria restano protetti; un secondo claim reale nella stessa frase
+  non viene mascherato dalla clausola cognitiva.
 - La risposta vocale viene ancora generata integralmente e attraversa tutti i
   guard di onestà prima dell'audio. Solo il testo finale viene diviso su confini
   di frase: il primo segmento parte appena pronto e Sherpa sintetizza il
@@ -21,8 +26,8 @@
   gate per misurare il prossimo intervento sui log reali.
 - Il frame semantico resta sempre attivo e autorevole: nessuna scorciatoia è
   stata introdotta su correzioni, `no_store`, azioni o sorgenti documentali.
-- Regressioni TTS/pipeline e query-feature cache aggiunte; manifest unitario:
-  **76/76 in 83,5 s**.
+- Regressioni TTS/pipeline, query-feature cache e confine cognitivo/operativo
+  aggiunte; ultimo manifest unitario: **76/76 in 91,4 s**.
 
 ## 2026-08-06 - Confine semantico risposta/azione condiviso
 

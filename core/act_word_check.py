@@ -99,12 +99,39 @@ _ARTIFACT_AVAILABILITY_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Un aggiornamento esplicitamente cognitivo non è un effetto operativo. Caso
+# live 06/08: "Ho aggiornato mentalmente il dato" apriva inutilmente il
+# controller e produceva una falsa smentita d'azione. La regola è grammaticale,
+# non legata al contenuto: rimuove soltanto la breve clausola interna; un secondo
+# claim reale nella stessa frase ("... e ho salvato il file") resta rilevabile.
+_COGNITIVE_UPDATE_OBJECT = (
+    r"(?:mentalmente(?:\s+(?:il|questo|quel)\s+"
+    r"(?:dato|quadro|contesto|informazione))?"
+    r"|(?:la\s+)?mia\s+(?:comprensione|interpretazione)"
+    r"|(?:il|questo|quel)\s+(?:dato|quadro|contesto|informazione)\s+"
+    r"(?:mentalmente|nella\s+mia\s+(?:comprensione|interpretazione)|"
+    r"nel\s+contesto\s+della\s+conversazione))"
+)
+_COGNITIVE_UPDATE_RE = re.compile(
+    rf"\b(?:"
+    rf"(?:ho|l['’ ]ho|li ho|le ho|gli ho)\s+(?:{_ADV}\s+){{0,2}}aggiornat\w*"
+    rf"|(?:ora|adesso|intanto)\s+aggiorno"
+    rf"|sto\s+(?:ora\s+|adesso\s+|già\s+)?aggiornando"
+    rf")\s+{_COGNITIVE_UPDATE_OBJECT}\b",
+    re.IGNORECASE,
+)
+
+
+def _without_cognitive_updates(text: str) -> str:
+    return _COGNITIVE_UPDATE_RE.sub("", text or "")
+
 
 def claims_completed_action(text: str) -> bool:
     """True se il testo afferma un'azione COMPIUTA in prima persona NEL turno corrente
     (negazioni e azioni passate-distanti escluse)."""
     if not text:
         return False
+    text = _without_cognitive_updates(text)
     if not (_CLAIM_RE.search(text) or _CLAIM_PREFIX_RE.search(text)):
         return False
     # Rimuovi le forme negate ("non ho salvato niente") e ricontrolla: resta un claim?
@@ -119,6 +146,7 @@ def claims_completed_action(text: str) -> bool:
 
 def claims_immediate_action_commitment(text: str) -> bool:
     """True se Euri promette lavoro autonomo immediato senza attendere un tool."""
+    text = _without_cognitive_updates(text)
     if not text or _CONDITIONAL_OFFER_RE.search(text):
         return False
     return bool(

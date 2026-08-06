@@ -25,6 +25,9 @@ embedding della stessa query, ma mantiene retrieval, ranking e gate separati.
 - Il frame semantico resta sempre attivo e canonico.
 - Nessun testo viene pronunciato prima della risposta completa e dello scrub di
   onestà; la segmentazione è solo trasporto audio.
+- Il guard atto-parola tratta un aggiornamento esplicitamente mentale o della
+  comprensione come stato conversazionale, non come effetto operativo. Una
+  dichiarazione su file, memoria o altri effetti reali resta soggetta al guard.
 - La cache RAG è per-turno e contiene soltanto dominio+vettore della query, mai
   risultati o documenti Redis.
 - I log `[TIMING] TTS pipeline` e `[TIMING] RAG dual` sono la baseline per ogni
@@ -33,8 +36,8 @@ embedding della stessa query, ma mantiene retrieval, ranking e gate separati.
 
 ## Evidenza
 
-Regressioni in `test_tts_segmentation.py` e `test_dual_channel_runtime.py`;
-manifest unitario completo: **76/76 in 83,5 s**.
+Regressioni in `test_tts_segmentation.py`, `test_dual_channel_runtime.py` e
+`test_act_word.py`; ultimo manifest unitario completo: **76/76 in 91,4 s**.
 
 ---
 

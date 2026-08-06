@@ -60,6 +60,19 @@ CASES = [
     ("claim appena, nessuna azione", "Ho appena salvato la nota.", set(), True),
     # --- e una negazione non scatta ---
     ("negazione", "Ok, non ho salvato niente.", set(), False),
+
+    # --- aggiornamento cognitivo: comprensione interna, nessun effetto operativo ---
+    ("aggiornamento mentale live 06/08",
+     "Ho aggiornato mentalmente il dato.", set(), False),
+    ("aggiornamento della comprensione",
+     "Ho aggiornato la mia comprensione.", set(), False),
+    ("impegno mentale presente",
+     "Ora aggiorno mentalmente il dato.", set(), False),
+    # La qualifica cognitiva non deve mascherare un secondo claim operativo.
+    ("mentale più salvataggio reale dichiarato",
+     "Ho aggiornato mentalmente il dato e ho salvato il file.", set(), True),
+    ("aggiornamento file resta operativo",
+     "Ho aggiornato il file.", set(), True),
 ]
 
 
@@ -102,6 +115,9 @@ SCRUB_CASES = [
     ("sto preparando → niente background finto",
      "Sto preparando il documento.", set(),
      lambda out: out == _COMMITMENT_TAIL),
+    ("aggiornamento mentale → invariato",
+     "Ho aggiornato mentalmente il dato.", set(),
+     lambda out: out == "Ho aggiornato mentalmente il dato."),
 ]
 
 
