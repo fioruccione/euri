@@ -105,11 +105,19 @@ class AudioCapture:
         self.close()
 
 
-def play_audio(samples: np.ndarray, sample_rate: int, stop_event=None) -> bool:
+def play_audio(
+    samples: np.ndarray,
+    sample_rate: int,
+    stop_event=None,
+    *,
+    terminate_existing: bool = True,
+) -> bool:
     """
     Riproduce audio dallo speaker.
     samples: numpy array float32 o int16.
     stop_event: threading.Event opzionale — se settato interrompe la riproduzione.
+    terminate_existing: termina un player CLI precedente; False per i segmenti
+        successivi della stessa coda, evitando pause e kill ridondanti.
     Ritorna True se interrotto da stop_event, False se completato normalmente.
     """
     global _sd_disabled
@@ -117,7 +125,12 @@ def play_audio(samples: np.ndarray, sample_rate: int, stop_event=None) -> bool:
         samples = samples.astype(np.float32) / 32768.0
 
     if _sd_disabled:
-        return _play_via_cli(samples, sample_rate, stop_event=stop_event)
+        return _play_via_cli(
+            samples,
+            sample_rate,
+            stop_event=stop_event,
+            terminate_existing=terminate_existing,
+        )
 
     def _sd_play():
         sd.stop()
@@ -138,7 +151,12 @@ def play_audio(samples: np.ndarray, sample_rate: int, stop_event=None) -> bool:
             sd.stop()
             _sd_disabled = True
             logger.warning(f"sounddevice timeout ({_SD_PLAY_TIMEOUT}s) — disabilitato per la sessione, fallback CLI")
-            return _play_via_cli(samples, sample_rate, stop_event=stop_event)
+            return _play_via_cli(
+                samples,
+                sample_rate,
+                stop_event=stop_event,
+                terminate_existing=terminate_existing,
+            )
         time.sleep(0.05)
 
     try:
@@ -146,12 +164,23 @@ def play_audio(samples: np.ndarray, sample_rate: int, stop_event=None) -> bool:
     except Exception as e:
         _sd_disabled = True
         logger.warning(f"sounddevice error: {e} — disabilitato per la sessione, fallback CLI")
-        return _play_via_cli(samples, sample_rate, stop_event=stop_event)
+        return _play_via_cli(
+            samples,
+            sample_rate,
+            stop_event=stop_event,
+            terminate_existing=terminate_existing,
+        )
 
     return False
 
 
-def _play_via_cli(samples: np.ndarray, sample_rate: int, stop_event=None) -> bool:
+def _play_via_cli(
+    samples: np.ndarray,
+    sample_rate: int,
+    stop_event=None,
+    *,
+    terminate_existing: bool = True,
+) -> bool:
     """
     Fallback cross-platform: scrive WAV temp e lo riproduce con aplay (Linux) o afplay (macOS).
     stop_event: threading.Event opzionale — se settato interrompe la riproduzione.
@@ -167,9 +196,10 @@ def _play_via_cli(samples: np.ndarray, sample_rate: int, stop_event=None) -> boo
     audio_duration = len(samples) / sample_rate
     afplay_timeout = max(5, min(600, audio_duration + 5))
     try:
-        import subprocess as _sp
-        _sp.run(["pkill", "-x", player_cmd], capture_output=True)
-        time.sleep(0.15)
+        if terminate_existing:
+            import subprocess as _sp
+            _sp.run(["pkill", "-x", player_cmd], capture_output=True)
+            time.sleep(0.15)
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             tmp_path = f.name

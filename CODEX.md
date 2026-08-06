@@ -10,6 +10,34 @@ aggiornare la mappa nello stesso intervento.
 
 ---
 
+# Handoff Euri - 2026-08-06 - Latenza realtime conservativa
+
+## Esito
+
+La voce usa una pipeline segmentata soltanto dopo che la risposta completa ha
+superato i guard epistemici. Il primo audio arriva prima e la sintesi restante si
+sovrappone al playback, senza streaming dei token o decisioni parziali. Il RAG
+dual-channel evita inoltre la seconda classificazione di dominio e il secondo
+embedding della stessa query, ma mantiene retrieval, ranking e gate separati.
+
+## Invarianti
+
+- Il frame semantico resta sempre attivo e canonico.
+- Nessun testo viene pronunciato prima della risposta completa e dello scrub di
+  onestà; la segmentazione è solo trasporto audio.
+- La cache RAG è per-turno e contiene soltanto dominio+vettore della query, mai
+  risultati o documenti Redis.
+- I log `[TIMING] TTS pipeline` e `[TIMING] RAG dual` sono la baseline per ogni
+  ulteriore ottimizzazione: non dedurre il guadagno dal solo handler complessivo,
+  che include l'intera durata del parlato.
+
+## Evidenza
+
+Regressioni in `test_tts_segmentation.py` e `test_dual_channel_runtime.py`;
+manifest unitario completo: **76/76 in 83,5 s**.
+
+---
+
 # Handoff Euri - 2026-08-06 - Conversazione come sorgente documentale
 
 ## Esito

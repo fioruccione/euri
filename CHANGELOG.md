@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-08-06 - Latenza realtime senza riduzione della logica
+
+- La risposta vocale viene ancora generata integralmente e attraversa tutti i
+  guard di onestà prima dell'audio. Solo il testo finale viene diviso su confini
+  di frase: il primo segmento parte appena pronto e Sherpa sintetizza il
+  successivo mentre `aplay` riproduce quello corrente.
+- L'interrupt listener resta unico per l'intera risposta. I segmenti successivi
+  non terminano e riavviano inutilmente il player CLI; un errore ripiega soltanto
+  sulla parte non ancora pronunciata. Il comportamento è reversibile con
+  `EURI_TTS_SEGMENTED_ENABLED=0` e la dimensione è configurabile con
+  `EURI_TTS_SEGMENT_MAX_CHARS`.
+- La telemetria distingue ora `first_ready`, CPU totale di sintesi, playback e
+  wall time della pipeline: la durata della risposta non viene più confusa con
+  il tempo necessario prima che Euri inizi a parlare.
+- Il dual-channel conserva due retrieval e tutti i suoi filtri, ranking, locator
+  e gate, ma dominio della query ed embedding vengono calcolati una sola volta
+  per turno e riusati dal secondo passaggio. La cache è effimera e non contiene
+  risultati di memoria. Nuova telemetria separa base, locator, composizione e
+  gate per misurare il prossimo intervento sui log reali.
+- Il frame semantico resta sempre attivo e autorevole: nessuna scorciatoia è
+  stata introdotta su correzioni, `no_store`, azioni o sorgenti documentali.
+- Regressioni TTS/pipeline e query-feature cache aggiunte; manifest unitario:
+  **76/76 in 83,5 s**.
+
 ## 2026-08-06 - Confine semantico risposta/azione condiviso
 
 - `compose_document` può ora usare intenzionalmente tre sorgenti distinte:

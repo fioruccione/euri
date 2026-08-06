@@ -193,6 +193,13 @@ turni verbatim con `turn_ref`, così una nota passiva nata in chat può restare
 un locator verificabile invece di perdere la propria fonte. L'archivio dei
 turni viene popolato in ogni modalità.
 
+Nel dual-channel i due retrieval restano separati perché hanno insiemi di fonti
+e responsabilità differenti. Per evitare lavoro duplicato senza alterare i
+risultati, nello stesso turno condividono soltanto la classificazione di dominio
+della query e il relativo embedding CPU; risultati, ranking, touch e gate non
+sono messi in cache. Il log `[TIMING] RAG dual` espone separatamente base,
+locator, composizione e gate.
+
 **Confine personale/sperimentale.** Il retrieval migliore non risolve da solo
 un problema precedente all'indice: una frase può essere semanticamente chiara
 ma appartenere a una battuta, una simulazione o un test. Dal 29/07/2026 Euri
@@ -417,7 +424,7 @@ Un'interfaccia web leggera (`ui/app.py`) per:
 | Memoria Attiva | Redis 8.8.0 vanilla (ReJSON / RediSearch / TimeSeries / Bloom / VectorSet integrati nel core + struttura `Array` nativa) |
 | Memoria Passiva/UI | Obsidian Vault sincronizzato via `watchdog` |
 | STT / Trascrizione | faster-whisper `large-v3` (CUDA float16 — NVIDIA RTX 4060 Ti) |
-| TTS / Voce | sherpa-onnx + Piper (`vits-piper-it_IT-paola-medium`) |
+| TTS / Voce | sherpa-onnx + Piper (`vits-piper-it_IT-paola-medium`), sintesi segmentata e pipeline con playback |
 | Embedding | sentence-transformers `intfloat/multilingual-e5-large` (1024-dim, asimmetrico query/passage) |
 | Classificatore Veloce | AdaptiveClassifier V2 (plasticità ancorata) — in ricostruzione, Fase −1 harvest (vedi sezione 1) |
 | Web search | ddgs (DuckDuckGo, no API key) + beautifulsoup4 |

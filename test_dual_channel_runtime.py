@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
+import core.domain_gater as domain_gater
 from core.brain import Brain
 from core.conversation_turns import ConversationTurnStore, make_turn_ref
 from core.memory_manager import MemoryManager
@@ -350,6 +351,54 @@ def test_passive_exclusion_is_a_redis_prefilter_not_a_post_cut_filter():
     )
 
 
+def test_query_features_are_reused_without_sharing_search_results():
+    class EmptySearch:
+        docs = []
+
+    class FakeFt:
+        def search(self, *_args, **_kwargs):
+            return EmptySearch()
+
+    class SearchRedis:
+        def ft(self, _index):
+            return FakeFt()
+
+    class CountingEmbedder:
+        def __init__(self):
+            self.calls = 0
+
+        def encode(self, _text, mode="passage"):
+            assert mode == "query"
+            self.calls += 1
+            return np.asarray([1.0, 0.0], dtype=np.float32)
+
+    embedder = CountingEmbedder()
+    domain_calls = []
+    cache = {}
+    original_assign_domain = domain_gater.assign_domain
+    try:
+        domain_gater.assign_domain = lambda text: domain_calls.append(text) or "automotive"
+        first = domain_gater.domain_aware_search(
+            "problema sensore Jeep",
+            embedder,
+            SearchRedis(),
+            source_exclude=["passive"],
+            query_feature_cache=cache,
+        )
+        second = domain_gater.domain_aware_search(
+            "problema sensore Jeep",
+            embedder,
+            SearchRedis(),
+            query_feature_cache=cache,
+        )
+    finally:
+        domain_gater.assign_domain = original_assign_domain
+
+    assert first == second == []
+    assert domain_calls == ["problema sensore Jeep"]
+    assert embedder.calls == 1
+
+
 if __name__ == "__main__":
     test_brain_persists_stable_turn_refs_and_metadata_reuses_them()
     test_dual_channel_protects_base_and_injects_only_original_turn()
@@ -358,4 +407,5 @@ if __name__ == "__main__":
     test_shared_runtime_dispatcher_applies_selective_mode_for_all_channels()
     test_selective_thinking_stays_off_without_promoted_verbatim()
     test_passive_exclusion_is_a_redis_prefilter_not_a_post_cut_filter()
+    test_query_features_are_reused_without_sharing_search_results()
     print("test_dual_channel_runtime: OK")

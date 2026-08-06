@@ -23,7 +23,8 @@ from utils.date_utils import now, format_datetime
 from voice.audio_io import AudioCapture, play_audio
 from voice.vad import VAD
 from voice.stt import STT
-from voice.tts import TTS
+from voice.tts import TTS, split_for_speech
+from voice.tts_pipeline import run_tts_pipeline
 from voice.visual_gate import VisualGate
 from voice.face_auth import FaceAuth
 from voice.speaker_auth import SpeakerAuth, SpeakerVerdict, ENROLL_UTTERANCES
@@ -553,7 +554,7 @@ class VoiceDaemon:
         return self._URL_RE.sub('', text).strip()
 
     def _speak(self, text: str, lang: str = "it", *, opens_conversation: bool = True):
-        """Sintetizza e riproduce testo con interrupt listener attivo."""
+        """Sintetizza e riproduce il testo finale con interrupt listener attivo."""
         text = self._clean_for_speech(text)
         if not text:
             return
@@ -571,27 +572,85 @@ class VoiceDaemon:
         self.visual_gate.notify_activity()
         self.r.set("euri:audio:lock", "1", ex=300)
         interrupted = False
+        fallback_text = text
         try:
-            _t_tts = time.perf_counter()
-            samples, sr = self.tts.synthesize(text, lang=lang)
-            logger.info(f"[TIMING] TTS synth: {(time.perf_counter()-_t_tts)*1000:.0f}ms ({len(text)} chars)")
+            chunks = (
+                split_for_speech(
+                    text,
+                    max_chars=getattr(config, "TTS_SEGMENT_MAX_CHARS", 360),
+                )
+                if getattr(config, "TTS_SEGMENTED_ENABLED", True)
+                else [text]
+            )
+            if not chunks:
+                return
+
             stop_event = threading.Event()
-            listener = threading.Thread(target=self._interrupt_listener, args=(stop_event,), daemon=True)
-            listener.start()
+            listener = None
+
+            def _on_first_ready(first_ready_s: float):
+                nonlocal listener
+                logger.info(
+                    f"[TIMING] TTS first-ready: {first_ready_s*1000:.0f}ms "
+                    f"(chunk 1/{len(chunks)}, {len(chunks[0])}/{len(text)} chars)"
+                )
+                # Mantiene riconoscibile la metrica storica, specificando che ora
+                # misura il tempo critico fino al primo audio e non l'intero testo.
+                logger.info(
+                    f"[TIMING] TTS synth: {first_ready_s*1000:.0f}ms "
+                    f"({len(chunks[0])} first-chunk chars)"
+                )
+                listener = threading.Thread(
+                    target=self._interrupt_listener,
+                    args=(stop_event,),
+                    daemon=True,
+                )
+                listener.start()
+
+            def _play_chunk(samples, sample_rate: int, index: int) -> bool:
+                return play_audio(
+                    samples,
+                    sample_rate,
+                    stop_event=stop_event,
+                    terminate_existing=(index == 0),
+                )
+
+            def _mark_played(count: int):
+                nonlocal fallback_text
+                fallback_text = " ".join(chunks[count:])
+
             try:
-                interrupted = play_audio(samples, sr, stop_event=stop_event)
+                result = run_tts_pipeline(
+                    chunks,
+                    synthesize=lambda chunk: self.tts.synthesize(chunk, lang=lang),
+                    play=_play_chunk,
+                    on_first_ready=_on_first_ready,
+                    on_chunk_played=_mark_played,
+                )
+                interrupted = result.interrupted
             finally:
                 stop_event.set()
-                listener.join(timeout=2)
+                if listener is not None:
+                    listener.join(timeout=2)
+            logger.info(
+                f"[TIMING] TTS pipeline: first_ready={result.first_ready_s*1000:.0f}ms "
+                f"synth_cpu={result.synth_cpu_s*1000:.0f}ms "
+                f"playback={result.playback_s*1000:.0f}ms "
+                f"wall={result.wall_s*1000:.0f}ms "
+                f"chunks={result.played_chunks}/{result.total_chunks} chars={len(text)} "
+                f"interrupted={interrupted}"
+            )
         except Exception as e:
             logger.error(f"Audio hardware irrecuperabile, fallback TTS: {e}")
             import subprocess, sys
             try:
+                if not fallback_text:
+                    return
                 if sys.platform == "darwin":
                     voice = "Paola" if lang == "it" else "Samantha"
-                    subprocess.run(["say", "-v", voice, text], timeout=300)
+                    subprocess.run(["say", "-v", voice, fallback_text], timeout=300)
                 else:
-                    subprocess.run(["spd-say", "-l", lang, text], timeout=300)
+                    subprocess.run(["spd-say", "-l", lang, fallback_text], timeout=300)
             except Exception as tts_err:
                 logger.critical(f"Fallback TTS fallito: {tts_err} — Euri muto")
         finally:

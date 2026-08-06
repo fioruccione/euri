@@ -397,6 +397,7 @@ class MemoryManager:
         *,
         source_exclude: list[str] | None = None,
         memory_scope: str | None = None,
+        query_feature_cache: dict | None = None,
     ) -> list[dict]:
         """
         Ricerca a tre livelli:
@@ -450,6 +451,7 @@ class MemoryManager:
                 source_filter=source_filter,
                 source_exclude=source_exclude,
                 memory_scope=memory_scope,
+                query_feature_cache=query_feature_cache,
             )
             semantic = [r for r in semantic if not r.get("superseded_by")]
             if source_filter is not None:

@@ -128,6 +128,17 @@ AUDIO_OUTPUT_DEVICE = "Jabra Speak2 40"
 # Su Mac con CoreAudio degradato o screen sharing attivo, stesso problema.
 AUDIO_SKIP_SOUNDDEVICE = True
 
+# La risposta viene sempre completata e sottoposta ai guard epistemici prima di
+# essere pronunciata. Solo dopo, il testo finale puo' essere sintetizzato a
+# segmenti: mentre un segmento viene riprodotto, quello successivo viene
+# preparato su CPU. Disattivabile a runtime per confronto/fallback immediato.
+TTS_SEGMENTED_ENABLED = os.environ.get(
+    "EURI_TTS_SEGMENTED_ENABLED", "1"
+).strip().lower() not in {"0", "false", "no", "off"}
+TTS_SEGMENT_MAX_CHARS = max(
+    120, int(os.environ.get("EURI_TTS_SEGMENT_MAX_CHARS", "360"))
+)
+
 # Timezone
 TIMEZONE = pytz.timezone("Europe/Rome")
 

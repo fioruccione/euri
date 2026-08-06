@@ -17,6 +17,7 @@ import re
 # loggato/mostrato in Silent Chat/salvato resta col suo markdown.
 _MD_BULLET = re.compile(r'(?m)^[ \t]*[-*•]\s+')
 _MD_HEADER = re.compile(r'(?m)^[ \t]*#{1,6}[ \t]*')
+_SPEECH_BOUNDARY = re.compile(r"(?<=[.!?…])\s+|\n+")
 
 
 def _strip_markup_for_speech(text: str) -> str:
@@ -27,6 +28,50 @@ def _strip_markup_for_speech(text: str) -> str:
     t = t.replace("*", "").replace("`", "")  # asterischi e backtick residui (grassetto/corsivo/code)
     t = re.sub(r"[ \t]{2,}", " ", t)
     return t.strip()
+
+
+def split_for_speech(text: str, *, max_chars: int = 360) -> list[str]:
+    """Divide il testo finale in segmenti TTS senza cambiarne il contenuto.
+
+    La divisione e' puramente di trasporto audio: avviene dopo che la risposta
+    completa e' stata generata e validata. Preferisce i confini di frase; una
+    frase eccezionalmente lunga viene spezzata sull'ultimo spazio disponibile.
+    """
+    cleaned = _strip_markup_for_speech(text)
+    if not cleaned:
+        return []
+    max_chars = max(40, int(max_chars))
+
+    def _wrap(unit: str) -> list[str]:
+        wrapped: list[str] = []
+        remaining = unit.strip()
+        while len(remaining) > max_chars:
+            cut = remaining.rfind(" ", 0, max_chars + 1)
+            if cut < max_chars // 2:
+                cut = max_chars
+            wrapped.append(remaining[:cut].strip())
+            remaining = remaining[cut:].strip()
+        if remaining:
+            wrapped.append(remaining)
+        return wrapped
+
+    units: list[str] = []
+    for sentence in _SPEECH_BOUNDARY.split(cleaned):
+        if sentence.strip():
+            units.extend(_wrap(sentence))
+
+    chunks: list[str] = []
+    current = ""
+    for unit in units:
+        candidate = f"{current} {unit}".strip() if current else unit
+        if current and len(candidate) > max_chars:
+            chunks.append(current)
+            current = unit
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
 
 
 def _load_sherpa_model(model_dir: Path) -> sherpa_onnx.OfflineTts:

@@ -9,6 +9,7 @@ Costruisce il contesto base da Redis senza conoscere domini specifici:
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 
 from loguru import logger
@@ -191,6 +192,7 @@ def build_rag_context(
     excluded_sources: set[str] | None = None,
     touch: bool = True,
     enable_recent_memory_intent: bool = True,
+    query_feature_cache: dict | None = None,
 ) -> RagContext:
     """Costruisce il contesto RAG base e ritorna anche gli ID iniettati.
 
@@ -304,6 +306,8 @@ def build_rag_context(
         }
         if source_exclude:
             search_kwargs["source_exclude"] = source_exclude
+        if query_feature_cache is not None:
+            search_kwargs["query_feature_cache"] = query_feature_cache
         extra_memories = memory.search_memories(text, **search_kwargs)
         kw_query = " | ".join(keywords[:8])
         from core.memory_scope import PERSONAL_SCOPE, current_scope
@@ -664,6 +668,9 @@ def build_dual_channel_context(
     if presentation not in {"append", "selective"}:
         raise ValueError(f"presentazione dual-channel non valida: {presentation}")
 
+    dual_started = time.perf_counter()
+    query_feature_cache: dict = {}
+    base_started = time.perf_counter()
     base = build_rag_context(
         text,
         memory,
@@ -671,14 +678,19 @@ def build_dual_channel_context(
         recent_history=recent_history,
         excluded_sources={"passive"},
         touch=touch,
+        query_feature_cache=query_feature_cache,
     )
+    base_ms = (time.perf_counter() - base_started) * 1000
+    locator_started = time.perf_counter()
     locator_view = build_rag_context(
         text,
         memory,
         mode=mode,
         recent_history=recent_history,
         touch=False,
+        query_feature_cache=query_feature_cache,
     )
+    locator_ms = (time.perf_counter() - locator_started) * 1000
     passive_nodes = [
         node
         for node in sorted(locator_view.nodes, key=lambda item: item.get("position", 0))
@@ -700,6 +712,7 @@ def build_dual_channel_context(
             return ""
         return turn.render()
 
+    compose_started = time.perf_counter()
     composition = compose_dual_channel(
         base_context_text=base.text,
         base_slots=len(base.nodes),
@@ -707,6 +720,7 @@ def build_dual_channel_context(
         locator_notes=locator_notes,
         render_turn=_render_scoped_turn,
     )
+    compose_ms = (time.perf_counter() - compose_started) * 1000
 
     added_nodes = []
     addition_gate_inputs = []
@@ -748,6 +762,7 @@ def build_dual_channel_context(
     prompt_regions = {
         item["turn_id"]: "append" for item in composition.additions
     }
+    gate_started = time.perf_counter()
     if observe_selective or presentation == "selective":
         thresholds = SelectiveThresholds(
             min_query_source_similarity=getattr(
@@ -773,6 +788,7 @@ def build_dual_channel_context(
                 composition,
                 gate["promoted_turn_ids"],
             )
+    gate_ms = (time.perf_counter() - gate_started) * 1000
 
     gate_by_turn = {
         candidate["turn_id"]: candidate for candidate in gate.get("candidates", [])
@@ -808,6 +824,14 @@ def build_dual_channel_context(
             "locator_memory_ids": [node["id"] for node in passive_nodes],
             "locator_notes_considered": len(passive_nodes),
             "selective_gate": gate,
+            "timing_ms": {
+                "base": round(base_ms, 1),
+                "locator": round(locator_ms, 1),
+                "compose": round(compose_ms, 1),
+                "selective_gate": round(gate_ms, 1),
+                "total": round((time.perf_counter() - dual_started) * 1000, 1),
+            },
+            "query_features_reused": bool(query_feature_cache.get("hits", 0)),
         }
     )
     logger.info(
@@ -824,6 +848,19 @@ def build_dual_channel_context(
             for item in composition.candidates_considered
         ),
         composition.discarded_budget,
+    )
+    logger.info(
+        "[TIMING] RAG dual: base={:.0f}ms locator={:.0f}ms compose={:.0f}ms "
+        "gate={:.0f}ms total={:.0f}ms base_chars={} final_chars={} "
+        "query_features_reused={}",
+        base_ms,
+        locator_ms,
+        compose_ms,
+        gate_ms,
+        (time.perf_counter() - dual_started) * 1000,
+        len(base.text),
+        len(final_text),
+        bool(query_feature_cache.get("hits", 0)),
     )
     for candidate in gate.get("candidates", []):
         logger.info(

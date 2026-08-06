@@ -181,15 +181,38 @@ def domain_aware_search(
     source_filter: list[str] | None = None,
     source_exclude: list[str] | None = None,
     memory_scope: str | None = None,
+    query_feature_cache: dict | None = None,
 ) -> list[dict]:
     """
     Ricerca vettoriale in due passaggi.
     Prima cerca di capire il dominio della query, poi filtra i risultati in quel dominio.
     Se ci sono meno di 2 risultati, allarga al DB completo.
     """
-    # 1. Capisci di che dominio stiamo cercando informazioni
-    query_domain = assign_domain(query)
-    vec = embedder.encode(query, mode="query")
+    # 1. Capisci di che dominio stiamo cercando informazioni. Nel dual-channel
+    # la medesima query alimenta due ricerche con filtri diversi: dominio ed
+    # embedding sono proprietà della query, quindi possono essere condivisi
+    # entro il singolo turno senza condividere risultati o ranking.
+    cache_key = str(query)
+    cache_entries = (
+        query_feature_cache.setdefault("entries", {})
+        if query_feature_cache is not None else {}
+    )
+    cached = (
+        cache_entries.get(cache_key)
+        if query_feature_cache is not None else None
+    )
+    if cached is not None:
+        query_domain = cached["domain"]
+        vec = cached["vector"]
+        query_feature_cache["hits"] = int(query_feature_cache.get("hits", 0)) + 1
+    else:
+        query_domain = assign_domain(query)
+        vec = embedder.encode(query, mode="query")
+        if query_feature_cache is not None and vec is not None:
+            cache_entries[cache_key] = {
+                "domain": query_domain,
+                "vector": vec,
+            }
     if vec is None:
         return []
     vec_bytes = vec.astype("float32").tobytes()

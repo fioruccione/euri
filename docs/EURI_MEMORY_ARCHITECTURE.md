@@ -396,6 +396,14 @@ flowchart LR
 - la modalità `selective` può promuovere davanti un verbatim ad alta rilevanza;
   altrimenti resta nell'append protetto.
 
+Base e locator eseguono ancora retrieval distinti: non condividono candidati,
+ranking o risultati. Condividono però, soltanto durante il singolo turno, le due
+feature invarianti della medesima query — dominio assegnato ed embedding — così
+il secondo passaggio non richiama inutilmente il classificatore LLM e non
+ricalcola lo stesso vettore CPU. La cache è effimera, non tocca Redis e non
+sopravvive al turno. Il log `[TIMING] RAG dual` rende osservabili separatamente
+base, locator, composizione e gate.
+
 Un retrieval con `touch=True` è l'evento che conta come richiamo:
 
 - incrementa `recalled_count`;

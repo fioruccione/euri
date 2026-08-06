@@ -68,6 +68,7 @@ test_start_euri_lifecycle.py
 test_stt_gpu_selection.py
 test_tension.py
 test_temporal_context.py
+test_tts_segmentation.py
 test_utterance_pragmatics.py
 test_verbatim_lifecycle.py
 test_visual_presence_bridge.py

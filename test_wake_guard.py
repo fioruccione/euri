@@ -30,7 +30,11 @@ class _SpeakerVerdict(str, Enum):
 _stub_module("voice.audio_io", AudioCapture=_HardwareStub, play_audio=lambda *_a, **_k: None)
 _stub_module("voice.vad", VAD=_HardwareStub)
 _stub_module("voice.stt", STT=_HardwareStub)
-_stub_module("voice.tts", TTS=_HardwareStub)
+_stub_module(
+    "voice.tts",
+    TTS=_HardwareStub,
+    split_for_speech=lambda text, **_kwargs: [text],
+)
 _stub_module("voice.visual_gate", VisualGate=_HardwareStub)
 _stub_module("voice.face_auth", FaceAuth=_HardwareStub)
 _stub_module(
