@@ -1122,6 +1122,7 @@ with main_col:
                 raw_prompt,
                 recent_history=_semantic_history,
                 memory_scope=current_scope(),
+                runtime_context=executor.document_action_state_context(),
             )
             semantic_frame = dict(semantic_frame)
             semantic_frame["accepted_owner_turn"] = True
@@ -1153,10 +1154,11 @@ with main_col:
                 )
 
             # Mostra utente
+            _user_observed_at = time.time()
             st.session_state.messages.append({
                 "role": "user", "content": prompt,
                 "display_content": raw_prompt,
-                "observed_at": time.time(),
+                "observed_at": _user_observed_at,
             })
             with st.chat_message("user"):
                 st.markdown(raw_prompt)
@@ -1196,8 +1198,19 @@ with main_col:
                     # controller non trova un tool grounded, il turno fallisce chiuso e
                     # non ricade nella chat che potrebbe fingere l'operazione.
                     tool_res = None
-                    from core.semantic_turn import frame_requests_contextual_action
+                    _semantic_chat_return = False
+                    _response_recorded_by_brain = False
+                    from core.semantic_turn import (
+                        frame_requests_contextual_action,
+                        frame_vetoes_contextual_action,
+                    )
                     _semantic_action = frame_requests_contextual_action(
+                        semantic_frame,
+                        minimum_confidence=getattr(
+                            config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72
+                        ),
+                    )
+                    _semantic_tool_veto = frame_vetoes_contextual_action(
                         semantic_frame,
                         minimum_confidence=getattr(
                             config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72
@@ -1216,6 +1229,9 @@ with main_col:
                             tool_res = executor.dispatch_contextual_action(
                                 prompt, previous_euri_turn=_previous_euri
                             )
+                            if tool_res.get("route_to_chat"):
+                                tool_res = None
+                                _semantic_chat_return = True
                         except Exception as exc:
                             logger.warning(
                                 "Silent Chat: dispatch contestuale fallito — {}", exc
@@ -1234,7 +1250,11 @@ with main_col:
                     # Compatibilita' con i comandi storici semplici: solo se il frame
                     # non ha gia' qualificato un'azione, resta il fast-path regex cheap.
                     try:
-                        if tool_res is None:
+                        if (
+                            tool_res is None
+                            and not _semantic_chat_return
+                            and not _semantic_tool_veto
+                        ):
                             tool_res = executor.dispatch_text(prompt, llm_fallback=False)
                     except Exception:
                         tool_res = None
@@ -1383,6 +1403,7 @@ with main_col:
                                     thinking_reason=_thinking["reason"],
                                 )
                             )
+                            _response_recorded_by_brain = True
                         except Exception:
                             finish_response_turn(
                                 r,
@@ -1409,6 +1430,24 @@ with main_col:
             st.session_state.messages.append({
                 "role": "assistant", "content": response, "observed_at": time.time()
             })
+
+            # I percorsi CHAT vengono archiviati da Brain.respond(). Tool, SAVE e
+            # fail-closed producono invece la risposta fuori dal Brain: registrali
+            # esplicitamente nello stesso archivio durevole condiviso con la voce.
+            if not _response_recorded_by_brain:
+                brain.record_context_message(
+                    "user",
+                    prompt,
+                    trusted=True,
+                    observed_at=_user_observed_at,
+                    raw_content=raw_prompt,
+                    semantic_frame=semantic_frame,
+                )
+                brain.record_context_message(
+                    "assistant",
+                    response,
+                    trusted=True,
+                )
 
             # Log della conversazione — alimenta il passive learner
             memory_manager.log_conversation("Stefano", prompt)

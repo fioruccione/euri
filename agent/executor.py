@@ -1121,7 +1121,8 @@ class Executor:
         E' usato dalla Silent Chat, che possiede gia' il frame semantico ma non il
         daemon vocale. Nessuna regex decide la capability: il controller puo'
         scegliere soltanto dal catalogo Executor e la policy rivalida l'effetto.
-        Qualunque incertezza ritorna un esito fail-closed, mai una risposta CHAT.
+        L'astensione operativa resta fail-closed. Un giudizio esplicito
+        ``conversation`` torna invece al chiamante senza fingere un tool.
         """
         from core.action_controller import (
             ActionController, ActionDisposition, build_capability_snapshot,
@@ -1143,6 +1144,16 @@ class Executor:
             targets_by_id=targets,
         )
         decision = action_controller.decide(proposal, capabilities)
+        if decision.disposition == ActionDisposition.CONVERSE:
+            logger.info("Executor contextual: gesto linguistico → ritorno a CHAT")
+            return {
+                "tool_name": "",
+                "output": "",
+                "raw_data": {},
+                "success": False,
+                "fail_closed": False,
+                "route_to_chat": True,
+            }
         if decision.disposition != ActionDisposition.EXECUTE or proposal is None:
             logger.info(
                 "Executor contextual: {} cap={} reason={}",

@@ -198,6 +198,35 @@ def test_semantic_abstain_is_fail_closed_not_chat():
     assert "Non ho eseguito nulla" in result["output"]
 
 
+def test_contextual_conversation_returns_to_chat_without_tool_claim():
+    class _ConversationController:
+        def propose(self, *_args, **_kwargs):
+            return ActionProposal(
+                capability="",
+                args={},
+                target_id=None,
+                authority=ActionAuthority.NONE,
+                confidence=0.99,
+                request_kind="conversation",
+            )
+
+        def decide(self, proposal, _capabilities):
+            return ActionDecision(
+                ActionDisposition.CONVERSE,
+                proposal,
+                "conversational_response",
+            )
+
+    executor = Executor()
+    result = executor.dispatch_contextual_action(
+        "Elenca i macchinari di cui abbiamo parlato.",
+        controller=_ConversationController(),
+    )
+    assert result["route_to_chat"] is True
+    assert result["fail_closed"] is False
+    assert result["output"] == ""
+
+
 def test_conservative_docx_revision_preserves_layout_footer_and_lists():
     from docx import Document
     from docx.shared import Cm

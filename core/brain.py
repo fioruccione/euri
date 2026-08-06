@@ -247,6 +247,8 @@ class Brain:
         trusted: bool = True,
         observed_at: float | None = None,
         memory_scope: str | None = None,
+        raw_content: str | None = None,
+        semantic_frame: dict | None = None,
     ) -> None:
         """Archivia un turno diretto senza candidarlo a nuova memoria passiva.
 
@@ -261,6 +263,8 @@ class Brain:
                 trusted,
                 observed_at=observed_at,
                 memory_scope=memory_scope,
+                raw_content=raw_content,
+                semantic_frame=semantic_frame,
                 passive_eligible=False,
             )
 

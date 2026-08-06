@@ -1483,7 +1483,9 @@ class VoiceDaemon:
                 targets_by_id=todos_by_id,
             )
         if proposal is None:
-            return False, False
+            # Il controller non ha prodotto un giudizio valido: una richiesta
+            # realmente operativa deve restare fail-closed.
+            return False, True
         self._emit_action_transition(proposal, "proposed", reason=proposal.reason)
         decision = self.action_controller.decide(
             proposal,
@@ -1501,6 +1503,9 @@ class VoiceDaemon:
             f"target={proposal.target_id or '-'} conf={proposal.confidence:.2f} "
             f"authority={proposal.authority.value}"
         )
+        if decision.disposition == ActionDisposition.CONVERSE:
+            logger.info("ActionController: gesto linguistico → ritorno a CHAT")
+            return False, False
         if decision.disposition == ActionDisposition.ABSTAIN:
             return False, True
         if decision.disposition == ActionDisposition.CLARIFY:
@@ -3111,11 +3116,13 @@ class VoiceDaemon:
         scope = current_scope()
         with self.brain.history_lock:
             recent_history = list(self.brain._conversation_history)
+        runtime_context = self.executor.document_action_state_context()
         with self._brain_lock:
             frame = self.semantic_turns.interpret(
                 text,
                 recent_history=recent_history,
                 memory_scope=scope,
+                runtime_context=runtime_context,
             )
         return self._apply_semantic_canonicalizations(frame)
 
@@ -3126,6 +3133,7 @@ class VoiceDaemon:
         scope = get_active_scope(self.r)
         with self.brain.history_lock:
             recent_history = list(self.brain._conversation_history)
+        runtime_context = self.executor.document_action_state_context()
         with self._brain_lock:
             return self.semantic_turns.interpret(
                 text,
@@ -3133,6 +3141,7 @@ class VoiceDaemon:
                 memory_scope=scope,
                 session_bootstrap=True,
                 persist_corrections=False,
+                runtime_context=runtime_context,
             )
 
     def _dispatch_scoped(
@@ -3389,15 +3398,20 @@ class VoiceDaemon:
         contextual_action_candidate = (
             looks_actionable(text) or semantic_action_reasoning
         )
-        if contextual_action_candidate and frame_vetoes_contextual_action(
+        frame_action_veto = contextual_action_candidate and frame_vetoes_contextual_action(
             semantic_frame,
             minimum_confidence=getattr(
                 config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72
             ),
-        ):
+        )
+        if frame_action_veto:
             contextual_action_candidate = False
             if semantic_action_reasoning:
                 action_veto = True
+            if intent == Intent.EXECUTE:
+                # Il router lessicale non può scavalcare un frame affidabile che
+                # descrive soltanto una risposta, una negazione o un'ipotesi.
+                intent = Intent.CHAT
             logger.info(
                 "ActionController evitato dal frame semantico: acts={}",
                 ",".join(semantic_frame.get("speech_acts") or []) or "-",
@@ -3409,15 +3423,12 @@ class VoiceDaemon:
             )
             if handled:
                 return
-            if semantic_action_reasoning:
-                # Anche un guasto/risposta vuota del controller e' un veto quando
-                # il frame ha gia' accertato REQUEST_ACTION: mai degradare a CHAT.
-                action_veto = True
-                if intent == Intent.EXECUTE:
-                    # Un EXECUTE già compreso semanticamente non torna al router
-                    # legacy/regex: altrimenti "crea un Word" può degradare da
-                    # compose_document al generatore di codice generico.
-                    intent = Intent.CHAT
+            if semantic_action_reasoning and intent == Intent.EXECUTE:
+                # Un EXECUTE già compreso semanticamente non torna al router
+                # legacy/regex. Se il controller ha riconosciuto un semplice gesto
+                # linguistico, rientra in CHAT; se ha fallito, action_veto conserva
+                # il fail-closed più sotto.
+                intent = Intent.CHAT
             if intent in {Intent.COMPLETE, Intent.RESCHEDULE}:
                 # Una mutazione non ricade mai sugli handler legacy se il
                 # controller non ha prodotto/eseguito una decisione grounded.
@@ -3475,6 +3486,19 @@ class VoiceDaemon:
             )
             self.memory.log_conversation(_OWNER_NAME, text)
             self.memory.log_conversation(_ASSISTANT_NAME, reply)
+            self.brain.record_context_message(
+                "user",
+                text,
+                trusted=trusted,
+                observed_at=observed_at,
+                raw_content=(semantic_frame or {}).get("raw_text"),
+                semantic_frame=semantic_frame,
+            )
+            self.brain.record_context_message(
+                "assistant",
+                reply,
+                trusted=trusted,
+            )
             self._speak(reply)
             logger.info("REQUEST_ACTION fail-closed dopo veto del controller")
             return

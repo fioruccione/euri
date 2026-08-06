@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-08-06 - Confine semantico risposta/azione condiviso
+
+- Il frame distingue ora il gesto linguistico dalla sua eventuale esecuzione:
+  ogni azione porta `effect_scope=response|read|write|state_change|external` e
+  `polarity=requested|negated|hypothetical`. Soltanto un effetto operativo
+  richiesto, completo di effetto, target e classe di capability, può aprire il
+  controller. “Spiega”, “descrivi”, “argomenta”, “elenca” e “non eseguire
+  strumenti” restano conversazione senza regex dedicate alle frasi osservate.
+- Voce, Mobile e Silent/Instant Chat ricevono la stessa decisione. Il frame vede
+  conversazione recente e stato effimero del documento attivo; quest'ultimo
+  risolve “questo documento” ma non autorizza da solo alcuna operazione.
+- L'ActionController espone ora l'esito distinto `CONVERSE`: una richiesta
+  erroneamente candidata come azione può tornare a CHAT soltanto dopo un
+  giudizio esplicito `request_kind=conversation`. Errori, output non validi,
+  capability assenti e richieste operative non supportate restano fail-closed.
+- Il veto semantico protegge anche i fast-path legacy di voce e UI. I turni
+  gestiti fuori da `Brain.respond()` (tool, SAVE e fail-closed) entrano ora
+  comunque nell'archivio durevole con raw e frame, senza essere ricandidati al
+  learner passivo.
+- Replay reale sul modello locale: quattro richieste conversazionali tratte dai
+  log non hanno aperto tool; “Crea un documento Word con le informazioni del PDF
+  attivo” è rimasto `EXECUTE`, `effect_scope=write`, `polarity=requested`.
+
 ## 2026-08-05 - Tavolo documentale condiviso UI/voce
 
 - Corretto il confine degli upload: il workspace usa esclusivamente i file registrati

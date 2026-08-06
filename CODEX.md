@@ -35,14 +35,19 @@ dell'altro processo prima di interpretarli.
   l'hash della sorgente blocca gli stale write.
 - “Creato” richiede percorso reale, byte, SHA-256 e validazione post-scrittura.
 - La voce non rigenera nome/percorso/stato con il modello: pronuncia la ricevuta del tool.
-- Un `REQUEST_ACTION` senza capability grounded fallisce chiuso in voce e Silent Chat;
-  non raggiunge Gemma come CHAT.
+- Un `REQUEST_ACTION` operativo senza capability grounded fallisce chiuso in voce
+  e Silent Chat; non raggiunge Gemma come CHAT. Una produzione puramente
+  linguistica (`effect_scope=response`), un effetto negato/ipotetico o il verdetto
+  esplicito `ActionDisposition.CONVERSE` tornano invece alla conversazione senza
+  fingere un tool.
 - `EXECUTE` non è un bypass del controller contestuale: quando il frame contiene
   `REQUEST_ACTION` ed effetto concreto, il controller precede il legacy handler.
   La creazione Word deve quindi usare `compose_document`, mai `run_code` per caduta.
-- Per il routing operativo contano `REQUEST_ACTION` e l'effetto strutturato: un
+- Per il routing operativo contano `REQUEST_ACTION`, `polarity=requested` e un
+  `effect_scope` operativo (`read|write|state_change|external`): un
   `primary_intent` vuoto/UNKNOWN non annulla un comando concreto come “crealo in
-  Word”. Senza effetto strutturato il controller resta invece vietato.
+  Word”. Effetto, target e classe di capability sono tutti obbligatori; senza
+  questo contratto il controller resta vietato.
 - I claim “generato/prodotto/esportato/preparato” e le indicazioni di disponibilità
   del file sono pronunciabili soltanto quando un tool reale copre il turno.
 - Workspace e ricevute durano 30 minuti in Redis, non sono memoria cognitiva e non
@@ -251,8 +256,11 @@ reinterpretazione.
   `semantic_frame` sono additivi in `euri:turn:*`.
 - Soltanto `CORRECT_ENTITY` esplicito, con evidenza e confidenza, può aggiornare
   il registro identità. Una menzione ordinaria non crea alias.
-- Il modello propone routing conversazionale; mutazioni, shutdown e tool
-  restano sotto router/ActionController deterministici.
+- Il modello comprende il contesto e propone routing conversazionale; mutazioni,
+  shutdown e tool restano sotto router/ActionController deterministici. Il frame
+  distingue `effect_scope=response|read|write|state_change|external` e
+  `polarity=requested|negated|hypothetical`: un imperativo linguistico o la
+  negazione di un tool non sono autorizzazione operativa.
 - `REQUEST_ACTION` senza un effetto, target o capability rappresentati non può
   aprire il controller fuzzy. Una richiesta di risposta/richiamo usa
   `SEARCH + ASK + REQUEST_MEMORY_SEARCH`.

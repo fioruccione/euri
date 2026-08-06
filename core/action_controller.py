@@ -37,6 +37,7 @@ class ActionDisposition(str, Enum):
     EXECUTE = "execute"
     CLARIFY = "clarify"
     CONFIRM = "confirm"
+    CONVERSE = "converse"
     ABSTAIN = "abstain"
 
 
@@ -57,6 +58,7 @@ class ActionProposal:
     target_id: str | None
     authority: ActionAuthority
     confidence: float
+    request_kind: str = "operation"
     reason: str = ""
     alternative: bool = False
     unmet_intent: str = ""
@@ -305,10 +307,13 @@ Regole:
 3. Usa soltanto una capability elencata e soltanto un target_id presente nello stato.
 4. Se l'azione e' chiara ma il bersaglio e' ambiguo, indica la capability e target_id null.
 5. Se e' conversazione, racconto, desiderio non operativo o semplice domanda di opinione,
-   usa capability null e authority none. Una richiesta di esaminare le capacita' di Euri,
+   usa request_kind=conversation, capability null e authority none. Una richiesta di esaminare le capacita' di Euri,
    riflettere sul suo codice o proporre miglioramenti resta conversazione anche se dice
    genericamente "usa i tuoi strumenti": non trasformarla in un controllo hardware
    casuale. Serve un sottopasso operativo specifico e realmente pertinente.
+   Rispondere, spiegare, descrivere, argomentare, confrontare, elencare o valutare sono
+   gesti conversazionali, non capability. Anche un divieto come "non eseguire strumenti"
+   e' conversation: la negazione non autorizza l'azione negata.
 6. Se origine=user: user_explicit solo quando il turno autorizza davvero il gesto.
    Se origine=euri: usa euri_proposed; una bozza di risposta di Euri non si auto-autorizza.
 7. La dichiarazione esplicita 'chiuso/chiudilo/consideralo chiuso' ha precedenza:
@@ -326,6 +331,8 @@ Regole:
    authority=euri_proposed e unmet_intent descrive in poche parole cio' che non puoi fare.
    L'alternativa deve avanzare davvero lo stesso obiettivo, non essere solo vagamente
    collegata. Se non esiste un'alternativa concreta, usa mode=none e capability null.
+   In quest'ultimo caso conserva request_kind=operation: la richiesta era operativa ma
+   non eseguibile, quindi deve fallire chiusa e non degradare a una promessa in chat.
    Anche un sottopasso richiesto esplicitamente e fattibile e' una buona alternativa
    quando il resto della richiesta non e' disponibile. Esempio: se viene chiesto di
    riavviare un servizio e poi verificarlo, il riavvio non esiste ma read_log esiste,
@@ -342,7 +349,7 @@ Regole:
     per leggerlo e compose_document per modificarlo o produrne una nuova versione.
 
 Rispondi SOLO con JSON:
-{{"mode":"direct|alternative|none","response_mode":"tool_result|integrated","capability":"nome o null","args":{{}},"target_id":"id o null","authority":"user_explicit|euri_proposed|none","confidence":0.0,"unmet_intent":"breve o vuoto","reason":"breve"}}"""
+{{"request_kind":"conversation|operation","mode":"direct|alternative|none","response_mode":"tool_result|integrated","capability":"nome o null","args":{{}},"target_id":"id o null","authority":"user_explicit|euri_proposed|none","confidence":0.0,"unmet_intent":"breve o vuoto","reason":"breve"}}"""
 
 
 class ActionController:
@@ -383,6 +390,8 @@ class ActionController:
                 think=False,
             )
             data = _extract_json(response.message.content or "")
+            if not data:
+                raise ValueError("risposta JSON vuota o non valida")
         except Exception as exc:
             logger.warning(f"ActionController: proposta non disponibile ({exc})")
             return None
@@ -410,12 +419,16 @@ class ActionController:
         args = data.get("args") if isinstance(data.get("args"), dict) else {}
         target = data.get("target_id")
         target_id = None if target in (None, "", "null", "none") else str(target)
+        request_kind = str(data.get("request_kind") or "operation").strip().lower()
+        if request_kind not in {"conversation", "operation"}:
+            request_kind = "operation"
         proposal = ActionProposal(
             capability=capability,
             args=args,
             target_id=target_id,
             authority=authority,
             confidence=confidence,
+            request_kind=request_kind,
             reason=str(data.get("reason", ""))[:240],
             alternative=alternative,
             unmet_intent=str(data.get("unmet_intent", ""))[:160],
@@ -454,6 +467,16 @@ class ActionController:
     ) -> ActionDecision:
         if proposal is None:
             return ActionDecision(ActionDisposition.ABSTAIN, reason="no_proposal")
+        if (
+            proposal.request_kind == "conversation"
+            and not proposal.capability
+            and proposal.authority == ActionAuthority.NONE
+        ):
+            return ActionDecision(
+                ActionDisposition.CONVERSE,
+                proposal,
+                "conversational_response",
+            )
         by_name = {cap.name: cap for cap in capabilities}
         cap = by_name.get(proposal.capability)
         if cap is None or proposal.confidence < self.MIN_CONFIDENCE:

@@ -210,6 +210,35 @@ def test_policy_boundaries():
     ).disposition == ActionDisposition.EXECUTE
 
 
+def test_controller_can_return_an_explicit_conversation_decision():
+    controller = ActionController(chat=_Chat({}), model="fake")
+    conversational = ActionProposal(
+        "", {}, None, ActionAuthority.NONE, 0.99,
+        request_kind="conversation",
+        reason="la richiesta chiede una spiegazione",
+    )
+    decision = controller.decide(conversational, [])
+    assert decision.disposition == ActionDisposition.CONVERSE
+
+
+def test_voice_contextual_probe_returns_to_chat_only_on_explicit_conversation():
+    daemon = _daemon({
+        "request_kind": "conversation",
+        "mode": "none",
+        "response_mode": "integrated",
+        "capability": None,
+        "args": {},
+        "target_id": None,
+        "authority": "none",
+        "confidence": 0.99,
+        "reason": "descrivere la struttura di Euri è una risposta",
+    })
+    handled, veto = daemon._try_contextual_action(
+        "Descrivi la tua struttura e i tuoi limiti."
+    )
+    assert handled is False and veto is False
+
+
 def test_execute_intent_enters_contextual_controller_before_legacy_handler():
     assert _should_try_contextual_action(Intent.EXECUTE, True) is True
     assert _should_try_contextual_action(Intent.EXECUTE, False) is False

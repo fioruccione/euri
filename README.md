@@ -40,9 +40,14 @@ contratto.
 
 Il frame non è autorità assoluta. Una mutazione resta sotto router e controller
 deterministici; un'azione proposta dal modello deve descrivere un effetto
-operativo concreto. Chiedere cosa Euri sa o ricorda è una ricerca/risposta, non
-un'azione. Se il frame manca o è incerto, la cascata preesistente resta il
-fallback sicuro.
+operativo concreto. Dal 06/08 il contratto separa esplicitamente la produzione
+di una risposta (`effect_scope=response`) da letture, scritture, mutazioni ed
+effetti esterni e conserva anche la polarità richiesta/negata/ipotetica.
+Chiedere cosa Euri sa, ricorda, spiega, descrive o elenca non è quindi un uso di
+tool, anche quando la frase è all'imperativo. Il controller può restituire
+esplicitamente `CONVERSE`; soltanto questo esito rientra in CHAT, mentre un vero
+errore o un'azione non grounded resta fail-closed. Se il frame manca o è
+incerto, la cascata preesistente resta il fallback sicuro.
 
 Le correzioni d'identità esplicite alimentano un registro scoped di alias senza
 nomi cablati: il contesto operativo può passare dalla forma osservata a quella

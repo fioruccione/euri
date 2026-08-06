@@ -230,10 +230,18 @@ def test_direct_context_turn_is_archived_but_not_passively_relearned():
     brain = Brain()
     archived = []
     brain._turn_callback = lambda message: archived.append(message)
-    brain.record_context_message("assistant", "Mi confermi questa informazione?")
+    frame = {"status": "interpreted", "primary_intent": "EXECUTE"}
+    brain.record_context_message(
+        "user",
+        "Crea il rapporto corretto.",
+        raw_content="Crea il raporto corretto.",
+        semantic_frame=frame,
+    )
     assert len(brain._conversation_history) == 1
     assert brain.passive_messages_after(0) == []
     assert archived[0]["passive_eligible"] is False
+    assert archived[0]["raw_content"] == "Crea il raporto corretto."
+    assert archived[0]["semantic_frame"] == frame
 
 
 def run():

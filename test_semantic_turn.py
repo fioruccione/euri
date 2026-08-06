@@ -473,6 +473,8 @@ def test_explicit_action_is_never_vetoed_by_contextual_guard():
             "effect": "read system state",
             "target": "gpu",
             "capability_class": "executor.gpu_usage",
+            "effect_scope": "read",
+            "polarity": "requested",
         }],
         "memory_disposition": "no_store",
     }
@@ -492,11 +494,53 @@ def test_grounded_request_action_survives_empty_primary_intent():
             "effect": "Creazione di un documento in formato .docx",
             "target": "document",
             "capability_class": "document_generation",
+            "effect_scope": "write",
+            "polarity": "requested",
         }],
     }
     assert semantic_intent(frame) == ""
     assert frame_requests_contextual_action(frame)
     assert not frame_vetoes_contextual_action(frame)
+
+
+def test_conversational_imperative_does_not_request_a_tool():
+    frame = {
+        "status": "interpreted",
+        "confidence": 0.99,
+        "requires_clarification": False,
+        "primary_intent": "ACTION_REASONING",
+        "speech_acts": ["ASK", "REQUEST_ACTION"],
+        "actions": [{
+            "effect": "Descrivere capacità, struttura e limiti di Euri",
+            "target": "risposta conversazionale",
+            "capability_class": "response_generation",
+            "effect_scope": "response",
+            "polarity": "requested",
+        }],
+    }
+    assert semantic_intent(frame) == ""
+    assert not frame_requests_contextual_action(frame)
+    assert frame_vetoes_contextual_action(frame)
+
+
+def test_negated_tool_request_cannot_become_execute():
+    frame = {
+        "status": "interpreted",
+        "confidence": 1.0,
+        "requires_clarification": False,
+        "primary_intent": "EXECUTE",
+        "speech_acts": ["REQUEST_ACTION"],
+        "actions": [{
+            "effect": "Eseguire strumenti",
+            "target": "strumenti di Euri",
+            "capability_class": "tool_use",
+            "effect_scope": "external",
+            "polarity": "negated",
+        }],
+    }
+    assert semantic_intent(frame) == ""
+    assert not frame_requests_contextual_action(frame)
+    assert frame_vetoes_contextual_action(frame)
 
 
 def test_ungrounded_action_label_cannot_hijack_a_memory_answer():
