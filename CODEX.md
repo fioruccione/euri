@@ -10,6 +10,37 @@ aggiornare la mappa nello stesso intervento.
 
 ---
 
+# Handoff Euri - 2026-08-06 - Semi Dream reidratati dal verbatim
+
+## Esito
+
+Loop 2b non ragiona più soltanto sulla parafrasi compatta quando la memoria
+possiede provenienza durevole. Prima della generazione recupera il turno sorgente
+e fino a due turni precedenti nello stesso segmento/scope, separandoli dalla
+premessa e marcando le risposte di Euri come contesto non fattuale. I giudici di
+fedeltà e del ponte vedono la stessa evidenza.
+
+## Invarianti
+
+- Nessuna memoria viene riscritta o completata retroattivamente.
+- `source_turn_refs` contiene soltanto le vere fonti; i vicini usati per risolvere
+  il referente vivono in `dream_context_turn_refs` e `seed_context`.
+- Provenienza assente o turni mancanti sono fail-open per i nodi legacy, ma il
+  prompt vieta di indovinare il referente.
+- La finestra non attraversa conversazione, segmento o scope ed è limitata da
+  numero di turni e caratteri.
+- Il batch sperimentale paired cambia protocollo: v2 resta storico e il nuovo
+  stato parte da `dream_trace_paired_v3_hydrated`.
+
+## Evidenza
+
+Il caso di regressione riproduce la memoria “980 euro IVA inclusa”: il turno
+sorgente è anaforico, mentre il turno precedente identifica Lenovo P620,
+Threadripper PRO e WRX80. Test dedicati in `test_dream_seed_hydration.py`;
+manifest unitario completo **77/77** in 89,7 s.
+
+---
+
 # Handoff Euri - 2026-08-06 - Latenza realtime conservativa
 
 ## Esito

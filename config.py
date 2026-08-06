@@ -312,11 +312,19 @@ DREAM_TRACE_TTL_S = 48 * 3600  # residuo stantio dopo 2 giorni di fermo → scad
 # Esperimento V2 (disegno appaiato, 21/07): stesso seme generato due volte, con e
 # senza residuo — elimina la variabilita' tra coppie di domini diverse del disegno a
 # blocchi (mai attivato, sostituito qui su richiesta di Stefano). Pre-registrazione:
-# ESPERIMENTO_DREAM_TRACE_V2.md. Il pilot v1 del 21/07 e' chiuso; v2 riparte con
-# stato Redis versionato. Dal nuovo avvio non cambiare generazione, modello o seed
-# gate finche' non si congelano 50 coppie.
+# ESPERIMENTO_DREAM_TRACE_V2.md. Il pilot v1 del 21/07 e' chiuso. La v2 e' stata
+# chiusa quando il caso workstation/perossido ha mostrato che il seme compatto
+# perdeva il referente; la v3 riparte con prompt e stato Redis versionati dopo
+# l'introduzione del contesto verbatim bounded. Non mescolare i due batch.
 DREAM_TRACE_PAIRED_ENABLED = True
-DREAM_TRACE_PAIRED_VERSION = "dream_trace_paired_v2"
+DREAM_TRACE_PAIRED_VERSION = "dream_trace_paired_v3_hydrated"
+# Reidratazione read-only dei semi creativi. La memoria compatta resta canonica;
+# al prompt si aggiungono soltanto i turni sorgente e al massimo due turni
+# precedenti nello stesso segmento/scope, per risolvere riferimenti anaforici.
+DREAM_SEED_CONTEXT_ENABLED = True
+DREAM_SEED_CONTEXT_PRECEDING_TURNS = 2
+DREAM_SEED_CONTEXT_MAX_TURNS = 4
+DREAM_SEED_CONTEXT_MAX_CHARS = 3200
 # Risveglio lucido — fedeltà-di-premessa dei candidate rispetto alle memorie
 # sorgente (source_memory_ids): il sogno ha detto la verità sulle proprie fonti?
 # Il punteggio viene calcolato UNA volta per candidate e cacheato sul documento.

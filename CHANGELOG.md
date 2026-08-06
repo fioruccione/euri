@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-08-06 - Dream contestualizzato dalla provenienza verbatim
+
+- Loop 2b reidrata ogni seme recente con il turno realmente citato dalla memoria
+  e una finestra bounded di massimo due turni precedenti nello stesso segmento e
+  scope. La memoria compatta resta canonica e non viene riscritta.
+- Il prompt distingue fonte, contesto precedente e ruolo: una risposta di Euri
+  può risolvere un referente, ma non diventa per questo un fatto dichiarato da
+  Stefano. Referenti ancora indefiniti devono produrre `NESSUN INSIGHT`.
+- Dream e insight registrano separatamente vere `source_turn_refs` e
+  `dream_context_turn_refs`; i giudici di fedeltà e validità del ponte ricevono
+  la stessa finestra usata in generazione.
+- I nodi legacy senza provenienza restano utilizzabili senza completamenti
+  inventati. Il protocollo paired riparte con stato isolato
+  `dream_trace_paired_v3_hydrated`, evitando di mescolare il nuovo prompt con il
+  batch v2.
+- Aggiunte regressioni sul caso workstation/P620 contro miscelazione del
+  perossido, confini di segmento, fallback legacy, metadati non autorevoli e
+  lineage del candidato. Manifest unitario completo: **77/77** in 89,7 s.
+
 ## 2026-08-06 - Latenza realtime senza riduzione della logica
 
 - Corretto il falso positivo live del guard atto-parola: “ho aggiornato

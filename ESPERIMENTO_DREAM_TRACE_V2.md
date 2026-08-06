@@ -1,6 +1,12 @@
 # Dream Trace Paired V2 — pre-registrazione proposta
 
-**Stato:** pilot v1 chiuso per deviazione; codice v2 preparato, nuova raccolta NON ancora attiva.
+> **Stato storico: chiuso il 6 agosto 2026.** I record
+> `dream_trace_paired_v2` non devono essere mescolati con il successore
+> [`ESPERIMENTO_DREAM_TRACE_V3_HYDRATED.md`](ESPERIMENTO_DREAM_TRACE_V3_HYDRATED.md),
+> che introduce contesto verbatim bounded in entrambi i bracci.
+
+**Stato storico:** pilot v1 chiuso per deviazione; protocollo v2 archiviato e
+sostituito dalla v3 reidratata prima di completare il batch pianificato.
 **Versione:** `dream_trace_paired_v2`.
 **Unità primaria:** la COPPIA (stesso seme, due condizioni), non il candidate isolato.
 

@@ -529,7 +529,7 @@ I segnali `proposal_only` non hanno autorità per mutare da soli una memoria.
 |---|---|---|---|---|
 | Passive learner | ~45 s idle | nuovi turni eleggibili | `source=passive` | acquisizione |
 | Loop 2a | idle, checkpoint di sessione | memorie di sessione + correlate | `source=reflection`, inizialmente 7 giorni | interpretazione interna |
-| Loop 2b | creative ~90 min | due semi diretti e puliti cross-domain | dream + insight candidate | generazione |
+| Loop 2b | creative ~90 min | due semi diretti e puliti cross-domain + contesto verbatim bounded | dream + insight candidate | generazione |
 | Loop 2c | light/creative | insight candidate | hypothesis/promoted | valutazione |
 | Loop 2d | maintenance | memorie vicine alla scadenza o in coda | estensione TTL, coda con lease o delete esplicito | mietitore budgetato |
 | Loop 2e | maintenance, max 24 h | cluster stesso dominio, recall >=3 e recenti | `source=loop2e`, `consolidated_into` | consolidamento |
@@ -549,7 +549,24 @@ Il Dream creativo accetta come semi soltanto fonti dirette o deliberatamente
 acquisite (`user`, `teach`, `passive`, `conversation`, `obsidian_vault`,
 `mobile_in`) e rivalida il JSON. Esclude derivati, episodi non fattuali,
 superseded, consolidati spesi, contestati, da verificare, rischiosi o senza
-provenienza adeguata.
+integrità epistemica sufficiente. I nodi legacy privi di riferimenti verbatim
+possono ancora essere scelti, ma vengono presentati come non reidratabili.
+
+Prima della generazione, Loop 2b reidrata ogni seme recente attraverso
+`temporal_context.source_turn_refs`: legge il turno verbatim citato e al massimo
+due turni precedenti nello stesso `conversation_id`, segmento e scope. La memoria
+compatta resta la sola premessa canonica; il contesto adiacente serve esclusivamente
+a risolvere referenti come “il sistema” o “quella macchina”. I turni
+dell'assistente vengono etichettati esplicitamente come contesto e non diventano
+fatti dell'utente. Il budget è limitato per numero di turni e caratteri.
+
+Dream e insight persistono separatamente `source_turn_refs` (vere fonti del
+fatto) e `dream_context_turn_refs` (finestra mostrata al modello), oltre allo
+stato per ciascun seme in `seed_context`. I giudici di fedeltà e validità del
+ponte ricostruiscono la stessa finestra. Se una memoria legacy non possiede
+provenienza, non viene riscritta: il prompt dichiara il contesto indisponibile e
+ordina di non indovinare referenti generici. Questa reidratazione è read-only e
+non modifica embedding, contenuto, TTL o stato epistemico della memoria sorgente.
 
 Loop 2e richiede almeno:
 
