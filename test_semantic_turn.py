@@ -239,6 +239,45 @@ def test_anaphora_is_not_projected_as_a_canonical_name():
     assert redis.hashes == {}
 
 
+def test_anaphora_labelled_as_explicit_correction_is_never_learned():
+    """Il percorso durevole e' il piu' pericoloso: l'alias appreso e' permanente
+    e riscrive ogni turno futuro. Se il modello sbaglia etichetta e dichiara
+    CORRECT_ENTITY su un'anafora, la guardia di grafia deve fermarlo."""
+    redis = FakeRedis()
+
+    def model(_prompt):
+        return json.dumps({
+            "interpreted_text": "Gio Style non l'ha fatta.",
+            "primary_intent": "CHAT",
+            "speech_acts": ["CORRECT_ENTITY"],
+            "entities": [{
+                "observed_form": "loro",
+                "canonical_name": "Gio Style",
+                "entity_type": "organization",
+                "status": "explicit_correction",
+                "evidence": "l'utente chiarisce a chi si riferiva",
+                "confidence": 0.95,
+            }],
+            "facts": [], "actions": [], "web_query": "",
+            "preservation_mode": "semantic",
+            "requires_clarification": False,
+            "meaning_preserved": True,
+            "confidence": 0.95,
+            "memory_disposition": "no_store",
+        }, ensure_ascii=False)
+
+    service = SemanticTurnService(redis, model_call=model)
+    frame = service.interpret("loro non l'ha fatta.", memory_scope="personal")
+
+    assert frame["canonicalizations"] == []
+    assert redis.hashes == {}
+    assert redis.events == []
+    # Il turno successivo non deve trovare "loro" trasformato in un'azienda.
+    assert service.registry.canonicalize(
+        "Ho parlato con loro ieri.", "personal"
+    ) == "Ho parlato con loro ieri."
+
+
 def test_verbatim_mode_keeps_raw_text_even_if_model_rewrites_it():
     redis = FakeRedis()
 

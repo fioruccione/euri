@@ -730,7 +730,12 @@ class SemanticTurnService:
             if str(entity.get("status") or "").lower() != "explicit_correction":
                 continue
             observed = str(entity.get("observed_form") or "").strip()
-            canonical = str(entity.get("canonical_name") or "").strip()
+            # La somiglianza si valuta sulla grafia finale, la stessa che verra'
+            # persistita: una correzione scandita (G-I-O) non deve sembrare
+            # distante dalla forma osservata solo per i separatori.
+            canonical = _compact_spelled_name(
+                str(entity.get("canonical_name") or "").strip()
+            )
             evidence = str(entity.get("evidence") or "").strip()
             if (
                 observed
@@ -739,6 +744,12 @@ class SemanticTurnService:
                 and _alias_token(observed) in raw_token
                 and _alias_token(observed) != _alias_token(canonical)
                 and _confidence(entity.get("confidence")) >= 0.80
+                # Un alias appreso e' permanente e riscrive ogni turno futuro:
+                # ammettilo solo per una grafia plausibile dello stesso nome.
+                # Senza questo vincolo il modello puo' etichettare un'anafora
+                # come correzione esplicita e "loro" resta per sempre un'azienda.
+                and _surface_name_similarity(observed, canonical)
+                >= _MIN_CURRENT_ENTITY_SURFACE_SIMILARITY
             ):
                 corrections.append(entity)
         return corrections
