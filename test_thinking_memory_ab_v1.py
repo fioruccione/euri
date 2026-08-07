@@ -14,6 +14,25 @@ from benchmarks.euri_memory import thinking_memory_ab_v1 as T
 ROOT = Path(__file__).resolve().parent
 VALIDATION = ROOT / "audit_output" / "dual_channel_validation_v1_seed396895560"
 SOURCE = ROOT / "benchmarks" / "euri_memory" / "prompt_ablation_v2_manifest.json"
+SOURCE_REPO_PATH = Path("benchmarks/euri_memory/prompt_ablation_v2_manifest.json")
+
+
+def _protocol_without_checkout_location(manifest: dict) -> dict:
+    """Confronta il contratto congelato senza firmare la directory del runner.
+
+    Il protocollo storico contiene il path assoluto della workstation originale.
+    Quel campo documenta una posizione, non un parametro sperimentale: su un
+    checkout GitHub Actions cambia necessariamente pur puntando allo stesso file,
+    già vincolato da ``source_case_manifest_sha256``. Entrambi i manifest restano
+    verificati con la propria firma prima di questa normalizzazione comparativa.
+    """
+    comparable = dict(manifest)
+    comparable.pop("manifest_sha256", None)
+    source_path = Path(str(comparable["source_case_manifest"]))
+    expected_parts = SOURCE_REPO_PATH.parts
+    assert source_path.parts[-len(expected_parts):] == expected_parts
+    comparable["source_case_manifest"] = SOURCE_REPO_PATH.as_posix()
+    return comparable
 
 
 def test_protocol_is_signed_and_two_arms():
@@ -23,7 +42,15 @@ def test_protocol_is_signed_and_two_arms():
         (ROOT / "benchmarks" / "euri_memory" /
          "thinking_memory_ab_v1_protocol.json").read_text(encoding="utf-8")
     )
-    assert protocol == frozen
+    T.verify_manifest(frozen)
+    assert Path(protocol["source_case_manifest"]).resolve() == SOURCE.resolve()
+    assert _protocol_without_checkout_location(protocol) == (
+        _protocol_without_checkout_location(frozen)
+    )
+    # La firma dell'artefatto storico e dei risultati già prodotti non cambia.
+    assert frozen["manifest_sha256"] == (
+        "a44be8c257ec7c3dbe2defd36a1f05bd5f1042bc81dedfc9127d53f81efd9c25"
+    )
     assert protocol["cases"] == 129
     assert protocol["arms"] == ["rag_think", "dual_think"]
     assert protocol["thinking"] is True
