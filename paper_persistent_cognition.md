@@ -218,12 +218,39 @@ non-obvious connections before committing to a synthesis.
 
 This is the most architecturally novel component.
 
-When the system has been idle for at least 2 hours, the Dream Engine activates.
-It selects two memories from **semantically distant domains**,
-asks a **dedicated reasoning model** (`qwen3.6:35b`, separate from the conversation model)
-with extended reasoning (`think=True`, `temperature=0.6`, `num_predict=2000`)
-to search for deep structural isomorphisms between the two concepts,
-and — if an analogy is found — saves it as a **CANDIDATE insight**.
+When the system has been idle for its creative interval, the Dream Engine activates.
+It selects two memories from **semantically distant domains** and rehydrates each
+compact seed with bounded verbatim provenance when available. A **dedicated reasoning
+model** (`qwen3.6:35b`, separate from the conversation model) then executes two
+architecturally distinct passes.
+
+The first is **divergent REM**. It is explicitly allowed to produce remote
+associations, technical metaphors, inversions, contradictions, and physically
+impossible transformations. It is not asked to solve a problem or to formulate an
+insight. Its output is retained for seven days as an auditable raw dream, without an
+embedding and with explicit negative capabilities: it cannot enter retrieval,
+Obsidian, semantic memory, convergence, or promotion.
+
+Freedom does not mean starvation of context. REM operates between **complete
+anchors**, not between amputated summaries: the compact memory preserves the
+canonical claim, while bounded source turns restore referents, situation, purpose,
+and argumentative texture. Adjacent assistant text remains context rather than user
+testimony. This distinction is what separates productive deformation from noise
+caused by a missing premise.
+
+The second is **lucid awakening**. The same source memories are presented again,
+together with the raw dream labelled as non-factual and non-executable material. The
+model asks whether the chaos contains a spark that can be translated into a concrete,
+testable cross-domain hypothesis. It may answer `NESSUN INSIGHT`. Only the awakening
+output can become a **CANDIDATE insight**, linked to its raw source by `rem_dream_id`.
+
+This restores the original asymmetry in executable form: divergence happens before
+epistemic discipline. The dream may deform; the awakening must reconstruct its two
+premises from the actual memories. Premise-fidelity, bridge-validity, and semantic
+convergence judges then decide whether the candidate is supported, remains an explicit
+hypothesis, or is rejected. The change was activated on 2026-08-07 after observing
+that the prior three-line generation prompt had moved the awakening filter upstream
+and was suppressing the very exploratory behaviour the architecture intended.
 
 Promotion from CANDIDATE to PROMOTED (permanent knowledge, written to Obsidian)
 uses a two-level convergence system:
@@ -300,6 +327,12 @@ conversation. The same system can connect radio to polymers at 03:00 and
 remain focused on today's client meeting at 09:00. The dream-wake asymmetry
 is not a constraint to be removed; it is the constraint that makes the
 architecture useful.
+
+The immediate **lucid awakening** above and this retrieval-time **Awakening Filter**
+serve different purposes. The first protects epistemic integrity when converting raw
+REM material into a candidate. The second protects conversational relevance when an
+already promoted insight competes for a waking context. Neither is permitted to rewrite
+or sanitize the raw dream retroactively.
 
 ### Phase 5b — Episodic Compression: Layer 0
 

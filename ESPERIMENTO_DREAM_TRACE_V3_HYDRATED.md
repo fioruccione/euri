@@ -2,7 +2,21 @@
 
 **Versione:** `dream_trace_paired_v3_hydrated`
 **Avvio protocollo:** 6 agosto 2026
-**Stato:** raccolta da iniziare al primo riavvio successivo alla modifica.
+**Stato:** raccolta congelata il 7 agosto 2026, prima della soglia pianificata.
+
+## Motivo del congelamento
+
+Il primo ciclo notturno ha confermato il valore diagnostico della reidratazione:
+nel caso con un solo lato idratato il generatore è rimasto fedele a quel lato e ha
+inventato dettagli sul seme legacy, correttamente bloccati dal giudice `NO/SI`.
+
+La raccolta non prosegue fino a 50 coppie perché il runtime di produzione passa
+ora all'architettura `rem_wake_v1`: un primo passaggio REM divergente produce
+materiale non cognitivo e un secondo passaggio lucido tenta la distillazione.
+Questo cambia trattamento, numero di chiamate e significato dell'output; continuare
+lo stesso batch violerebbe la separazione dichiarata qui. Stream e chiavi V3 restano
+intatti per audit storico. Il flag paired è spento e nessun risultato V3 viene
+presentato come confronto conclusivo.
 
 ## Perché una nuova versione
 

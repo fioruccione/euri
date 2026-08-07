@@ -1,5 +1,39 @@
 # Changelog
 
+## 2026-08-07 - Dream REM divergente e risveglio lucido
+
+- Ripristinato nel runtime il principio originario del paper: il Dream non viene
+  più obbligato a essere operativo mentre nasce. Un primo passaggio REM ad alta
+  divergenza produce associazioni, immagini e trasformazioni anche assurde.
+- Conservata la reidratazione introdotta il giorno precedente e ampliato il suo
+  contratto esplicito: restituisce anche situazione, scopo e filo argomentativo,
+  senza convertire il contesto adiacente in nuove premesse. Il REM è caos fra
+  ancore complete, non rumore generato da memorie amputate.
+- La selezione dei semi preferisce ora la provenienza verbatim sia dentro il
+  dominio sia fra i domini campionati; usa il legacy soltanto come fallback
+  osservabile, senza eliminare memorie storiche autosufficienti.
+- Il REM grezzo vive sette giorni in `euri:dream:*` con stato
+  `oneiric_uninterpreted`, senza embedding e con esclusioni esplicite da insight,
+  RAG e memoria. Non entra in Obsidian, Initiative o convergenza.
+- Un secondo passaggio di risveglio riceve le stesse fonti e il raw marcato come
+  non fattuale/non eseguibile. Solo questo passaggio può rispondere nel formato
+  operativo, creare un candidate e collegarlo al sogno tramite `rem_dream_id`.
+- La telemetria separa il costo della generazione REM da quello del risveglio,
+  così qualità onirica e costo hardware possono essere misurati senza confonderli
+  con i giudici epistemici eseguiti successivamente.
+- Fedeltà delle premesse, validità del ponte, convergenza e filtro di rilevanza
+  restano invariati. Il rigore viene spostato a valle, non rimosso.
+- Congelato il paired V3 prima della soglia pianificata: REM→wake cambia il
+  protocollo e non può essere mescolato nello stesso batch. I flag dream_trace
+  sono spenti; il nuovo costo sostituisce le due generazioni appaiate con REM +
+  risveglio.
+- Aggiunta la specifica `docs/EURI_REM_WAKE_ARCHITECTURE.md` e aggiornati paper,
+  README e mappa canonica della memoria. Nuove regressioni in
+  `test_dream_rem_wake.py`.
+- Dichiarata la natura funzionale, non biologica, dell'analogia sonno→risveglio e
+  fissati sei paletti di compatibilità per le evoluzioni future. `CODEX.md` rende
+  obbligatoria la lettura della specifica prima di intervenire su Loop 2b.
+
 ## 2026-08-06 - Dream contestualizzato dalla provenienza verbatim
 
 - Loop 2b reidrata ogni seme recente con il turno realmente citato dalla memoria

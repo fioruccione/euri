@@ -2,7 +2,7 @@
 
 Stato: **mappa canonica del comportamento corrente**
 
-Verificata contro il codice: **5 agosto 2026**
+Verificata contro il codice: **7 agosto 2026**
 
 Versione runtime di riferimento: **V2.22**
 
@@ -65,7 +65,9 @@ flowchart TB
 
     J --> DR[Operatori cognitivi in idle]
     DR --> J
-    DR --> I[(Dream e Insight)]
+    DR --> REM[REM grezzo<br/>TTL 7 giorni, non cognitivo]
+    REM --> W[Risveglio lucido]
+    W --> I[(Insight candidate)]
     DR --> PR[Pruning, supersessione,<br/>consolidamento e provenienza]
 ```
 
@@ -92,7 +94,7 @@ La distinzione fondamentale è questa:
 | Memoria cognitiva | variabile per sorgente | `euri:memory:*` | fatti, episodi, riflessioni, lezioni e consolidati | sì, tramite RAG |
 | Appunti espliciti | durevole, senza TTL automatico | `euri:note:*` | note scoped cercate separatamente | sì, tramite keyword RAG |
 | Registro identità | durevole, separato per scope | `euri:semantic:entity*` | alias confermati esplicitamente | influenza l'interpretazione, non entra come nodo RAG |
-| Dream e insight | lifecycle proprio | `euri:dream:*`, `euri:insight:*` | ipotesi e connessioni interne | solo gli insight ammessi dal loro stato |
+| Dream e insight | REM grezzo 7 giorni; insight con lifecycle proprio | `euri:dream:*`, `euri:insight:*` | esplorazione divergente separata da ipotesi e connessioni interne | il REM mai; solo gli insight ammessi dal loro stato |
 | Vault Obsidian | durevole su filesystem | replica umana bidirezionale | consultazione e modifica manuale | rientra via watcher come `obsidian_vault` |
 | Indici e telemetria | ricostruibile o osservativa | JSON canonici ed eventi | ranking, replay, audit e misure | no, salvo il loro effetto sul ranking |
 
@@ -529,7 +531,8 @@ I segnali `proposal_only` non hanno autorità per mutare da soli una memoria.
 |---|---|---|---|---|
 | Passive learner | ~45 s idle | nuovi turni eleggibili | `source=passive` | acquisizione |
 | Loop 2a | idle, checkpoint di sessione | memorie di sessione + correlate | `source=reflection`, inizialmente 7 giorni | interpretazione interna |
-| Loop 2b | creative ~90 min | due semi diretti e puliti cross-domain + contesto verbatim bounded | dream + insight candidate | generazione |
+| Loop 2b-REM | creative ~90 min | due semi diretti e puliti cross-domain + contesto verbatim bounded | dream grezzo TTL 7 giorni, senza embedding | divergenza non cognitiva |
+| Loop 2b-Wake | subito dopo REM | stessi semi + dream grezzo marcato non fattuale | dream interpretato e, se esiste, insight candidate | distillazione lucida |
 | Loop 2c | light/creative | insight candidate | hypothesis/promoted | valutazione |
 | Loop 2d | maintenance | memorie vicine alla scadenza o in coda | estensione TTL, coda con lease o delete esplicito | mietitore budgetato |
 | Loop 2e | maintenance, max 24 h | cluster stesso dominio, recall >=3 e recenti | `source=loop2e`, `consolidated_into` | consolidamento |
@@ -551,12 +554,16 @@ acquisite (`user`, `teach`, `passive`, `conversation`, `obsidian_vault`,
 superseded, consolidati spesi, contestati, da verificare, rischiosi o senza
 integrità epistemica sufficiente. I nodi legacy privi di riferimenti verbatim
 possono ancora essere scelti, ma vengono presentati come non reidratabili.
+Dentro ciascun dominio e fra i domini campionati, Loop 2b preferisce i nodi con
+`source_turn_refs`; se non ne trova mantiene un fallback legacy esplicito nei
+log, senza dichiararlo artificiosamente completo.
 
 Prima della generazione, Loop 2b reidrata ogni seme recente attraverso
 `temporal_context.source_turn_refs`: legge il turno verbatim citato e al massimo
 due turni precedenti nello stesso `conversation_id`, segmento e scope. La memoria
-compatta resta la sola premessa canonica; il contesto adiacente serve esclusivamente
-a risolvere referenti come “il sistema” o “quella macchina”. I turni
+compatta resta la sola premessa canonica; il contesto adiacente ricostruisce la
+cornice episodica necessaria — referenti come “il sistema” o “quella macchina”,
+situazione, scopo e filo argomentativo — senza aggiungere nuove premesse. I turni
 dell'assistente vengono etichettati esplicitamente come contesto e non diventano
 fatti dell'utente. Il budget è limitato per numero di turni e caratteri.
 
@@ -567,6 +574,26 @@ ponte ricostruiscono la stessa finestra. Se una memoria legacy non possiede
 provenienza, non viene riscritta: il prompt dichiara il contesto indisponibile e
 ordina di non indovinare referenti generici. Questa reidratazione è read-only e
 non modifica embedding, contenuto, TTL o stato epistemico della memoria sorgente.
+
+La generazione è divisa in due passaggi secondo l'invariante **caos fra ancore
+complete, non caos da ancore incomplete**. La reidratazione restituisce la
+cornice episodica e argomentativa disponibile senza trasformare i turni adiacenti
+in nuove premesse fattuali. `stage=rem_divergent` può produrre
+associazioni assurde, metafore o collisioni senza effetto operativo. Il documento
+porta esplicitamente `eligible_for_insight=false`, `eligible_for_rag=false` ed
+`eligible_for_memory=false`, non riceve embedding e scade dopo sette giorni. Non
+può quindi alimentare direttamente RAG, Obsidian, Initiative o convergenza.
+
+Il passaggio `stage=wake_interpretation` riceve lo stesso contesto sorgente e il
+REM come materiale non fattuale. Soltanto questo passaggio può emettere il formato
+operativo a tre righe e creare un `euri:insight:*`; `rem_dream_id` conserva la
+lineage. Il candidato attraversa poi invariati i giudici di fedeltà delle premesse,
+validità del ponte e convergenza. La distinzione completa fra libertà generativa,
+integrità epistemica e rilevanza al recupero è in
+[`EURI_REM_WAKE_ARCHITECTURE.md`](EURI_REM_WAKE_ARCHITECTURE.md).
+I sei paletti dichiarati in quella specifica sono il contratto di compatibilità
+per ogni futura modifica a Loop 2b: non possono essere rimossi come semplice
+refactoring o ottimizzazione prestazionale.
 
 Loop 2e richiede almeno:
 

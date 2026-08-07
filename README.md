@@ -259,6 +259,15 @@ Gli strumenti read-only sono:
 
 ### 3. Dream Engine (Cicli cognitivi in idle)
 Quando non gli parli per un po', Euri entra in cicli cognitivi offline. Non è più un blocco "notturno": l'orchestratore separa pass leggeri, sogni creativi e manutenzione lenta.
+
+> **Scopo architetturale:** REM→wake è un'analogia funzionale del ciclo umano,
+> non una dichiarazione di equivalenza biologica. Alterna esplorazione associativa
+> e verifica vigile per cercare connessioni non ovvie senza trasformare fantasia
+> in conoscenza. I suoi sei paletti sono una decisione durevole: future modifiche
+> a modelli, prompt o prestazioni devono conservarli oppure dichiarare e versionare
+> esplicitamente una nuova architettura. Vedi
+> [`docs/EURI_REM_WAKE_ARCHITECTURE.md`](docs/EURI_REM_WAKE_ARCHITECTURE.md#i-sei-paletti-architetturali).
+
 - **Ciclo leggero** (~20 min di cadenza mentre è idle): valuta insight candidati, metabolizza correzioni pending, genera ipotesi trasversali da episodi ripetuti e propaga la provenienza.
 - **Ciclo creativo** (~90 min): genera nuovi sogni cross-domain e promuove insight per convergenza.
 - **Ciclo manutentivo** (~24h): risoluzione contraddizioni, self-observation,
@@ -269,9 +278,13 @@ Quando non gli parli per un po', Euri entra in cicli cognitivi offline. Non è p
   fonti dirette o deliberatamente acquisite. Reflection, reaction, consolidamenti,
   anchor/episodi conversazionali, nodi superseded, contestati o da verificare non
   possono fondare un nuovo sogno; il JSON viene rivalidato dopo la shortlist Redis.
-- **Loop 2b** — Chiede a **Qwen3.6 35B** (*thinking attivo*, modello dedicato) di cercare isomorfismi strutturali tra i due concetti usando un processo in 3 passi: astrazione logica → ricerca della dinamica condivisa → formulazione del principio generale. Qwen3.6 è separato da Gemma4: più lento ma con ragionamento astratto superiore, usato nei cicli offline senza vincoli di latenza realtime.
-- **dream_trace (esperimento concluso nella raccolta, flag spento):** tra un ciclo creativo e il successivo sopravviveva un **residuo di esplorazione** distillato dal chain-of-thought del sogno appena concluso — max 5 righe, a livello di *strategia* ("che tipo di ponte ho provato e perché era debole"), mai contenuti né conclusioni. Raccolta congelata il 21/07 a 160 baseline / 74 trattamento validi; resta da compilare e aprire l'audit cieco descritto in `ESPERIMENTO_DREAM_TRACE.md`.
-- Se l'analogia è forte, genera un **CANDIDATE Insight**.
+- Fra i semi puliti privilegia quelli dotati di provenienza verbatim, prima nel
+  dominio e poi nel campione cross-domain. Il fallback legacy resta possibile per
+  non perdere memorie storiche autosufficienti, ma viene dichiarato nei log.
+- **Loop 2b-REM — divergenza:** **Qwen3.6 35B** (*thinking attivo*, modello dedicato) lascia collidere i due semi senza dover produrre una soluzione, un fatto o il formato operativo degli insight. Associazioni lontane, metafore, inversioni e trasformazioni anche assurde vengono conservate per sette giorni come `euri:dream:*`, con `stage=rem_divergent`. Questo materiale non ha embedding, non entra nel RAG, non va in Obsidian e non può diventare memoria: è sonno, non conoscenza.
+- **Loop 2b-Wake — risveglio lucido:** una seconda chiamata riceve le stesse fonti reidratate e il REM grezzo, esplicitamente marcato come non fattuale e non eseguibile. Cerca soltanto l'eventuale lampo traducibile in una connessione operativa verificabile; se non esiste risponde `NESSUN INSIGHT`. Solo questa distillazione può generare un **CANDIDATE Insight** e viene collegata al sogno sorgente tramite `rem_dream_id`.
+- **Principio REM→wake:** il caos è permesso a monte e il rigore è applicato a valle, ma il caos avviene fra **ancore complete**, non a causa di frammenti amputati. Memoria compatta, turni sorgente e contesto bounded restituiscono referenti, situazione, scopo e filo argomentativo; la fase divergente può deformarli, mentre il risveglio ricostruisce le premesse esclusivamente dalle fonti reali. Specifica e invarianti: [`docs/EURI_REM_WAKE_ARCHITECTURE.md`](docs/EURI_REM_WAKE_ARCHITECTURE.md).
+- **dream_trace (esperimenti congelati, flag spenti):** il primo studio sul residuo di esplorazione resta storico e auditabile. Il paired V3 con semi reidratati è stato interrotto il 07/08 prima della soglia pianificata: l'introduzione di REM→wake cambia il trattamento e impedisce di proseguire lo stesso batch. Il costo della nuova produzione sostituisce le due generazioni appaiate con una generazione REM e un risveglio, senza aggiungere un terzo braccio.
 - **Loop 2c** — La convergenza usa la distanza cosine soltanto come shortlist e un
   **LLM judge con thinking** per stabilire se due insight esprimono davvero lo
   stesso meccanismo. La convergenza da sola non basta più: le due premesse devono
@@ -323,7 +336,7 @@ Quando non gli parli per un po', Euri entra in cicli cognitivi offline. Non è p
 - I gate semantici aggiungono chiamate al modello locale durante la manutenzione:
   cicli più lenti, meno insight promossi e più astensioni sono un costo atteso
   della maggiore integrità, non una regressione.
-- **Filtro del Risveglio (re-rank insight in retrieval):** complementare al Dream Engine. Il sogno (Loop 2b) resta libero e atemporale per design — il filtro di rilevanza opera solo al recupero conversazionale. `search_insights` applica una penalty moltiplicativa (×1.5 default) sulla cosine distance per gli insight i cui due domini non sono apparsi nelle memorie *curate* di Stefano (`teach/user/reflection`) negli ultimi 30 giorni. Non sopprime: deprioritizza. Se domani Stefano riapre un dominio archivio, l'insight risale automaticamente. `passive` e `conversation` escluse dal set `INSIGHT_ACTIVE_SOURCES` perché spugne ambient — dry-run aveva mostrato 0% archivio con tutti i source operativi (no-op). Con `teach/user/reflection` → 35% archivio sui 95 insight promossi, caso "Radio QUQU ↔ materiali" correttamente penalizzato. Cache `_active_domains` 5 min.
+- **Filtro del Risveglio (re-rank insight in retrieval):** è distinto dal risveglio lucido immediato. Il primo trasforma eventualmente il REM in candidato e applica integrità epistemica; questo filtro successivo decide invece la rilevanza conversazionale di un insight già promosso. `search_insights` applica una penalty moltiplicativa (×1.5 default) sulla cosine distance per gli insight i cui due domini non sono apparsi nelle memorie *curate* di Stefano (`teach/user/reflection`) negli ultimi 30 giorni. Non sopprime: deprioritizza. Se domani Stefano riapre un dominio archivio, l'insight risale automaticamente. `passive` e `conversation` escluse dal set `INSIGHT_ACTIVE_SOURCES` perché spugne ambient — dry-run aveva mostrato 0% archivio con tutti i source operativi (no-op). Con `teach/user/reflection` → 35% archivio sui 95 insight promossi, caso "Radio QUQU ↔ materiali" correttamente penalizzato. Cache `_active_domains` 5 min.
 
 - **Propagazione di provenienza (V2.20, invariante A):** ogni ciclo, dopo 2f/2e, `_provenance_propagation_pass` ricalcola **dal vivo** la solidità delle fonti di ogni nodo consolidato (`consolidated_from`). Un nodo le cui fonti sono state superseded/contraddette/cancellate viene marcato `provenance_stale` (**down-rank** nel retrieval: demozione, non esclusione → fail-safe) + `requires_verification` (Euri si copre, *"da confermare"*). Si auto-guarisce se le fonti rientrano. Chiude il buco per cui una correzione a una memoria-foglia poteva essere **silenziosamente disfatta** da un nodo consolidato che l'aveva già assorbita: le correzioni ora si **propagano** lungo gli edge di provenienza, invece di fermarsi alla foglia. Audit read-only in `diag_provenance.py`.
 

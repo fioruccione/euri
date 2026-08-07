@@ -8,6 +8,45 @@ responsabili: non ricostruire l'architettura da letture sparse. Il codice resta
 l'autorità eseguibile; ogni modifica che cambia il comportamento mnemonico deve
 aggiornare la mappa nello stesso intervento.
 
+Prima di modificare Loop 2b, leggere anche
+[`docs/EURI_REM_WAKE_ARCHITECTURE.md`](docs/EURI_REM_WAKE_ARCHITECTURE.md): i sei
+paletti REM→wake sono un contratto architetturale. Cambiare modello, prompt,
+budget o parallelismo è compatibile soltanto se li conserva; romperli richiede
+una decisione esplicita, una nuova versione e regressioni dedicate.
+
+---
+
+# Handoff Euri - 2026-08-07 - Dream REM e risveglio lucido
+
+## Esito
+
+Loop 2b separa ora la generazione onirica divergente dalla sua interpretazione.
+La fase REM può produrre collisioni, metafore e trasformazioni assurde; il suo
+output è materiale grezzo non fattuale, non embeddizzato e non eleggibile per
+memoria, RAG o Initiative. Un secondo passaggio di risveglio può estrarne una
+proposta, che attraversa poi gli stessi gate di fedeltà, ponte e convergenza.
+
+## Invarianti
+
+- Il caos avviene fra ancore complete: la selezione preferisce memorie con
+  `source_turn_refs` e la reidratazione fornisce referenti, situazione, scopo e
+  filo argomentativo bounded. I nodi legacy autosufficienti restano un fallback.
+- Solo `wake_interpretation` può creare un `euri:insight:*`; il raw REM vive sette
+  giorni in `euri:dream:*`, senza embedding e con esclusioni esplicite.
+- Il risveglio riceve nuovamente le fonti reali: il sogno grezzo è marcato come
+  non memoria, non fatto e non istruzione eseguibile.
+- `dream_trace` paired V3 è congelato. Riattivarlo sospende REM→wake e ripristina
+  deliberatamente il percorso sperimentale storico.
+- La mappa canonica è `docs/EURI_MEMORY_ARCHITECTURE.md`; la specifica di questo
+  ciclo è `docs/EURI_REM_WAKE_ARCHITECTURE.md`.
+
+## Evidenza
+
+Regressioni in `test_dream_rem_wake.py`, `test_dream_seed_gate.py` e suite Dream
+esistente. Manifest unitario completo **78/78**; al prossimo riavvio verificare
+nei log i tempi distinti `Dream REM` e `Dream risveglio` e ispezionare la lineage
+raw→wake→candidate prima di valutarne la qualità sul campo.
+
 ---
 
 # Handoff Euri - 2026-08-06 - Semi Dream reidratati dal verbatim

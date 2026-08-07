@@ -314,9 +314,10 @@ DREAM_TRACE_TTL_S = 48 * 3600  # residuo stantio dopo 2 giorni di fermo → scad
 # blocchi (mai attivato, sostituito qui su richiesta di Stefano). Pre-registrazione:
 # ESPERIMENTO_DREAM_TRACE_V2.md. Il pilot v1 del 21/07 e' chiuso. La v2 e' stata
 # chiusa quando il caso workstation/perossido ha mostrato che il seme compatto
-# perdeva il referente; la v3 riparte con prompt e stato Redis versionati dopo
-# l'introduzione del contesto verbatim bounded. Non mescolare i due batch.
-DREAM_TRACE_PAIRED_ENABLED = True
+# perdeva il referente. La v3 e' stata avviata con contesto verbatim bounded e
+# congelata il 07/08 prima della soglia pianificata: l'architettura di produzione
+# e' passata a REM->risveglio e non puo' essere mescolata con quel protocollo.
+DREAM_TRACE_PAIRED_ENABLED = False
 DREAM_TRACE_PAIRED_VERSION = "dream_trace_paired_v3_hydrated"
 # Reidratazione read-only dei semi creativi. La memoria compatta resta canonica;
 # al prompt si aggiungono soltanto i turni sorgente e al massimo due turni
@@ -325,6 +326,20 @@ DREAM_SEED_CONTEXT_ENABLED = True
 DREAM_SEED_CONTEXT_PRECEDING_TURNS = 2
 DREAM_SEED_CONTEXT_MAX_TURNS = 4
 DREAM_SEED_CONTEXT_MAX_CHARS = 3200
+# Preferenza, non hard gate: tra semi epistemicamente puliti privilegia quelli
+# con provenienza verbatim. Un nodo legacy autosufficiente resta utilizzabile se
+# nel pool non esistono ancore reidratabili; il log rende visibile il fallback.
+DREAM_SEED_PREFER_PROVENANCE = True
+# Architettura onirica REM -> risveglio (07/08/2026). Il primo passaggio e'
+# deliberatamente divergente e non puo' creare insight, embedding o memoria RAG;
+# il secondo cerca nel materiale grezzo un lampo traducibile in una connessione
+# operativa, che attraversa poi i gate epistemici ordinari. Gli esperimenti
+# dream_trace legacy/paired restano mutuamente esclusivi da questo path.
+DREAM_REM_WAKE_ENABLED = True
+DREAM_REM_WAKE_VERSION = "rem_wake_v1"
+DREAM_REM_TEMPERATURE = 0.95
+DREAM_REM_NUM_PREDICT = 4500
+DREAM_REM_MAX_CHARS = 6000
 # Risveglio lucido — fedeltà-di-premessa dei candidate rispetto alle memorie
 # sorgente (source_memory_ids): il sogno ha detto la verità sulle proprie fonti?
 # Il punteggio viene calcolato UNA volta per candidate e cacheato sul documento.

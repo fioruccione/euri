@@ -96,6 +96,24 @@ def test_fetch_revalidates_json():
     assert "@source:" in engine._r._ft.query
 
 
+def test_fetch_prefers_a_seed_with_verbatim_provenance():
+    docs = {
+        "euri:memory:legacy": _clean(id="legacy"),
+        "euri:memory:grounded": _clean(
+            id="grounded",
+            temporal_context={"source_turn_refs": ["conv:7"]},
+        ),
+    }
+    engine = DreamEngine.__new__(DreamEngine)
+    engine._r = _Redis(docs)
+
+    seed = engine._get_random_memory_from_domain("chimica polimeri")
+
+    assert seed is not None
+    assert seed["id"] == "euri:memory:grounded"
+    assert seed["temporal_context"]["source_turn_refs"] == ["conv:7"]
+
+
 def test_pick_seed_skips_empty_domains():
     engine = DreamEngine.__new__(DreamEngine)
     docs = {"vuoto": None, "fragile": None, "buono": _clean()}
@@ -106,8 +124,25 @@ def test_pick_seed_skips_empty_domains():
     assert engine._pick_dream_seed(["buono"], exclude={"buono"}) is None
 
 
+def test_pick_seed_prefers_provenance_across_sampled_domains():
+    engine = DreamEngine.__new__(DreamEngine)
+    docs = {
+        "legacy": _clean(),
+        "grounded": _clean(
+            temporal_context={"source_turn_refs": ["conv:3"]},
+        ),
+    }
+    engine._get_random_memory_from_domain = lambda domain: docs[domain]
+
+    picked = engine._pick_dream_seed(["legacy", "grounded"], max_attempts=2)
+
+    assert picked is not None and picked[0] == "grounded"
+
+
 if __name__ == "__main__":
     test_pure_gate()
     test_fetch_revalidates_json()
+    test_fetch_prefers_a_seed_with_verbatim_provenance()
     test_pick_seed_skips_empty_domains()
+    test_pick_seed_prefers_provenance_across_sampled_domains()
     print("test_dream_seed_gate: OK")
