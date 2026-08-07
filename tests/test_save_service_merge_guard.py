@@ -28,15 +28,21 @@ class FakeMemory:
 
 
 class FakeBrain:
-    def __init__(self, merged=None):
+    def __init__(self, merged=None, corrected=None):
         self.merged = merged
+        self.corrected = corrected
         self.merge_calls = []
+        self.correction_calls = []
 
     def merge_memories(self, existing, new):
         self.merge_calls.append((existing, new))
         if self.merged is None:
             raise AssertionError("merge_memories non doveva essere chiamato")
         return self.merged
+
+    def apply_correction_to_memory(self, existing, correction):
+        self.correction_calls.append((existing, correction))
+        return self.corrected
 
     def confirm_save(self, _item_type, content, _due_at_str=""):
         return f"Segnato: {content}"
@@ -108,8 +114,43 @@ def test_explicit_save_does_not_merge_into_correction_pending_memory_even_if_use
     assert memory.superseded == [("old-pending", "new-id")]
 
 
+def test_explicit_correction_rewrites_trusted_memory_instead_of_union_merge():
+    match = {
+        "id": "old-user",
+        "content": (
+            "Assistente Ufficio garantisce la privacy ed è già conforme "
+            "all'AI Act. Le citazioni sono cliccabili."
+        ),
+        "similarity": 0.93,
+        "source": "user",
+        "consolidation_risk": {"level": "ok"},
+    }
+    correction = (
+        "Non dire che il sistema garantisce la conformità o la sicurezza assoluta. "
+        "I dati restano in azienda e le citazioni indicano documento e pagina."
+    )
+    corrected = (
+        "I dati di Assistente Ufficio restano in azienda, ma questo non garantisce "
+        "automaticamente conformità o sicurezza assoluta. Le citazioni indicano "
+        "documento e pagina."
+    )
+    memory = FakeMemory(match)
+    brain = FakeBrain(corrected=corrected)
+
+    res = _save_or_merge(correction, memory, brain, operation="correct")
+
+    assert res["saved"] is True
+    assert res["corrected"] is True
+    assert res["content"] == corrected
+    assert brain.merge_calls == []
+    assert brain.correction_calls == [(match["content"], correction)]
+    assert memory.saved == [(corrected, "user", True)]
+    assert memory.superseded == [("old-user", "new-id")]
+
+
 if __name__ == "__main__":
     test_explicit_save_does_not_merge_into_weak_passive_memory()
     test_explicit_save_still_merges_into_trusted_user_memory()
     test_explicit_save_does_not_merge_into_correction_pending_memory_even_if_user()
+    test_explicit_correction_rewrites_trusted_memory_instead_of_union_merge()
     print("test_save_service_merge_guard: OK")

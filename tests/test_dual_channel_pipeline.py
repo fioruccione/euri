@@ -19,7 +19,7 @@ from benchmarks.euri_memory.heldout_localization import build_selected_localizat
 _SCORER = "locomo_reduced_deterministic_v1_not_official"
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 OFFICIAL = ROOT / "benchmarks" / "euri_memory" / "data" / "locomo10.json"
 
 

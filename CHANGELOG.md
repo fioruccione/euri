@@ -1,5 +1,94 @@
 # Changelog
 
+## 2026-08-07 - Correzioni, aggiunte e sorgenti reali nel SAVE
+
+- Il router non interpreta più il generico «aggiungi che» dentro un discorso
+  come richiesta di memoria: «aggiungi in memoria che» resta esplicito, mentre
+  richieste finali come «ora riscrivi» rimangono conversazione.
+- Il risolutore condiviso distingue ora `add`, `correct` e `replace`. Le
+  correzioni usano la riscrittura correttiva già esistente e non il merge
+  costruttivo che, per contratto, conserva tutti i dettagli della versione
+  precedente.
+- Negazioni, limiti e confini operativi diventano parte vincolante della
+  correzione; in caso di errore del modello viene salvata la parola dell'utente
+  invece di reintrodurre una memoria smentita.
+- «Memorizza il contenuto della clipboard/del documento attivo» usa ora
+  l'artefatto fisico condiviso tra voce e UI. La memoria viene ricavata dal
+  contenuto reale, non dall'istruzione o dalla precedente risposta di Euri.
+- Aggiunte regressioni sul caso Assistente Ufficio: niente falso `SAVE_MEMORY`,
+  niente union-merge durante una correzione e sorgente clipboard verificata.
+
+## 2026-08-07 - Clipboard autonoma e crash Silent Chat
+
+- Corretto il `NameError: logger is not defined` nel percorso con cui la Silent
+  Chat registra l'arbitraggio dell'intent semantico.
+- La clipboard decide dal contenuto effettivo: accetta il ramo vision soltanto
+  quando i byte dichiarati `image/png` hanno davvero la firma PNG; altrimenti
+  prosegue autonomamente con il testo, senza richiedere all'utente di specificare
+  il formato.
+- Un errore di `Brain.analyze_image` torna ora come assenza di risultato e i tool
+  lo espongono come `FAIL`. Eliminata la risposta contraddittoria «ho analizzato
+  l'immagine ... non sono riuscito ad analizzarla» marcata erroneamente `OK`.
+- Il documento caricato in UI continua a seguire il workspace condiviso e il
+  tool `read_document`; clipboard e tavolo documenti restano sorgenti distinte,
+  selezionate dal bersaglio reale della richiesta.
+
+## 2026-08-07 - Rubrica prospettica per la novità Dream
+
+- Separata la novità tecnica (`V0/V1/V2`) dalla sorpresa o utilità contestuale
+  per Stefano: «non ci avevo pensato» non è da solo evidenza di `V2`.
+- Definito `V1` come composizione diretta «applica A a B» e riservato `V2` a un
+  meccanismo, vincolo, previsione falsificabile o criterio decisionale nuovo,
+  fondato e dipendente da entrambe le fonti.
+- Congelato fuori da futuri campioni blind il primo caso live REM→wake
+  clipboard×bozza-clienti, classificato `G1/V1/C`: il dettaglio non sostenuto che
+  causa `G1` non può essere riusato per rivendicare novità.
+- I prossimi blind useranno ruoli anonimi Valutatore A/B; nessuna persona esterna
+  al protocollo viene inferita come annotatrice. V2/V3 restano archivi storici e
+  non vengono rietichettati.
+- Specifica in `docs/EURI_DREAM_NOVELTY_CALIBRATION_2026-08-07.md`.
+
+## 2026-08-07 - Test raccolti nella directory canonica
+
+- Spostati i 89 script `test_*.py` dalla root a `tests/`, mantenendo i tre tier
+  espliciti `unit`, `integration` e `live`.
+- Manifest aggiornati con percorsi relativi completi; il runner rende esplicita
+  la root in `PYTHONPATH` e il checker inventaria esclusivamente `tests/`.
+- Allineati i test che derivavano la root del repository da `__file__` e i
+  comandi diretti documentati. La classificazione continua a impedire che test
+  live o integrativi entrino accidentalmente nella CI.
+- Il daemon non collega il sink `logs/voice_daemon.log` quando il runner espone
+  `EURI_TEST_TIER`: le regressioni mantengono l'output nel proprio processo ma
+  non contaminano più la cronologia operativa di Euri.
+
+## 2026-08-07 - Personalità emergente e modello relazionale
+
+- Aggiunta una proiezione owner-scoped ricostruibile dai turni canonici: separa
+  tratti di Euri, preferenze operative dell'interlocutore e dinamiche della
+  relazione, senza inserirne il contenuto nel system prompt.
+- Il Dream Engine usa Qwen in idle per proporre pattern soltanto dopo almeno
+  otto nuovi turni owner e con almeno sei ore fra consolidamenti validi. Il
+  bootstrap considera il presente recente; i batch successivi avanzano in
+  ordine tramite checkpoint durevole.
+- Il gate accetta esclusivamente citazioni contigue di turni user autenticati
+  nello scope personale e richiede almeno una fonte nuova. Le risposte di Euri
+  sono contesto per capire il feedback, mai evidenza del suo carattere.
+- I tratti espliciti possono stabilizzarsi da una dichiarazione owner; i pattern
+  inferiti richiedono tre turni in almeno due segmenti/conversazioni. Le
+  contraddizioni producono `contested`, escluso dal realtime; i pattern non
+  rinforzati decadono dal rendering senza cancellazione storica.
+- `Brain` riceve al massimo nove tratti stable in una vista marcata come
+  derivata, non fattuale e non diagnostica. Voice applica il modello soltanto
+  all'owner autenticato; Silent Chat e Mobile usano l'actor owner del canale.
+- Documentati otto paletti in `docs/EURI_EMERGENT_PERSONALITY.md`; regressioni
+  dedicate in `test_personality_model.py`.
+- Evidenza runtime del bootstrap: Qwen 3.6 ha consumato prima 2.600 e poi 5.000
+  token interamente nel reasoning (`content_chars=0`, `done_reason=length`). Il
+  consolidatore identitario, che deve consegnare dati alla veglia, usa quindi
+  `think=False` e JSON vincolato; REM e cicli creativi restano invariati. Un
+  output invalido produce diagnostica di lunghezze e `done_reason` e ritenta
+  dopo 20 minuti; le sei ore restano riservate ai consolidamenti validi.
+
 ## 2026-08-07 - Dream REM divergente e risveglio lucido
 
 - Ripristinato nel runtime il principio originario del paper: il Dream non viene

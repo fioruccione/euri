@@ -262,6 +262,13 @@ def _tool_clipboard_analyze(params: dict, *, persist: bool, **kwargs) -> ToolRes
                 "Se contiene dati tecnici, tabelle o specifiche, riportali fedelmente. "
                 "Usa frasi complete, niente elenchi puntati."
             ))
+            if not description.strip():
+                return ToolResult(
+                    success=False,
+                    output="Non sono riuscito ad analizzare l'immagine negli appunti.",
+                    error="image analysis failed",
+                    raw_data={"persisted": False, "type": "image"},
+                )
             mid = None
             if persist:
                 mid = memory.save_memory(
@@ -392,6 +399,10 @@ def _clipboard_image() -> str | None:
         try:
             result = subprocess.run(cmd, capture_output=True, timeout=3)
             if result.returncode == 0 and result.stdout:
+                # Alcuni clipboard owner rispondono anche a un target non realmente
+                # disponibile. Non passare testo/HTML rinominato .png a Ollama.
+                if not result.stdout.startswith(b"\x89PNG\r\n\x1a\n"):
+                    continue
                 tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
                 tmp.write(result.stdout)
                 tmp.close()

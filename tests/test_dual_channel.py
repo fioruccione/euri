@@ -29,7 +29,7 @@ from benchmarks.euri_memory.dual_channel_worker import (
 )
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 OFFICIAL = ROOT / "benchmarks" / "euri_memory" / "data" / "locomo10.json"
 DEV_RUN = ROOT / "audit_output" / "passive_memory_heldout_v1_seed914917171" / "run"
 

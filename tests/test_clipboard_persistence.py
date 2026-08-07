@@ -3,6 +3,11 @@
 
 from agent.executor import Executor
 from agent.tools import text_writer
+from core import brain as brain_module
+from core.brain import Brain
+from types import SimpleNamespace
+import tempfile
+from pathlib import Path
 
 
 class FakeBrain:
@@ -89,6 +94,56 @@ def test_clipboard_routing_requires_explicit_save_language():
     assert executor.select_tool_by_regex("non analizzare gli appunti") is None
 
 
+def test_clipboard_rejects_non_png_bytes_from_image_target():
+    original_run = text_writer.subprocess.run
+    try:
+        text_writer.subprocess.run = lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=b"testo o html dichiarato erroneamente come immagine",
+        )
+        assert text_writer._clipboard_image() is None
+    finally:
+        text_writer.subprocess.run = original_run
+
+
+def test_failed_clipboard_image_analysis_is_not_reported_as_success():
+    original_image = text_writer._clipboard_image
+
+    class FailedVisionBrain:
+        def analyze_image(self, *_args, **_kwargs):
+            return ""
+
+    with tempfile.TemporaryDirectory(prefix="euri-clipboard-test-") as temp_dir:
+        image_path = Path(temp_dir) / "clipboard.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+        try:
+            text_writer._clipboard_image = lambda: str(image_path)
+            result = text_writer.tool_clipboard_analyze(
+                {},
+                brain=FailedVisionBrain(),
+                memory=FakeMemory(),
+            )
+        finally:
+            text_writer._clipboard_image = original_image
+
+    assert result.success is False
+    assert result.error == "image analysis failed"
+    assert "non sono riuscito" in result.output.lower()
+
+
+def test_brain_image_failure_returns_no_fake_description():
+    original_chat = brain_module.chat_client.chat
+    try:
+        def _fail(**_kwargs):
+            raise RuntimeError("vision unavailable")
+
+        brain_module.chat_client.chat = _fail
+        brain = Brain.__new__(Brain)
+        assert brain.analyze_image("/tmp/immagine-inesistente.png") == ""
+    finally:
+        brain_module.chat_client.chat = original_chat
+
+
 def test_only_temporary_analysis_is_contextually_proposable():
     executor = Executor()
     capabilities = {
@@ -103,5 +158,8 @@ if __name__ == "__main__":
     test_explicit_analysis_and_save_persists_teach_memory()
     test_explicit_save_reports_rejection_truthfully()
     test_clipboard_routing_requires_explicit_save_language()
+    test_clipboard_rejects_non_png_bytes_from_image_target()
+    test_failed_clipboard_image_analysis_is_not_reported_as_success()
+    test_brain_image_failure_returns_no_fake_description()
     test_only_temporary_analysis_is_contextually_proposable()
     print("test_clipboard_persistence: OK")

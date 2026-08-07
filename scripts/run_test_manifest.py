@@ -48,6 +48,15 @@ def main() -> int:
     tier = manifest.stem
     env = os.environ.copy()
     env["EURI_TEST_TIER"] = tier
+    # I test vivono in tests/, ma importano i package applicativi dalla root.
+    # Manteniamo anche l'esecuzione come script isolato (non pytest discovery)
+    # e rendiamo esplicito il confine invece di dipendere dalla cwd implicita.
+    existing_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        str(ROOT)
+        if not existing_pythonpath
+        else str(ROOT) + os.pathsep + existing_pythonpath
+    )
     failures = []
     started_suite = time.monotonic()
 

@@ -1054,11 +1054,23 @@ class Executor:
             # Analizza la prima immagine (o tutte se sono poche)
             if len(images) == 1:
                 result = brain.analyze_image(str(images[0]), question)
+                if not result:
+                    return ToolResult(
+                        success=False,
+                        output="Non sono riuscito ad analizzare l'immagine.",
+                        error="image analysis failed",
+                    )
                 return ToolResult(success=True, output=result)
             else:
                 # Analizza la più recente
                 latest = max(images, key=lambda p: p.stat().st_mtime)
                 result = brain.analyze_image(str(latest), question)
+                if not result:
+                    return ToolResult(
+                        success=False,
+                        output="Non sono riuscito ad analizzare l'immagine più recente.",
+                        error="image analysis failed",
+                    )
                 prefix = f"Ho trovato {len(images)} immagini. Analizzo la più recente. "
                 return ToolResult(success=True, output=prefix + result)
 

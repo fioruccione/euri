@@ -30,13 +30,13 @@ secondi isolamento, reset, adapter, trace e scorer senza avviare modelli.
 Test puri, adatti alla CI:
 
 ```bash
-./venv/bin/python test_memory_benchmark.py
+PYTHONPATH=. ./venv/bin/python tests/test_memory_benchmark.py
 ```
 
 Smoke integration con Redis effimero:
 
 ```bash
-./venv/bin/python test_memory_benchmark_integration.py
+PYTHONPATH=. ./venv/bin/python tests/test_memory_benchmark_integration.py
 ```
 
 Acquisizione ufficiale LoCoMo:

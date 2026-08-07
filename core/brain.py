@@ -42,6 +42,9 @@ class Brain:
         self.history_lock = threading.Lock()  # protegge _conversation_history da accessi concorrenti
         self._episode_callback = None        # fn(summary, temporal_context) -> salva in Redis
         self._turn_callback = None           # fn(message) -> archivia il turno originale
+        # Vista derivata owner-scoped. Brain resta indipendente da Redis: voce/UI
+        # forniscono un renderer fail-open, non un secondo archivio canonico.
+        self._personality_context_callback = None
 
     def restore_continuity(
         self,
@@ -318,6 +321,7 @@ class Brain:
         context: str = "",
         *,
         trusted: bool = False,
+        actor_id: str | None = None,
         observed_at: float | None = None,
         thinking: bool = False,
         thinking_reason: str = "",
@@ -355,6 +359,20 @@ class Brain:
         op_ctx = load_operational_context()
         if op_ctx:
             messages.append({"role": "system", "content": op_ctx})
+
+        # Il contenuto non e' una persona scritta a mano: e' la proiezione
+        # ricostruibile dei turni verificati. Senza actor_id non si presume mai
+        # che il modello relazionale del proprietario valga per un ospite.
+        if actor_id and self._personality_context_callback:
+            try:
+                learned_identity = str(
+                    self._personality_context_callback(actor_id) or ""
+                ).strip()
+            except Exception as exc:
+                logger.debug(f"Proiezione identitaria non disponibile ({exc})")
+                learned_identity = ""
+            if learned_identity:
+                messages.append({"role": "system", "content": learned_identity})
 
         dt_line = f"Data e ora corrente: {format_datetime_full(now())}"
         ctx_parts = [dt_line]
@@ -1602,8 +1620,11 @@ class Brain:
                              dettagli → cattura la SOSTANZA dagli scambi, non l'etichetta.
           - "last_exchange": riferimento anaforico puro ("memorizza questo").
           - "ask"          : non è chiaro cosa salvare.
-        Ritorna {"mode","memory","confidence"} oppure {} su errore/parse fallito (→ il
-        chiamante fa fallback al comportamento attuale). Vedi [[project_euri_memory_controller]].
+        Ritorna {"mode","operation","memory","confidence"} oppure {} su errore/parse
+        fallito (→ il chiamante fa fallback al comportamento attuale).
+        ``operation`` distingue un arricchimento da una correzione: il primo può essere
+        fuso conservando B, la seconda deve poter rimuovere ciò che l'utente smentisce.
+        Vedi [[project_euri_memory_controller]].
         """
         convo = self._format_history_for_save(recent_history)
         if not convo:
@@ -1613,7 +1634,7 @@ class Brain:
             f"Comando: \"{command}\"\n\n"
             f"Conversazione recente (dal più vecchio al più recente):\n{convo}\n\n"
             "Decidi cosa salvare e rispondi SOLO con un oggetto JSON, niente altro testo:\n"
-            '{"mode": "...", "memory": "...", "confidence": 0.0}\n\n'
+            '{"mode": "...", "operation": "...", "memory": "...", "confidence": 0.0}\n\n'
             "mode può essere:\n"
             "- \"direct\": il comando contiene GIÀ un fatto completo e autosufficiente. "
             "memory = quel fatto, ripulito.\n"
@@ -1625,6 +1646,14 @@ class Brain:
             "- \"last_exchange\": riferimento puramente anaforico ('memorizza questo', "
             "'segnati quanto detto'). memory = sintesi del fatto emerso nell'ultimo scambio.\n"
             "- \"ask\": non è chiaro cosa salvare. memory = \"\".\n\n"
+            "operation può essere:\n"
+            "- \"add\": aggiunge un fatto senza smentire quanto già noto.\n"
+            "- \"correct\": corregge, limita o nega un'affermazione precedente. In questo "
+            "caso memory DEVE conservare esplicitamente negazioni, limiti e formule come "
+            "'non garantisce', 'soltanto', 'non è collegato', senza trasformarle in una "
+            "descrizione positiva più generica.\n"
+            "- \"replace\": l'utente chiede esplicitamente di sostituire integralmente una "
+            "versione precedente.\n\n"
             "Per memory: italiano, conciso (max 3-4 frasi), SOLO fatti concreti. Fonte "
             f"primaria: ciò che afferma {_OWNER_NAME}; la conversazione serve a recuperare i "
             "dettagli del soggetto. NON includere preamboli, meta-commenti o spiegazioni sul "
@@ -1644,12 +1673,53 @@ class Brain:
                 return {}
             return {
                 "mode": str(data.get("mode", "")).strip().lower(),
+                "operation": str(data.get("operation", "add")).strip().lower(),
                 "memory": str(data.get("memory", "")).strip(),
                 "confidence": data.get("confidence", 0.0),
             }
         except Exception as e:
             logger.error(f"Errore resolve_save_intent: {e}")
             return {}
+
+    def summarize_artifact_for_memory(self, content: str, source_name: str = "") -> str:
+        """Produce una memoria fedele dalla sorgente documentale attiva.
+
+        Diversamente dal resolver anaforico, qui l'input primario è il contenuto fisico
+        dell'artefatto (clipboard o documento condiviso), non l'istruzione pronunciata e
+        non la risposta conversazionale che lo ha riassunto. Limiti e negazioni sono
+        informazione: perderli trasformerebbe una sintesi tecnica in una promessa.
+        """
+        source = (source_name or "documento attivo").strip()
+        text = (content or "").strip()
+        if not text:
+            return ""
+        excerpt = text[:24_000]
+        truncated = len(text) > len(excerpt)
+        prompt = (
+            f"Sorgente reale: {source}.\n\n{excerpt}"
+            + ("\n\n[La sorgente continua oltre il limite disponibile.]" if truncated else "")
+            + "\n\nCrea una memoria durevole e autosufficiente in italiano. Riporta i fatti, "
+              "le capacità, i limiti e le cautele realmente presenti nella sorgente. "
+              "Conserva esplicitamente negazioni e confini operativi (per esempio: ciò "
+              "che il sistema non fa, su quali soli documenti opera, cosa non garantisce). "
+              "Distingui le affermazioni del documento dai fatti verificati: non amplificare "
+              "termini promozionali e non dedurre conformità, sicurezza o certezza. "
+              "Sii denso ma sufficiente per richiamare in seguito il contenuto: massimo "
+              "8 frasi. Nessun preambolo, nessun markdown."
+        )
+        try:
+            response = chat_client.chat(
+                model=config.OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.1, "num_predict": 1000, "num_ctx": 32768},
+                think=False,
+            )
+            return self._strip_memory_header(
+                self._clean(response.message.content or "")
+            ).strip()
+        except Exception as exc:
+            logger.error(f"Errore summarize_artifact_for_memory: {exc}")
+            return ""
 
     def classify_retrieval_strategy(self, query: str, recent_history: list[dict] = None) -> dict:
         """
@@ -2209,10 +2279,13 @@ class Brain:
             )
             elapsed = (time.perf_counter() - _t) * 1000
             logger.info(f"[TIMING] brain.analyze_image() Ollama: {elapsed:.0f}ms")
-            return self._clean(response.message.content or "Impossibile analizzare l'immagine.")
+            return self._clean(response.message.content or "")
         except Exception as e:
             logger.error(f"Errore analyze_image: {e}")
-            return "Non sono riuscito ad analizzare l'immagine."
+            # Il chiamante possiede il contratto ToolResult e deve poter distinguere
+            # un output vision valido da un errore. Una frase di errore restituita
+            # come normale descrizione veniva marcata success=True dall'Executor.
+            return ""
 
     def read_and_extract(self, documents: dict[str, str], question: str = "") -> str:
         """

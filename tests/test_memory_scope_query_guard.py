@@ -18,7 +18,7 @@ import ast
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 INDEXES = ("idx:memories", "idx:notes")
 SCOPE_MARKERS = ("memory_scope", "scope_clause", "_source_prefix")
 

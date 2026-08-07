@@ -12,7 +12,7 @@ from benchmarks.euri_memory.prompt_ablation import (
 )
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 RUN = ROOT / "audit_output" / "dual_channel_validation_v1_seed396895560" / "run"
 SOURCE = ROOT / "benchmarks" / "euri_memory" / "data" / "locomo10.json"
 

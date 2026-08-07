@@ -12,6 +12,7 @@ from core.act_word_check import (
     emit_unbacked_action_commitment,
     needs_honest_correction,
     scrub_unbacked_action_claim,
+    strip_leading_stage_direction,
     honest_correction,
     honest_commitment_correction,
 )
@@ -172,7 +173,25 @@ def main():
         fails.append("no emit su azione coperta")
     print(f"  {'✓' if passed else '✗ FAIL'}  claim coperto da azione reale → niente Pulse")
 
-    total = len(CASES) + len(SCRUB_CASES) + 2
+    stage_reply = (
+        "(Immagina che io faccia un respiro profondo, pronta a parlare.)\n\n"
+        "Buongiorno a tutti. Ora vi presento Assistente Ufficio."
+    )
+    stripped = strip_leading_stage_direction(stage_reply)
+    passed = stripped == "Buongiorno a tutti. Ora vi presento Assistente Ufficio."
+    ok += passed
+    if not passed:
+        fails.append("strip didascalia iniziale")
+    print(f"  {'✓' if passed else '✗ FAIL'}  didascalia iniziale non letta dal TTS")
+
+    internal_parentheses = "Il sistema (se configurato) resta locale."
+    passed = strip_leading_stage_direction(internal_parentheses) == internal_parentheses
+    ok += passed
+    if not passed:
+        fails.append("parentesi interne preservate")
+    print(f"  {'✓' if passed else '✗ FAIL'}  parentesi tecniche interne preservate")
+
+    total = len(CASES) + len(SCRUB_CASES) + 4
     print("\n" + "=" * 60)
     print(f"PASS: {ok}/{total}")
     if fails:

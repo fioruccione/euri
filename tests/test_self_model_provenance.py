@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import config
 from core.memory_risk import is_document_summary, memory_verification_suffix
@@ -140,7 +141,7 @@ def test_profile_names_are_configuration_not_cognitive_constants():
     )
     completed = subprocess.run(
         [sys.executable, "-c", code],
-        cwd=os.path.dirname(__file__),
+        cwd=Path(__file__).resolve().parents[1],
         env=env,
         capture_output=True,
         text=True,

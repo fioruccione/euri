@@ -57,7 +57,7 @@ from benchmarks.euri_memory.integrity import (
 from benchmarks.euri_memory.selection import BenchmarkSelection
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 OFFICIAL = ROOT / "benchmarks" / "euri_memory" / "data" / "locomo10.json"
 _CATEGORIES = ("single_hop", "temporal", "multi_hop", "open_domain", "adversarial")
 

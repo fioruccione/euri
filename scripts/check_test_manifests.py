@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fallisce se un test root manca dai manifest o compare in piu' livelli."""
+"""Fallisce se un test in tests/ manca dai manifest o compare in piu' livelli."""
 
 from __future__ import annotations
 
@@ -14,7 +14,10 @@ def main() -> int:
     manifests = sorted(manifest_dir.glob("*.txt"))
     entries = [path.relative_to(ROOT).as_posix() for manifest in manifests for path in load_manifest(manifest)]
     counts = Counter(entries)
-    actual = {path.relative_to(ROOT).as_posix() for path in ROOT.glob("test_*.py")}
+    actual = {
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "tests").glob("test_*.py")
+    }
     listed = set(entries)
     duplicates = sorted(path for path, count in counts.items() if count > 1)
     missing = sorted(actual - listed)

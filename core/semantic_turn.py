@@ -956,6 +956,38 @@ def _frame_has_concrete_action(frame: dict | None) -> bool:
     return False
 
 
+def _frame_has_grounded_contextual_action(frame: dict | None) -> bool:
+    """Azione concreta con il grounding aggiuntivo richiesto dalle correzioni.
+
+    Un ``CORRECT_FACT`` generico non identifica implicitamente un documento. Se il
+    modello gli assegna comunque ``effect_scope=write``, la revisione e' operativa
+    soltanto quando ha anche scelto una sorgente documentale esplicita. Gli altri
+    effetti (read/state/external) conservano il contratto esistente.
+    """
+    if not _frame_has_concrete_action(frame):
+        return False
+    acts = {
+        str(item or "").upper()
+        for item in ((frame or {}).get("speech_acts") or [])
+    }
+    if not (acts & {"CORRECT_ENTITY", "CORRECT_FACT"}):
+        return True
+    for item in (frame or {}).get("actions") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("polarity") or "").strip().lower() != "requested":
+            continue
+        scope = str(item.get("effect_scope") or "").strip().lower()
+        if scope not in _OPERATIONAL_ACTION_EFFECT_SCOPES:
+            continue
+        if scope != "write":
+            return True
+        source_kind = str(item.get("source_kind") or "").strip().lower()
+        if source_kind in _ALLOWED_DOCUMENT_SOURCE_KINDS - {"unspecified"}:
+            return True
+    return False
+
+
 def frame_document_source(frame: dict | None) -> dict:
     """Sorgente documentale compresa dal frame, senza risolvere dati o path.
 
@@ -1016,12 +1048,19 @@ def semantic_intent(frame: dict | None, *, minimum_confidence: float = 0.72) -> 
     }.get(value)
     if required is not None and not (acts & required):
         return ""
-    if value in {"EXECUTE", "ACTION_REASONING"} and "CORRECT_ENTITY" in acts:
+    if (
+        value in {"EXECUTE", "ACTION_REASONING"}
+        and acts & {"CORRECT_ENTITY", "CORRECT_FACT"}
+        and not _frame_has_grounded_contextual_action(frame)
+    ):
         # La canonicalizzazione e' gia' l'effetto autorizzato del frame. Una
         # richiesta come "correggi il nome" non deve avviare un secondo
         # controller generico o fingere una mutazione di memoria distinta.
         return "CHAT"
-    if value in {"EXECUTE", "ACTION_REASONING"} and not _frame_has_concrete_action(frame):
+    if (
+        value in {"EXECUTE", "ACTION_REASONING"}
+        and not _frame_has_grounded_contextual_action(frame)
+    ):
         # Un modello non puo' autorizzare il controller con la sola etichetta:
         # deve anche rappresentare l'effetto operativo richiesto.
         return ""
@@ -1039,11 +1078,16 @@ def arbitrate_routable_intent(
 
     Il frame puo' correggere un router lessicale che ha restituito CHAT, ma non
     puo' trasformare una route mutante/non ammessa in una capability diversa.
+    Simmetricamente, un comando SAVE riconosciuto in modo deterministico non viene
+    annullato da un frame incoerente: il modello puo' scoprire un save naturale,
+    non revocare l'autorita' esplicita gia' presente nelle parole dell'utente.
     Accetta sia enum con ``.value`` sia stringhe per restare channel-agnostic.
     """
     current = str(getattr(current_intent, "value", current_intent) or "").upper()
     safe_allowed = {str(value or "").upper() for value in allowed}
     shared = semantic_intent(frame, minimum_confidence=minimum_confidence)
+    if current in {"SAVE_MEMORY", "SAVE_TODO", "SAVE_NOTE", "SAVE_LAST"}:
+        return current
     if shared in safe_allowed and current in safe_allowed:
         return shared
     return current
@@ -1072,7 +1116,37 @@ def frame_requests_contextual_action(
     if _confidence(frame.get("confidence")) < minimum_confidence:
         return False
     acts = {str(item or "").upper() for item in (frame.get("speech_acts") or [])}
-    return "REQUEST_ACTION" in acts and _frame_has_concrete_action(frame)
+    return "REQUEST_ACTION" in acts and _frame_has_grounded_contextual_action(frame)
+
+
+def frame_requests_linguistic_response(
+    frame: dict | None,
+    *,
+    minimum_confidence: float = 0.72,
+) -> bool:
+    """True quando l'azione richiesta consiste soltanto nella risposta stessa.
+
+    Presentare, recitare, formulare un discorso o spiegare possono comparire come
+    ``REQUEST_ACTION`` nel frame, ma ``effect_scope=response`` dichiara che non
+    esiste alcun effetto operativo esterno. Questa informazione serve anche a valle:
+    il guard atto-parola non deve scambiare le frasi della presentazione per promesse
+    di lavoro in background compiute da Euri.
+    """
+    if not isinstance(frame, dict) or frame.get("status") != "interpreted":
+        return False
+    if frame.get("requires_clarification"):
+        return False
+    if _confidence(frame.get("confidence")) < minimum_confidence:
+        return False
+    acts = {str(item or "").upper() for item in (frame.get("speech_acts") or [])}
+    if "REQUEST_ACTION" not in acts or _frame_has_grounded_contextual_action(frame):
+        return False
+    return any(
+        isinstance(item, dict)
+        and str(item.get("polarity") or "").strip().lower() == "requested"
+        and str(item.get("effect_scope") or "").strip().lower() == "response"
+        for item in (frame.get("actions") or [])
+    )
 
 
 def frame_vetoes_contextual_action(
@@ -1098,7 +1172,7 @@ def frame_vetoes_contextual_action(
     if "REQUEST_ACTION" in acts:
         # Un primary intent vuoto/UNKNOWN non annulla un effetto operativo
         # strutturato. Senza effetto, invece, il gate resta fail-closed.
-        return not _frame_has_concrete_action(frame)
+        return not _frame_has_grounded_contextual_action(frame)
     return intent not in {"EXECUTE", "COMPLETE", "RESCHEDULE", "ACTION_REASONING"}
 
 

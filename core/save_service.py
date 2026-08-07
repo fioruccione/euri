@@ -43,6 +43,23 @@ _SAVE_CONFIDENCE_FLOOR = 0.6  # sotto → il risolutore semantico cede al fallba
 
 _TRUSTED_MERGE_SOURCES = {"user", "teach"}
 
+# Sono riferimenti a una sorgente operativa, non al testo della conversazione. Il
+# contenuto deve arrivare dall'Executor/DocumentWorkspace e non essere ricostruito
+# dall'ultima risposta di Euri.
+_ARTIFACT_SAVE_REF = re.compile(
+    r"\b(?:clipboard|appunti|documento\s+attivo|documento\s+caricato|"
+    r"file\s+attivo|file\s+caricato)\b",
+    re.IGNORECASE,
+)
+
+# Fallback deterministico quando il resolver semantico non restituisce operation.
+# Sono atti linguistici generali, non nomi/entità del dominio.
+_CORRECTION_CUE = re.compile(
+    r"\b(?:corregg\w*|rettific\w*|smentisc\w*|non\s+dire|non\s+affermare|"
+    r"in\s+realt[aà].{0,120}\b(?:corregg\w*|ricord\w*|memorizz\w*))\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
 # Comando nominato: il nome è metadato, il contenuto va risolto dalla conversazione.
 # Include "questi informazioni" perché è la forma realmente arrivata da STT/chat.
 _NAMED_SAVE_RE = re.compile(
@@ -128,6 +145,13 @@ def _resolve_content_semantic(text: str, brain, recent_history):
     if not isinstance(res, dict) or not res:
         return None
     mode = (res.get("mode") or "").strip().lower()
+    operation = (res.get("operation") or "add").strip().lower()
+    if operation not in {"add", "correct", "replace"}:
+        operation = "add"
+    if operation == "add" and _CORRECTION_CUE.search(text):
+        # Un output semantico incompleto non può trasformare una correzione esplicita
+        # in un arricchimento che conserva la versione smentita.
+        operation = "correct"
     memory = (res.get("memory") or "").strip()
     try:
         conf = float(res.get("confidence", 0.0))
@@ -137,10 +161,14 @@ def _resolve_content_semantic(text: str, brain, recent_history):
         return None
     # 'direct' passa dal Buttafuori a valle; 'recent_topic'/'last_exchange' sono già
     # sintesi pulite del modello → trattati come 'mix' (niente Buttafuori).
+    semantic_kind = {
+        "correct": "correction",
+        "replace": "replacement",
+    }.get(operation)
     if mode == "direct" and len(memory) >= _MIN_FACT_LEN:
-        return memory, "direct"
+        return memory, semantic_kind or "direct"
     if mode in ("recent_topic", "last_exchange") and len(memory) >= 3:
-        return memory, "mix"
+        return memory, semantic_kind or "mix"
     if mode == "ask":
         return None, "ask"
     return None  # mode/memory inutilizzabili → fallback a regex
@@ -149,9 +177,9 @@ def _resolve_content_semantic(text: str, brain, recent_history):
 def _resolve_content(text: str, brain, prev_user_text: str, prev_assistant_text: str,
                      fresh: bool, recent_history=None):
     """
-    Determina COSA salvare. Ritorna (content|None, kind) dove kind ∈
-    {'direct','pre','mix','ask','fail'}. 'direct'/'pre' vanno ripuliti dal Buttafuori;
-    'mix' è già una sintesi.
+    Determina COSA salvare. Ritorna (content|None, kind) dove kind include
+    direct/pre/mix, correction/replacement e ask. Solo direct/pre passano dal
+    Buttafuori: una correzione non deve perdere negazioni durante una riscrittura.
     Prima prova il risolutore semantico (Gradino 1); se cede (None) si usa la regex.
     """
     sem = _resolve_content_semantic(text, brain, recent_history)
@@ -160,11 +188,11 @@ def _resolve_content(text: str, brain, prev_user_text: str, prev_assistant_text:
     after = extract_content_after_trigger(text, SAVE_MEMORY_TRIGGERS)
     # A) fatto in chiaro dopo il trigger ("memorizza che X")
     if after and not is_anaphoric(after):
-        return after, "direct"
+        return after, "correction" if _CORRECTION_CUE.search(text) else "direct"
     # B) trigger a fine frase: il fatto è PRIMA ("Giovanna è responsabile..., quindi memorizza questo")
     before = _content_before_trigger(text, SAVE_MEMORY_TRIGGERS)
     if before and not is_anaphoric(before) and len(before) >= _MIN_FACT_LEN:
-        return before, "pre"
+        return before, "correction" if _CORRECTION_CUE.search(text) else "pre"
     # C) anaforico puro → estrai il FATTO dall'ultimo scambio (NON riassumere la
     # conversazione): fonte primaria Stefano, Euri solo per disambiguare. L'estrattore
     # esclude meta-commenti/preamboli ("il sistema non ha…", "carica un documento") →
@@ -178,12 +206,65 @@ def _resolve_content(text: str, brain, prev_user_text: str, prev_assistant_text:
     return fact, "mix"
 
 
-def _save_or_merge(content: str, memory, brain, *, memory_title: str = "") -> dict:
-    """Salva nuovo, oppure ARRICCHISCE la memoria esistente più simile (fusione costruttiva)."""
+def _save_or_merge(content: str, memory, brain, *, memory_title: str = "",
+                   operation: str = "add") -> dict:
+    """Salva, arricchisce o corregge la memoria più simile.
+
+    ``add`` usa l'unione costruttiva storica. ``correct`` non deve mai attraversare
+    quel prompt, perché l'unione conserva per contratto tutti i dettagli precedenti.
+    ``replace`` usa invece il nuovo testo come versione completa.
+    """
     match = memory.find_similar_memory(content)
+    fields = {"memory_title": memory_title} if memory_title else None
+
+    if operation in {"correct", "replace"}:
+        if match is None or match.get("similarity", 0.0) < _SIM_MERGE_FLOOR:
+            new_id = memory.save_memory(
+                content, source="user", idempotent=True, final_fields=fields
+            )
+            if not new_id:
+                return {"saved": False, "merged": False, "reply": "Non sono riuscito a salvare.", "content": None}
+            return {
+                "saved": True,
+                "merged": False,
+                "corrected": operation == "correct",
+                "reply": brain.confirm_save("memory", content),
+                "content": content,
+            }
+
+        if operation == "correct":
+            rewritten = (
+                brain.apply_correction_to_memory(match["content"], content) or ""
+            ).strip()
+            # Fail-safe: mai perdere la parola dell'utente. Se il correttore fallisce,
+            # il nodo nuovo contiene la correzione stessa e ritira comunque la versione
+            # contraddetta; è preferibile una memoria meno completa a una falsa.
+            new_content = rewritten or content
+        else:
+            new_content = content
+        new_id = memory.save_memory(
+            new_content, source="user", idempotent=True, final_fields=fields
+        )
+        if not new_id:
+            return {"saved": False, "merged": False, "reply": "Non sono riuscito a salvare.", "content": None}
+        if not memory.supersede_memory(match["id"], new_id):
+            logger.warning(
+                f"{operation} salvata, ma supersede di {match['id']} fallito"
+            )
+        action_reply = (
+            "Ho corretto la memoria" if operation == "correct"
+            else "Ho sostituito la memoria"
+        )
+        return {
+            "saved": True,
+            "merged": False,
+            "corrected": operation == "correct",
+            "reply": f"{action_reply}: {new_content}",
+            "content": new_content,
+        }
+
     # Niente di abbastanza simile → memoria nuova
     if match is None or match.get("similarity", 0.0) < _SIM_MERGE_FLOOR:
-        fields = {"memory_title": memory_title} if memory_title else None
         new_id = memory.save_memory(
             content, source="user", idempotent=True, final_fields=fields
         )
@@ -196,7 +277,6 @@ def _save_or_merge(content: str, memory, brain, *, memory_title: str = "") -> di
         # adesivizzato: una memoria passiva ha reintrodotto "impostazioni macchina").
         # Questo ramo precede anche l'identita' testuale: "ricordalo" promuove la
         # provenienza passive→user pure quando le parole del fatto non cambiano.
-        fields = {"memory_title": memory_title} if memory_title else None
         new_id = memory.save_memory(
             content, source="user", idempotent=True, final_fields=fields
         )
@@ -217,7 +297,6 @@ def _save_or_merge(content: str, memory, brain, *, memory_title: str = "") -> di
     if (not merged) or mu.startswith("DIVERSO"):
         # Soggetto diverso (o dubbio) → salva SEPARATO, niente supersede: meglio un
         # doppione (lo consolida il Loop 2e) che conflare due entità distinte.
-        fields = {"memory_title": memory_title} if memory_title else None
         new_id = memory.save_memory(
             content, source="user", idempotent=True, final_fields=fields
         )
@@ -225,7 +304,6 @@ def _save_or_merge(content: str, memory, brain, *, memory_title: str = "") -> di
             return {"saved": False, "merged": False, "reply": "Non sono riuscito a salvare.", "content": None}
         return {"saved": True, "merged": False, "reply": brain.confirm_save("memory", content), "content": content}
     # Arricchimento reale (stesso soggetto) → salva la fusa, soft-delete della vecchia
-    fields = {"memory_title": memory_title} if memory_title else None
     new_id = memory.save_memory(
         merged, source="user", idempotent=True, final_fields=fields
     )
@@ -248,18 +326,88 @@ def save_memory_command(
     prev_assistant_text: str = "",
     fresh: bool = True,
     recent_history=None,
+    active_artifact: dict | None = None,
 ) -> dict:
     """
     Esegue SAVE_MEMORY in modo channel-agnostic a partire dal comando completo `text`.
     Ritorna {'saved': bool, 'merged': bool, 'reply': str, 'content': str|None}.
     Il chiamante parla/stampa 'reply' e, se 'saved', logga la conversazione.
     `recent_history` (lista di {role,content}) abilita il risolutore semantico Gradino 1.
+    `active_artifact` è la sorgente fisica recente condivisa da voce e UI.
     """
     named = extract_named_save(text)
     # Il prefisso nominato contiene solo metadati: per il resolver va trasformato
     # in un riferimento anaforico, altrimenti la regex lo scambierebbe per il fatto.
     resolve_text = "memorizza questo" if named else text
     memory_title = named[1] if named else ""
+
+    if _ARTIFACT_SAVE_REF.search(resolve_text):
+        artifact = active_artifact if isinstance(active_artifact, dict) else None
+        artifact_content = str((artifact or {}).get("content") or "").strip()
+        requested_clipboard = bool(
+            re.search(r"\b(?:clipboard|appunti)\b", resolve_text, re.IGNORECASE)
+        )
+        artifact_signature = (
+            f"{(artifact or {}).get('source') or ''} "
+            f"{(artifact or {}).get('kind') or ''}"
+        ).casefold()
+        if requested_clipboard and "clipboard" not in artifact_signature:
+            artifact_content = ""
+        if not artifact_content:
+            return {
+                "saved": False,
+                "merged": False,
+                "artifact": True,
+                "reply": (
+                    "Non ho la sorgente richiesta attiva da memorizzare. "
+                    "Fammelo leggere prima."
+                ),
+                "content": None,
+            }
+        filenames = list((artifact or {}).get("filenames") or [])
+        artifact_source = str((artifact or {}).get("source") or "")
+        artifact_kind = str((artifact or {}).get("kind") or "")
+        if "clipboard" in f"{artifact_source} {artifact_kind}".casefold():
+            source_name = "clipboard"
+        else:
+            source_name = str(
+                (artifact or {}).get("filename")
+                or (filenames[0] if len(filenames) == 1 else "")
+                or artifact_source
+                or "documento attivo"
+            )
+        summary = (
+            brain.summarize_artifact_for_memory(artifact_content, source_name) or ""
+        ).strip()
+        if len(summary) < _MIN_FACT_LEN:
+            return {
+                "saved": False,
+                "merged": False,
+                "artifact": True,
+                "reply": "Ho trovato la sorgente, ma non sono riuscito a ricavarne una memoria fedele.",
+                "content": None,
+            }
+        fields = {"memory_title": memory_title or source_name}
+        new_id = memory.save_memory(
+            summary, source="user", idempotent=True, final_fields=fields
+        )
+        if not new_id:
+            return {
+                "saved": False,
+                "merged": False,
+                "artifact": True,
+                "reply": "Ho analizzato la sorgente, ma non sono riuscito a salvarla.",
+                "content": None,
+            }
+        return {
+            "saved": True,
+            "merged": False,
+            "artifact": True,
+            "memory_title": memory_title or source_name,
+            "reply": f"Ho salvato una sintesi fedele di {source_name}.",
+            "content": summary,
+        }
+
     content, kind = _resolve_content(resolve_text, brain, prev_user_text, prev_assistant_text,
                                      fresh, recent_history)
     if content is None:
@@ -272,7 +420,13 @@ def save_memory_command(
         if not clean:
             return {"saved": False, "merged": False, "reply": "Non sembra una cosa utile da ricordare.", "content": None}
         content = clean
-    result = _save_or_merge(content, memory, brain, memory_title=memory_title)
+    operation = {
+        "correction": "correct",
+        "replacement": "replace",
+    }.get(kind, "add")
+    result = _save_or_merge(
+        content, memory, brain, memory_title=memory_title, operation=operation
+    )
     if memory_title:
         result["memory_title"] = memory_title
         if result.get("saved"):

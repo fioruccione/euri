@@ -204,11 +204,19 @@ def _ensure_hypothesis_wording(text: str) -> str:
 
 
 class DreamEngine:
-    def __init__(self, r, embedder, brain=None, memory=None):
+    def __init__(
+        self,
+        r,
+        embedder,
+        brain=None,
+        memory=None,
+        personality_model=None,
+    ):
         self._r = r
         self._embedder = embedder
         self._brain = brain        # usato dal Loop 2d (death-row gate)
         self._memory_manager = memory  # usato dal Bridge Synthesis
+        self._personality_model = personality_model
         self._running = False
         self._thread = None
         self._stop_event = threading.Event()
@@ -420,17 +428,35 @@ class DreamEngine:
         light_due = ts - self._light_last_run >= float(getattr(config, "DREAM_LIGHT_CYCLE_INTERVAL_S", 20 * 60))
         creative_due = ts - self._creative_last_run >= float(getattr(config, "DREAM_CREATIVE_CYCLE_INTERVAL_S", 90 * 60))
         maintenance_due = ts - self._maintenance_last_run >= float(getattr(config, "DREAM_MAINTENANCE_CYCLE_INTERVAL_S", 24 * 3600))
+        personality_batch = None
+        if (
+            self._personality_model is not None
+            and getattr(config, "PERSONALITY_MODEL_ENABLED", False)
+        ):
+            try:
+                personality_batch = self._personality_model.prepare_if_due(
+                    config.OWNER_ACTOR_ID,
+                    reference_at=ts,
+                )
+            except Exception as exc:
+                logger.debug(f"Modello identitario: preparazione fallita ({exc})")
 
-        if not (light_due or creative_due or maintenance_due):
+        if not (light_due or creative_due or maintenance_due or personality_batch):
             return
 
         logger.info(
             "Dream Engine: ciclo idle "
-            f"(light={light_due}, creative={creative_due}, maintenance={maintenance_due})"
+            f"(light={light_due}, creative={creative_due}, maintenance={maintenance_due}, "
+            f"identity={personality_batch is not None})"
         )
         pulse_emit(
             self._r, "dream", "intero", "idle_cycle",
-            payload={"light": light_due, "creative": creative_due, "maintenance": maintenance_due},
+            payload={
+                "light": light_due,
+                "creative": creative_due,
+                "maintenance": maintenance_due,
+                "identity": personality_batch is not None,
+            },
             salience=0.25,
         )
 
@@ -446,6 +472,35 @@ class DreamEngine:
                 logger.error(f"Errore ciclo creativo Dream Engine: {e}")
             finally:
                 phase_timings.append(("creative", time.monotonic() - phase_started))
+        if personality_batch is not None:
+            phase_started = time.monotonic()
+            try:
+                with self._lock:
+                    activity_snapshot = self._last_activity
+
+                def _activity_unchanged():
+                    with self._lock:
+                        return self._last_activity == activity_snapshot
+
+                result = self._personality_model.update(
+                    personality_batch,
+                    model_call=self._ollama_chat,
+                    precommit_guard=_activity_unchanged,
+                    reference_at=ts,
+                )
+                logger.info(
+                    "Modello identitario: status={} proposte={} accettate={} "
+                    "stabili={} revisione={}",
+                    result.status,
+                    result.proposals,
+                    result.accepted,
+                    result.stable,
+                    result.revision,
+                )
+            except Exception as e:
+                logger.error(f"Errore consolidamento identitario: {e}")
+            finally:
+                phase_timings.append(("identity", time.monotonic() - phase_started))
         if light_due:
             phase_started = time.monotonic()
             try:

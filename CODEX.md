@@ -14,6 +14,43 @@ paletti REM→wake sono un contratto architetturale. Cambiare modello, prompt,
 budget o parallelismo è compatibile soltanto se li conserva; romperli richiede
 una decisione esplicita, una nuova versione e regressioni dedicate.
 
+Prima di progettare o annotare un nuovo blind Dream, leggere anche
+[`docs/EURI_DREAM_NOVELTY_CALIBRATION_2026-08-07.md`](docs/EURI_DREAM_NOVELTY_CALIBRATION_2026-08-07.md).
+Novità tecnica e sorpresa/utilità personale sono assi distinti; gli esperimenti
+storici chiusi non vanno rietichettati retroattivamente.
+
+Prima di modificare il modello identitario, il suo rendering nel `Brain` o il
+modo in cui Dream usa i turni per descrivere Euri o l'interlocutore, leggere
+anche [`docs/EURI_EMERGENT_PERSONALITY.md`](docs/EURI_EMERGENT_PERSONALITY.md).
+I suoi otto paletti impediscono autocertificazione, profiling senza identità e
+promozione diretta del materiale onirico.
+
+---
+
+# Handoff Euri - 2026-08-07 - Personalità emergente owner-scoped
+
+## Esito
+
+Euri distilla ora dai turni autenticati una vista lenta e ricostruibile del
+proprio modo di agire, dell'interlocutore e della relazione. Qwen propone
+pattern in idle; citazioni contigue, actor, scope, batch nuovo e indipendenza dei
+supporti vengono verificati dal codice. Solo i tratti `stable` accompagnano le
+risposte realtime.
+
+## Invarianti
+
+- Il contenuto della personalità non è cablato nel codice o nel system prompt.
+- `euri:turn:*` resta fonte canonica; `euri:personality:projection:*` è una vista.
+- Le risposte di Euri non sono evidenza del suo carattere.
+- `candidate` e `contested` non entrano nel contesto.
+- La proiezione owner viene resa soltanto quando il canale porta l'actor owner.
+- Dream propone; la validazione e il lifecycle appartengono alla veglia.
+
+## Evidenza
+
+Contratto in `docs/EURI_EMERGENT_PERSONALITY.md`; regressioni dedicate in
+`test_personality_model.py`.
+
 ---
 
 # Handoff Euri - 2026-08-07 - Dream REM e risveglio lucido
@@ -1460,7 +1497,7 @@ ranking epistemico, outbox durevole, supervisione e CI non distruttiva.
   - `requirements.txt` allineato a dipendenze runtime, UI, CodeRunner, documenti,
     visione e diagnostica.
 - Test/controlli passati:
-  - `./venv/bin/python test_executor_routing.py`;
+  - `PYTHONPATH=. ./venv/bin/python tests/test_executor_routing.py`;
   - `./venv/bin/python -m pip check`;
   - risolvibilita' import dei pacchetti aggiunti;
   - `git diff --check`.

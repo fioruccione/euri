@@ -1,7 +1,7 @@
 # Stato reale, hardware o cicli cognitivi: esecuzione solo manuale e consapevole.
-test_consolidation.py
-test_insight_repromotion.py
-test_linux.py
-test_memory.py
-test_plane_guard.py
-test_retrieval_strategy.py
+tests/test_consolidation.py
+tests/test_insight_repromotion.py
+tests/test_linux.py
+tests/test_memory.py
+tests/test_plane_guard.py
+tests/test_retrieval_strategy.py

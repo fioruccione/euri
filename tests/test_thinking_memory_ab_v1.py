@@ -11,7 +11,7 @@ from pathlib import Path
 from benchmarks.euri_memory import thinking_memory_ab_v1 as T
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 VALIDATION = ROOT / "audit_output" / "dual_channel_validation_v1_seed396895560"
 SOURCE = ROOT / "benchmarks" / "euri_memory" / "prompt_ablation_v2_manifest.json"
 SOURCE_REPO_PATH = Path("benchmarks/euri_memory/prompt_ablation_v2_manifest.json")

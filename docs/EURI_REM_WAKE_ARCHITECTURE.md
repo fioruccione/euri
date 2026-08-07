@@ -176,3 +176,13 @@ oppure `discarded`. Successivamente compaiono, come prima, `Fedeltà premesse` e
 `Qualita ponte`. La prima evidenza utile non è il numero di candidate: è la
 capacità del risveglio di trovare occasionalmente un ponte nuovo senza far
 passare le deformazioni del REM come premesse reali.
+
+## Valutazione della novità
+
+La novità tecnica del candidate è distinta dalla sorpresa o utilità per Stefano.
+Una composizione diretta «applica A a B» resta incrementale anche quando è utile;
+un dettaglio inventato non può essere usato per farla apparire non ovvia. Le
+definizioni operative `G/V/C`, la sequenza decisionale e il caso-limite congelato
+prima di un futuro blind sono in
+[`EURI_DREAM_NOVELTY_CALIBRATION_2026-08-07.md`](EURI_DREAM_NOVELTY_CALIBRATION_2026-08-07.md).
+Il documento è prospettico e non riscrive gli esperimenti Dream Trace già chiusi.

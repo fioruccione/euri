@@ -15,7 +15,7 @@ from benchmarks.euri_memory.selection import BenchmarkSelection
 from benchmarks.euri_memory.localization import BenchmarkLocalization
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "benchmarks" / "euri_memory" / "fixtures" / "locomo_smoke.json"
 OFFICIAL = ROOT / "benchmarks" / "euri_memory" / "data" / "locomo10.json"
 REDUCED = (

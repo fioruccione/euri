@@ -237,7 +237,6 @@ _PATTERNS: list[tuple[Intent, list[str]]] = [
         r"non\s+dimenticare\s+che\b",
         r"memorizza\b",
         r"aggiungi\s+(?:anche\s+)?in\s+memoria\s+che\b",
-        r"aggiungi\s+(?:anche\s+)?che\b",
         r"metti\s+in\s+memoria\s+che\b",
         r"salva\s+in\s+memoria\s+che\b",
     ]),
@@ -359,7 +358,6 @@ SAVE_MEMORY_TRIGGERS = [
     r"ricordami\s+che\b", r"segna\s+che\b", r"ricorda\s+che\b",
     r"nota\s+che\b", r"tieni\s+a\s+mente\s+che\b", r"memorizza\b",
     r"aggiungi\s+(?:anche\s+)?in\s+memoria\s+che\b",
-    r"aggiungi\s+(?:anche\s+)?che\b",
     r"metti\s+in\s+memoria\s+che\b",
     r"salva\s+in\s+memoria\s+che\b",
 ]

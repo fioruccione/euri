@@ -5,6 +5,7 @@ Flusso:
   microfono → VAD → STT → intent_router → [branch] → brain → TTS → speaker
 """
 import json
+import os
 import re
 import sys
 import signal
@@ -51,6 +52,7 @@ from core.act_word_check import (
     emit_unbacked_action_commitment,
     needs_honest_correction,
     scrub_unbacked_action_claim,
+    strip_leading_stage_direction,
 )
 from core.action_controller import (
     ActionController,
@@ -77,6 +79,7 @@ from core.semantic_turn import (
     frame_bootstraps_owner_session,
     frame_blocks_passive_memory,
     frame_is_correction,
+    frame_requests_linguistic_response,
     frame_requests_contextual_action,
     frame_vetoes_contextual_action,
     semantic_intent,
@@ -160,7 +163,14 @@ _STT_CORRECTIONS: dict[str, str] = {
 # ──────────────────────────────────────────
 logger.remove()
 logger.add(sys.stderr, level="INFO", format="<green>{time:HH:mm:ss}</green> | <level>{message}</level>")
-logger.add("logs/voice_daemon.log", rotation="10 MB", retention="7 days", level="DEBUG", enqueue=True)
+if not os.environ.get("EURI_TEST_TIER"):
+    logger.add(
+        "logs/voice_daemon.log",
+        rotation="10 MB",
+        retention="7 days",
+        level="DEBUG",
+        enqueue=True,
+    )
 
 
 def _tts_trim(text: str, max_chars: int = 400) -> str:
@@ -195,8 +205,11 @@ class VoiceDaemon:
         self.memory = MemoryManager(self.r, embedder=self.embedder)
         from core.conversation_turns import ConversationTurnStore
         self.turn_store = ConversationTurnStore(self.r)
+        from core.personality_model import PersonalityModel
+        self.personality_model = PersonalityModel(self.r)
         self.guest_claims = GuestClaimStore(self.r)
         self.brain = Brain()
+        self.brain._personality_context_callback = self.personality_model.render_context
         self.semantic_turns = SemanticTurnService(self.r)
         Brain._shared_instance = self.brain  # Condivisa col CodeRunner
         self.brain._turn_callback = self.turn_store.persist
@@ -416,7 +429,13 @@ class VoiceDaemon:
 
         # Inizializza Dream Engine
         from core.dream_engine import DreamEngine
-        self.dream_engine = DreamEngine(self.r, self.embedder, brain=self.brain, memory=self.memory)
+        self.dream_engine = DreamEngine(
+            self.r,
+            self.embedder,
+            brain=self.brain,
+            memory=self.memory,
+            personality_model=self.personality_model,
+        )
         
         # Inizializza Obsidian Sync Watcher
         from utils.obsidian_sync import ObsidianSyncManager
@@ -441,6 +460,16 @@ class VoiceDaemon:
             config.RAG_DUAL_SELECTIVE_MAX_REDUNDANCY,
             config.RAG_DUAL_SELECTIVE_THINKING,
             config.RAG_DUAL_THINKING_NUM_PREDICT,
+        )
+        personality_projection = self.personality_model.load(_OWNER_ID)
+        personality_traits = list(personality_projection.get("traits") or [])
+        logger.info(
+            "Modello identitario: revisione={} stabili={} candidati={} contestati={} "
+            "(proiezione derivata owner-scoped)",
+            int(personality_projection.get("revision") or 0),
+            sum(1 for item in personality_traits if item.get("status") == "stable"),
+            sum(1 for item in personality_traits if item.get("status") == "candidate"),
+            sum(1 for item in personality_traits if item.get("status") == "contested"),
         )
         from core.conversation_turns import get_verbatim_lifecycle_pending
         lifecycle_pending = get_verbatim_lifecycle_pending(self.r)
@@ -870,6 +899,7 @@ class VoiceDaemon:
             prev_assistant_text=self._last_speech_content or "",
             fresh=fresh,
             recent_history=recent_history,
+            active_artifact=self.executor.get_session_artifact(),
         )
         if result["saved"]:
             self.memory.log_conversation(_OWNER_NAME, text)
@@ -1230,6 +1260,7 @@ class VoiceDaemon:
                     text,
                     context=context,
                     trusted=trusted,
+                    actor_id=_OWNER_ID if trusted else None,
                     observed_at=observed_at,
                     raw_user_text=(semantic_frame or {}).get("raw_text"),
                     semantic_frame=semantic_frame,
@@ -1508,6 +1539,7 @@ class VoiceDaemon:
                 text,
                 context=context,
                 trusted=trusted,
+                actor_id=_OWNER_ID if trusted else None,
                 observed_at=observed_at,
                 **self._memory_thinking_kwargs(),
             )
@@ -2734,6 +2766,7 @@ class VoiceDaemon:
                     text,
                     context=context,
                     trusted=trusted,
+                    actor_id=_OWNER_ID if trusted else None,
                     observed_at=observed_at,
                     raw_user_text=(semantic_frame or {}).get("raw_text"),
                     semantic_frame=semantic_frame,
@@ -2744,14 +2777,25 @@ class VoiceDaemon:
                 lineage, "", outcome="failed", attribute_usage=False
             )
             raise
-        reply = scrub_unbacked_save_claim(reply)  # pavimento di onestà: CHAT non salva
-        if needs_honest_correction(reply, set()) and self._try_euri_readonly_action(reply, text):
-            self._finish_response_lineage(
-                lineage, "", outcome="rerouted", attribute_usage=False
-            )
-            return
-        emit_unbacked_action_commitment(self.r, reply, set(), channel="voice_chat")
-        reply = scrub_unbacked_action_claim(reply, set())  # CHAT non agisce: niente claim d'azione
+        linguistic_response = frame_requests_linguistic_response(
+            semantic_frame,
+            minimum_confidence=getattr(
+                config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72
+            ),
+        )
+        if linguistic_response:
+            # Il testo E' l'azione richiesta (discorso/presentazione): non esiste
+            # una promessa operativa da smentire e la didascalia non va letta dal TTS.
+            reply = strip_leading_stage_direction(reply)
+        else:
+            reply = scrub_unbacked_save_claim(reply)  # CHAT non salva
+            if needs_honest_correction(reply, set()) and self._try_euri_readonly_action(reply, text):
+                self._finish_response_lineage(
+                    lineage, "", outcome="rerouted", attribute_usage=False
+                )
+                return
+            emit_unbacked_action_commitment(self.r, reply, set(), channel="voice_chat")
+            reply = scrub_unbacked_action_claim(reply, set())
         self._finish_response_lineage(lineage, reply)
         self.memory.log_conversation(_ASSISTANT_NAME, reply)
         if len(reply) > 150:
@@ -5078,6 +5122,7 @@ class VoiceDaemon:
                                 response = self.brain.respond(
                                     text,
                                     context=context,
+                                    actor_id=_OWNER_ID,
                                     raw_user_text=raw_mobile_text,
                                     semantic_frame=semantic_frame,
                                     **self._memory_thinking_kwargs(),

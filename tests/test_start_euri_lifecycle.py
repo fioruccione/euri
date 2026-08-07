@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 
 
 _FAKE_PROCESS = """#!/usr/bin/env python3

@@ -15,7 +15,7 @@ from benchmarks.euri_memory.runners import run_smoke
 from benchmarks.euri_memory.runtime import IsolatedRuntime
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "benchmarks" / "euri_memory" / "fixtures" / "locomo_smoke.json"
 OFFICIAL = ROOT / "benchmarks" / "euri_memory" / "data" / "locomo10.json"
 

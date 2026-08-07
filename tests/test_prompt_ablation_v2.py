@@ -16,7 +16,7 @@ from pathlib import Path
 from benchmarks.euri_memory import prompt_ablation_v2 as P
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 VAL = ROOT / "audit_output" / "dual_channel_validation_v1_seed396895560"
 VAL_RUNS = VAL / "run" / "runs"
 LOC = VAL / "localization_it.json"

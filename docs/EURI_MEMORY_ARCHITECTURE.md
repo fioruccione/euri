@@ -39,6 +39,7 @@ flowchart TB
     SV --> M
     T --> C[Capsule di continuità<br/>12 turni, TTL 6 ore]
     C --> H
+    T --> PM[Proiezione identitaria<br/>owner-scoped, ricostruibile]
 
     H --> P{Policy del turno}
     P -->|candidate o fallback eleggibile| E[Passive extractor]
@@ -60,6 +61,7 @@ flowchart TB
     T --> D[Turni originali idratati<br/>max 2]
     R --> Q[Prompt della risposta]
     D --> Q
+    PM --> Q
     Q --> RL[Response lineage shadow]
     RL --> UT[Utilità osservata<br/>solo ordine Loop 2e]
 
@@ -82,6 +84,8 @@ La distinzione fondamentale è questa:
    uso e lifecycle propri.
 5. **Indici, lineage, Pulse e Vault sono proiezioni o repliche.** Non devono
    diventare silenziosamente una seconda verità canonica.
+6. **La personalità emergente è una proiezione.** Conserva pattern sostenuti da
+   turni verificati, ma la sua fonte di verità resta il verbatim.
 
 ## 2. I piani di memoria
 
@@ -94,6 +98,7 @@ La distinzione fondamentale è questa:
 | Memoria cognitiva | variabile per sorgente | `euri:memory:*` | fatti, episodi, riflessioni, lezioni e consolidati | sì, tramite RAG |
 | Appunti espliciti | durevole, senza TTL automatico | `euri:note:*` | note scoped cercate separatamente | sì, tramite keyword RAG |
 | Registro identità | durevole, separato per scope | `euri:semantic:entity*` | alias confermati esplicitamente | influenza l'interpretazione, non entra come nodo RAG |
+| Proiezione identitaria | durevole e revisionata; pattern inferiti non espliciti diventano invisibili dopo 180 giorni senza rinforzo | `euri:turn:*`, referenziato da `euri:personality:projection:<actor_id>` | distilla sé, interlocutore e relazione senza riscrivere la memoria | sì, solo stable e actor verificato |
 | Dream e insight | REM grezzo 7 giorni; insight con lifecycle proprio | `euri:dream:*`, `euri:insight:*` | esplorazione divergente separata da ipotesi e connessioni interne | il REM mai; solo gli insight ammessi dal loro stato |
 | Vault Obsidian | durevole su filesystem | replica umana bidirezionale | consultazione e modifica manuale | rientra via watcher come `obsidian_vault` |
 | Indici e telemetria | ricostruibile o osservativa | JSON canonici ed eventi | ranking, replay, audit e misure | no, salvo il loro effetto sul ranking |
@@ -103,6 +108,20 @@ La distinzione fondamentale è questa:
 `core/cognitive_present.py` mantiene lo stato di secondi e minuti. È separato
 dalla memoria a lungo termine. Gli snapshot sensoriali o sociali non diventano
 fatti mnemonici soltanto perché sono presenti in questo stato.
+
+### Proiezione identitaria emergente
+
+`core/personality_model.py` legge finestre bounded dell'archivio turni e lascia
+che il modello Dream proponga pattern aperti. La proposta non ha autorità: il
+codice richiede citazioni owner contigue, scope personale, novità rispetto al
+checkpoint e indipendenza dei supporti. Solo `stable` entra nel `Brain`; gli
+stati `candidate` e `contested` restano osservabili ma inattivi.
+
+La proiezione non è RAG, non è presente cognitivo, non entra in Obsidian e non
+può usare una risposta di Euri come prova del carattere di Euri. Voice la lega
+all'identità autenticata; UI e Mobile al canale owner. Il contratto completo e
+i paletti di compatibilità sono in
+[`EURI_EMERGENT_PERSONALITY.md`](EURI_EMERGENT_PERSONALITY.md).
 
 ### Artefatto documentale di sessione (non è memoria)
 

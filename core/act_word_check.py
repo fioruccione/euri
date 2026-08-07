@@ -179,6 +179,31 @@ def honest_commitment_correction() -> str:
             "In questo turno non è partito alcun tool reale.")
 
 
+def strip_leading_stage_direction(text: str) -> str:
+    """Rimuove una sola didascalia parentesizzata posta prima del testo parlato.
+
+    La funzione non interpreta il contenuto e non tocca parentesi interne. Va usata
+    soltanto quando il frame semantico ha gia' stabilito che il turno e' una
+    performance linguistica (presentazione, discorso, recitazione).
+    """
+    value = str(text or "")
+    stripped = value.lstrip()
+    if not stripped.startswith("("):
+        return value
+    depth = 0
+    for index, char in enumerate(stripped):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                remainder = stripped[index + 1 :].lstrip()
+                return remainder if remainder else value
+        if depth < 0:
+            break
+    return value
+
+
 def scrub_unbacked_action_claim(reply: str, turn_actions: set) -> str:
     """
     Pavimento di onestà sull'AZIONE — fratello più largo di

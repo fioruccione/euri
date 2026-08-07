@@ -288,6 +288,41 @@ DREAM_ENGINE_POLL_SECONDS = 300
 DREAM_LIGHT_CYCLE_INTERVAL_S = 20 * 60       # insight eval, correzioni, ipotesi 2i, provenienza
 DREAM_CREATIVE_CYCLE_INTERVAL_S = 90 * 60    # nuovo sogno cross-domain + promozione
 DREAM_MAINTENANCE_CYCLE_INTERVAL_S = 24 * 3600  # 2f/2h/cleanup/pruning/2e
+
+# Modello identitario emergente. Il Dream propone pattern da turni owner verificati;
+# il codice convalida citazioni e supporti prima di renderli stabili. Il contenuto
+# non e' configurato qui: queste costanti definiscono soltanto ritmo e budget.
+PERSONALITY_MODEL_ENABLED = (
+    os.environ.get("EURI_PERSONALITY_MODEL_ENABLED", "1").strip().lower()
+    not in {"0", "false", "no", "off"}
+)
+PERSONALITY_UPDATE_INTERVAL_S = int(
+    os.environ.get("EURI_PERSONALITY_UPDATE_INTERVAL_S", str(6 * 3600))
+)
+PERSONALITY_RETRY_INTERVAL_S = max(
+    5 * 60, int(os.environ.get("EURI_PERSONALITY_RETRY_INTERVAL_S", str(20 * 60)))
+)
+PERSONALITY_MIN_NEW_OWNER_TURNS = max(
+    2, int(os.environ.get("EURI_PERSONALITY_MIN_NEW_OWNER_TURNS", "8"))
+)
+PERSONALITY_ANALYSIS_MAX_TURNS = max(
+    12, int(os.environ.get("EURI_PERSONALITY_ANALYSIS_MAX_TURNS", "60"))
+)
+PERSONALITY_MODEL_TIMEOUT_S = max(
+    60, int(os.environ.get("EURI_PERSONALITY_MODEL_TIMEOUT_S", "240"))
+)
+PERSONALITY_MODEL_NUM_PREDICT = max(
+    3000, int(os.environ.get("EURI_PERSONALITY_MODEL_NUM_PREDICT", "5000"))
+)
+PERSONALITY_MAX_ACTIVE_TRAITS = max(
+    1, int(os.environ.get("EURI_PERSONALITY_MAX_ACTIVE_TRAITS", "9"))
+)
+PERSONALITY_CONTEXT_MAX_CHARS = max(
+    800, int(os.environ.get("EURI_PERSONALITY_CONTEXT_MAX_CHARS", "2800"))
+)
+PERSONALITY_PATTERN_STALE_DAYS = max(
+    30, int(os.environ.get("EURI_PERSONALITY_PATTERN_STALE_DAYS", "180"))
+)
 DREAM_INSIGHT_MIN_CONVERGENCES = 3   # era 2 — soglia alzata per ridurre promozioni facili
 # Instrumentazione ADDITIVA: logga la convergenza-al-momento-della-decisione su
 # euri:convergence:trace (promoted/hypothesis_formed/denied_*/below_threshold),
@@ -686,7 +721,7 @@ CODE_RUNNER_TOOL_TIMEOUT = 180     # secondi max per l'intero ciclo CodeRunner
 #      → SAVE_MEMORY 0.898 invece di CHAT). Test sintetico con frasi brevi
 #      non aveva rivelato il problema; in produzione su 6 turni CHAT
 #      consecutivi nessun match Fast Path, sprecati 600ms embedding ogni volta.
-# Codice e modulo restano (core/tool_registry.py + test_tool_vectorset.py)
+# Codice e modulo restano (core/tool_registry.py + tests/test_tool_vectorset.py)
 # come fondamento per V2.18.1 / V2.19: vie suggerite per ripartire (Euri stessa
 # le ha intuite, sessione 13:44 del 28/05):
 #   (a) Ricerca ibrida FT.SEARCH keyword + VectorSet semantico

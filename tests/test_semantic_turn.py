@@ -13,6 +13,7 @@ from core.semantic_turn import (
     frame_blocks_passive_memory,
     frame_document_source,
     frame_requests_contextual_action,
+    frame_requests_linguistic_response,
     frame_vetoes_contextual_action,
     semantic_intent,
 )
@@ -548,7 +549,98 @@ def test_conversational_imperative_does_not_request_a_tool():
     }
     assert semantic_intent(frame) == ""
     assert not frame_requests_contextual_action(frame)
+    assert frame_requests_linguistic_response(frame)
     assert frame_vetoes_contextual_action(frame)
+
+
+def test_linguistic_response_does_not_cover_a_mixed_operational_action():
+    frame = {
+        "status": "interpreted",
+        "confidence": 0.99,
+        "requires_clarification": False,
+        "primary_intent": "EXECUTE",
+        "speech_acts": ["REQUEST_ACTION"],
+        "actions": [{
+            "effect": "Presentare il progetto",
+            "target": "risposta conversazionale",
+            "capability_class": "response_generation",
+            "effect_scope": "response",
+            "polarity": "requested",
+        }, {
+            "effect": "Creare il file della presentazione",
+            "target": "documento Word",
+            "capability_class": "document_generation",
+            "effect_scope": "write",
+            "polarity": "requested",
+        }],
+    }
+    assert frame_requests_contextual_action(frame)
+    assert not frame_requests_linguistic_response(frame)
+
+
+def test_fact_correction_without_document_source_cannot_start_compose_tool():
+    frame = {
+        "status": "interpreted",
+        "confidence": 0.99,
+        "requires_clarification": False,
+        "primary_intent": "EXECUTE",
+        "speech_acts": ["CORRECT_FACT", "REQUEST_ACTION"],
+        "actions": [{
+            "effect": "Correggere il nome dell'azienda",
+            "target": "informazione sull'azienda",
+            "capability_class": "document_revision",
+            "effect_scope": "write",
+            "polarity": "requested",
+            "source_kind": "unspecified",
+        }],
+    }
+    assert semantic_intent(frame) == "CHAT"
+    assert not frame_requests_contextual_action(frame)
+    assert frame_vetoes_contextual_action(frame)
+
+
+def test_fact_correction_of_active_document_remains_operational():
+    frame = {
+        "status": "interpreted",
+        "confidence": 0.99,
+        "requires_clarification": False,
+        "primary_intent": "EXECUTE",
+        "speech_acts": ["CORRECT_FACT", "REQUEST_ACTION"],
+        "actions": [{
+            "effect": "Correggere il nome dell'azienda nel file attivo",
+            "target": "documento attivo",
+            "capability_class": "document_revision",
+            "effect_scope": "write",
+            "polarity": "requested",
+            "source_kind": "active_document",
+        }],
+    }
+    assert semantic_intent(frame) == "EXECUTE"
+    assert frame_requests_contextual_action(frame)
+    assert not frame_vetoes_contextual_action(frame)
+
+
+def test_semantic_frame_cannot_revoke_an_explicit_save_command():
+    frame = {
+        "status": "interpreted",
+        "confidence": 0.99,
+        "requires_clarification": False,
+        "primary_intent": "EXECUTE",
+        "speech_acts": ["CORRECT_FACT", "REQUEST_ACTION", "REQUEST_SAVE"],
+        "actions": [{
+            "effect": "Correggere informazioni generiche",
+            "target": "informazione",
+            "capability_class": "document_revision",
+            "effect_scope": "write",
+            "polarity": "requested",
+            "source_kind": "unspecified",
+        }],
+    }
+    assert arbitrate_routable_intent(
+        frame,
+        "SAVE_MEMORY",
+        allowed={"CHAT", "SAVE_MEMORY", "EXECUTE"},
+    ) == "SAVE_MEMORY"
 
 
 def test_negated_tool_request_cannot_become_execute():

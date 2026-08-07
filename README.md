@@ -101,6 +101,18 @@ ricandidate al learner) e il loro pending breve sopravvive a un riavvio per il
 solo TTL residuo. Euri può quindi collegare una risposta come “sì, confermo”
 alla domanda realmente pronunciata prima dello stop.
 
+**Personalità emergente owner-scoped:** il RAG tematico non garantisce che un
+tratto maturato nel tempo compaia in ogni conversazione. Euri mantiene quindi
+una proiezione identitaria distinta dalla memoria: il Dream propone pattern dai
+turni verbatim autenticati, mentre un gate deterministico accetta soltanto
+citazioni reali e richiede supporti indipendenti prima della promozione. Il
+contenuto non è una persona scritta a mano: il codice stabilisce il lifecycle,
+non i tratti. Sé di Euri, modello dell'interlocutore e dinamica della relazione
+restano separati; candidati e tratti contestati non entrano mai nel prompt.
+Soltanto una vista compatta, stabile, revisionabile e associata all'actor
+verificato accompagna le conversazioni realtime. Contratto e paletti:
+[Personalità emergente e modello relazionale](docs/EURI_EMERGENT_PERSONALITY.md).
+
 **Guard manifatturiero:** se la frase contiene termini chimici/analitici (XRF, talco, MFI, carbonato…) senza termini di sistema espliciti, EXECUTE viene bloccato in entrambi i layer.
 
 > **AdaptiveClassifier — in ricostruzione (V2: plasticità ancorata):** la versione Welford è sospesa (`ADAPTIVE_CLASSIFIER_ENABLED = False`) — con e5-large 1024-dim l'encoding (~400ms) eguagliava il fallback LLM e i centroidi non erano calibrati (falsi positivi). Limite strutturale più sottile: il **selection bias**, il layer impara solo dalle utterance che *non* sa già classificare (le sole che raggiungono il maestro LLM), derivando verso la coda ambigua. La V2 è un **dimostratore di plasticità ancorata**: per ogni classe un *anchor* congelato + un *delta* vivo col guinzaglio (deriva massima vincolata), embedding statico sub-millisecondo, e un'**omeostasi in idle** — canary set + rollback automatico — che misura e ripristina l'integrità. In corso la **Fase −1**: l'harvest persistente delle etichette del maestro LLM (`euri:aclf:harvest`) accumula il dataset reale su cui costruire e validare, prima di riattivare il fast path.
@@ -284,6 +296,7 @@ Quando non gli parli per un po', Euri entra in cicli cognitivi offline. Non è p
 - **Loop 2b-REM — divergenza:** **Qwen3.6 35B** (*thinking attivo*, modello dedicato) lascia collidere i due semi senza dover produrre una soluzione, un fatto o il formato operativo degli insight. Associazioni lontane, metafore, inversioni e trasformazioni anche assurde vengono conservate per sette giorni come `euri:dream:*`, con `stage=rem_divergent`. Questo materiale non ha embedding, non entra nel RAG, non va in Obsidian e non può diventare memoria: è sonno, non conoscenza.
 - **Loop 2b-Wake — risveglio lucido:** una seconda chiamata riceve le stesse fonti reidratate e il REM grezzo, esplicitamente marcato come non fattuale e non eseguibile. Cerca soltanto l'eventuale lampo traducibile in una connessione operativa verificabile; se non esiste risponde `NESSUN INSIGHT`. Solo questa distillazione può generare un **CANDIDATE Insight** e viene collegata al sogno sorgente tramite `rem_dream_id`.
 - **Principio REM→wake:** il caos è permesso a monte e il rigore è applicato a valle, ma il caos avviene fra **ancore complete**, non a causa di frammenti amputati. Memoria compatta, turni sorgente e contesto bounded restituiscono referenti, situazione, scopo e filo argomentativo; la fase divergente può deformarli, mentre il risveglio ricostruisce le premesse esclusivamente dalle fonti reali. Specifica e invarianti: [`docs/EURI_REM_WAKE_ARCHITECTURE.md`](docs/EURI_REM_WAKE_ARCHITECTURE.md).
+- **Novità misurabile, non impressionistica:** una sorpresa utile per Stefano e una connessione tecnicamente non ovvia sono assi distinti. La composizione diretta «applica A a B» è `V1`; `V2` richiede un meccanismo, vincolo, previsione o criterio decisionale nuovo e fondato. Rubrica prospettica e caso di calibrazione escluso dal blind: [`docs/EURI_DREAM_NOVELTY_CALIBRATION_2026-08-07.md`](docs/EURI_DREAM_NOVELTY_CALIBRATION_2026-08-07.md).
 - **dream_trace (esperimenti congelati, flag spenti):** il primo studio sul residuo di esplorazione resta storico e auditabile. Il paired V3 con semi reidratati è stato interrotto il 07/08 prima della soglia pianificata: l'introduzione di REM→wake cambia il trattamento e impedisce di proseguire lo stesso batch. Il costo della nuova produzione sostituisce le due generazioni appaiate con una generazione REM e un risveglio, senza aggiungere un terzo braccio.
 - **Loop 2c** — La convergenza usa la distanza cosine soltanto come shortlist e un
   **LLM judge con thinking** per stabilire se due insight esprimono davvero lo

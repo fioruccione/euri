@@ -14,6 +14,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 import streamlit as st
 import redis
 import numpy as np
+from loguru import logger
 
 import config
 from core.brain import Brain
@@ -202,6 +203,9 @@ semantic_turns = get_semantic_turns(r)
 memory_manager = MemoryManager(r, embedder)
 from core.conversation_turns import ConversationTurnStore
 turn_store = ConversationTurnStore(r)
+from core.personality_model import PersonalityModel
+personality_model = PersonalityModel(r)
+brain._personality_context_callback = personality_model.render_context
 executor = get_executor()
 executor.brain = brain
 executor.memory = memory_manager
@@ -1222,12 +1226,68 @@ with main_col:
                     # controller non trova un tool grounded, il turno fallisce chiuso e
                     # non ricade nella chat che potrebbe fingere l'operazione.
                     tool_res = None
+                    save_res = None
                     _semantic_chat_return = False
                     _response_recorded_by_brain = False
                     from core.semantic_turn import (
+                        arbitrate_routable_intent,
+                        frame_requests_linguistic_response,
                         frame_requests_contextual_action,
                         frame_vetoes_contextual_action,
                     )
+                    from core.intent_router import classify, Intent
+                    from core.save_service import save_memory_command
+                    try:
+                        _intent, _ = classify(prompt)
+                    except Exception:
+                        _intent = Intent.CHAT
+                    _shared_label = arbitrate_routable_intent(
+                        semantic_frame,
+                        _intent,
+                        allowed={
+                            "CHAT", "WEB_SEARCH", "SEARCH", "SAVE_MEMORY",
+                            "SAVE_TODO", "SAVE_NOTE", "SAVE_LAST", "READ_BACK",
+                            "TRANSLATE", "DICTATION",
+                        },
+                        minimum_confidence=getattr(
+                            config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72
+                        ),
+                    )
+                    if _shared_label != _intent.value:
+                        _intent = Intent(_shared_label)
+                        logger.info(
+                            "Silent Chat: intent condiviso dal frame semantico: {}",
+                            _intent.value,
+                        )
+
+                    # SAVE esplicito prima di QUALSIASI tool: una correzione di
+                    # memoria non puo' essere rubata da ingest/compose solo perche'
+                    # contiene verbi come "correggi" o nomina dei documenti.
+                    if _intent == Intent.SAVE_MEMORY:
+                        prev_user, prev_assist = "", ""
+                        for _m in reversed(st.session_state.messages[:-1]):
+                            if not prev_assist and _m["role"] == "assistant":
+                                prev_assist = _m["content"]
+                            elif not prev_user and _m["role"] == "user":
+                                prev_user = _m["content"]
+                            if prev_user and prev_assist:
+                                break
+                        recent_history = [
+                            {
+                                "role": _m["role"],
+                                "content": _m["content"],
+                                "observed_at": _m.get("observed_at"),
+                            }
+                            for _m in st.session_state.messages[:-1]
+                        ]
+                        save_res = save_memory_command(
+                            prompt, memory_manager, brain,
+                            prev_user_text=prev_user,
+                            prev_assistant_text=prev_assist,
+                            fresh=True,
+                            recent_history=recent_history,
+                            active_artifact=executor.get_session_artifact(),
+                        )
                     _semantic_action = frame_requests_contextual_action(
                         semantic_frame,
                         minimum_confidence=getattr(
@@ -1240,7 +1300,7 @@ with main_col:
                             config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72
                         ),
                     )
-                    if _semantic_action:
+                    if save_res is None and _semantic_action:
                         _previous_euri = next(
                             (
                                 str(item.get("content") or "")
@@ -1278,72 +1338,13 @@ with main_col:
                     try:
                         if (
                             tool_res is None
+                            and save_res is None
                             and not _semantic_chat_return
                             and not _semantic_tool_veto
                         ):
                             tool_res = executor.dispatch_text(prompt, llm_fallback=False)
                     except Exception:
                         tool_res = None
-
-                    # Percorso SAVE reale: prima della chat, riconosci un comando
-                    # "memorizza…" con lo STESSO router della voce (solo regex → zero
-                    # latenza sui messaggi normali) e salva DAVVERO, invece di lasciare
-                    # che l'LLM finga il salvataggio. Logica condivisa con la voce via
-                    # core/save_service. Vedi [[project_euri_silentchat_no_tools]].
-                    save_res = None
-                    if tool_res is None:
-                        from core.intent_router import classify, Intent
-                        from core.save_service import save_memory_command
-                        from core.semantic_turn import arbitrate_routable_intent
-                        try:
-                            _intent, _ = classify(prompt)
-                        except Exception:
-                            _intent = Intent.CHAT
-                        _shared_label = arbitrate_routable_intent(
-                            semantic_frame,
-                            _intent,
-                            allowed={
-                                "CHAT", "WEB_SEARCH", "SEARCH", "SAVE_MEMORY",
-                                "SAVE_TODO", "SAVE_NOTE", "SAVE_LAST", "READ_BACK",
-                                "TRANSLATE", "DICTATION",
-                            },
-                            minimum_confidence=getattr(
-                                config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72
-                            ),
-                        )
-                        if _shared_label != _intent.value:
-                            _intent = Intent(_shared_label)
-                            logger.info(
-                                "Silent Chat: intent condiviso dal frame semantico: {}",
-                                _intent.value,
-                            )
-                        if _intent == Intent.SAVE_MEMORY:
-                            # Sorgente anaforica = ultimo scambio PRIMA del prompt corrente
-                            # (messages[-1] è il "memorizza…" appena appeso).
-                            prev_user, prev_assist = "", ""
-                            for _m in reversed(st.session_state.messages[:-1]):
-                                if not prev_assist and _m["role"] == "assistant":
-                                    prev_assist = _m["content"]
-                                elif not prev_user and _m["role"] == "user":
-                                    prev_user = _m["content"]
-                                if prev_user and prev_assist:
-                                    break
-                            # History recente per il risolutore SAVE semantico (Gradino 1):
-                            # escludo il "memorizza…" corrente (messages[-1]).
-                            recent_history = [
-                                {
-                                    "role": _m["role"],
-                                    "content": _m["content"],
-                                    "observed_at": _m.get("observed_at"),
-                                }
-                                for _m in st.session_state.messages[:-1]
-                            ]
-                            save_res = save_memory_command(
-                                prompt, memory_manager, brain,
-                                prev_user_text=prev_user, prev_assistant_text=prev_assist,
-                                fresh=True,
-                                recent_history=recent_history,
-                            )
 
                     if tool_res is not None:
                         response = tool_res.get("output") or "Comando eseguito."
@@ -1414,21 +1415,29 @@ with main_col:
                         from core.act_word_check import (
                             emit_unbacked_action_commitment,
                             scrub_unbacked_action_claim,
+                            strip_leading_stage_direction,
+                        )
+                        _linguistic_response = frame_requests_linguistic_response(
+                            semantic_frame,
+                            minimum_confidence=getattr(
+                                config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72
+                            ),
                         )
                         try:
                             from core.rag_context import selective_thinking_decision
                             _thinking = selective_thinking_decision(_rag)
-                            response = scrub_unbacked_save_claim(
-                                brain.respond(
-                                    prompt,
-                                    context=context_full,
-                                    trusted=True,
-                                    raw_user_text=raw_prompt,
-                                    semantic_frame=semantic_frame,
-                                    thinking=_thinking["enabled"],
-                                    thinking_reason=_thinking["reason"],
-                                )
+                            response = brain.respond(
+                                prompt,
+                                context=context_full,
+                                trusted=True,
+                                actor_id=config.OWNER_ACTOR_ID,
+                                raw_user_text=raw_prompt,
+                                semantic_frame=semantic_frame,
+                                thinking=_thinking["enabled"],
+                                thinking_reason=_thinking["reason"],
                             )
+                            if not _linguistic_response:
+                                response = scrub_unbacked_save_claim(response)
                             _response_recorded_by_brain = True
                         except Exception:
                             finish_response_turn(
@@ -1439,8 +1448,13 @@ with main_col:
                                 attribute_usage=False,
                             )
                             raise
-                        emit_unbacked_action_commitment(r, response, set(), channel="silent_chat")
-                        response = scrub_unbacked_action_claim(response, set())
+                        if _linguistic_response:
+                            response = strip_leading_stage_direction(response)
+                        else:
+                            emit_unbacked_action_commitment(
+                                r, response, set(), channel="silent_chat"
+                            )
+                            response = scrub_unbacked_action_claim(response, set())
                         finish_response_turn(
                             r, response_lineage, response=response
                         )
