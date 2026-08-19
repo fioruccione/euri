@@ -910,6 +910,35 @@ with main_col:
             st.session_state.chat_log_offset = len(memory_manager.get_today_conversation())
         if "sc_upload_key" not in st.session_state:
             st.session_state.sc_upload_key = 0
+        from core.ideation_activation import ui_stream_key as _ideation_ui_stream_key
+        _ideation_stream = _ideation_ui_stream_key(config.OWNER_ACTOR_ID)
+        if "sc_ideation_last_id" not in st.session_state:
+            _latest_ideation = r.xrevrange(_ideation_stream, count=1)
+            st.session_state.sc_ideation_last_id = (
+                _latest_ideation[0][0] if _latest_ideation else "0-0"
+            )
+
+        @st.fragment(run_every=2)
+        def _poll_ideation_results():
+            rows = r.xread(
+                {_ideation_stream: st.session_state.sc_ideation_last_id},
+                count=5,
+            )
+            changed = False
+            for _stream, entries in rows:
+                for event_id, fields in entries:
+                    st.session_state.sc_ideation_last_id = event_id
+                    reply = str(fields.get("reply") or "").strip()
+                    if reply:
+                        st.session_state.messages.append({
+                            "role": "assistant", "content": reply,
+                            "observed_at": time.time(),
+                        })
+                        changed = True
+            if changed:
+                st.rerun()
+
+        _poll_ideation_results()
 
         _cleanup_chat_uploads()
 
@@ -1208,6 +1237,7 @@ with main_col:
                     turn_store,
                     mode=_context_mode,
                     recent_history=_recent_hist,
+                    semantic_frame=semantic_frame,
                 )
                 context = _rag.text
                 context = semantic_turns.registry.canonicalize(
@@ -1215,6 +1245,173 @@ with main_col:
                 )
                 ctx_ids_now = list(_rag.ids)
                 memory_manager.set_last_rag_ctx(ctx_ids_now)
+
+            # Loop 2k usa il medesimo frame della chat, senza un classificatore
+            # UI parallelo. La richiesta esplicita accoda il lavoro al daemon;
+            # una proposta di Euri resta pending finche' un turno successivo non
+            # contiene un CONFIRM o REJECT semantico affidabile.
+            from core.ideation_activation import (
+                active_key as _ideation_active_key,
+                enqueue_job as _enqueue_ideation_job,
+                job_queue_key as _ideation_job_queue_key,
+                load_json as _load_ideation_json,
+                pending_key as _ideation_pending_key,
+                semantic_pending_decision as _semantic_ideation_decision,
+                store_json as _store_ideation_json,
+            )
+            from core.semantic_turn import trusted_deliberation_request
+
+            def _queue_silent_ideation(payload: dict) -> str:
+                if not getattr(config, "IDEATION_ARENA_ENABLED", False):
+                    return "Il confronto tra ipotesi in questo momento e' disabilitato."
+                import uuid as _ideation_uuid
+                token = str(_ideation_uuid.uuid4())
+                active_key = _ideation_active_key(config.OWNER_ACTOR_ID)
+                active = {
+                    "token": token, "pid": os.getpid(),
+                    "problem": payload.get("problem", ""),
+                    "started_at": time.time(),
+                }
+                acquired = r.set(
+                    active_key,
+                    json.dumps(active, ensure_ascii=False),
+                    nx=True,
+                    ex=getattr(config, "IDEATION_ACTIVE_TTL_S", 3600),
+                )
+                if not acquired:
+                    return "C'e' gia' un confronto in corso. Ti avviso appena termina."
+                job = dict(payload, token=token)
+                try:
+                    _enqueue_ideation_job(
+                        r,
+                        _ideation_job_queue_key(config.OWNER_ACTOR_ID),
+                        job,
+                        ttl_s=getattr(config, "IDEATION_DELIVERY_TTL_S", 86400),
+                    )
+                except Exception:
+                    current = _load_ideation_json(r, active_key)
+                    if str(current.get("token") or "") == token:
+                        r.delete(active_key)
+                    return "Non sono riuscita ad accodare il confronto, quindi non l'ho avviato."
+                logger.info(
+                    "Loop 2k Silent Chat: accodato reason={} problem='{}'",
+                    payload.get("reason", "other"),
+                    str(payload.get("problem") or "")[:120],
+                )
+                return (
+                    "Va bene. Metto a confronto quattro strade indipendenti e provo "
+                    "anche a smentirle prima di scegliere. Ci vorranno alcuni minuti; "
+                    "nel frattempo possiamo continuare a parlare."
+                )
+
+            _pending_key = _ideation_pending_key(config.OWNER_ACTOR_ID)
+            _pending_ideation = _load_ideation_json(r, _pending_key)
+            _pending_decision = _semantic_ideation_decision(
+                semantic_frame,
+                minimum_confidence=getattr(
+                    config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72
+                ),
+            )
+            _ideation_response = ""
+            if _pending_ideation and _pending_decision == "reject":
+                r.delete(_pending_key)
+                _ideation_response = (
+                    "Va bene, lascio perdere il confronto e continuiamo normalmente."
+                )
+            elif _pending_ideation and _pending_decision == "confirm":
+                r.delete(_pending_key)
+                _pending_job = dict(_pending_ideation)
+                if not str(_pending_job.get("grounding_context") or "").strip():
+                    _origin_text = str(
+                        _pending_job.get("user_text")
+                        or _pending_job.get("problem")
+                        or prompt
+                    )
+                    _origin_frame = _pending_job.get("semantic_frame") or {}
+                    with brain.history_lock:
+                        _origin_history = list(brain._conversation_history)
+                    _origin_rag = build_runtime_rag_context(
+                        _origin_text,
+                        memory_manager,
+                        turn_store,
+                        mode="chat",
+                        recent_history=_origin_history,
+                        semantic_frame=_origin_frame,
+                    )
+                    _pending_job["grounding_context"] = (
+                        semantic_turns.registry.canonicalize(
+                            _origin_rag.text, current_scope()
+                        )
+                    )
+                    _pending_job["source_refs"] = [
+                        f"semantic-turn:{_origin_frame.get('turn_id', '')}",
+                        *(f"rag:{item}" for item in _origin_rag.ids),
+                    ]
+                    _pending_job["source_refs"] = [
+                        item for item in _pending_job["source_refs"]
+                        if not item.endswith(":")
+                    ]
+                _pending_job["delivery_channel"] = "silent_chat"
+                _ideation_response = _queue_silent_ideation(_pending_job)
+            else:
+                _deliberation = trusted_deliberation_request(semantic_frame)
+                if _deliberation is not None:
+                    _ideation_payload = {
+                        "problem": _deliberation.get("problem", ""),
+                        "reason": _deliberation.get("reason", "other"),
+                        "constraints": list(_deliberation.get("constraints") or []),
+                        "grounding_context": context,
+                        "source_refs": [
+                            f"semantic-turn:{semantic_frame.get('turn_id', '')}",
+                            *(f"rag:{item}" for item in ctx_ids_now),
+                        ],
+                        "created_at": time.time(),
+                        "delivery_channel": "silent_chat",
+                    }
+                    _ideation_payload["source_refs"] = [
+                        item for item in _ideation_payload["source_refs"]
+                        if not item.endswith(":")
+                    ]
+                    if _deliberation.get("mode") == "explicit":
+                        if _pending_ideation:
+                            r.delete(_pending_key)
+                        _ideation_response = _queue_silent_ideation(
+                            _ideation_payload
+                        )
+                    elif _pending_ideation:
+                        _ideation_response = (
+                            "Ho gia' lasciato aperta una proposta di confronto. Puoi "
+                            "confermarla, rifiutarla oppure continuare normalmente."
+                        )
+                    else:
+                        _store_ideation_json(
+                            r, _pending_key, _ideation_payload,
+                            ttl_s=getattr(config, "IDEATION_PENDING_TTL_S", 600),
+                        )
+                        _ideation_response = (
+                            "Qui vedo almeno due strade realmente diverse e una risposta "
+                            "unica rischierebbe di nascondere il compromesso. Vuoi che le "
+                            "faccia competere nel confronto approfondito? Richiedera' alcuni minuti."
+                        )
+
+            if _ideation_response:
+                with st.chat_message("assistant"):
+                    st.markdown(_ideation_response)
+                st.session_state.messages.append({
+                    "role": "assistant", "content": _ideation_response,
+                    "observed_at": time.time(),
+                })
+                brain.record_context_message(
+                    "user", prompt, trusted=True,
+                    observed_at=_user_observed_at, raw_content=raw_prompt,
+                    semantic_frame=semantic_frame,
+                )
+                brain.record_context_message(
+                    "assistant", _ideation_response, trusted=True
+                )
+                memory_manager.log_conversation("Stefano", prompt)
+                memory_manager.log_conversation("Euri", _ideation_response)
+                st.stop()
 
             # Risposta Euri
             with st.chat_message("assistant"):
@@ -1227,6 +1424,7 @@ with main_col:
                     # non ricade nella chat che potrebbe fingere l'operazione.
                     tool_res = None
                     save_res = None
+                    web_res = None
                     _semantic_chat_return = False
                     _response_recorded_by_brain = False
                     from core.semantic_turn import (
@@ -1288,6 +1486,17 @@ with main_col:
                             recent_history=recent_history,
                             active_artifact=executor.get_session_artifact(),
                         )
+                    elif _intent == Intent.WEB_SEARCH:
+                        # Il frame condiviso ha gia' stabilito che questo turno,
+                        # non un Pulse precedente, autorizza l'accesso esterno.
+                        from core.web_search import answer_explicit_web_search
+                        web_res = answer_explicit_web_search(
+                            prompt,
+                            brain,
+                            memory_manager,
+                            semantic_frame=semantic_frame,
+                        )
+                        memory_manager.set_last_rag_ctx([])
                     _semantic_action = frame_requests_contextual_action(
                         semantic_frame,
                         minimum_confidence=getattr(
@@ -1300,7 +1509,7 @@ with main_col:
                             config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72
                         ),
                     )
-                    if save_res is None and _semantic_action:
+                    if save_res is None and web_res is None and _semantic_action:
                         _previous_euri = next(
                             (
                                 str(item.get("content") or "")
@@ -1339,6 +1548,7 @@ with main_col:
                         if (
                             tool_res is None
                             and save_res is None
+                            and web_res is None
                             and not _semantic_chat_return
                             and not _semantic_tool_veto
                         ):
@@ -1354,6 +1564,8 @@ with main_col:
                         memory_manager.set_last_rag_ctx([])
                     elif save_res is not None:
                         response = save_res["reply"]
+                    elif web_res is not None:
+                        response = web_res["reply"]
                     else:
                         chat_hint = "[Modalità chat testuale — nessun vincolo TTS. Puoi rispondere con più profondità, sviluppare i concetti, fare domande di ritorno. Sii presente e partecipe come in una conversazione reale.]"
                         from core.visual_presence import with_visual_context

@@ -185,14 +185,6 @@ _PATTERNS: list[tuple[Intent, list[str]]] = [
         r"\b(cosa|quali|quanti)\s+.*(file|dati)\s+.*(ci\s+sono|nella|cartella)\b",
         r"\belenca\s+.*(file|dati)\b",
     ]),
-    (Intent.TEACH, [
-        r"\bti\s+(racconto|spiego|insegno)\b",
-        r"\bvoglio\s+(spiegarti|raccontarti|insegnarti)\b",
-        r"\blascia\s+che\s+ti\s+(spieghi|racconti)\b",
-        r"\bvolendo\s+te\s+lo\s+posso\s+(raccontare|spiegare)\b",
-        r"\bte\s+lo\s+(spiego|racconto)\b",
-        r"\bposso\s+(spiegarti|raccontarti)\b",
-    ]),
     (Intent.AUDIT_MEMORY, [
         r"\baudit\s+(della\s+)?(memoria|memorie)\b",
         r"\bpulisci\s+((la|le)\s+)?(memoria|memorie)\b",

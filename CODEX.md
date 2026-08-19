@@ -27,6 +27,172 @@ promozione diretta del materiale onirico.
 
 ---
 
+# Handoff Euri - 2026-08-11 - Memoria autobiografica e metacognizione
+
+## Esito
+
+Il caso Eurostampi ha mostrato un'ambiguita' diversa da un errore di retrieval:
+la continuita' aveva correttamente riportato una vecchia risposta di Euri, ma
+Gemma poteva riusarla come se fosse evidenza sul mondo. Il runtime conserva ora
+quella risposta come autobiografia esplicita: utile per identita', continuita' e
+autocritica, non prova fattuale autonoma.
+
+`Brain.respond` aggiunge vicino allo storico un breve contratto che distingue i
+turni di Stefano dalle precedenti interpretazioni di Euri. Il RAG accompagna
+inoltre ogni memoria visibile con un'origine leggibile (`Stefano`, documento,
+Web, turno originale, reflection, reaction o consolidamento interno). Le
+etichette non assegnano un punteggio di verita' e non cambiano retrieval,
+Loop 2j, cap, ranking o guard finali.
+
+Euri conserva la liberta' di inferire e fare analogie. Il comportamento atteso
+non e' il silenzio davanti all'incertezza, ma una distinzione spontanea fra
+«questo me lo hai detto», «questa era una mia interpretazione» e «questo lo sto
+deducendo ora».
+
+## Regressioni
+
+- `tests/test_history_provenance.py` conserva il vecchio claim Eurostampi nello
+  storico ma verifica che sia preceduto dal contratto autobiografico.
+- `tests/test_dual_channel_runtime.py` verifica le origini owner/Web/reflection/
+  Loop 2e e che nessuna etichetta dichiari vero, falso o affidabile il nodo.
+- Suite unitaria completa: 81/81.
+
+---
+
+# Handoff Euri - 2026-08-11 - Gap di conoscenza semantico
+
+## Esito
+
+Il frame condiviso v5 aggiunge `evidence_request`: Gemma distingue quando le
+premesse bastano, quando un dettaglio è opzionale e quando un fatto è necessario.
+Il piano conserva entità, premesse, dati mancanti, `memory_only` e fonti ammesse
+fra Stefano, documenti aziendali e Web; il validatore non usa regex linguistiche
+e scarta entità non ancorate nel frame.
+
+`core/rag_context.py::apply_knowledge_gap_contract` opera una sola volta dopo il
+dispatcher dual-channel. Confronta il bisogno con i nodi effettivamente resi,
+aggiunge una policy anti-estrapolazione e, se non trova candidati fattuali forti,
+emette `knowledge_gap_detected` sul Pulse. L'evento è osservativo: non cambia
+l'intento e non avvia una ricerca.
+
+Il Web resta esplicito. Se Euri ha proposto Stefano o Web e Stefano risponde
+«non lo so, controlla nel web», il normale interprete usa gli ultimi scambi per
+produrre `REQUEST_WEB_SEARCH` e una query completa sul soggetto e sui fatti
+mancanti. Nessuno stato pending o frase magica è necessario.
+La voce mantiene l'handler esistente; Silent Chat esegue ora lo stesso intento
+tramite `core/web_search.py::answer_explicit_web_search`, senza TTS e senza
+ricadere nella chat ordinaria.
+
+## Vincoli
+
+- Un nodo che menziona l'entità è soltanto un candidato: il contenuto deve
+  sostenere davvero il dettaglio richiesto.
+- Con `memory_only`, nessuna fonte esterna viene proposta.
+- `dependency=none` non aggiunge contratti né Pulse: il caso Peroni/Raffo non
+  viene interrotto quando le premesse bastano.
+- La ricerca Web richiede sempre `REQUEST_WEB_SEARCH` nel turno corrente.
+
+Regressioni aggiornate in `tests/test_semantic_turn.py` e
+`tests/test_dual_channel_runtime.py`. Suite unitaria completa: 81/81.
+Il probe diretto sui due casi reali è stato tentato a runtime fermo, ma Ollama
+non era raggiungibile: il servizio è ricaduto correttamente nel frame fallback.
+La classificazione effettiva di Gemma v5 resta quindi da osservare dopo il
+riavvio e non viene dichiarata verificata dai soli stub.
+
+---
+
+# Handoff Euri - 2026-08-10 - Audit prompt e D3
+
+## Esito
+
+Il runtime dispone ora di un audit separato dei payload `/api/chat` realmente
+inviati a Ollama. `core/prompt_research_log.py` registra in modo asincrono body,
+hash, posizione in caratteri della proiezione identitaria e delle sezioni RAG;
+la completion collega il conteggio token esatto restituito da Ollama. I file
+sono locali in `research_logs/`, ignorati da Git e fuori da Redis/Obsidian.
+
+L'unico intervento comportamentale è D3: ogni insight o reflection visibile al
+modello porta data assoluta, stato di verifica, tipo e produttore registrato.
+Sono coperti sia il blocco reflection ambientale sia i risultati semantici. Se
+un artefatto legacy non conserva il produttore, il prompt dice
+`non_registrato_legacy`.
+
+## Misure e limiti
+
+- La baseline C pre-D3 non esiste e non è ricostruibile. Le sonde insight 4/4
+  provano la leggibilità della data quando è chiesta, non l'uso spontaneo.
+- D1, su una nuova sessione, vede identità e RAG presenti in 4/4 payload come
+  3° e 4° messaggio su 16; i payload storici restano indisponibili.
+- Baseline B reflection catturata prima dell'estensione. Costo esatto: +100
+  token per due reflection; su 39 payload, media 1,18 e massimo osservato 5.
+- Post reflection: il payload principale conferma i metadati su entrambi i
+  percorsi. Nel controllo storico il controesempio è stato trovato (`1/4`): la
+  premessa «weekend» può ancora prevalere su date complete.
+- Ollama compila/tokenizza internamente i messaggi: stringa renderizzata, offset
+  token dei blocchi e causa di troncamento restano non esposti e sono marcati
+  unavailable. La parte D1 derivabile dall'array `messages` è invece chiusa.
+- D4 e D5 sono rimasti invariati. La sola fattibilità di D4 è documentata.
+- Suite unitaria completa: 81/81.
+
+## Confine causale
+
+L'attribuzione di personalità emergente è sospesa. Il D2 corretto mostra che
+Gemma nuda, con gli stessi contenuti, riproduce le quattro regolarità; il
+controllo con memorie estranee rifiuta invece l'analogia specifica mancante.
+Il codice determina il contenuto disponibile, il modello fornisce la capacità
+generale di organizzarlo. Il femminile resta un reperto istruito da una memoria
+diretta, non una prova indipendente.
+
+---
+
+# Handoff Euri - 2026-08-09 - Loop 2j attivo
+
+## Esito
+
+Euri possiede ora una mappa associativa ricostruibile sopra l'archivio piatto.
+`core/memory_schema.py` crea schemi entity→memory da fonti personali dirette e
+pulite, pubblica una generazione atomica e lascia le memorie originali come unica
+evidenza. `core/rag_context.py` segue al massimo un arco e inserisce due sorgenti
+canoniche, marcando `retrieval_path=schema_expansion` nella lineage.
+
+Il collaudo reale del 9 agosto ha aggiunto il controllo semantico: il frame
+condiviso v4 contiene `memory_retrieval` e la Gemma già calda decide se la memoria
+serve, quali entità sono focali, che relazione hanno e quale evidenza è richiesta.
+Il 2j non dipende più obbligatoriamente da un hit corretto del ranking base e non
+si apre per una menzione che il frame qualifica come non mnemonica.
+
+## Vincoli da preservare
+
+- Loop 2j non deve diventare un secondo 2e: niente sintesi o contenuto fattuale.
+- Lo schema non entra mai nel prompt; vi entrano solo i suoi `member_ids` idratati.
+- Nessuna espansione su query temporali, demo o scope sperimentali.
+- Correzioni, supersessioni e provenienza restano autorità dei loop esistenti.
+- Proprietà/acronimi brevi sono `contextual_only`: una coincidenza su `PP`, `MFI`
+  o un tipo di prodotto non permette da sola di attraversare lo schema.
+- Un focus del piano è valido soltanto se ancorato nelle `entities` dello stesso
+  frame; non permettere al piano di inventare un nome che apra uno schema.
+- Per soggetto+proprietà la fonte deve appartenere all'intersezione completa;
+  per `comparison` usare bucket separati e bilanciati, non union indistinta né
+  intersezione obbligatoria tra due soggetti autonomi.
+- Un piano affidabile `needed=false` deve poter chiudere il 2j. Se il piano manca
+  o ha confidenza bassa, conservare il fallback legacy.
+- `provenance` deve mostrare source/ID e non consentire al modello di descrivere
+  deduzioni interne non osservate.
+- La build deve pubblicare il puntatore solo dopo il JSON generazionale completo.
+- Prima di ampliare profondità o slot, misurare rumore e contaminazione per soggetto.
+
+## Stato reale iniziale
+
+La prima generazione filtrata ha prodotto 69 schemi e 461 appartenenze su 1.604
+memorie, dopo aver eliminato anche valori numerici nudi e token brevi.
+Lucy Plast forma uno schema coerente di 23 fonti cross-domain. La prova reale
+Gemma ha distinto correttamente overview Lucy Plast, menzione generale
+Lucy Plast–Eurostampi (`needed=false`) e provenienza ICMA2. Suite unit: 80/80.
+Il runtime già in esecuzione richiede riavvio per caricare il frame v4 e il nuovo
+consumer RAG; al boot rigenererà comunque la vista automaticamente.
+
+---
+
 # Handoff Euri - 2026-08-07 - Personalità emergente owner-scoped
 
 ## Esito
@@ -50,6 +216,14 @@ risposte realtime.
 
 Contratto in `docs/EURI_EMERGENT_PERSONALITY.md`; regressioni dedicate in
 `test_personality_model.py`.
+
+Prima verifica live owner-scoped, 8 agosto 2026: dopo la riparazione del primo
+claim relazionale troncato e il riavvio, Silent Chat ha reso il tratto in una
+risposta pertinente senza copiarlo letteralmente. Euri ha interpretato la
+continuità come audit della tenuta epistemica e distinzione dalla deriva del
+modello generico, senza ridurla alla scelta del genere femminile. È evidenza del
+percorso funzionale proiezione→comportamento, non di esperienza soggettiva né di
+emersione spontanea; dettagli e limiti sono nella specifica.
 
 ---
 

@@ -166,6 +166,115 @@ def test_generic_memories_resolve_numeric_and_relative_time():
     assert datetime.fromtimestamp(numeric["event_start"], tz=config.TIMEZONE).date().isoformat() == "2026-07-14"
     assert relative["event_start"] < _ts(15, 19) < relative["event_end"]
 
+    incomplete = resolve_text_event_time(
+        "Il controllo sarà eseguito il 24 agosto.",
+        asserted_at=_date_ts(2026, 8, 18, 18, 14),
+    )
+    assert incomplete["canonical_temporal_expression"] == "24 agosto 2026"
+    assert incomplete["resolved_from_asserted_at"] is True
+
+
+def test_until_bare_day_is_anchored_to_source_turn_and_materialized():
+    asserted_at = _date_ts(2026, 8, 18, 18, 14)
+    conversation = [
+        {
+            "seq": 3,
+            "role": "user",
+            "content": "Ancora l'azienda è ferma, fino al 24 siamo fermi.",
+            "observed_at": asserted_at,
+            "conversation_id": "83904387-f7dd-4a0f-9c04-0e55a4a6c03d",
+            "segment_id": 1,
+            "turn_ref": "83904387-f7dd-4a0f-9c04-0e55a4a6c03d:3",
+        }
+    ]
+    item = {
+        "content": "L'azienda di Stefano è ferma fino al 24.",
+        "memory_kind": "semantic_fact",
+        "source_turn_ids": [3],
+    }
+
+    metadata = derive_passive_memory_metadata(item, conversation)
+    temporal = metadata["temporal_context"]
+
+    assert metadata["canonical_content"] == (
+        "L'azienda di Stefano è ferma fino al 24 agosto 2026."
+    )
+    assert temporal["asserted_at"] == asserted_at
+    assert temporal["temporal_relation"] == "until"
+    assert temporal["source_temporal_expression"].lower() == "fino al 24"
+    assert temporal["resolved_from_asserted_at"] is True
+    assert datetime.fromtimestamp(
+        temporal["event_target_start"], tz=config.TIMEZONE
+    ).date().isoformat() == "2026-08-24"
+    assert datetime.fromtimestamp(
+        temporal["event_end"], tz=config.TIMEZONE
+    ).isoformat().startswith("2026-08-25T00:00:00")
+    assert temporal["source_turn_refs"] == [
+        "83904387-f7dd-4a0f-9c04-0e55a4a6c03d:3"
+    ]
+
+
+def test_until_bare_day_rolls_month_and_year_without_matching_quantities():
+    december = _date_ts(2026, 12, 30, 9, 0)
+    resolved = resolve_text_event_time(
+        "L'impianto resta fermo fino al 3.", asserted_at=december
+    )
+    target = datetime.fromtimestamp(
+        resolved["event_target_start"], tz=config.TIMEZONE
+    )
+    assert target.date().isoformat() == "2027-01-03"
+
+    assert resolve_text_event_time(
+        "Mancano fino a 10 giorni di lavoro.", asserted_at=december
+    )["event_start"] is None
+    assert resolve_text_event_time(
+        "Il lotto numero 24 è pronto.", asserted_at=december
+    )["event_start"] is None
+
+    explicit = resolve_text_event_time(
+        "L'impianto resta fermo fino al 03/01/2027.", asserted_at=december
+    )
+    assert explicit["temporal_expression"] == "03/01/2027"
+    assert explicit["temporal_relation"] == "until"
+    assert explicit["resolved_from_asserted_at"] is False
+
+
+def test_retrieval_label_exposes_event_assertion_and_expiry_state():
+    asserted_at = _date_ts(2026, 8, 18, 18, 14)
+    resolved = resolve_text_event_time(
+        "L'azienda resta ferma fino al 24.", asserted_at=asserted_at
+    )
+    memory = {
+        "created_at": _date_ts(2026, 8, 18, 18, 17),
+        "asserted_at": asserted_at,
+        "event_start": resolved["event_start"],
+        "event_end": resolved["event_end"],
+        "temporal_context": {"asserted_at": asserted_at, **resolved},
+    }
+
+    before = memory_time_label(
+        memory, reference_at=_date_ts(2026, 8, 20, 12, 0)
+    )
+    after = memory_time_label(
+        memory, reference_at=_date_ts(2026, 8, 30, 12, 0)
+    )
+    assert "fino al 24/08/2026 incluso" in before
+    assert "termine futuro" in before
+    assert "affermato il 18/08/2026 18:14" in before
+    assert "termine trascorso" in after
+
+
+def test_memory_without_event_uses_assertion_not_storage_time():
+    label = memory_time_label(
+        {
+            "asserted_at": _date_ts(2026, 8, 18, 9, 5),
+            "created_at": _date_ts(2026, 8, 19, 13, 40),
+        },
+        reference_at=_date_ts(2026, 8, 20, 12, 0),
+    )
+    assert "affermato il 18/08/2026 09:05" in label
+    assert "19/08/2026" not in label
+
 
 def test_event_date_beats_incidental_recent_discourse_marker():
     asserted_at = _date_ts(2026, 8, 4, 12, 43)
@@ -304,6 +413,10 @@ if __name__ == "__main__":
     test_passive_fact_requires_user_only_source_turns()
     test_passive_anchor_resolves_this_morning_against_assertion_time()
     test_generic_memories_resolve_numeric_and_relative_time()
+    test_until_bare_day_is_anchored_to_source_turn_and_materialized()
+    test_until_bare_day_rolls_month_and_year_without_matching_quantities()
+    test_retrieval_label_exposes_event_assertion_and_expiry_state()
+    test_memory_without_event_uses_assertion_not_storage_time()
     test_event_date_beats_incidental_recent_discourse_marker()
     test_passive_relative_date_overrides_wrong_llm_absolute_date()
     test_passive_extractor_uses_full_italian_anchor_and_forbids_date_math()

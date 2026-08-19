@@ -198,11 +198,6 @@ class MemoryManager:
         # Fail-mode sicuro: spento = resta il dedup best-effort.
         ts = now()
         memory_scope = normalize_scope(memory_scope or current_scope())
-        idem_key = (
-            self._idempotency_key(content, source, memory_scope)
-            if idempotent
-            else None
-        )
         temporal_context = dict(temporal_context or {})
 
         def _float_or_none(value):
@@ -215,16 +210,30 @@ class MemoryManager:
         event_start = _float_or_none(temporal_context.get("event_start"))
         event_end = _float_or_none(temporal_context.get("event_end"))
         if event_start is None and event_end is None:
-            from core.temporal_context import resolve_text_event_time
+            from core.temporal_context import (
+                materialize_temporal_expression,
+                resolve_text_event_time,
+            )
             inferred_time = resolve_text_event_time(content, asserted_at=asserted_at)
+            content = materialize_temporal_expression(content, inferred_time)
             for field, value in inferred_time.items():
                 temporal_context.setdefault(field, value)
             event_start = _float_or_none(temporal_context.get("event_start"))
             event_end = _float_or_none(temporal_context.get("event_end"))
-        temporal_context["schema_version"] = int(temporal_context.get("schema_version") or 1)
+        from core.temporal_context import TEMPORAL_SCHEMA_VERSION
+        temporal_context["schema_version"] = int(
+            temporal_context.get("schema_version") or TEMPORAL_SCHEMA_VERSION
+        )
         temporal_context["asserted_at"] = asserted_at
         temporal_context["event_start"] = event_start
         temporal_context["event_end"] = event_end
+        # La chiave idempotente deve riflettere il contenuto canonico realmente
+        # pubblicato, non la forma ellittica precedente alla risoluzione.
+        idem_key = (
+            self._idempotency_key(content, source, memory_scope)
+            if idempotent
+            else None
+        )
         kind_by_source = {
             "episode": "conversation_episode",
             "reflection": "reflection",

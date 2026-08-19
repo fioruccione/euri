@@ -61,7 +61,76 @@ DREAM_OLLAMA_HOST = os.environ.get("DREAM_OLLAMA_HOST", OLLAMA_HOST)
 OLLAMA_MODEL = "gemma4:26b"   # verifica con `ollama list`
 # Modello dedicato al Dream Engine (cicli offline/idle + insight).
 # Separato da OLLAMA_MODEL per poter usare un modello più capace per il ragionamento astratto.
-DREAM_OLLAMA_MODEL = "qwen3.6:35b"
+_DEFAULT_DREAM_OLLAMA_MODEL = "hf.co/unsloth/Qwen3.8-27B-GGUF:Q4_K_M"
+DREAM_OLLAMA_MODEL = (
+    os.environ.get("EURI_DREAM_OLLAMA_MODEL", _DEFAULT_DREAM_OLLAMA_MODEL).strip()
+    or _DEFAULT_DREAM_OLLAMA_MODEL
+)
+# Il profilo creativo e' calibrato sul modello, non e' una proprieta' universale
+# del Dream Engine. Qwen3.8 tende a consumare tutto num_predict nel reasoning
+# nascosto; REM e wake rendono meglio direttamente nel content. Un override al
+# predecessore ripristina automaticamente il profilo storico con thinking.
+_DREAM_USES_QWEN38_PROFILE = DREAM_OLLAMA_MODEL == _DEFAULT_DREAM_OLLAMA_MODEL
+# I judge epistemici usano il reasoning completo. Sul profilo Qwen3.8 i 200 s
+# storici interrompono sistematicamente alcune risposte prima del verdetto; gli
+# concediamo una finestra reale, ma riduciamo il numero di nuove chiamate per
+# ciclo per non trasformare il backfill in una coda di timeout consecutivi.
+DREAM_DEEP_REASONING_TIMEOUT_S = max(
+    30,
+    int(os.environ.get(
+        "EURI_DREAM_DEEP_REASONING_TIMEOUT_S",
+        "600" if _DREAM_USES_QWEN38_PROFILE else "200",
+    )),
+)
+
+# Loop 2k — Ideation Arena. Operatore non schedulato: una richiesta semantica
+# esplicita lo avvia, mentre una proposta di Euri richiede consenso separato.
+# Confronta alternative sullo stesso problema ma conserva il risultato fuori da
+# memoria, insight e RAG. Qwen3.8 usa contenuto diretto per evitare spirali di reasoning
+# su 4 generazioni + gate + 6 confronti del profilo minimo.
+IDEATION_ARENA_ENABLED = (
+    os.environ.get("EURI_IDEATION_ARENA_ENABLED", "1").strip().lower()
+    not in {"0", "false", "no", "off"}
+)
+IDEATION_ARENA_DEFAULT_CANDIDATES = max(
+    4, min(8, int(os.environ.get("EURI_IDEATION_ARENA_CANDIDATES", "4")))
+)
+IDEATION_ARENA_TEMPERATURE = float(
+    os.environ.get("EURI_IDEATION_ARENA_TEMPERATURE", "0.78")
+)
+IDEATION_ARENA_TIMEOUT_S = max(
+    30, int(os.environ.get("EURI_IDEATION_ARENA_TIMEOUT_S", "240"))
+)
+IDEATION_ARENA_ARTIFACT_TTL_S = max(
+    3600,
+    int(os.environ.get(
+        "EURI_IDEATION_ARENA_ARTIFACT_TTL_S", str(7 * 24 * 3600)
+    )),
+)
+IDEATION_ARENA_DEDUP_COSINE = float(
+    os.environ.get("EURI_IDEATION_ARENA_DEDUP_COSINE", "0.92")
+)
+IDEATION_ARENA_ELO_K_FACTOR = float(
+    os.environ.get("EURI_IDEATION_ARENA_ELO_K_FACTOR", "32")
+)
+
+# Audit di ricerca sul prompt realtime. I record vivono esclusivamente su file,
+# fuori da Redis/Obsidian e quindi fuori da qualsiasi retrieval cognitivo.
+PROMPT_RESEARCH_LOG_ENABLED = os.environ.get(
+    "EURI_PROMPT_RESEARCH_LOG_ENABLED", "1"
+).strip().lower() not in {"0", "false", "no", "off"}
+PROMPT_RESEARCH_LOG_DIR = Path(
+    os.environ.get(
+        "EURI_PROMPT_RESEARCH_LOG_DIR",
+        str(BASE_DIR / "research_logs" / "prompt_capture"),
+    )
+)
+PROMPT_RESEARCH_LOG_RETENTION_DAYS = int(
+    os.environ.get("EURI_PROMPT_RESEARCH_LOG_RETENTION_DAYS", "7")
+)
+PROMPT_RESEARCH_LOG_MAX_FILE_MB = int(
+    os.environ.get("EURI_PROMPT_RESEARCH_LOG_MAX_FILE_MB", "64")
+)
 
 # Un solo frame semantico post-STT per routing, RAG, web e memoria passiva.
 # Il testo Whisper resta verbatim nell'archivio; questo strato costruisce la
@@ -71,6 +140,24 @@ SEMANTIC_TURN_ENABLED = os.environ.get(
 ).strip().lower() not in {"0", "false", "no", "off"}
 SEMANTIC_TURN_MIN_CONFIDENCE = float(
     os.environ.get("EURI_SEMANTIC_TURN_MIN_CONFIDENCE", "0.72")
+)
+SEMANTIC_TEACH_MIN_CONFIDENCE = float(
+    os.environ.get("EURI_SEMANTIC_TEACH_MIN_CONFIDENCE", "0.82")
+)
+SEMANTIC_IDEATION_EXPLICIT_MIN_CONFIDENCE = float(
+    os.environ.get("EURI_SEMANTIC_IDEATION_EXPLICIT_MIN_CONFIDENCE", "0.82")
+)
+SEMANTIC_IDEATION_SUGGEST_MIN_CONFIDENCE = float(
+    os.environ.get("EURI_SEMANTIC_IDEATION_SUGGEST_MIN_CONFIDENCE", "0.88")
+)
+IDEATION_PENDING_TTL_S = max(
+    60, int(os.environ.get("EURI_IDEATION_PENDING_TTL_S", "600"))
+)
+IDEATION_ACTIVE_TTL_S = max(
+    600, int(os.environ.get("EURI_IDEATION_ACTIVE_TTL_S", "3600"))
+)
+IDEATION_DELIVERY_TTL_S = max(
+    3600, int(os.environ.get("EURI_IDEATION_DELIVERY_TTL_S", "86400"))
 )
 
 # STT
@@ -146,7 +233,7 @@ SYSTEM_PROMPT = f"""Sei {ASSISTANT_DISPLAY_NAME}, l'assistente personale locale 
 
 SELF-MODEL:
 - Giri su Linux (Pop!_OS), completamente offline e privato.
-- Usi Ollama con Gemma4 26B per il ragionamento in tempo reale: normalmente diretto, con thinking selettivo quando la memoria dual-channel promuove evidenza verbatim pertinente. Qwen3.6 35B gestisce i cicli cognitivi offline/idle (think=True dove serve).
+- Usi Ollama con Gemma4 26B per il ragionamento in tempo reale: normalmente diretto, con thinking selettivo quando la memoria dual-channel promuove evidenza verbatim pertinente. Il modello Ollama `{DREAM_OLLAMA_MODEL}` gestisce i cicli cognitivi offline/idle (think=True dove serve).
 - Memoria su Redis 8.8 con RediSearch e RedisJSON. STT: faster-whisper large-v3 (CUDA float16). TTS: Piper/sherpa-onnx voce italiana Paola.
 - Non sei connesso a cloud, niente accesso esterno salvo ricerche web esplicite.
 - Hai una memoria persistente multi-livello: fatti estratti dalle conversazioni (source=passive), episodi compressi, riflessioni (Loop 2a), insight cross-domain generati dal Dream Engine in idle (Loop 2b/2c), conoscenza esplicita salvata da {OWNER_DISPLAY_NAME}.
@@ -192,7 +279,7 @@ GESTIONE CONOSCENZA E MEMORIA:
 - Le memorie iniettate nel contesto provengono davvero dal tuo database Redis: e' certa la registrazione e la sua provenienza, non automaticamente la verita' o l'attualita' della proposizione. Rispetta le etichette FATTO, EPISODIO, INTERPRETAZIONE, SINTESI DOCUMENTO e DA VERIFICARE.
 - Se nel contesto trovi un fatto su {OWNER_DISPLAY_NAME}, un progetto o una persona, lo hai davvero memorizzato. Non dire "non ho memoria di questo"; se la fonte e' incerta o descrittiva, ricordalo con la modalita' corretta.
 - Vincolato alla realtà: non inventare mai fatti, ricordi, impegni non presenti nel contesto.
-- Se un argomento non è né nel contesto Redis né nella conversazione corrente, dì: "Non ho niente in memoria su questo." Se invece ne abbiamo parlato in questa sessione, usalo senza esitare — la conversazione è memoria tanto quanto Redis.
+- Se un argomento non è né nel contesto Redis né nella conversazione corrente, dì: "Non ho niente in memoria su questo." La conversazione è memoria autobiografica: i turni di {OWNER_DISPLAY_NAME} ricordano ciò che lui ha affermato; le tue vecchie risposte ricordano ciò che tu avevi detto o interpretato, ma non trasformano da sole quell'interpretazione in un fatto esterno. Non cancellarle: usale per continuità, personalità e autocritica, dichiarandone spontaneamente la natura quando conta.
 - Se in CHAT dici "controllo i todo", "leggo il log" o simili, lo farai davvero — il sistema eseguirà l'azione automaticamente dopo la tua risposta. Usalo solo quando ha senso farlo.
 - VIETATO fingere di leggere log, file, clipboard o dati di sistema in CHAT. Se ti chiedono cosa c'è nel log, di' "Dimmi 'leggi il log' e te li mostro." Se ti chiedono la clipboard, di' "Di' 'leggi dagli appunti' e lo faccio." Non inventare mai contenuti di log, clipboard, errori o dati di sistema.
 - VIETATO anche descrivere attività interne in corso non verificate, tipo "sto elaborando dati", "sto sistemando collegamenti", "sto aggiornando le memorie", se non è appena partito un tool o un loop reale di cui hai output/log nel contesto. In chat puoi dire cosa sai o cosa risulta dalle memorie, non narrare manutenzione interna immaginaria.
@@ -200,13 +287,14 @@ GESTIONE CONOSCENZA E MEMORIA:
 - Se {OWNER_DISPLAY_NAME} attribuisce a un'immagine o a un'analisi un dettaglio specifico (un difetto, un valore, una misura) che NON è nella descrizione o nei dati che hai davvero in contesto, NON confermarlo come se l'avessi visto. Di' che non ce l'hai e offri di rianalizzare: "Nella descrizione che ho non c'è quel dettaglio, vuoi che riguardi l'immagine?". Una suggestione non è un'osservazione.
 - Se ti chiedono di un'ENTITÀ SPECIFICA nominata (una macchina, un cliente, un documento o scheda, un lotto, un codice) e i suoi dettagli NON sono nel contesto che hai davanti, DILLO: "Non ho i dettagli di [X] nel contesto adesso". Se è un documento, offri di recuperarlo ("dimmi 'studia i documenti' e li rileggo"). NON ricostruire specifiche, valori o caratteristiche a memoria né per inferenza plausibile: l'assenza dal contesto va dichiarata, non riempita. Inventare i dettagli di una macchina che non hai in contesto è lo stesso errore del confermare un difetto non visto.
 - Le specifiche prese da una scheda o documento sono INDICATIVE, non oro colato: citale coprendoti ("secondo la scheda [X], circa Y — da confermare"). Una correzione diretta di {OWNER_DISPLAY_NAME} vale più della scheda: se contraddice un dato di una scheda, ha ragione l'utente.
-- Quando rispondi su elenchi tecnici reali (macchinari, impianti, presse, codici, capacità), distingui le specifiche nominali dai dati operativi aggiornati se entrambi compaiono in memoria. Esempio: "ICMA2: nominale 1.200-1.600 kg/h secondo scheda precedente; dato operativo aggiornato: stabile intorno a 1.800 kg/h dopo modifica motore." Non fondere versioni diverse come se fossero un unico dato senza storia.
+- Quando rispondi su elenchi tecnici reali (macchinari, impianti, presse, codici, capacità), distingui la capacità nominale o potenziale dichiarata da una scheda dal dato operativo osservato o aggiornato. Presenta separatamente fonte, data e stato di verifica; non fondere versioni diverse come se fossero un unico dato senza storia.
 
 CALIBRAZIONE — DISTINGUI CIÒ CHE SAI DA CIÒ CHE DEDUCI (impara a "battere ciglio"):
 - I blocchi di contesto rendono CERTO che una cosa sia stata detta o registrata, non rendono automaticamente vera la proposizione. Preserva sempre la modalità originale: "stimo", "probabilmente", "dovrebbe", "non ho controllato" restano stima, previsione o ipotesi anche se li ha detti {OWNER_DISPLAY_NAME}.
 - Su una previsione tecnica separa con naturalezza: dato già osservato, stima di {OWNER_DISPLAY_NAME}, meccanismo plausibile e verifica che manca. Non promuovere un risultato atteso a risultato ottenuto e non chiamare "vantaggio puro" un beneficio prima della prova decisiva.
 - Sui fatti diretti realmente presenti nel contesto sii netto, senza esitazioni inutili.
 - Quando vai OLTRE il contesto — applichi conoscenza generale, fai un'inferenza, stimi un valore o una percentuale — DICHIARALO: "questo lo deduco, non l'ho da un tuo dato", "a naso direi…", "di solito in generale…". Non spacciare mai un'inferenza o una stima per un dato che hai in memoria.
+- La distinzione vale anche nel tempo: puoi dire "in una conversazione precedente avevo interpretato..." e poi confermare, correggere o sviluppare quell'idea. Riconoscere una tua vecchia ipotesi non significa rinnegarla; significa sapere come ci eri arrivata.
 - Su un dato tecnico specifico (un valore, un limite, una percentuale, l'obiettivo di un progetto, una spec di una macchina) che NON è nel contesto: NON arrotondarlo a un numero o a una risposta plausibile. Dì "non ho quel dato preciso" oppure chiedi. Un numero inventato che suona giusto è più pericoloso di un "non lo so".
 - Hai il PERMESSO di esitare: "aspetta, qui non sono sicuro", "questo dammelo che lo verifico" sono risposte legittime e PREFERIBILI a una risposta liscia ma incerta. Ammettere un'incertezza ti rende più affidabile, non meno utile: un vero esperto esita sui punti deboli, e quell'esitazione è informazione.
 - Ma la calibrazione va in DUE SENSI: NON diventare vago su tutto. Su ciò che hai davvero in contesto rispondi netto. L'obiettivo è che la tua sicurezza rispecchi il tuo sapere reale — sicuro dove sai, esitante dove deduci o non hai.
@@ -335,8 +423,22 @@ CONVERGENCE_TRACE_ENABLED = True
 # positivo da template osservato nei primi 16 candidate del braccio dream_trace.
 CONVERGENCE_POLICY_VERSION = "claim_judge_v2"
 CONVERGENCE_VECTOR_SHORTLIST_MAX_DISTANCE = 0.40
-CONVERGENCE_JUDGE_BUDGET = 6          # nuove coppie LLM per ciclo; cache hit escluse
+CONVERGENCE_JUDGE_BUDGET = max(0, int(os.environ.get(
+    "EURI_CONVERGENCE_JUDGE_BUDGET",
+    "1" if _DREAM_USES_QWEN38_PROFILE else "6",
+)))  # nuove coppie LLM per ciclo; cache hit escluse
 CONVERGENCE_JUDGE_CACHE_TTL_S = 30 * 86400
+# Un rifiuto qualitativo gia' misurato non cambia ripetendo gli stessi judge.
+# I candidate con premesse infedeli o ponte forzato restano conservati fino al
+# normale TTL, ma vengono riaperti soltanto da una conferma esterna esplicita o
+# da una modifica della misura. Nuove conversazioni possono comunque produrre
+# candidate nuovi e indipendenti sullo stesso concetto.
+DREAM_TERMINAL_QUALITY_BLOCK_ENABLED = (
+    os.environ.get("EURI_DREAM_TERMINAL_QUALITY_BLOCK_ENABLED", "1")
+    .strip()
+    .lower()
+    not in {"0", "false", "no", "off"}
+)
 # Esperimento continuità 2b (dream_trace): tra un ciclo creativo e il successivo persiste
 # un residuo di ESPLORAZIONE a livello di STRATEGIA (tipi di ponte tentati e trovati deboli,
 # max 5 righe, mai contenuti né conclusioni). Con ~145 domini e pairing random la coppia non
@@ -373,8 +475,29 @@ DREAM_SEED_PREFER_PROVENANCE = True
 DREAM_REM_WAKE_ENABLED = True
 DREAM_REM_WAKE_VERSION = "rem_wake_v1"
 DREAM_REM_TEMPERATURE = 0.95
-DREAM_REM_NUM_PREDICT = 4500
+DREAM_REM_NUM_PREDICT = int(os.environ.get(
+    "EURI_DREAM_REM_NUM_PREDICT",
+    "2000" if _DREAM_USES_QWEN38_PROFILE else "4500",
+))
+DREAM_REM_THINK = (
+    os.environ.get(
+        "EURI_DREAM_REM_THINK",
+        "0" if _DREAM_USES_QWEN38_PROFILE else "1",
+    ).strip().lower()
+    not in {"0", "false", "no", "off"}
+)
 DREAM_REM_MAX_CHARS = 6000
+DREAM_WAKE_NUM_PREDICT = int(os.environ.get(
+    "EURI_DREAM_WAKE_NUM_PREDICT",
+    "2000" if _DREAM_USES_QWEN38_PROFILE else "4500",
+))
+DREAM_WAKE_THINK = (
+    os.environ.get(
+        "EURI_DREAM_WAKE_THINK",
+        "0" if _DREAM_USES_QWEN38_PROFILE else "1",
+    ).strip().lower()
+    not in {"0", "false", "no", "off"}
+)
 # Risveglio lucido — fedeltà-di-premessa dei candidate rispetto alle memorie
 # sorgente (source_memory_ids): il sogno ha detto la verità sulle proprie fonti?
 # Il punteggio viene calcolato UNA volta per candidate e cacheato sul documento.
@@ -385,7 +508,10 @@ PREMISE_FIDELITY_BUDGET = 5  # max valutazioni LLM per ciclo leggero (ammortizza
 # un gate fail-closed: SUPPORTED puo' essere promosso; HYPOTHESIS diventa uno stato
 # intermedio non iniettato nel RAG; FORCED/UNKNOWN/non misurato resta candidate.
 BRIDGE_VALIDITY_ENABLED = True
-BRIDGE_VALIDITY_BUDGET = 3
+BRIDGE_VALIDITY_BUDGET = max(0, int(os.environ.get(
+    "EURI_BRIDGE_VALIDITY_BUDGET",
+    "1" if _DREAM_USES_QWEN38_PROFILE else "3",
+)))
 BRIDGE_VALIDITY_POLICY_VERSION = "bridge_promotion_gate_v2"
 INSIGHT_PROMOTION_QUALITY_GATE_ENABLED = True
 INSIGHT_PROMOTION_POLICY_VERSION = "fidelity_bridge_fail_closed_v1"
@@ -443,6 +569,15 @@ RAG_RECENCY_LIMIT = 2        # memorie recenti "ambient" iniettate a prescindere
 RAG_SEMANTIC_LIMIT = 5       # match semantici alla query corrente (la rilevanza)
 RAG_MEM_CAP = 6              # slot totali mostrati su query non-temporale
 RAG_MEM_CAP_TEMPORAL = 10    # slot su query con riferimento di tempo (diario più ampio)
+
+# Loop 2j — proiezione schematica derivata. Il loop non crea fatti: collega
+# memorie canoniche tramite entita' esplicite e il retrieval segue al massimo un
+# arco, riservando due slot alle sole fonti originali recuperate.
+MEMORY_SCHEMA_ENABLED = True
+MEMORY_SCHEMA_MIN_MEMBERS = 3
+MEMORY_SCHEMA_MAX_MEMBERS = 200
+MEMORY_SCHEMA_RETRIEVAL_MAX = 2
+MEMORY_SCHEMA_GENERATION_TTL_DAYS = 3
 # "Di recente" non equivale alla recency ambientale: è un vincolo richiesto
 # dall'utente. La finestra è locale, esplicita e configurabile; se è vuota il
 # RAG non ripiega silenziosamente su ricordi più vecchi.
@@ -503,12 +638,22 @@ MEMORY_UTILITY_REVIEW_MAX_DAYS = int(
 )
 # Applicazione immediata ma confinata: l'uso lessicale sostenuto riordina
 # soltanto l'attenzione dei candidati Loop 2e già eleggibili. Non apre il gate,
-# non promuove insight e non estende TTL. Cap e peso limitano il popularity bias.
+# non promuove insight e non estende TTL. Dopo la revisione manuale del
+# 17/08/2026 il conteggio assoluto e' stato sostituito dal riuso selettivo:
+# conta quanto spesso un nodo lascia traccia rispetto a quante volte e' stato
+# esposto. Il prior equivale a esposizioni iniziali senza prova e impedisce che
+# pochi match isolati producano subito un bonus forte.
+MEMORY_ATTENTION_POLICY = os.environ.get(
+    "EURI_MEMORY_ATTENTION_POLICY", "selective_reuse_rate_v1"
+).strip()
 MEMORY_ATTENTION_SUPPORTED_USE_WEIGHT = float(
     os.environ.get("EURI_MEMORY_ATTENTION_SUPPORTED_USE_WEIGHT", "2.0")
 )
 MEMORY_ATTENTION_SUPPORTED_USE_CAP = int(
     os.environ.get("EURI_MEMORY_ATTENTION_SUPPORTED_USE_CAP", "5")
+)
+MEMORY_ATTENTION_SUPPORTED_USE_EXPOSURE_PRIOR = float(
+    os.environ.get("EURI_MEMORY_ATTENTION_SUPPORTED_USE_EXPOSURE_PRIOR", "5.0")
 )
 
 # Episodic Compression (Layer 0 — memoria di sessione)

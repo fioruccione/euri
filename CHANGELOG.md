@@ -1,5 +1,287 @@
 # Changelog
 
+## 2026-08-19 - Attivazione semantica e consent-first di Loop 2k
+
+- Il frame semantico passa a v7 e distingue `explicit`, `suggest` e `none` per
+  la deliberazione competitiva. Richiede problema, alternative visibili,
+  confidenza alta ed evidenza letterale grounded; una normale richiesta di
+  opinione resta conversazione ordinaria.
+- La richiesta esplicita del proprietario avvia direttamente Loop 2k. Una
+  opportunità riconosciuta da Euri produce soltanto una proposta con TTL di
+  dieci minuti; partenza e rifiuto leggono `CONFIRM`/`REJECT` dallo stesso frame
+  semantico, senza trigger regex. Turni non pertinenti non vengono intercettati.
+- Un bisogno evidenziale `required` ancora scoperto blocca il torneo. Un solo
+  job può essere attivo; il grounding RAG viene selezionato una volta e il
+  calcolo prosegue in background mentre la conversazione resta disponibile.
+- Voce e Silent Chat condividono pending, singolo slot e coda lavori. Il
+  risultato viene mostrato nella chat appena pronto; soltanto i job nati dal
+  canale vocale vengono pronunciati, con proprietario presente e canale libero.
+  Code, stream UI, pending e lock sono effimeri e separati da memoria, RAG e
+  insight.
+- Un verdetto `contested` non viene trasformato in vincitore; anche il risultato
+  completato è presentato come ipotesi interna con prova di falsificazione.
+
+## 2026-08-19 - Loop 2k Ideation Arena
+
+- Aggiunto un operatore deliberativo esplicito che genera 4–8 ipotesi
+  indipendenti sullo stesso problema usando il modello Dream, con prospettive
+  dichiarate e pacchetto evidenziale fornito dal chiamante.
+- Il gate batch valuta ogni candidato prima della deduplica. L'embedder usa
+  soltanto proposta e meccanismo come shortlist; un judge batch distingue la
+  stessa decisione da assegnazioni inverse o strategie diverse. Verdetti e
+  distanze sono auditabili in `dedup_comparisons`; un judge indisponibile
+  conserva entrambe le alternative.
+- Confronti pairwise ciechi precedono il ranking. Output mancanti o non
+  parsabili del gate falliscono chiusi.
+- Copeland è il verdetto primario; Elo viene mediato su rotazioni e ordine
+  inverso e resta telemetria. I cicli non transitivi rimangono `contested`.
+- Ogni run e i suoi candidati condividono un `generation_group_id`: varianti
+  sorelle non possono sostenersi a vicenda come convergenze indipendenti.
+- Il risultato vive soltanto in `euri:ideation:*` con TTL, senza embedding e
+  con esclusione esplicita da RAG, memoria e insight. Anche il vincitore resta
+  una deliberazione interna da verificare.
+- Esposti il contratto Python `run_tournament_pipeline`, il metodo
+  `DreamEngine.run_ideation_tournament` e il runner manuale
+  `scripts/run_ideation_tournament.py`. Nessun trigger automatico è stato
+  collegato alle conversazioni o al Pulse in questa prima versione.
+
+## 2026-08-19 - TEACH semantico e fail-closed
+
+- Rimossi dal router lessicale i pattern che trasformavano automaticamente
+  “ti racconto/ti spiego” in una sessione TEACH. Una richiesta rivolta a Euri
+  perché spieghi qualcosa a una terza persona resta ora una normale CHAT.
+- Il frame semantico v6 autorizza TEACH soltanto con destinatario assistente,
+  trasferimento di conoscenza, dialogo guidato, atto `INITIATE_TEACHING`,
+  confidenza elevata ed evidenza letterale presente nel turno corrente.
+- Errori JSON, frame incompleti e classificazioni dubbie falliscono chiusi su
+  CHAT; il fallback non può attivare autonomamente una modalità persistente.
+- Il contratto semantico accompagna la sessione, gli snapshot di recupero sono
+  versionati e una conferma finale non può salvare `source=teach` senza origine
+  autorizzata e riepilogo effettivo.
+- Le regressioni coprono il caso reale della spiegazione destinata a Davide,
+  l'assenza di autorizzazione lessicale, il fallback del parser, l'evidenza non
+  grounded, il recovery e il blocco del commit finale.
+
+## 2026-08-18 - Tempo dell'affermazione e date ellittiche ancorate alla fonte
+
+- Le memorie distinguono operativamente pubblicazione (`created_at`), turno
+  sorgente (`asserted_at`) e intervallo dell'evento (`event_start`/`event_end`).
+  Il retrieval mostra ora anche l'istante assoluto dell'affermazione e segnala
+  se il termine di un intervallo è futuro o trascorso.
+- Il resolver completa un giorno privo di mese e anno soltanto quando esiste una
+  relazione temporale esplicita (`fino al`, `entro`, `dal`). Il calendario usa
+  il timestamp del turno e gestisce cambio mese/anno; numeri, quantità e codici
+  isolati restano intatti.
+- Anche i salvataggi diretti materializzano la forma canonica prima di deduplica,
+  embedding e commit. Il verbatim non viene riscritto.
+- La memoria passiva `a8de20af…` è stata riparata dalla propria fonte
+  `83904387…:3`: «fino al 24» è ora «fino al 24 agosto 2026», con intervallo,
+  embedding e copia Vault riallineati e audit idempotente dedicato.
+- I replay firmati anteriori a questa modifica selezionano esplicitamente il
+  renderer temporale v1, conservando la ricostruzione byte-esatta senza limitare
+  il contratto runtime corrente.
+
+## 2026-08-18 - Finestra di prova completa per i judge Qwen3.8
+
+- I log reali separano il problema dalla generazione creativa: REM e wake
+  chiudono normalmente in circa 1-2 minuti, mentre bridge e convergenza con
+  reasoning pieno incontravano il timeout storico di 200 secondi.
+- Il profilo Qwen3.8 concede ora 600 secondi ai judge profondi, mantenendo
+  `think=True` e il budget di generazione a 5.000 token. Il predecessore conserva
+  il limite storico; timeout e budget restano modificabili via ambiente.
+- Bridge e convergenza eseguono al massimo un nuovo giudizio per tipo a ciclo.
+  Inoltre il budget bridge conta i tentativi, non soltanto i verdetti riusciti:
+  un timeout non può più lasciare intatto il budget e innescare una serie di
+  chiamate costose nello stesso passaggio.
+- La telemetria distingue ogni chiamata profonda (`bridge`/`convergence`) e
+  registra durata, `done_reason`, token di output e dimensione del reasoning,
+  così la qualità del nuovo modello può essere valutata su risposte completate.
+
+## 2026-08-17 - Qwen3.8 come modello dei cicli cognitivi
+
+- Il Dream Engine, il modello identitario e gli operatori offline/idle passano
+  da `qwen3.6:35b` a `hf.co/unsloth/Qwen3.8-27B-GGUF:Q4_K_M`; Gemma4 26B resta
+  il modello conversazionale, perché il cambio non riguarda la voce di Euri.
+- Tutti i call site continuano a dipendere dall'unico
+  `config.DREAM_OLLAMA_MODEL`. Il nuovo default può essere annullato senza
+  modifiche al codice avviando Euri con
+  `EURI_DREAM_OLLAMA_MODEL=qwen3.6:35b`.
+- Il self-model rende ora l'identificatore configurato realmente, evitando che
+  Euri continui a descrivere il predecessore dopo il cambio o durante un
+  rollback.
+- La calibrazione isolata ha mostrato che il wake con `think=True` esauriva il
+  timeout di 240 s; con thinking medio/basso chiudeva in 76–82 s ma ricamava
+  dettagli nelle premesse. Il profilo Qwen3.8 usa quindi contenuto diretto e
+  budget 2.000 per REM/wake: 35,8 s per un REM divergente di 1.937 caratteri e
+  12,6 s per un wake strutturato nel probe. I judge e i gate semantici restano
+  invariati e mantengono il thinking.
+- Il profilo e' legato al default Qwen3.8: l'override a `qwen3.6:35b` ripristina
+  automaticamente `think=True` e budget 4.500 per le fasi creative storiche.
+- Il bootstrap del Dream Engine espone nei log modello effettivo e profilo
+  REM/wake, così il cambio e un eventuale rollback sono verificabili al riavvio.
+
+## 2026-08-17 - Shadow memoria: dall'esposizione al riuso selettivo
+
+- Chiusa manualmente la revisione shadow v1 dopo 19,1 giorni, 336 risposte,
+  409 entità, 3.056 richiami e 642 usi lessicalmente sostenuti ma non provati.
+- Il bonus di attenzione Loop 2e non usa più il conteggio assoluto: combina gli
+  usi con il numero di esposizioni nella stessa finestra e un prior conservativo
+  di cinque esposizioni. Nessuna regola distingue source, dominio o contenuto.
+- Il confronto read-only sui 130 candidati reali mantiene 41 rinforzi, ma riduce
+  il bonus massimo osservato da `+10` a `+5` e la media da `+1,68` a `+0,44`.
+  La memoria hardware iniettata 336 volte passa da `+10` a `+0,73`.
+- La migrazione conserva tutti i contatori esistenti, materializza il nuovo
+  denominatore e aggiorna l'indice derivato. In sua assenza il bonus è zero.
+- Verità, TTL, eleggibilità, retrieval delle chat, identità e promozione degli
+  insight restano invariati. Rollback tramite
+  `EURI_MEMORY_ATTENTION_POLICY=absolute_count_v1`.
+
+## 2026-08-17 - Loop 2c: stop reversibile alle rivalutazioni terminali
+
+- I candidate già respinti per premesse infedeli o ponte forzato non consumano
+  più fedeltà, bridge e judge a ogni ciclo light mentre il verdetto è invariato.
+- Il candidate non viene cancellato e conserva audit e TTL ordinari. Una
+  conferma esterna esplicita o una misura corretta riaprono la valutazione;
+  misure mancanti ed errori transitori continuano invece a essere ritentati.
+- Nuove conversazioni e nuovi sogni possono creare candidate indipendenti sullo
+  stesso concetto: il gate elimina lavoro ripetuto, non blocca l'apprendimento.
+- Rollback operativo tramite `EURI_DREAM_TERMINAL_QUALITY_BLOCK_ENABLED=0`.
+
+## 2026-08-11 - Provenienza metacognitiva e memoria autobiografica
+
+- Le vecchie risposte di Euri restano nello storico e continuano a sostenere
+  continuità, personalità e autocritica, ma il prompt chiarisce vicino ai
+  messaggi che testimoniano ciò che Euri aveva interpretato e non provano da
+  sole fatti esterni.
+- Ogni memoria resa nel RAG porta ora una breve origine comprensibile: Stefano,
+  documento, Web, turno originale o rielaborazione interna. È una descrizione
+  della provenienza, non un voto automatico di verità o affidabilità.
+- Euri mantiene il permesso di inferire e costruire analogie; quando usa una
+  propria interpretazione precedente non confermata, il comportamento atteso è
+  riconoscerla come tale, non sopprimerla.
+- Nessuna modifica a ranking, numero di memorie, Loop 2j, retrieval, Pulse o
+  guard della risposta.
+- Aggiunte regressioni strutturali sul caso Eurostampi e sulle etichette di
+  origine.
+- Suite unitaria completa: 81/81.
+
+## 2026-08-11 - Gap di conoscenza semantico e fonti conversazionali
+
+- Il frame semantico passa alla versione 5 e distingue fatti non necessari,
+  opzionali o indispensabili tramite `evidence_request`, separando premesse,
+  dettagli mancanti, entità e fonti ammissibili.
+- La decisione resta di Gemma: non sono state aggiunte regex o liste di domini.
+  Il bordo deterministico valida soltanto entità già presenti nel frame e il
+  vocabolario chiuso del contratto.
+- Dopo il RAG, i nodi realmente visibili vengono confrontati con le entità
+  richieste. Memorie dirette pulite e turni owner autenticati sono candidati
+  fattuali; derivati, contestati e contenuti da verificare non colmano il gap.
+- Un gap aggiunge al prompt una policy anti-estrapolazione e pubblica il Pulse
+  osservativo `knowledge_gap_detected`. Non cambia intento e non avvia il Web.
+- Stefano, documenti aziendali e Web sono fonti possibili scelte semanticamente.
+  Un successivo «controlla nel web» viene risolto dal dialogo recente e soltanto
+  allora produce la richiesta Web esplicita e la query completa.
+- Silent Chat ora esegue davvero l'intento Web condiviso invece di lasciarlo
+  ricadere nella risposta ordinaria; usa la query semantica e conserva la fonte
+  esterna con `requires_verification`, come il percorso voce.
+- I casi di regressione coprono confronto Lucy Plast/Eurostampi, analogia
+  Peroni/Raffo, vincolo memory-only e autorizzazione Web ellittica.
+- Rimossa dal prompt base la specifica ICMA2 cablata: resta una regola generale
+  che separa capacità nominale/potenziale da capacità effettiva misurata.
+- Suite unitaria completa: 81/81.
+- Il probe live Gemma è rimasto non eseguibile perché Ollama non era
+  raggiungibile; il fallback è stato corretto, ma il comportamento generativo
+  va verificato dopo il riavvio e non è dedotto dai test con output simulato.
+
+## 2026-08-10 - Prompt transport audit e provenienza di insight/reflection
+
+- Il `Brain` cattura i byte HTTP effettivamente inviati a Ollama, con body
+  integrale, hash, presenza/offset in caratteri della proiezione identitaria e
+  delle sezioni RAG, più `prompt_eval_count` restituito dal server.
+- I prompt vivono soltanto in `research_logs/`, esclusa dal repository e dal
+  retrieval, con permessi locali, rotazione a 64 MiB, retention di sette giorni
+  e scrittura asincrona. Il costo sincrono osservato è 0,29–1,16 ms.
+- Il limite del renderer è esplicito: Ollama non espone stringa compilata,
+  offset token dei blocchi o flag di troncamento; il log li marca unavailable e
+  non li sostituisce con stime.
+- Gli insight resi nel RAG includono data ISO assoluta, stato di verifica, tipo
+  e produttore. I record legacy privi di origine dichiarano
+  `non_registrato_legacy` anziché ricevere un Loop inventato.
+- D1 è chiusa per la parte derivabile su una nuova sessione: nei quattro payload
+  reali identità e RAG sono sempre presenti come 3° e 4° messaggio su 16. Prompt
+  compilato, offset token interni e segnale server di troncamento restano
+  genuinamente indisponibili.
+- La baseline C pre-D3 non esiste e non è più ricostruibile. Le 4/4 sonde sugli
+  insight provano soltanto che la data è leggibile quando viene chiesta; non
+  provano l'uso spontaneo né una riduzione di frequenza.
+- Lo stesso formato di provenienza è applicato alle reflection, sia ambientali
+  sia semantiche. Costo esatto: +100 token per due; su 39 payload la media era
+  1,18 e il massimo osservato 5 reflection.
+- Sul replay B storico con metadati completi è stato trovato il controesempio:
+  `1/4` risposte ha comunque accettato la premessa temporale e parlato di un
+  weekend non sostenuto dalle date. Il residuo è documentato per un futuro D5.
+- D4 e D5 non sono stati modificati. L'attribuzione di personalità emergente è
+  sospesa nei documenti: D2 corretto riproduce le quattro regolarità con Gemma
+  nuda e gli stessi contenuti iniettati.
+- Suite unitaria completa: 81/81.
+
+## 2026-08-09 - Loop 2j: schemi associativi attivi nel retrieval
+
+- Aggiunta una proiezione schematica ricostruibile che collega memorie dirette
+  tramite entità esplicite, senza sintetizzare fatti o riscrivere i nodi canonici.
+- La vista è generazionale: una build incompleta non sposta il puntatore attivo;
+  il boot la rende subito disponibile e la maintenance la rigenera dopo
+  supersessioni, consolidamento e propagazione di provenienza.
+- Il retrieval può seguire un solo arco e riserva al massimo due fonti originali
+  (un terzo del contesto). Query temporali, demo, scope sperimentali e memorie
+  ambientali recenti non attivano l'espansione.
+- Il gate esclude derivati, quarantene, supersessioni, soggetti acefali, assenso
+  tacito e falsi propri linguistici; valori numerici nudi restano al percorso
+  identifier-first e non diventano schemi.
+- Le proprietà ripetibili e gli acronimi brevi sono `contextual_only`: `PP` o
+  `MFI` non collegano da soli aziende/codici differenti. Serve un'ancora esplicita
+  o una concordanza multi-legame con almeno un'ancora non ambigua. Le query
+  composte richiedono l'intersezione completa degli schemi nominati: coperto il
+  contro-caso «birra bionda Peroni» contro «birra bionda Raffo».
+- Prima proiezione reale finale: 1.604 documenti letti, 323 eleggibili, 69 schemi
+  e 461 appartenenze. Audit mirato dello schema Lucy Plast:
+  23 fonti distribuite in 14 domini, senza soggetti estranei osservati.
+- Regressioni dedicate in `tests/test_memory_schema.py`; documentazione canonica
+  aggiornata in `docs/EURI_MEMORY_ARCHITECTURE.md`.
+- Il primo collaudo Silent Chat ha mostrato un limite reale: una richiesta
+  esplicita su Lucy Plast poteva recuperare una `reflection` ICMA2 senza aprire
+  lo schema Lucy Plast, perché il 2j dipendeva da un hit corretto del vecchio
+  retrieval. La risposta successiva sulla provenienza ha poi inventato una
+  deduzione, benché il fatto fosse registrato come `source=user`.
+- Il frame semantico condiviso passa alla versione 4 e chiede alla Gemma già
+  calda un piano `memory_retrieval`: necessità, entità focali con rilevanza e
+  ruolo, relazione ed obiettivo dell'evidenza. Nessuna nuova regex interpreta
+  il linguaggio; il codice valida soltanto che i focus siano entità realmente
+  ancorate nel frame e applica i limiti epistemici del 2j.
+- Silent Chat, voce e mobile consegnano lo stesso piano al RAG. Una decisione
+  affidabile `needed=false` impedisce l'espansione per menzioni incidentali;
+  `overview` può aprire direttamente uno schema nominato anche quando il ranking
+  base lo manca; `comparison` conserva un piccolo bucket per ogni entità;
+  `provenance` espone source e memory ID e vieta spiegazioni cognitive inventate.
+- Prova reale Gemma: panoramica Lucy Plast → focus/overview; frase generale
+  Lucy Plast–Eurostampi → `needed=false` pur riconoscendo relazione ed entità;
+  origine ICMA2 → focus/provenance. Suite unitaria completa: 80/80.
+
+## 2026-08-08 - Integrità dei claim identitari
+
+- Il validatore della proiezione identitaria non tronca più a metà frase i claim
+  troppo lunghi: li respinge integralmente e il prompt richiede una sola frase
+  completa entro un limite prudente.
+- Aggiunta una regressione che impedisce a un claim sovradimensionato di
+  diventare un tratto `stable` semanticamente mutilato.
+- Riparato nella proiezione runtime il primo tratto relazionale emerso, usando
+  una formulazione breve fondata sulle stesse due citazioni owner già validate;
+  i turni canonici non sono stati modificati.
+- Verificato dopo il riavvio che il tratto `stable` raggiunge Silent Chat
+  owner-scoped e orienta una risposta coerente senza essere recitato. La prova è
+  registrata come evidenza funzionale proiezione→comportamento, non come prova
+  di esperienza soggettiva o di iniziativa spontanea.
+
 ## 2026-08-07 - Correzioni, aggiunte e sorgenti reali nel SAVE
 
 - Il router non interpreta più il generico «aggiungi che» dentro un discorso

@@ -11,6 +11,12 @@ venv/
 
 # Logs
 logs/
+# Prompt completi e output diagnostici locali: contengono conversazioni e non
+# devono entrare né nel repository né negli archivi cognitivi.
+research_logs/
+# Copie locali create dalle riparazioni di memoria: contengono dati operativi
+# e restano fuori dal codice versionato.
+.memory_quarantine/
 
 # Modelli e dati pesanti
 models/

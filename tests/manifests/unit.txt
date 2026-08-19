@@ -33,6 +33,8 @@ tests/test_guest_identity.py
 tests/test_history_provenance.py
 tests/test_hardware_interoception.py
 tests/test_identifier_extraction.py
+tests/test_ideation_tournament.py
+tests/test_ideation_activation.py
 tests/test_insight_epistemic_boundary.py
 tests/test_initiative.py
 tests/test_loop2a_reflection.py
@@ -46,6 +48,7 @@ tests/test_memory_benchmark.py
 tests/test_memory_benchmark_heldout.py
 tests/test_memory_dedup.py
 tests/test_memory_outbox.py
+tests/test_memory_schema.py
 tests/test_memory_scope.py
 tests/test_memory_scope_query_guard.py
 tests/test_memory_utility_shadow.py
@@ -55,6 +58,7 @@ tests/test_passive_provenance.py
 tests/test_personality_model.py
 tests/test_prompt_ablation.py
 tests/test_prompt_ablation_v2.py
+tests/test_prompt_research_log.py
 tests/test_thinking_memory_ab_v1.py
 tests/test_reaction_briefing.py
 tests/test_reaction_scope.py

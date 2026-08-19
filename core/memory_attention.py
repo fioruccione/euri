@@ -74,6 +74,67 @@ def is_loop2e_candidate(doc: dict[str, Any], *, now_ts: float | None = None) -> 
     return True
 
 
+def supported_use_attention_bonus(doc: dict[str, Any]) -> float:
+    """Rinforzo limitato dalla selettività osservata, mai dalla sola frequenza.
+
+    ``supported_use_count`` dice quante risposte hanno lasciato evidenza
+    lessicale del nodo; ``supported_use_observed_recalled_count`` quante volte
+    quel nodo era stato esposto al modello nella stessa finestra. La policy v1
+    assoluta resta disponibile soltanto come rollback esplicito.
+    """
+    import config
+
+    try:
+        supported = max(0, int(doc.get("supported_use_count") or 0))
+        cap = max(
+            0,
+            int(getattr(config, "MEMORY_ATTENTION_SUPPORTED_USE_CAP", 5)),
+        )
+        weight = max(
+            0.0,
+            float(getattr(config, "MEMORY_ATTENTION_SUPPORTED_USE_WEIGHT", 2.0)),
+        )
+    except (TypeError, ValueError):
+        return 0.0
+    if supported <= 0 or cap <= 0 or weight <= 0:
+        return 0.0
+
+    policy = str(
+        getattr(config, "MEMORY_ATTENTION_POLICY", "selective_reuse_rate_v1")
+    )
+    if policy == "absolute_count_v1":
+        return min(supported, cap) * weight
+    if policy != "selective_reuse_rate_v1":
+        # Una policy sconosciuta non deve amplificare il ranking.
+        return 0.0
+
+    try:
+        recalled = max(
+            0,
+            int(doc.get("supported_use_observed_recalled_count") or 0),
+        )
+        prior = max(
+            0.0,
+            float(
+                getattr(
+                    config,
+                    "MEMORY_ATTENTION_SUPPORTED_USE_EXPOSURE_PRIOR",
+                    5.0,
+                )
+            ),
+        )
+    except (TypeError, ValueError):
+        return 0.0
+    if recalled <= 0:
+        # Durante la migrazione il contatore d'uso può precedere il suo
+        # denominatore: meglio nessun bonus che un rapporto inventato.
+        return 0.0
+
+    supported_in_window = min(supported, recalled)
+    selective_rate = supported_in_window / (recalled + prior)
+    return min(supported_in_window, cap) * selective_rate * weight
+
+
 def loop2e_attention_score(doc: dict[str, Any]) -> float:
     """
     Score ordinato per utilità di consolidamento.
@@ -89,25 +150,12 @@ def loop2e_attention_score(doc: dict[str, Any]) -> float:
     except (TypeError, ValueError):
         rc = 0
     try:
-        supported = min(
-            int(doc.get("supported_use_count") or 0),
-            int(getattr(config, "MEMORY_ATTENTION_SUPPORTED_USE_CAP", 5)),
-        )
-    except (TypeError, ValueError):
-        supported = 0
-    try:
-        supported_weight = float(
-            getattr(config, "MEMORY_ATTENTION_SUPPORTED_USE_WEIGHT", 2.0)
-        )
-    except (TypeError, ValueError):
-        supported_weight = 2.0
-    try:
         lr = float(doc.get("last_recalled_at") or doc.get("created_at") or 0.0)
     except (TypeError, ValueError):
         lr = 0.0
     mid = bare_memory_id(doc.get("id", ""))
     tie = int(hashlib.sha1(mid.encode("utf-8")).hexdigest()[:6], 16) / 100_000_000
-    attention = rc + supported * max(0.0, supported_weight)
+    attention = rc + supported_use_attention_bonus(doc)
     return attention * 10_000_000_000.0 + lr + tie
 
 

@@ -9,8 +9,11 @@ from core.brain import Brain
 from core.conversation_turns import ConversationTurnStore, make_turn_ref
 from core.memory_manager import MemoryManager
 from core.rag_context import (
+    RagContext,
+    apply_knowledge_gap_contract,
     build_dual_channel_context,
     build_runtime_rag_context,
+    memory_origin_for_context,
     selective_thinking_decision,
 )
 from core.temporal_context import derive_passive_memory_metadata
@@ -35,9 +38,14 @@ class FakeRedis:
     def __init__(self):
         self.docs = {}
         self._json = FakeJson(self.docs)
+        self.events = []
 
     def json(self):
         return self._json
+
+    def xadd(self, stream, fields, **kwargs):
+        self.events.append((stream, fields, kwargs))
+        return f"1-{len(self.events)}"
 
 
 class FakeMemory:
@@ -80,6 +88,30 @@ class FakeEmbedder:
 
     def encode_many(self, texts, mode="passage"):
         return np.asarray([self.encode(text, mode=mode) for text in texts])
+
+
+def test_memory_origin_exposes_kind_without_assigning_truth():
+    assert memory_origin_for_context({"source": "user"}) == (
+        "[ORIGINE: comunicato da Stefano]"
+    )
+    assert memory_origin_for_context({"source": "web"}) == (
+        "[ORIGINE: risultato Web salvato, fonte esterna]"
+    )
+    assert memory_origin_for_context({"source": "reflection"}) == (
+        "[ORIGINE: interpretazione autobiografica di Euri]"
+    )
+    derived = memory_origin_for_context({"source": "loop2e"})
+    assert "consolidamento interno di Euri" in derived
+    assert all(
+        word not in " ".join(
+            [
+                memory_origin_for_context({"source": "user"}),
+                memory_origin_for_context({"source": "web"}),
+                memory_origin_for_context({"source": "reflection"}),
+            ]
+        ).lower()
+        for word in ("vero", "falso", "affidabile")
+    )
 
 
 def test_brain_persists_stable_turn_refs_and_metadata_reuses_them():
@@ -342,6 +374,98 @@ def test_selective_thinking_stays_off_without_promoted_verbatim():
     assert decision["reason"] == "no_promoted_verbatim"
 
 
+def _evidence_frame(*, dependency="optional", memory_only=False):
+    return {
+        "status": "interpreted",
+        "turn_id": "turn-gap-test",
+        "confidence": 0.98,
+        "speech_acts": ["ASK", "REQUEST_MEMORY_SEARCH"],
+        "evidence_request": {
+            "dependency": dependency,
+            "entities": ["Eurostampi"],
+            "premises": [
+                "Eurostampi e' proposta dall'utente come termine di confronto"
+            ],
+            "missing_facts": ["processi e indicatori reali di produttivita'"],
+            "acceptable_sources": ["current_user", "web"],
+            "memory_only": memory_only,
+            "confidence": 0.97,
+        },
+    }
+
+
+def test_runtime_gap_emits_pulse_and_never_authorizes_web_automatically():
+    redis = FakeRedis()
+    memory = type("Memory", (), {"r": redis})()
+    rag = RagContext(text="Contesto esistente", ids=[], mode="search")
+
+    result = apply_knowledge_gap_contract(rag, memory, _evidence_frame())
+
+    gap = result.diagnostics["knowledge_gap"]
+    assert gap["detected"] is True
+    assert gap["uncovered_entities"] == ["Eurostampi"]
+    assert "vuoto di conoscenza" in result.text
+    assert "non autorizza automaticamente alcuna ricerca Web" in result.text
+    assert len(redis.events) == 1
+    assert redis.events[0][1]["kind"] == "knowledge_gap_detected"
+
+
+def test_matching_direct_memory_is_a_candidate_not_a_license_to_extrapolate():
+    redis = FakeRedis()
+    memory = type("Memory", (), {"r": redis})()
+    rag = RagContext(
+        text="Una memoria pertinente.",
+        ids=["m1"],
+        mode="search",
+        nodes=[{
+            "kind": "memory",
+            "id": "m1",
+            "content": "Eurostampi costruisce stampi e stampa grandi formati.",
+            "entity_mentions": ["Eurostampi"],
+            "factual_support_eligible": True,
+            "requires_verification": False,
+            "epistemic_status": "",
+        }],
+    )
+
+    result = apply_knowledge_gap_contract(rag, memory, _evidence_frame())
+
+    assert result.diagnostics["knowledge_gap"]["detected"] is False
+    assert "esistono candidati fattuali" in result.text
+    assert "usa soltanto cio' che il contenuto del nodo sostiene davvero" in result.text
+    assert redis.events == []
+
+
+def test_memory_only_gap_never_offers_user_documents_or_web():
+    redis = FakeRedis()
+    memory = type("Memory", (), {"r": redis})()
+    frame = _evidence_frame(dependency="required", memory_only=True)
+    frame["evidence_request"]["acceptable_sources"] = []
+
+    result = apply_knowledge_gap_contract(
+        RagContext(text="", ids=[], mode="search"), memory, frame
+    )
+
+    assert "senza proporre fonti esterne" in result.text
+    assert "fonti semanticamente adatte" not in result.text
+
+
+def test_dependency_none_does_not_add_contract_or_emit_pulse():
+    redis = FakeRedis()
+    memory = type("Memory", (), {"r": redis})()
+    frame = _evidence_frame(dependency="none")
+    frame["evidence_request"].update({
+        "entities": [], "acceptable_sources": [], "confidence": 0.97,
+    })
+    rag = RagContext(text="Solo le premesse bastano.", ids=[], mode="chat")
+
+    result = apply_knowledge_gap_contract(rag, memory, frame)
+
+    assert result.text == "Solo le premesse bastano."
+    assert result.diagnostics["knowledge_gap"]["evaluated"] is False
+    assert redis.events == []
+
+
 def test_passive_exclusion_is_a_redis_prefilter_not_a_post_cut_filter():
     assert MemoryManager._source_prefix(None, ["passive"]) == (
         "@memory_scope:{personal} -@source:{passive}"
@@ -406,6 +530,10 @@ if __name__ == "__main__":
     test_selective_runtime_prepends_only_high_confidence_original_turn()
     test_shared_runtime_dispatcher_applies_selective_mode_for_all_channels()
     test_selective_thinking_stays_off_without_promoted_verbatim()
+    test_runtime_gap_emits_pulse_and_never_authorizes_web_automatically()
+    test_matching_direct_memory_is_a_candidate_not_a_license_to_extrapolate()
+    test_memory_only_gap_never_offers_user_documents_or_web()
+    test_dependency_none_does_not_add_contract_or_emit_pulse()
     test_passive_exclusion_is_a_redis_prefilter_not_a_post_cut_filter()
     test_query_features_are_reused_without_sharing_search_results()
     print("test_dual_channel_runtime: OK")

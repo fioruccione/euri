@@ -25,7 +25,7 @@ from core.ollama_client import chat_client
 from core.pulse import cognitive_emit
 
 
-SEMANTIC_FRAME_VERSION = 3
+SEMANTIC_FRAME_VERSION = 7
 ENTITY_SCHEMA_VERSION = 1
 _ALIAS_KEY_PREFIX = "euri:semantic:entity_aliases:"
 _ENTITY_KEY_PREFIX = "euri:semantic:entity:"
@@ -33,12 +33,13 @@ _ENTITY_KEY_PREFIX = "euri:semantic:entity:"
 _ALLOWED_INTENTS = frozenset({
     "CHAT", "WEB_SEARCH", "SEARCH", "SAVE_MEMORY", "SAVE_TODO",
     "SAVE_NOTE", "SAVE_LAST", "READ_BACK", "EXECUTE", "COMPLETE",
-    "RESCHEDULE", "ACTION_REASONING", "TRANSLATE", "DICTATION",
+    "RESCHEDULE", "ACTION_REASONING", "TRANSLATE", "DICTATION", "TEACH",
 })
 _ALLOWED_SPEECH_ACTS = frozenset({
     "INFORM", "ASK", "REQUEST_WEB_SEARCH", "REQUEST_MEMORY_SEARCH",
     "REQUEST_SAVE", "REQUEST_ACTION", "CORRECT_ENTITY", "CORRECT_FACT",
-    "CONFIRM", "REJECT", "DICTATE", "TRANSLATE",
+    "CONFIRM", "REJECT", "DICTATE", "TRANSLATE", "INITIATE_TEACHING",
+    "REQUEST_DELIBERATION",
 })
 _ALLOWED_MEMORY_DISPOSITIONS = frozenset({
     "candidate", "ephemeral", "no_store", "unspecified",
@@ -63,6 +64,14 @@ _ALLOWED_DOCUMENT_SOURCE_KINDS = frozenset({
 })
 _ALLOWED_DOCUMENT_SOURCE_SCOPES = frozenset({
     "last_exchange", "current_thread", "recent_turns", "unspecified",
+})
+_ALLOWED_EVIDENCE_DEPENDENCIES = frozenset({"none", "optional", "required"})
+_ALLOWED_EVIDENCE_SOURCES = frozenset({
+    "current_user", "company_documents", "web",
+})
+_ALLOWED_DELIBERATION_MODES = frozenset({"none", "explicit", "suggest"})
+_ALLOWED_DELIBERATION_REASONS = frozenset({
+    "tradeoff", "multiple_hypotheses", "high_impact", "uncertainty", "other",
 })
 _MIN_CURRENT_ENTITY_SURFACE_SIMILARITY = 0.72
 
@@ -96,6 +105,11 @@ def _identity_token(value: str) -> str:
         result.append(parts[index])
         index += 1
     return " ".join(result)
+
+
+def semantic_entity_key(value: str) -> str:
+    """Chiave strutturale per confrontare entita' gia' estratte semanticamente."""
+    return _identity_token(value)
 
 
 def _surface_name_similarity(observed: str, canonical: str) -> float:
@@ -157,6 +171,10 @@ class SemanticTurnFrame:
     memory_scope: str = "personal"
     memory_disposition: str = "unspecified"
     memory_reason: str = ""
+    memory_retrieval: dict = field(default_factory=dict)
+    evidence_request: dict = field(default_factory=dict)
+    teaching_session: dict = field(default_factory=dict)
+    deliberation_request: dict = field(default_factory=dict)
     addressed_to_assistant: bool = False
     address_relation: str = "unclear"
     address_confidence: float = 0.0
@@ -183,6 +201,10 @@ class SemanticTurnFrame:
             "memory_scope": self.memory_scope,
             "memory_disposition": self.memory_disposition,
             "memory_reason": self.memory_reason,
+            "memory_retrieval": dict(self.memory_retrieval),
+            "evidence_request": dict(self.evidence_request),
+            "teaching_session": dict(self.teaching_session),
+            "deliberation_request": dict(self.deliberation_request),
             "addressed_to_assistant": self.addressed_to_assistant,
             "address_relation": self.address_relation,
             "address_confidence": self.address_confidence,
@@ -361,6 +383,7 @@ class SemanticTurnService:
             model=config.OLLAMA_MODEL,
             messages=[{"role": "user", "content": prompt}],
             options={"temperature": 0, "num_predict": 700},
+            format="json",
             think=False,
         )
         return str(response.message.content or "")
@@ -465,6 +488,69 @@ class SemanticTurnService:
             "e per una richiesta esplicita di salvataggio, gia' gestita dal flusso attivo e "
             "da non duplicare passivamente. Questa classificazione puo' soltanto candidare o "
             "impedire l'estrazione passiva: non salva direttamente nulla.\n"
+            "Produci anche memory_retrieval: e' un piano semantico per decidere se la "
+            "risposta corrente beneficia della memoria durevole, non un comando di ricerca. "
+            "needed=true soltanto quando recuperare conoscenza pregressa aiuta davvero a "
+            "rispondere; una semplice menzione incidentale di un nome non basta. In focus "
+            "inserisci esclusivamente entita' gia' presenti in entities, usando il nome "
+            "canonico e una relevance continua. role descrive il ruolo discorsivo: focus "
+            "per il soggetto cercato, comparison per un termine di confronto, context per "
+            "un riferimento ambientale e modifier per una proprieta'/prodotto che restringe "
+            "un altro soggetto. relation riassume liberamente il rapporto compreso. "
+            "evidence_goal indica overview, fact, comparison, provenance, timeline, "
+            "continuity oppure other. Per domande sull'origine di un ricordo usa provenance. "
+            "Non inventare entita' o bisogni mnemonici assenti dal turno e dal contesto.\n"
+            "Produci anche evidence_request, che descrive quali fatti esterni alle sole "
+            "premesse del turno servono davvero per rispondere. Non e' un comando e non "
+            "autorizza strumenti. dependency=none se basta ragionare sulle premesse date "
+            "dall'utente o se la risposta non richiede fatti ulteriori; optional se puoi "
+            "dare una risposta condizionale utile ma alcuni dettagli renderebbero il "
+            "confronto piu' preciso; required soltanto se senza quei dati una risposta "
+            "specifica sarebbe inventata. In entities usa esclusivamente nomi gia' "
+            "presenti in entities. premises conserva, senza rafforzarle, le assunzioni "
+            "esplicite o implicate dalla domanda. missing_facts nomina informazioni "
+            "concrete mancanti, non temi generici. acceptable_sources ordina le fonti "
+            "semanticamente adatte: current_user se il proprietario puo' conoscere il "
+            "dato, company_documents per dati aziendali/documentali, web per fatti "
+            "pubblici verificabili. Il web non e' una fonte automatica e non va sempre "
+            "proposto. Se la richiesta impone di usare soltanto le memorie, usa "
+            "memory_only=true e non proporre fonti esterne. Una normale analogia basata "
+            "su premesse gia' sufficienti (per esempio due marche che hanno entrambe una "
+            "birra bionda) non crea un vuoto informativo. In un confronto aziendale, una "
+            "premessa dell'utente puo' essere usata come premessa, ma non autorizza a "
+            "inventare processi, valori o caratteristiche dell'altra azienda.\n"
+            "Se il turno corrente autorizza esplicitamente una ricerca web con un "
+            "riferimento ellittico come 'controlla nel web', risolvi dal dialogo recente "
+            "l'entita' e i missing_facts appena discussi, usa WEB_SEARCH e "
+            "REQUEST_WEB_SEARCH e costruisci una web_query autonoma e precisa. Non "
+            "completare la query con dettagli che non compaiono nel turno o nel dialogo.\n"
+            "Distingui una vera SESSIONE DI INSEGNAMENTO da una normale spiegazione. "
+            "Usa primary_intent=TEACH e speech act INITIATE_TEACHING soltanto quando "
+            "l'utente vuole trasferire conoscenza all'assistente in un dialogo guidato: "
+            "l'assistente ascoltera', fara' domande e proporra' un riepilogo da salvare "
+            "solo dopo conferma. Compila teaching_session con recipient=assistant, "
+            "goal=knowledge_transfer, interaction=guided_session e cita in evidence un "
+            "passaggio letterale del turno che dimostri questa intenzione. Chiedere "
+            "all'assistente di spiegare, presentare o raccontare qualcosa a una terza "
+            "persona resta CHAT con recipient=third_party e goal=explanation. Una normale "
+            "confidenza o un racconto rivolto all'assistente resta CHAT se non emerge "
+            "l'intenzione di istruirlo. Una richiesta di ricordare direttamente un fatto "
+            "resta SAVE_MEMORY, non TEACH. Nel dubbio resta CHAT e usa valori unclear.\n"
+            "Valuta infine se il turno richiede una DELIBERAZIONE COMPETITIVA, cioe' "
+            "il confronto lento di piu' ipotesi indipendenti. Usa mode=explicit e lo "
+            "speech act REQUEST_DELIBERATION solo quando l'utente chiede davvero di "
+            "esplorare, confrontare o mettere alla prova piu' alternative sullo stesso "
+            "problema. Una normale domanda, 'cosa ne pensi?', una richiesta di spiegazione "
+            "o un singolo consiglio restano mode=none. Usa mode=suggest soltanto quando "
+            "nel problema sono visibili almeno due strade materialmente diverse, la scelta "
+            "ha conseguenze non banali e il beneficio plausibile giustifica diversi minuti "
+            "di calcolo; in questo caso il sistema chiedera' consenso prima di partire. "
+            "Non proporla per ricordi fattuali, conversazione casuale, salvataggi, correzioni, "
+            "azioni semplici o quando evidence_request segnala fatti indispensabili ancora "
+            "mancanti. problem deve formulare il problema reale senza aggiungere premesse; "
+            "constraints contiene solo vincoli espressi nel turno o nel dialogo recente. "
+            "Cita in evidence un passaggio letterale del turno corrente che giustifica la "
+            "classificazione. Nel dubbio usa mode=none.\n"
             "Valuta inoltre se il turno e' linguisticamente rivolto all'assistente. Non "
             "presumerlo dal fatto che il parlante sia il proprietario. Usa direct_address "
             "solo per un saluto, una domanda, un comando o un riferimento diretto allo "
@@ -482,10 +568,10 @@ class SemanticTurnService:
             "Schema obbligatorio:\n"
             "{\"interpreted_text\":\"\",\"primary_intent\":\"CHAT|WEB_SEARCH|SEARCH|"
             "SAVE_MEMORY|SAVE_TODO|SAVE_NOTE|SAVE_LAST|READ_BACK|EXECUTE|COMPLETE|"
-            "RESCHEDULE|ACTION_REASONING|TRANSLATE|DICTATION\","
+            "RESCHEDULE|ACTION_REASONING|TRANSLATE|DICTATION|TEACH\","
             "\"speech_acts\":[\"INFORM|ASK|REQUEST_WEB_SEARCH|REQUEST_MEMORY_SEARCH|"
             "REQUEST_SAVE|REQUEST_ACTION|CORRECT_ENTITY|CORRECT_FACT|CONFIRM|REJECT|"
-            "DICTATE|TRANSLATE\"],\"entities\":[{\"observed_form\":\"\","
+            "DICTATE|TRANSLATE|INITIATE_TEACHING|REQUEST_DELIBERATION\"],\"entities\":[{\"observed_form\":\"\","
             "\"canonical_name\":\"\",\"entity_type\":\"person|organization|product|"
             "place|project|other\",\"status\":\"mentioned|resolved|explicit_correction\","
             "\"evidence\":\"\",\"confidence\":0.0}],\"facts\":[{\"claim\":\"\","
@@ -499,7 +585,24 @@ class SemanticTurnService:
             "\"web_query\":\"\",\"preservation_mode\":\"semantic|verbatim\","
             "\"requires_clarification\":false,\"meaning_preserved\":true,"
             "\"confidence\":0.0,\"memory_disposition\":\"candidate|ephemeral|no_store\","
-            "\"memory_reason\":\"\",\"addressed_to_assistant\":false,"
+            "\"memory_reason\":\"\",\"memory_retrieval\":{\"needed\":false,"
+            "\"focus\":[{\"entity\":\"\",\"role\":\"focus|comparison|context|modifier\","
+            "\"relevance\":0.0}],\"relation\":\"\","
+            "\"evidence_goal\":\"overview|fact|comparison|provenance|timeline|continuity|other\","
+            "\"confidence\":0.0},\"evidence_request\":{"
+            "\"dependency\":\"none|optional|required\",\"entities\":[\"\"],"
+            "\"premises\":[\"\"],\"missing_facts\":[\"\"],"
+            "\"acceptable_sources\":[\"current_user|company_documents|web\"],"
+            "\"memory_only\":false,\"confidence\":0.0},"
+            "\"teaching_session\":{\"recipient\":\"assistant|third_party|unclear\","
+            "\"goal\":\"knowledge_transfer|explanation|ordinary_conversation|direct_save|unclear\","
+            "\"interaction\":\"guided_session|single_turn|unclear\","
+            "\"evidence\":\"\",\"confidence\":0.0},"
+            "\"deliberation_request\":{\"mode\":\"none|explicit|suggest\","
+            "\"problem\":\"\",\"reason\":\"tradeoff|multiple_hypotheses|high_impact|uncertainty|other\","
+            "\"alternatives_visible\":false,\"constraints\":[\"\"],"
+            "\"evidence\":\"\",\"confidence\":0.0},"
+            "\"addressed_to_assistant\":false,"
             "\"address_relation\":\"direct_address|direct_followup|ambient|unclear\","
             "\"address_confidence\":0.0}\n"
             "INPUT_JSON:\n" + json.dumps(payload, ensure_ascii=False)
@@ -674,6 +777,222 @@ class SemanticTurnService:
             })
         return projected_text, projected_query, projections
 
+    @staticmethod
+    def _normalized_memory_retrieval(data: dict, entities: list[dict]) -> dict:
+        """Valida il piano mnemonico senza reinterpretare il linguaggio.
+
+        Gemma decide il significato; questo bordo impedisce soltanto che un nome
+        inventato dal piano apra uno schema non osservato nel frame del turno.
+        """
+        raw = data.get("memory_retrieval")
+        if not isinstance(raw, dict):
+            return {}
+        allowed_roles = {"focus", "comparison", "context", "modifier"}
+        allowed_goals = {
+            "overview", "fact", "comparison", "provenance", "timeline",
+            "continuity", "other",
+        }
+        known: dict[str, str] = {}
+        for entity in entities:
+            observed = str(entity.get("observed_form") or "").strip()
+            canonical = str(entity.get("canonical_name") or observed).strip()
+            if observed:
+                known[_identity_token(observed)] = canonical or observed
+            if canonical:
+                known[_identity_token(canonical)] = canonical
+
+        focus: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        for item in raw.get("focus") or []:
+            if not isinstance(item, dict):
+                continue
+            requested = str(
+                item.get("entity") or item.get("canonical_name") or ""
+            ).strip()
+            canonical = known.get(_identity_token(requested))
+            if not canonical:
+                continue
+            role = str(item.get("role") or "focus").strip().lower()
+            if role not in allowed_roles:
+                role = "focus"
+            key = (_identity_token(canonical), role)
+            if key in seen:
+                continue
+            seen.add(key)
+            focus.append({
+                "entity": canonical[:160],
+                "role": role,
+                "relevance": _confidence(item.get("relevance")),
+            })
+            if len(focus) >= 8:
+                break
+
+        goal = str(raw.get("evidence_goal") or "other").strip().lower()
+        if goal not in allowed_goals:
+            goal = "other"
+        return {
+            "needed": raw.get("needed") is True,
+            "focus": focus,
+            "relation": str(raw.get("relation") or "").strip()[:240],
+            "evidence_goal": goal,
+            "confidence": _confidence(raw.get("confidence")),
+        }
+
+    @staticmethod
+    def _normalized_evidence_request(data: dict, entities: list[dict]) -> dict:
+        """Valida il bisogno informativo deciso semanticamente da Gemma.
+
+        Il bordo non interpreta il testo e non sceglie fonti: limita il piano a
+        entita' gia' ancorate nel frame e a un vocabolario operativo compatto.
+        """
+        raw = data.get("evidence_request")
+        if not isinstance(raw, dict):
+            return {}
+
+        dependency = str(raw.get("dependency") or "none").strip().lower()
+        if dependency not in _ALLOWED_EVIDENCE_DEPENDENCIES:
+            dependency = "none"
+
+        known: dict[str, str] = {}
+        for entity in entities:
+            observed = str(entity.get("observed_form") or "").strip()
+            canonical = str(entity.get("canonical_name") or observed).strip()
+            if observed:
+                known[_identity_token(observed)] = canonical or observed
+            if canonical:
+                known[_identity_token(canonical)] = canonical
+
+        requested_entities: list[str] = []
+        seen_entities: set[str] = set()
+        for item in raw.get("entities") or []:
+            requested = str(item or "").strip()
+            canonical = known.get(_identity_token(requested))
+            key = _identity_token(canonical or "")
+            if not canonical or key in seen_entities:
+                continue
+            seen_entities.add(key)
+            requested_entities.append(canonical[:160])
+            if len(requested_entities) >= 8:
+                break
+
+        def _short_strings(name: str, limit: int) -> list[str]:
+            values: list[str] = []
+            for item in raw.get(name) or []:
+                value = str(item or "").strip()
+                if value and value not in values:
+                    values.append(value[:240])
+                if len(values) >= limit:
+                    break
+            return values
+
+        sources: list[str] = []
+        for item in raw.get("acceptable_sources") or []:
+            source = str(item or "").strip().lower()
+            if source in _ALLOWED_EVIDENCE_SOURCES and source not in sources:
+                sources.append(source)
+
+        memory_only = raw.get("memory_only") is True
+        if memory_only:
+            sources = []
+        if dependency == "none":
+            requested_entities = []
+            sources = []
+
+        return {
+            "dependency": dependency,
+            "entities": requested_entities,
+            "premises": _short_strings("premises", 6),
+            "missing_facts": _short_strings("missing_facts", 6),
+            "acceptable_sources": sources,
+            "memory_only": memory_only,
+            "confidence": _confidence(raw.get("confidence")),
+        }
+
+    @staticmethod
+    def _normalized_teaching_session(data: dict, raw_text: str) -> dict:
+        """Conserva un contratto TEACH solo se la sua evidenza viene dal turno.
+
+        Il modello comprende l'intenzione; questo bordo non tenta di rifarla con
+        parole chiave. Verifica pero' che il passaggio addotto come motivo sia
+        realmente pronunciato dall'utente, cosi' una classificazione astratta non
+        puo' aprire da sola una modalita' capace di salvare memoria durevole.
+        """
+        raw = data.get("teaching_session")
+        if not isinstance(raw, dict):
+            return {}
+
+        recipient = str(raw.get("recipient") or "unclear").strip().lower()
+        if recipient not in {"assistant", "third_party", "unclear"}:
+            recipient = "unclear"
+        goal = str(raw.get("goal") or "unclear").strip().lower()
+        if goal not in {
+            "knowledge_transfer", "explanation", "ordinary_conversation",
+            "direct_save", "unclear",
+        }:
+            goal = "unclear"
+        interaction = str(raw.get("interaction") or "unclear").strip().lower()
+        if interaction not in {"guided_session", "single_turn", "unclear"}:
+            interaction = "unclear"
+
+        evidence = str(raw.get("evidence") or "").strip()[:320]
+        evidence_key = _alias_token(evidence)
+        raw_key = _alias_token(raw_text)
+        evidence_grounded = bool(evidence_key and evidence_key in raw_key)
+        return {
+            "recipient": recipient,
+            "goal": goal,
+            "interaction": interaction,
+            "evidence": evidence if evidence_grounded else "",
+            "evidence_grounded": evidence_grounded,
+            "confidence": _confidence(raw.get("confidence")),
+        }
+
+    @staticmethod
+    def _normalized_deliberation_request(data: dict, raw_text: str) -> dict:
+        """Valida il motivo semantico senza cercare parole di attivazione.
+
+        L'evidenza letterale non decide il significato: impedisce pero' che un
+        suggerimento costoso nasca da una spiegazione astratta del modello e non
+        dal turno effettivamente pronunciato.
+        """
+        raw = data.get("deliberation_request")
+        if not isinstance(raw, dict):
+            return {}
+        mode = str(raw.get("mode") or "none").strip().lower()
+        if mode not in _ALLOWED_DELIBERATION_MODES:
+            mode = "none"
+        reason = str(raw.get("reason") or "other").strip().lower()
+        if reason not in _ALLOWED_DELIBERATION_REASONS:
+            reason = "other"
+        evidence = str(raw.get("evidence") or "").strip()[:320]
+        evidence_key = _alias_token(evidence)
+        raw_key = _alias_token(raw_text)
+        evidence_grounded = bool(evidence_key and evidence_key in raw_key)
+        constraints: list[str] = []
+        for item in raw.get("constraints") or []:
+            value = str(item or "").strip()[:360]
+            if value and value not in constraints:
+                constraints.append(value)
+            if len(constraints) >= 8:
+                break
+        if mode == "none":
+            return {
+                "mode": "none", "problem": "", "reason": reason,
+                "alternatives_visible": False, "constraints": [],
+                "evidence": "", "evidence_grounded": False,
+                "confidence": _confidence(raw.get("confidence")),
+            }
+        return {
+            "mode": mode,
+            "problem": str(raw.get("problem") or "").strip()[:2400],
+            "reason": reason,
+            "alternatives_visible": raw.get("alternatives_visible") is True,
+            "constraints": constraints,
+            "evidence": evidence if evidence_grounded else "",
+            "evidence_grounded": evidence_grounded,
+            "confidence": _confidence(raw.get("confidence")),
+        }
+
     @classmethod
     def _validated_frame(cls, data: dict, raw_text: str, baseline: str, scope: str) -> SemanticTurnFrame:
         intent = str(data.get("primary_intent") or "").upper()
@@ -686,13 +1005,18 @@ class SemanticTurnService:
                 speech_acts.append(value)
         operational_acts = {
             "REQUEST_WEB_SEARCH", "REQUEST_MEMORY_SEARCH", "REQUEST_SAVE",
-            "REQUEST_ACTION", "DICTATE", "TRANSLATE",
+            "REQUEST_ACTION", "DICTATE", "TRANSLATE", "INITIATE_TEACHING",
+            "REQUEST_DELIBERATION",
         }
         # Un turno informativo/interrogativo e' comunque conversazione. Senza
         # questo default un primary_intent vuoto puo' cadere nel controller fuzzy.
         if not intent and speech_acts and not (set(speech_acts) & operational_acts):
             intent = "CHAT"
         entities = [item for item in (data.get("entities") or []) if isinstance(item, dict)][:16]
+        memory_retrieval = cls._normalized_memory_retrieval(data, entities)
+        evidence_request = cls._normalized_evidence_request(data, entities)
+        teaching_session = cls._normalized_teaching_session(data, raw_text)
+        deliberation_request = cls._normalized_deliberation_request(data, raw_text)
         facts = cls._normalized_facts(data)
         preservation = str(data.get("preservation_mode") or "semantic").lower()
         if preservation not in {"semantic", "verbatim"}:
@@ -783,6 +1107,10 @@ class SemanticTurnService:
             memory_scope=scope,
             memory_disposition=memory_disposition,
             memory_reason=str(data.get("memory_reason") or "").strip()[:240],
+            memory_retrieval=memory_retrieval,
+            evidence_request=evidence_request,
+            teaching_session=teaching_session,
+            deliberation_request=deliberation_request,
             addressed_to_assistant=data.get("addressed_to_assistant") is True,
             address_relation=address_relation,
             address_confidence=_confidence(data.get("address_confidence")),
@@ -937,6 +1265,91 @@ class SemanticTurnService:
         return frame.as_dict()
 
 
+def trusted_memory_retrieval_plan(
+    frame: dict | None,
+    *,
+    minimum_confidence: float | None = None,
+) -> dict | None:
+    """Restituisce il piano Gemma soltanto quando il frame e' affidabile.
+
+    ``None`` significa compatibilita' legacy: nessun piano utilizzabile. Un piano
+    valido con ``needed=False`` e' invece una decisione semantica esplicita e deve
+    poter impedire l'espansione schematica per una menzione incidentale.
+    """
+    if not isinstance(frame, dict) or frame.get("status") != "interpreted":
+        return None
+    plan = frame.get("memory_retrieval")
+    if not isinstance(plan, dict) or "needed" not in plan:
+        return None
+    floor = float(
+        minimum_confidence
+        if minimum_confidence is not None
+        else getattr(config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72)
+    )
+    if _confidence(frame.get("confidence")) < floor:
+        return None
+    if _confidence(plan.get("confidence")) < floor:
+        return None
+    return {
+        "needed": plan.get("needed") is True,
+        "focus": [
+            dict(item) for item in (plan.get("focus") or [])
+            if isinstance(item, dict)
+        ][:8],
+        "relation": str(plan.get("relation") or "")[:240],
+        "evidence_goal": str(plan.get("evidence_goal") or "other").lower(),
+        "confidence": _confidence(plan.get("confidence")),
+    }
+
+
+def trusted_evidence_request(
+    frame: dict | None,
+    *,
+    minimum_confidence: float | None = None,
+) -> dict | None:
+    """Espone il bisogno informativo solo da un frame semantico affidabile.
+
+    La funzione non decide se le memorie coprono il bisogno: quella verifica puo'
+    avvenire soltanto dopo il RAG, sui nodi realmente entrati nel prompt.
+    """
+    if not isinstance(frame, dict) or frame.get("status") != "interpreted":
+        return None
+    request = frame.get("evidence_request")
+    if not isinstance(request, dict) or "dependency" not in request:
+        return None
+    floor = float(
+        minimum_confidence
+        if minimum_confidence is not None
+        else getattr(config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72)
+    )
+    if _confidence(frame.get("confidence")) < floor:
+        return None
+    if _confidence(request.get("confidence")) < floor:
+        return None
+    dependency = str(request.get("dependency") or "none").strip().lower()
+    if dependency not in _ALLOWED_EVIDENCE_DEPENDENCIES:
+        return None
+    return {
+        "dependency": dependency,
+        "entities": [
+            str(item) for item in (request.get("entities") or []) if str(item).strip()
+        ][:8],
+        "premises": [
+            str(item) for item in (request.get("premises") or []) if str(item).strip()
+        ][:6],
+        "missing_facts": [
+            str(item) for item in (request.get("missing_facts") or [])
+            if str(item).strip()
+        ][:6],
+        "acceptable_sources": [
+            str(item) for item in (request.get("acceptable_sources") or [])
+            if item in _ALLOWED_EVIDENCE_SOURCES
+        ],
+        "memory_only": request.get("memory_only") is True,
+        "confidence": _confidence(request.get("confidence")),
+    }
+
+
 def _frame_has_concrete_action(frame: dict | None) -> bool:
     if not isinstance(frame, dict):
         return False
@@ -1017,6 +1430,119 @@ def frame_document_source(frame: dict | None) -> dict:
     return {}
 
 
+def trusted_teaching_session(
+    frame: dict | None,
+    *,
+    minimum_confidence: float = 0.82,
+) -> dict | None:
+    """Restituisce il contratto didattico solo su intenzione forte e grounded.
+
+    TEACH apre uno stato multi-turn e puo' culminare in memoria durevole: una
+    classificazione generica, un destinatario terzo o un parser in fallback non
+    hanno quindi autorita' sufficiente.
+    """
+    if not isinstance(frame, dict) or frame.get("status") != "interpreted":
+        return None
+    if frame.get("requires_clarification"):
+        return None
+    if _confidence(frame.get("confidence")) < minimum_confidence:
+        return None
+    if str(frame.get("primary_intent") or "").upper() != "TEACH":
+        return None
+    acts = {str(item or "").upper() for item in (frame.get("speech_acts") or [])}
+    if "INITIATE_TEACHING" not in acts:
+        return None
+    contract = frame.get("teaching_session")
+    if not isinstance(contract, dict):
+        return None
+    if contract.get("evidence_grounded") is not True:
+        return None
+    if _confidence(contract.get("confidence")) < minimum_confidence:
+        return None
+    if str(contract.get("recipient") or "").lower() != "assistant":
+        return None
+    if str(contract.get("goal") or "").lower() != "knowledge_transfer":
+        return None
+    if str(contract.get("interaction") or "").lower() != "guided_session":
+        return None
+    return dict(contract)
+
+
+def trusted_deliberation_request(
+    frame: dict | None,
+    *,
+    explicit_minimum_confidence: float | None = None,
+    suggest_minimum_confidence: float | None = None,
+) -> dict | None:
+    """Autorizza Loop 2k solo da una decisione semantica forte e grounded.
+
+    La richiesta esplicita puo' partire direttamente. Un suggerimento resta una
+    proposta e richiede poi un CONFIRM separato. I fatti indispensabili mancanti
+    chiudono entrambi i percorsi: prima va colmato il vuoto informativo.
+    """
+    if not isinstance(frame, dict) or frame.get("status") != "interpreted":
+        return None
+    if frame.get("requires_clarification"):
+        return None
+    if frame.get("addressed_to_assistant") is not True:
+        return None
+    contract = frame.get("deliberation_request")
+    if not isinstance(contract, dict):
+        return None
+    mode = str(contract.get("mode") or "none").strip().lower()
+    if mode not in {"explicit", "suggest"}:
+        return None
+    explicit_floor = float(
+        explicit_minimum_confidence
+        if explicit_minimum_confidence is not None
+        else getattr(config, "SEMANTIC_IDEATION_EXPLICIT_MIN_CONFIDENCE", 0.82)
+    )
+    suggest_floor = float(
+        suggest_minimum_confidence
+        if suggest_minimum_confidence is not None
+        else getattr(config, "SEMANTIC_IDEATION_SUGGEST_MIN_CONFIDENCE", 0.88)
+    )
+    floor = explicit_floor if mode == "explicit" else suggest_floor
+    if _confidence(frame.get("confidence")) < floor:
+        return None
+    if _confidence(contract.get("confidence")) < floor:
+        return None
+    if contract.get("evidence_grounded") is not True:
+        return None
+    if not str(contract.get("problem") or "").strip():
+        return None
+    if contract.get("alternatives_visible") is not True:
+        return None
+    acts = {str(item or "").upper() for item in frame.get("speech_acts") or []}
+    if mode == "explicit" and "REQUEST_DELIBERATION" not in acts:
+        return None
+    evidence_request = frame.get("evidence_request")
+    if isinstance(evidence_request, dict):
+        if (
+            str(evidence_request.get("dependency") or "none").lower() == "required"
+            and any(str(item or "").strip() for item in evidence_request.get("missing_facts") or [])
+        ):
+            return None
+    return dict(contract)
+
+
+def gate_teaching_route(
+    frame: dict | None,
+    current_intent,
+    *,
+    minimum_confidence: float = 0.82,
+) -> str:
+    """TEACH e' fail-closed: senza contratto semantico torna sempre CHAT."""
+    current = str(getattr(current_intent, "value", current_intent) or "").upper()
+    if current != "TEACH":
+        return current
+    if trusted_teaching_session(
+        frame, minimum_confidence=minimum_confidence
+    ) is not None:
+        return "TEACH"
+    return "CHAT"
+
+
 def semantic_intent(frame: dict | None, *, minimum_confidence: float = 0.72) -> str:
     """Intent operativo del frame, solo quando abbastanza sicuro."""
     if not isinstance(frame, dict) or frame.get("status") != "interpreted":
@@ -1045,8 +1571,14 @@ def semantic_intent(frame: dict | None, *, minimum_confidence: float = 0.72) -> 
         "ACTION_REASONING": {"REQUEST_ACTION"},
         "TRANSLATE": {"TRANSLATE"},
         "DICTATION": {"DICTATE"},
+        "TEACH": {"INITIATE_TEACHING"},
     }.get(value)
     if required is not None and not (acts & required):
+        return ""
+    if value == "TEACH" and trusted_teaching_session(
+        frame,
+        minimum_confidence=max(0.82, float(minimum_confidence)),
+    ) is None:
         return ""
     if (
         value in {"EXECUTE", "ACTION_REASONING"}

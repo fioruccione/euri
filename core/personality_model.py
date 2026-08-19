@@ -33,6 +33,8 @@ STRENGTHS = frozenset({"declared", "feedback", "pattern"})
 PROJECTION_PREFIX = "euri:personality:projection:"
 LOCK_PREFIX = "euri:personality:lock:"
 ATTEMPT_PREFIX = "euri:personality:last_attempt:"
+CLAIM_MAX_CHARS = 320
+CLAIM_PROMPT_MAX_CHARS = 240
 
 
 def _decode(value: Any) -> str:
@@ -182,7 +184,7 @@ def validate_proposals(
         subject = str(item.get("subject") or "").strip().casefold()
         relation = str(item.get("relation") or "new").strip().casefold()
         strength = str(item.get("strength") or "pattern").strip().casefold()
-        claim = " ".join(str(item.get("claim") or "").split())[:320]
+        claim = " ".join(str(item.get("claim") or "").split())
         scope = " ".join(str(item.get("scope") or "generale").split())[:120]
         trait_id = str(item.get("trait_id") or "").strip()
         if (
@@ -190,6 +192,11 @@ def validate_proposals(
             or relation not in RELATIONS
             or strength not in STRENGTHS
             or len(claim) < 12
+            # Un tratto identitario non puo' essere mozzato silenziosamente:
+            # cambierebbe il significato di una vista che entra nel realtime.
+            # Le proposte troppo lunghe vengono respinte e potranno essere
+            # riformulate dal modello in un consolidamento successivo.
+            or len(claim) > CLAIM_MAX_CHARS
             or not scope
         ):
             continue
@@ -583,6 +590,9 @@ class PersonalityModel:
             '"relation":"new|supports|contradicts","trait_id":"id oppure vuoto",'
             '"strength":"declared|feedback|pattern","evidence":'
             '[{"turn_ref":"...","quote":"citazione esatta"}]}]}\n\n'
+            f"Il claim deve essere una sola frase completa di massimo "
+            f"{CLAIM_PROMPT_MAX_CHARS} caratteri. Se non riesci a formularlo "
+            "entro il limite, non proporlo.\n\n"
             f"Tratti esistenti:\n{json.dumps(existing, ensure_ascii=False)}\n\n"
             "Turni:\n" + "\n".join(lines)
         )
@@ -618,7 +628,7 @@ class PersonalityModel:
                 },
                 format="json",
                 # Questo e' un consolidatore strutturato, non il REM grezzo:
-                # con think=True Qwen 3.6 puo' consumare l'intero budget nel
+                # Con think=True il modello Dream puo' consumare l'intero budget nel
                 # reasoning senza produrre content. La liberta' semantica resta
                 # nel prompt/temperature; la veglia riceve direttamente JSON.
                 think=False,

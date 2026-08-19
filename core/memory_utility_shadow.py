@@ -107,7 +107,11 @@ def migrate_legacy_utility_shadow_keys(redis_client) -> dict:
 def get_memory_utility_review_pending(redis_client) -> dict:
     """Ritorna l'avviso durevole, senza mutare la finestra osservativa."""
     migrate_legacy_utility_shadow_keys(redis_client)
-    return _load_json_key(redis_client, UTILITY_REVIEW_PENDING_KEY)
+    review = _load_json_key(redis_client, UTILITY_REVIEW_PENDING_KEY)
+    policy = str(getattr(config, "MEMORY_ATTENTION_POLICY", ""))
+    if policy == "selective_reuse_rate_v1":
+        return {}
+    return review if review.get("status") == "review_pending" else {}
 
 
 def _new_state(reference_at: float) -> dict:
@@ -254,6 +258,7 @@ def sync_supported_use_metadata(redis_client, state: dict) -> dict:
 
     for stats in (state.get("entities") or {}).values():
         observed = int(stats.get("used_supported_not_proven") or 0)
+        observed_recalled = max(int(stats.get("recalled") or 0), observed)
         if observed <= 0:
             continue
         kind = str(stats.get("kind") or "")
@@ -268,10 +273,19 @@ def sync_supported_use_metadata(redis_client, state: dict) -> dict:
             doc = raw[0]
             current = int(doc.get("supported_use_count") or 0)
             cumulative = max(current, observed)
-            if cumulative == current:
+            current_recalled = int(
+                doc.get("supported_use_observed_recalled_count") or 0
+            )
+            cumulative_recalled = max(current_recalled, observed_recalled)
+            if cumulative == current and cumulative_recalled == current_recalled:
                 continue
             redis_client.json().set(
                 key, "$.supported_use_count", cumulative
+            )
+            redis_client.json().set(
+                key,
+                "$.supported_use_observed_recalled_count",
+                cumulative_recalled,
             )
             redis_client.json().set(
                 key,
@@ -285,12 +299,21 @@ def sync_supported_use_metadata(redis_client, state: dict) -> dict:
                     "method": "distinctive_lexical_overlap_v1",
                     "status": "supported_not_proven",
                     "attention_only": True,
+                    "attention_policy": "selective_reuse_rate_v1",
+                    "observed_recalled_count": cumulative_recalled,
+                    "observed_supported_use_count": cumulative,
+                    "observed_selective_reuse_ratio": round(
+                        cumulative / cumulative_recalled, 6
+                    ) if cumulative_recalled else 0.0,
                     "updated_at": time.time(),
                 },
             )
             if kind == "memory":
                 indexed = dict(doc)
                 indexed["supported_use_count"] = cumulative
+                indexed["supported_use_observed_recalled_count"] = (
+                    cumulative_recalled
+                )
                 indexed["last_supported_use_at"] = (
                     stats.get("last_used_at") or time.time()
                 )
@@ -376,7 +399,7 @@ def build_memory_utility_report(
     used_total = int(totals.get("used_nodes_supported_not_proven") or 0)
     return {
         "schema_version": UTILITY_SCHEMA_VERSION,
-        "mode": "shadow_observation_plus_bounded_attention",
+        "mode": "shadow_observation_plus_bounded_selective_attention",
         "experiment_version": LINEAGE_EXPERIMENT,
         "reference_at": float(reference_at),
         "observation_started_at": observation_started_at,
@@ -396,6 +419,16 @@ def build_memory_utility_report(
             ),
             "supported_use_cap": int(
                 getattr(config, "MEMORY_ATTENTION_SUPPORTED_USE_CAP", 5)
+            ),
+            "attention_policy": str(
+                getattr(config, "MEMORY_ATTENTION_POLICY", "")
+            ),
+            "exposure_prior": float(
+                getattr(
+                    config,
+                    "MEMORY_ATTENTION_SUPPORTED_USE_EXPOSURE_PRIOR",
+                    5.0,
+                )
             ),
             "truth_gate_changed": False,
             "promotion_gate_changed": False,
@@ -466,6 +499,14 @@ def run_memory_utility_shadow_maintenance(
     )
     report["metadata_sync"] = sync_result
     report["namespace_migration"] = namespace_migration
+    attention_policy = str(getattr(config, "MEMORY_ATTENTION_POLICY", ""))
+    if attention_policy == "selective_reuse_rate_v1":
+        report["review_resolution"] = {
+            "status": "completed",
+            "decided_at": "2026-08-17",
+            "decision": attention_policy,
+            "automatic_policy_change": False,
+        }
     redis_client.set(
         UTILITY_REPORT_KEY,
         json.dumps(report, ensure_ascii=False, sort_keys=True),
@@ -480,6 +521,39 @@ def run_memory_utility_shadow_maintenance(
             report["totals"].get("turns_responded", 0),
             report["thresholds"]["min_responded_turns"],
         )
+        return report
+
+    if attention_policy == "selective_reuse_rate_v1":
+        previous = _load_json_key(redis_client, UTILITY_REVIEW_PENDING_KEY)
+        newly_completed = not (
+            previous.get("status") == "review_completed"
+            and previous.get("decision") == attention_policy
+        )
+        completed = {
+            "schema_version": UTILITY_SCHEMA_VERSION,
+            "status": "review_completed",
+            "decision": attention_policy,
+            "decided_at": "2026-08-17",
+            "first_due_at": previous.get("first_due_at"),
+            "last_checked_at": now_ts,
+            "observation_age_days": report["observation_age_days"],
+            "turns_responded": report["totals"].get("turns_responded", 0),
+            "entities_observed": report["totals"].get("entities_observed", 0),
+            "report_key": UTILITY_REPORT_KEY,
+            "automatic_review_tuning": False,
+        }
+        redis_client.set(
+            UTILITY_REVIEW_PENDING_KEY,
+            json.dumps(completed, ensure_ascii=False, sort_keys=True),
+        )
+        if newly_completed:
+            logger.info(
+                "Utilità memoria shadow: revisione chiusa manualmente — "
+                "policy={}, {} risposte, {} entità",
+                attention_policy,
+                report["totals"].get("turns_responded", 0),
+                report["totals"].get("entities_observed", 0),
+            )
         return report
 
     fingerprint = hashlib.sha256(

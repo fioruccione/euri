@@ -11,6 +11,7 @@ import sys
 import signal
 import threading
 import time
+import uuid
 from dataclasses import replace as dataclass_replace
 import numpy as np
 from loguru import logger
@@ -82,7 +83,24 @@ from core.semantic_turn import (
     frame_requests_linguistic_response,
     frame_requests_contextual_action,
     frame_vetoes_contextual_action,
+    gate_teaching_route,
     semantic_intent,
+    trusted_deliberation_request,
+    trusted_teaching_session,
+)
+from core.ideation_activation import (
+    active_key as ideation_active_key,
+    delivery_key as ideation_delivery_key,
+    enqueue_delivery as enqueue_ideation_delivery,
+    format_result as format_ideation_result,
+    load_json as load_ideation_json,
+    pending_key as ideation_pending_key,
+    peek_delivery as peek_ideation_delivery,
+    job_queue_key as ideation_job_queue_key,
+    pop_job as pop_ideation_job,
+    ui_stream_key as ideation_ui_stream_key,
+    semantic_pending_decision,
+    store_json as store_ideation_json,
 )
 from agent.executor import Executor, ToolCall, build_injected_context
 
@@ -250,6 +268,7 @@ class VoiceDaemon:
         self._teach_topic = ""
         self._teach_asked: list[str] = []
         self._teach_pending_save = ""
+        self._teach_contract: dict = {}
         self._web_pending: dict = {}  # contesto ultima ricerca web (per "approfondisci" / "salva")
         self._pending_todo: _PendingState | None = None   # todo in attesa di conferma (timeout 60s)
         self._pending_reschedule: _PendingState | None = None  # impegno da spostare, manca la data (timeout 120s)
@@ -259,6 +278,7 @@ class VoiceDaemon:
         self._awaiting_reaction: _PendingState | None = None  # insight su cui Euri ha chiesto conferma, in attesa della reazione di Stefano (timeout 300s)
         self._awaiting_memory_verification: _PendingState | None = None
         self._pending_guest_review: _PendingState | None = None  # claim ospite chiesto esplicitamente a Stefano
+        self._ideation_thread: threading.Thread | None = None
         self._guest_review_cooldown_until: float = 0.0
         self._last_created_file: str | None = None  # ultimo file creato da Euri (per "aprilo")
         self._last_created_file_ts: float = 0.0  # quando — recency per disambiguare "apri il documento"
@@ -1239,7 +1259,9 @@ class VoiceDaemon:
         self._last_user_text = text
 
         self.memory.log_conversation(_OWNER_NAME, text)
-        context = self._build_context(text, mode="search")
+        context = self._build_context(
+            text, mode="search", semantic_frame=semantic_frame
+        )
         # Gradino 2 — strategia di retrieval scelta dal modello caldo (wide/subject), solo
         # quando la pre-gate cheap sospetta una domanda non-specifica. NON tocca il retrieval
         # principale: lo affianca. Fail-safe a specific_search.
@@ -2399,7 +2421,13 @@ class VoiceDaemon:
         re.IGNORECASE,
     )
 
-    def _build_context(self, text: str, *, mode: str = "chat") -> str:
+    def _build_context(
+        self,
+        text: str,
+        *,
+        mode: str = "chat",
+        semantic_frame: dict | None = None,
+    ) -> str:
         """Cerca in Redis contenuto rilevante da iniettare come contesto nella risposta."""
         from core.rag_context import build_runtime_rag_context
         with self.brain.history_lock:
@@ -2410,6 +2438,7 @@ class VoiceDaemon:
             self.turn_store,
             mode=mode,
             recent_history=recent_history,
+            semantic_frame=semantic_frame,
         )
         # Thread-local: voce e mobile possono costruire contesti in parallelo.
         # La struttura serve soltanto alla lineage shadow e non entra nel prompt.
@@ -2745,7 +2774,7 @@ class VoiceDaemon:
             self._speak("Perfetto. Di' 'vai' per procedere subito, oppure aggiungimi dettagli da includere nel file.")
             return
 
-        context = self._build_context(text)
+        context = self._build_context(text, semantic_frame=semantic_frame)
         # Gradino 2 — strategia di retrieval (wide/subject) sul modello caldo, solo quando la
         # pre-gate cheap scatta; specific_search → context invariato.
         context = self._augment_context_by_strategy(text, context)
@@ -2813,15 +2842,43 @@ class VoiceDaemon:
                     logger.warning(f"Implicit action fallita: {e}")
                 break
 
-    def _handle_teach(self, text: str):
-        """Avvia la modalità insegnamento: Euri ascolta e fa domande di approfondimento."""
+    def _handle_teach(
+        self,
+        text: str,
+        *,
+        trusted: bool = False,
+        observed_at: float | None = None,
+        semantic_frame: dict | None = None,
+    ):
+        """Avvia TEACH soltanto da un contratto semantico grounded."""
+        contract = trusted_teaching_session(
+            semantic_frame,
+            minimum_confidence=getattr(
+                config, "SEMANTIC_TEACH_MIN_CONFIDENCE", 0.82
+            ),
+        )
+        if contract is None:
+            logger.warning("TEACH negato: contratto semantico assente o insufficiente")
+            self._handle_chat(
+                text,
+                trusted=trusted,
+                observed_at=observed_at,
+                semantic_frame=semantic_frame,
+            )
+            return
         self._teach_mode = True
         self._teach_confirm_mode = False
         self._teach_buffer = [text]
         self._teach_topic = text
         self._teach_asked = []
         self._teach_pending_save = ""
+        self._teach_contract = contract
         self.memory.log_conversation(_OWNER_NAME, text)
+        logger.info(
+            "TEACH avviato semanticamente: evidence='{}' conf={:.2f}",
+            str(contract.get("evidence") or "")[:120],
+            float(contract.get("confidence") or 0.0),
+        )
         self._speak("Dimmi, ti ascolto.")
 
     # Impegni di Euri in CHAT che devono tradursi in azioni reali
@@ -2854,6 +2911,42 @@ class VoiceDaemon:
         re.IGNORECASE
     )
 
+    @staticmethod
+    def _encode_teach_snapshot(
+        buffer: list[str], topic: str, contract: dict
+    ) -> str:
+        return json.dumps({
+            "schema_version": 2,
+            "authorized": bool(contract),
+            "buffer": [str(item) for item in buffer if str(item).strip()],
+            "topic": str(topic or ""),
+            "contract": dict(contract or {}),
+        }, ensure_ascii=False, separators=(",", ":"))
+
+    @staticmethod
+    def _decode_teach_snapshot(raw) -> dict | None:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(str(raw or ""))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict) or payload.get("schema_version") != 2:
+            return None
+        contract = payload.get("contract")
+        buffer = payload.get("buffer")
+        if payload.get("authorized") is not True:
+            return None
+        if not isinstance(contract, dict) or not contract:
+            return None
+        if not isinstance(buffer, list) or not any(str(item).strip() for item in buffer):
+            return None
+        return {
+            "buffer": [str(item) for item in buffer if str(item).strip()],
+            "topic": str(payload.get("topic") or ""),
+            "contract": dict(contract),
+        }
+
     def _reset_teach(self):
         self._teach_mode = False
         self._teach_confirm_mode = False
@@ -2861,12 +2954,22 @@ class VoiceDaemon:
         self._teach_topic = ""
         self._teach_asked = []
         self._teach_pending_save = ""
+        self._teach_contract = {}
         self.r.delete("euri:teach:snapshot")
 
     def _handle_teach_confirm(self, text: str):
         """Gestisce la conferma dopo il read-back del riassunto."""
         self.memory.log_conversation(_OWNER_NAME, text)
         if self._TEACH_CONFIRM_YES.search(text):
+            if not self._teach_contract or not self._teach_pending_save.strip():
+                logger.warning(
+                    "TEACH salvataggio negato: sessione non autorizzata o riepilogo assente"
+                )
+                self._speak(
+                    "Non salvo: questa sessione non ha un'origine didattica abbastanza chiara."
+                )
+                self._reset_teach()
+                return
             self.memory.save_memory(self._teach_pending_save, category="conoscenza", source="teach")
             self.memory.log_conversation(_ASSISTANT_NAME, f"[Conoscenza salvata — argomento: {self._teach_topic[:60]}]")
             self._speak("Salvato. Ho capito e tenuto tutto a mente.")
@@ -2914,7 +3017,11 @@ class VoiceDaemon:
 
         # Snapshot progressivo ogni 5 utterance (protezione crash)
         if len(self._teach_buffer) % 5 == 0:
-            snapshot = "\n".join(self._teach_buffer)
+            snapshot = self._encode_teach_snapshot(
+                self._teach_buffer,
+                self._teach_topic,
+                self._teach_contract,
+            )
             self.r.set("euri:teach:snapshot", snapshot, ex=3600)
 
         accumulated = "\n".join(self._teach_buffer)
@@ -2934,9 +3041,18 @@ class VoiceDaemon:
         """Gestisce la risposta alla domanda di ripristino sessione TEACH."""
         self._teach_recovery_mode = False
         if self._TEACH_CONFIRM_YES.search(text):
-            lines = [l for l in self._teach_snapshot_content.split("\n") if l.strip()]
+            snapshot = self._decode_teach_snapshot(self._teach_snapshot_content)
+            if snapshot is None:
+                self.r.delete("euri:teach:snapshot")
+                self._teach_snapshot_content = ""
+                self._speak(
+                    "Non riprendo quella sessione: manca il contratto didattico verificato."
+                )
+                return
+            lines = snapshot["buffer"]
             self._teach_buffer = lines
-            self._teach_topic = lines[0] if lines else "argomento precedente"
+            self._teach_topic = snapshot.get("topic") or lines[0]
+            self._teach_contract = snapshot["contract"]
             self._teach_mode = True
             self._teach_confirm_mode = False
             self._teach_asked = []
@@ -3408,6 +3524,22 @@ class VoiceDaemon:
             semantic_frame["accepted_owner_turn"] = True
         text = str(semantic_frame.get("interpreted_text") or text)
 
+        # Loop 2k usa lo stesso frame gia' prodotto per il turno. Una richiesta
+        # esplicita parte; un'opportunita' rilevata da Euri resta una proposta e
+        # attende un CONFIRM semantico separato. Nessun trigger lessicale.
+        if self._handle_semantic_ideation(
+            text,
+            semantic_frame,
+            trusted=trusted,
+            observed_at=observed_at,
+            owner_authorized=bool(
+                owner_authenticated
+                or trusted
+                or semantic_frame.get("accepted_owner_turn") is True
+            ),
+        ):
+            return
+
         # "Scrivilo / salvalo" dopo una risposta lunga → usa il contenuto dell'ultima risposta (TTL 300s)
         if (self._last_speech_content
                 and time.time() - self._last_speech_ts < 300
@@ -3489,11 +3621,12 @@ class VoiceDaemon:
         semantic_routable = {
             "CHAT", "WEB_SEARCH", "SEARCH", "SAVE_MEMORY", "SAVE_TODO",
             "SAVE_NOTE", "SAVE_LAST", "READ_BACK", "TRANSLATE", "DICTATION",
+            "TEACH",
         }
         current_routable = {
             Intent.CHAT, Intent.WEB_SEARCH, Intent.SEARCH, Intent.SAVE_MEMORY,
             Intent.SAVE_TODO, Intent.SAVE_NOTE, Intent.SAVE_LAST, Intent.READ_BACK,
-            Intent.TRANSLATE, Intent.DICTATION,
+            Intent.TRANSLATE, Intent.DICTATION, Intent.TEACH,
         }
         from core.semantic_turn import arbitrate_routable_intent
         shared_label = arbitrate_routable_intent(
@@ -3507,6 +3640,23 @@ class VoiceDaemon:
         if shared_label != intent.value and intent in current_routable:
             intent = Intent(shared_label)
             logger.info("Intent condiviso dal frame semantico: {}", intent.value)
+
+        gated_teach = gate_teaching_route(
+            semantic_frame,
+            intent,
+            minimum_confidence=getattr(
+                config, "SEMANTIC_TEACH_MIN_CONFIDENCE", 0.82
+            ),
+        )
+        if gated_teach != intent.value:
+            logger.info(
+                "TEACH fail-closed: {} → {} (status={}, semantic={})",
+                intent.value,
+                gated_teach,
+                semantic_frame.get("status") or "unknown",
+                semantic_label or "unknown",
+            )
+            intent = Intent(gated_teach)
 
         action_checked = False
         action_veto = False
@@ -3664,6 +3814,13 @@ class VoiceDaemon:
             )
         elif intent == Intent.WEB_SEARCH:
             handler(text, semantic_frame=semantic_frame)
+        elif intent == Intent.TEACH:
+            handler(
+                text,
+                trusted=trusted,
+                observed_at=observed_at,
+                semantic_frame=semantic_frame,
+            )
         else:
             handler(text)
         logger.info(f"[TIMING] Handler {intent.value}: {(time.perf_counter()-_t_handler)*1000:.0f}ms")
@@ -4146,6 +4303,368 @@ class VoiceDaemon:
             if self._wait_or_stop(30):
                 break
 
+    def _record_ideation_exchange(
+        self,
+        user_text: str,
+        reply: str,
+        *,
+        semantic_frame: dict | None = None,
+        trusted: bool = True,
+        observed_at: float | None = None,
+    ) -> None:
+        """Rende il dialogo visibile senza trasformare l'arena in memoria."""
+        self.memory.log_conversation(_OWNER_NAME, user_text)
+        self.memory.log_conversation(_ASSISTANT_NAME, reply)
+        self.brain.record_context_message(
+            "user",
+            user_text,
+            trusted=trusted,
+            observed_at=observed_at,
+            raw_content=(semantic_frame or {}).get("raw_text"),
+            semantic_frame=semantic_frame,
+        )
+        self.brain.record_context_message("assistant", reply, trusted=trusted)
+
+    def _reconcile_ideation_runtime(self) -> None:
+        """Rimuove soltanto il lock di un processo che non esiste piu'."""
+        key = ideation_active_key(_OWNER_ID)
+        active = load_ideation_json(self.r, key)
+        if not active:
+            return
+        try:
+            pid = int(active.get("pid") or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        alive = False
+        if pid > 0 and pid != os.getpid():
+            try:
+                os.kill(pid, 0)
+                alive = True
+            except (ProcessLookupError, PermissionError):
+                alive = False
+        if not alive:
+            self.r.delete(key)
+            logger.info("Loop 2k: lock orfano riconciliato al boot")
+
+    def _release_ideation_lock(self, token: str) -> None:
+        key = ideation_active_key(_OWNER_ID)
+        try:
+            current = load_ideation_json(self.r, key)
+            if str(current.get("token") or "") == token:
+                self.r.delete(key)
+        except Exception as exc:
+            logger.debug(f"Loop 2k: rilascio lock ignorato ({exc})")
+
+    def _run_ideation_job(self, payload: dict, token: str) -> None:
+        """Esegue il lavoro costoso fuori dal path della conversazione."""
+        started = time.monotonic()
+        try:
+            result = self.dream_engine.run_ideation_tournament(
+                str(payload.get("problem") or ""),
+                grounding_context=str(payload.get("grounding_context") or ""),
+                constraints=list(payload.get("constraints") or []),
+                source_refs=list(payload.get("source_refs") or []),
+                n_candidates=int(getattr(config, "IDEATION_ARENA_DEFAULT_CANDIDATES", 4)),
+            )
+            reply = format_ideation_result(result)
+            delivery = {
+                "run_id": str(getattr(result, "run_id", "") or ""),
+                "artifact_key": str(getattr(result, "artifact_key", "") or ""),
+                "status": str(getattr(result, "status", "") or ""),
+                "reply": reply,
+                "completed_at": time.time(),
+                "delivery_channel": str(
+                    payload.get("delivery_channel") or "voice"
+                ),
+            }
+            logger.info(
+                "Loop 2k conversazionale: completato status={} in {:.1f}s",
+                delivery["status"], time.monotonic() - started,
+            )
+        except Exception as exc:
+            logger.exception("Loop 2k conversazionale fallito")
+            reply = (
+                "Il confronto si e' interrotto prima di produrre un risultato affidabile. "
+                "Non ne ricavo una conclusione; possiamo riprovarlo piu' avanti."
+            )
+            delivery = {
+                "run_id": "", "artifact_key": "", "status": "failed",
+                "reply": reply, "completed_at": time.time(),
+                "error": type(exc).__name__,
+                "delivery_channel": str(
+                    payload.get("delivery_channel") or "voice"
+                ),
+            }
+        finally:
+            self._release_ideation_lock(token)
+
+        # La conversazione condivisa riceve subito il risultato; la voce attende
+        # invece presenza e canale libero nel worker di consegna.
+        self.memory.log_conversation(_ASSISTANT_NAME, reply)
+        self.brain.record_context_message("assistant", reply, trusted=True)
+        try:
+            self.r.xadd(
+                ideation_ui_stream_key(_OWNER_ID),
+                {
+                    "reply": reply,
+                    "run_id": delivery.get("run_id", ""),
+                    "status": delivery.get("status", ""),
+                },
+                maxlen=20,
+                approximate=True,
+            )
+        except Exception as exc:
+            logger.debug(f"Loop 2k: notifica Silent Chat ignorata ({exc})")
+        if delivery.get("delivery_channel") != "silent_chat":
+            try:
+                enqueue_ideation_delivery(
+                    self.r,
+                    ideation_delivery_key(_OWNER_ID),
+                    delivery,
+                    ttl_s=getattr(config, "IDEATION_DELIVERY_TTL_S", 86400),
+                )
+            except Exception as exc:
+                logger.warning(f"Loop 2k: consegna non persistita ({exc})")
+
+    def _start_semantic_ideation(
+        self,
+        payload: dict,
+        *,
+        user_text: str,
+        semantic_frame: dict | None,
+        trusted: bool,
+        observed_at: float | None,
+    ) -> bool:
+        """Acquisisce il singolo slot, prepara il grounding e avvia il job."""
+        if not getattr(config, "IDEATION_ARENA_ENABLED", False):
+            reply = "Il confronto tra ipotesi in questo momento e' disabilitato."
+            self._record_ideation_exchange(
+                user_text, reply, semantic_frame=semantic_frame,
+                trusted=trusted, observed_at=observed_at,
+            )
+            self._speak(reply)
+            return True
+        if self._ideation_thread is not None and self._ideation_thread.is_alive():
+            reply = "Sto gia' confrontando un altro problema. Ti avviso appena ho finito."
+            self._record_ideation_exchange(
+                user_text, reply, semantic_frame=semantic_frame,
+                trusted=trusted, observed_at=observed_at,
+            )
+            self._speak(reply)
+            return True
+
+        token = str(uuid.uuid4())
+        active = {
+            "token": token, "pid": os.getpid(), "problem": payload.get("problem", ""),
+            "started_at": time.time(),
+        }
+        try:
+            acquired = self.r.set(
+                ideation_active_key(_OWNER_ID),
+                json.dumps(active, ensure_ascii=False),
+                nx=True,
+                ex=getattr(config, "IDEATION_ACTIVE_TTL_S", 3600),
+            )
+        except Exception:
+            acquired = False
+        if not acquired:
+            reply = "C'e' gia' un confronto in corso. Ti avviso appena termina."
+            self._record_ideation_exchange(
+                user_text, reply, semantic_frame=semantic_frame,
+                trusted=trusted, observed_at=observed_at,
+            )
+            self._speak(reply)
+            return True
+
+        try:
+            frame = payload.get("semantic_frame") or semantic_frame or {}
+            original_text = str(payload.get("user_text") or user_text)
+            context = self._build_context(original_text, semantic_frame=frame)
+            local = getattr(self, "_response_rag_local", None)
+            rag = getattr(local, "rag", None) if local is not None else None
+            source_refs = [f"semantic-turn:{frame.get('turn_id', '')}"]
+            source_refs.extend(
+                f"rag:{item}" for item in (getattr(rag, "ids", None) or [])
+            )
+            job_payload = dict(payload)
+            job_payload.update({
+                "grounding_context": context,
+                "source_refs": [item for item in source_refs if not item.endswith(":")],
+                "delivery_channel": "voice",
+            })
+        except Exception as exc:
+            self._release_ideation_lock(token)
+            logger.warning(f"Loop 2k: grounding fallito ({exc})")
+            reply = (
+                "Non sono riuscita a costruire un contesto abbastanza stabile per il "
+                "confronto, quindi non l'ho avviato."
+            )
+            self._record_ideation_exchange(
+                user_text, reply, semantic_frame=semantic_frame,
+                trusted=trusted, observed_at=observed_at,
+            )
+            self._speak(reply)
+            return True
+
+        reply = (
+            "Va bene. Metto a confronto quattro strade indipendenti e provo anche a "
+            "smentirle prima di scegliere. Ci vorranno alcuni minuti; nel frattempo "
+            "possiamo continuare a parlare."
+        )
+        self._record_ideation_exchange(
+            user_text, reply, semantic_frame=semantic_frame,
+            trusted=trusted, observed_at=observed_at,
+        )
+        self._speak(reply)
+        self._ideation_thread = threading.Thread(
+            target=self._run_ideation_job,
+            args=(job_payload, token),
+            daemon=True,
+            name="euri-ideation-job",
+        )
+        self._ideation_thread.start()
+        logger.info(
+            "Loop 2k conversazionale: avviato reason={} problem='{}'",
+            payload.get("reason", "other"), str(payload.get("problem") or "")[:120],
+        )
+        return True
+
+    def _handle_semantic_ideation(
+        self,
+        text: str,
+        semantic_frame: dict,
+        *,
+        trusted: bool,
+        observed_at: float | None,
+        owner_authorized: bool,
+    ) -> bool:
+        """Richiesta esplicita o proposta con consenso, entrambe semantiche."""
+        if not owner_authorized:
+            return False
+        pending_key = ideation_pending_key(_OWNER_ID)
+        pending = load_ideation_json(self.r, pending_key)
+        decision = semantic_pending_decision(
+            semantic_frame,
+            minimum_confidence=getattr(config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72),
+        )
+        if pending and decision == "reject":
+            self.r.delete(pending_key)
+            reply = "Va bene, lascio perdere il confronto e continuiamo normalmente."
+            self._record_ideation_exchange(
+                text, reply, semantic_frame=semantic_frame,
+                trusted=trusted, observed_at=observed_at,
+            )
+            self._speak(reply)
+            return True
+        if pending and decision == "confirm":
+            self.r.delete(pending_key)
+            return self._start_semantic_ideation(
+                pending,
+                user_text=text,
+                semantic_frame=semantic_frame,
+                trusted=trusted,
+                observed_at=observed_at,
+            )
+
+        contract = trusted_deliberation_request(semantic_frame)
+        if contract is None:
+            return False
+        payload = {
+            "problem": contract.get("problem", ""),
+            "reason": contract.get("reason", "other"),
+            "constraints": list(contract.get("constraints") or []),
+            "user_text": text,
+            "semantic_frame": semantic_frame,
+            "created_at": time.time(),
+        }
+        if contract.get("mode") == "explicit":
+            if pending:
+                self.r.delete(pending_key)
+            return self._start_semantic_ideation(
+                payload,
+                user_text=text,
+                semantic_frame=semantic_frame,
+                trusted=trusted,
+                observed_at=observed_at,
+            )
+
+        if pending:
+            reply = (
+                "Ho gia' lasciato aperta una proposta di confronto. Puoi confermarla, "
+                "rifiutarla oppure continuare il discorso normalmente."
+            )
+        else:
+            store_ideation_json(
+                self.r, pending_key, payload,
+                ttl_s=getattr(config, "IDEATION_PENDING_TTL_S", 600),
+            )
+            reply = (
+                "Qui vedo almeno due strade realmente diverse e una risposta unica "
+                "rischierebbe di nascondere il compromesso. Vuoi che le faccia competere "
+                "nel confronto approfondito? Richiedera' alcuni minuti."
+            )
+        self._record_ideation_exchange(
+            text, reply, semantic_frame=semantic_frame,
+            trusted=trusted, observed_at=observed_at,
+        )
+        self._speak(reply)
+        return True
+
+    def _ideation_delivery_worker(self) -> None:
+        """Pronuncia risultati gia' loggati solo quando l'efferenza e' sicura."""
+        key = ideation_delivery_key(_OWNER_ID)
+        while self._running:
+            self._workers.heartbeat("ideation-delivery")
+            delivery = peek_ideation_delivery(self.r, key)
+            if delivery and str(delivery.get("reply") or "").strip():
+                reason = self._initiative_block_reason(idle_seconds=2, cooldown_s=0)
+                if not reason:
+                    try:
+                        self._speak(str(delivery["reply"]))
+                        self.r.lpop(key)
+                    except Exception as exc:
+                        logger.warning(f"Loop 2k: consegna vocale rinviata ({exc})")
+            if self._wait_or_stop(2):
+                break
+
+    def _ideation_job_worker(self) -> None:
+        """Consuma anche i lavori autorizzati dalla Silent Chat."""
+        key = ideation_job_queue_key(_OWNER_ID)
+        while self._running:
+            self._workers.heartbeat("ideation-job")
+            payload = pop_ideation_job(self.r, key)
+            if not payload:
+                if self._wait_or_stop(2):
+                    break
+                continue
+            token = str(payload.get("token") or "")
+            if not token:
+                logger.warning("Loop 2k: job in coda privo di token, scartato")
+                continue
+            active_key = ideation_active_key(_OWNER_ID)
+            if not load_ideation_json(self.r, active_key):
+                self.r.set(
+                    active_key,
+                    json.dumps({
+                        "token": token, "pid": os.getpid(),
+                        "problem": payload.get("problem", ""),
+                        "started_at": time.time(),
+                    }, ensure_ascii=False),
+                    nx=True,
+                    ex=getattr(config, "IDEATION_ACTIVE_TTL_S", 3600),
+                )
+            self._ideation_thread = threading.Thread(
+                target=self._run_ideation_job,
+                args=(payload, token),
+                daemon=True,
+                name="euri-ideation-job",
+            )
+            self._ideation_thread.start()
+            while self._ideation_thread.is_alive() and self._running:
+                self._workers.heartbeat("ideation-job")
+                if self._wait_or_stop(2):
+                    break
+
     def _initiative_block_reason(self, *, idle_seconds: float | None = None,
                                  cooldown_s: float | None = None) -> str:
         """Ritorna "" se Euri può iniziare una domanda proattiva adesso."""
@@ -4524,6 +5043,7 @@ class VoiceDaemon:
         self._workers.prepare()
         self._shutdown_done = False
         self._running = True
+        self._reconcile_ideation_runtime()
 
         # Intercetta Ctrl+C
         def _shutdown(sig, frame):
@@ -4550,6 +5070,18 @@ class VoiceDaemon:
             "initiative",
             self._initiative_worker,
             enabled=getattr(config, "INITIATIVE_ENABLED", False),
+        )
+
+        # Consegna asincrona dei tornei espliciti, separata dall'iniziativa Pulse.
+        self._workers.start(
+            "ideation-delivery",
+            self._ideation_delivery_worker,
+            enabled=getattr(config, "IDEATION_ARENA_ENABLED", False),
+        )
+        self._workers.start(
+            "ideation-job",
+            self._ideation_job_worker,
+            enabled=getattr(config, "IDEATION_ARENA_ENABLED", False),
         )
 
         # Outbox memoria — TTL, indice attenzione, Pulse e Obsidian replayabili.
@@ -4616,11 +5148,17 @@ class VoiceDaemon:
                             )
                     # Controlla se c'è una sessione TEACH interrotta
                     snapshot = self.r.get("euri:teach:snapshot")
-                    if snapshot and not self._teach_mode:
+                    teach_snapshot = self._decode_teach_snapshot(snapshot)
+                    if teach_snapshot and not self._teach_mode:
                         self._teach_snapshot_content = snapshot
                         self._teach_recovery_mode = True
                         self._speak("Ho trovato una sessione di insegnamento non completata. Vuoi riprendere da dove eravamo?")
                     else:
+                        if snapshot and teach_snapshot is None:
+                            self.r.delete("euri:teach:snapshot")
+                            logger.warning(
+                                "TEACH recovery: snapshot legacy/non autorizzato eliminato"
+                            )
                         self._offer_next_guest_claim()
 
                 # Salta se proactive_agent sta parlando
@@ -5108,7 +5646,9 @@ class VoiceDaemon:
                         )
                         self.memory.log_conversation(_OWNER_NAME, text)
 
-                        context = self._build_context(text)
+                        context = self._build_context(
+                            text, semantic_frame=semantic_frame
+                        )
                         context = (context + "\n\n" if context else "") + \
                             f"[Messaggio da interfaccia mobile — {_OWNER_NAME} è lontano dalla workstation. " \
                             "Rispondi in modo conciso e TTS-friendly, niente markdown.]"

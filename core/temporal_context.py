@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import config
@@ -16,7 +16,47 @@ from utils.date_utils import from_timestamp
 from utils.temporal import extract_temporal_range
 
 
-TEMPORAL_SCHEMA_VERSION = 1
+TEMPORAL_SCHEMA_VERSION = 2
+
+_MONTHS_IT = (
+    "gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno",
+    "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre",
+)
+_MONTHS_IT_PATTERN = "|".join(_MONTHS_IT)
+
+# Una data ellittica non viene interpretata da sola: serve una relazione
+# temporale esplicita. Questo evita di trasformare qualsiasi numero ("il 24")
+# in una data, ma consente al resolver calendariale di completare espressioni
+# come "fino al 24" usando il timestamp del turno come ancora.
+_RELATIONAL_DAY_PATTERNS = (
+    (
+        "until",
+        re.compile(
+            rf"\b(?P<prefix>(?:fino|sino)\s+(?:a|al|alla)\s+(?:giorno\s+)?)"
+            rf"(?P<day>\d{{1,2}})(?:\s+(?P<month>{_MONTHS_IT_PATTERN}))?"
+            r"(?:\s+(?P<year>\d{4}))?\b(?![/-]\d)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "deadline",
+        re.compile(
+            rf"\b(?P<prefix>entro\s+(?:il\s+|giorno\s+)?)"
+            rf"(?P<day>\d{{1,2}})(?:\s+(?P<month>{_MONTHS_IT_PATTERN}))?"
+            r"(?:\s+(?P<year>\d{4}))?\b(?![/-]\d)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "since",
+        re.compile(
+            rf"\b(?P<prefix>(?:a\s+partire\s+)?(?:dal|dalla)\s+(?:giorno\s+)?)"
+            rf"(?P<day>\d{{1,2}})(?:\s+(?P<month>{_MONTHS_IT_PATTERN}))?"
+            r"(?:\s+(?P<year>\d{4}))?\b(?![/-]\d)",
+            re.IGNORECASE,
+        ),
+    ),
+)
 
 _TEMPORAL_EXPRESSION_RE = re.compile(
     r"\b(?:questa\s+mattina|stamattina|stamani|stamane|questa\s+sera|stasera|"
@@ -116,6 +156,22 @@ def temporal_prompt_contract() -> str:
         "Le etichette 'tempo interno' sono metadati cognitivi: usale per ordinare i fatti, "
         "risolvere riferimenti e distinguere continuita' da riapertura. Non copiarle mai "
         "nella risposta e non recitare date o orari salvo che siano utili o richiesti. "
+        "Nei ricordi, il tempo dell'evento e il momento in cui e' stato affermato sono "
+        "distinti: non presentare come attuale un intervallo il cui termine e' trascorso. "
+        "Un turno di ore prima non e' 'poco fa'. Se il nuovo turno e' ellittico (per esempio "
+        "un valore, 'quello' o 'il risultato') e segue un tema aperto nello stesso segmento, "
+        "collegalo a quel tema e chiedi soltanto gli attributi davvero mancanti. Un numero "
+        "senza unita', metodo o riferimento puo' essere collegato e ricordato, ma non basta "
+        "per dichiararlo tecnicamente coerente, normale o anomalo."
+    )
+
+
+def temporal_prompt_contract_legacy_v1() -> str:
+    """Contratto congelato per i replay firmati anteriori al 18/08/2026."""
+    return (
+        "Le etichette 'tempo interno' sono metadati cognitivi: usale per ordinare i fatti, "
+        "risolvere riferimenti e distinguere continuita' da riapertura. Non copiarle mai "
+        "nella risposta e non recitare date o orari salvo che siano utili o richiesti. "
         "Un turno di ore prima non e' 'poco fa'. Se il nuovo turno e' ellittico (per esempio "
         "un valore, 'quello' o 'il risultato') e segue un tema aperto nello stesso segmento, "
         "collegalo a quel tema e chiedi soltanto gli attributi davvero mancanti. Un numero "
@@ -146,19 +202,197 @@ def _event_precision(expression: str) -> str:
     return "unspecified"
 
 
+def _calendar_candidate(
+    reference: datetime,
+    *,
+    day: int,
+    direction: str,
+) -> datetime | None:
+    """Trova il giorno di calendario valido più vicino nella direzione richiesta."""
+    if day < 1 or day > 31:
+        return None
+    base = reference.replace(hour=0, minute=0, second=0, microsecond=0)
+    step = 1 if direction == "future" else -1
+    year, month = base.year, base.month
+    for _ in range(14):
+        try:
+            candidate = base.replace(year=year, month=month, day=day)
+        except ValueError:
+            candidate = None
+        if candidate is not None:
+            if direction == "future" and candidate.date() >= base.date():
+                return candidate
+            if direction == "past" and candidate.date() <= base.date():
+                return candidate
+        month += step
+        if month == 13:
+            month, year = 1, year + 1
+        elif month == 0:
+            month, year = 12, year - 1
+    return None
+
+
+def _resolve_relational_day(text: str, asserted_at: float) -> dict | None:
+    """Risolvi una data con giorno ellittico soltanto se la relazione è esplicita."""
+    reference = datetime.fromtimestamp(asserted_at, tz=config.TIMEZONE)
+    for relation, pattern in _RELATIONAL_DAY_PATTERNS:
+        match = pattern.search(text or "")
+        if not match:
+            continue
+
+        # Evita quantità come "fino a 10 giorni" o "entro 24 ore".
+        tail = (text or "")[match.end():]
+        if not match.group("month") and re.match(
+            r"\s*(?:ore?|giorni?|settimane?|mesi?|anni?|%|kg|g|mm|cm|m\b)",
+            tail,
+            flags=re.IGNORECASE,
+        ):
+            continue
+
+        day = int(match.group("day"))
+        month_name = (match.group("month") or "").casefold()
+        year_text = match.group("year")
+        inferred = not bool(month_name) or not bool(year_text)
+        if month_name:
+            month = _MONTHS_IT.index(month_name) + 1
+            year = int(year_text) if year_text else reference.year
+            try:
+                target = reference.replace(
+                    year=year,
+                    month=month,
+                    day=day,
+                    hour=0,
+                    minute=0,
+                    second=0,
+                    microsecond=0,
+                )
+            except ValueError:
+                continue
+        else:
+            direction = "past" if relation == "since" else "future"
+            target = _calendar_candidate(reference, day=day, direction=direction)
+            if target is None:
+                continue
+
+        day_end = target + timedelta(days=1)
+        if relation == "until":
+            # Se il termine era già passato, non costruiamo un intervallo
+            # invertito: senza una data iniziale esplicita conserviamo almeno
+            # il giorno terminale come collocazione storica.
+            event_start = (
+                asserted_at if asserted_at < day_end.timestamp() else target.timestamp()
+            )
+            event_end = day_end.timestamp()
+            canonical_prefix = "fino al "
+        elif relation == "since":
+            event_start, event_end = target.timestamp(), None
+            canonical_prefix = "dal "
+        else:
+            event_start, event_end = target.timestamp(), day_end.timestamp()
+            canonical_prefix = "entro il "
+        canonical_expression = (
+            f"{canonical_prefix}{target.day} {_MONTHS_IT[target.month - 1]} {target.year}"
+        )
+        return {
+            "temporal_expression": match.group(0),
+            "canonical_temporal_expression": canonical_expression,
+            "temporal_relation": relation,
+            "event_precision": "calendar_day_inferred" if inferred else "explicit_day",
+            "event_start": event_start,
+            "event_end": event_end,
+            "event_target_start": target.timestamp(),
+            "event_target_end": day_end.timestamp(),
+            "resolved_from_asserted_at": inferred,
+        }
+    return None
+
+
+def _relation_for_expression(text: str, expression: str) -> str:
+    """Ricava la relazione grammaticale che introduce una data già completa."""
+    if not expression:
+        return "none"
+    start = (text or "").casefold().find(expression.casefold())
+    if start < 0:
+        return "point"
+    prefix = (text or "")[:start]
+    if re.search(r"\b(?:fino|sino)\s+(?:a|al|alla)\s*$", prefix, re.IGNORECASE):
+        return "until"
+    if re.search(r"\bentro\s+(?:il\s+)?$", prefix, re.IGNORECASE):
+        return "deadline"
+    if re.search(
+        r"\b(?:a\s+partire\s+)?(?:dal|dalla)\s*$",
+        prefix,
+        re.IGNORECASE,
+    ):
+        return "since"
+    return "point"
+
+
 def resolve_text_event_time(text: str, *, asserted_at: float) -> dict:
     """Resolve a temporal phrase in text against the moment it was asserted."""
+    relational = _resolve_relational_day(text, asserted_at)
+    if relational is not None:
+        return relational
     expression = _temporal_expression(text)
     event_range = None
     if expression:
         reference_dt = datetime.fromtimestamp(asserted_at, tz=config.TIMEZONE)
         event_range = extract_temporal_range(expression, reference_dt)
+    relation = _relation_for_expression(text, expression) if event_range else "none"
+    event_start = event_range[0] if event_range else None
+    event_end = event_range[1] if event_range else None
+    if event_range and relation == "until":
+        event_start = asserted_at if asserted_at < event_end else event_range[0]
+    elif event_range and relation == "since":
+        event_end = None
+    canonical_expression = ""
+    resolved_from_asserted_at = False
+    if event_range and expression:
+        event_dt = from_timestamp(event_range[0])
+        if event_dt is not None and re.fullmatch(
+            r"\d{1,2}[/-]\d{1,2}", expression.strip()
+        ):
+            canonical_expression = event_dt.strftime("%d/%m/%Y")
+            resolved_from_asserted_at = True
+        elif event_dt is not None and re.fullmatch(
+            rf"\d{{1,2}}\s+(?:{_MONTHS_IT_PATTERN})",
+            expression.strip(),
+            flags=re.IGNORECASE,
+        ):
+            canonical_expression = (
+                f"{event_dt.day} {_MONTHS_IT[event_dt.month - 1]} {event_dt.year}"
+            )
+            resolved_from_asserted_at = True
     return {
         "temporal_expression": expression,
+        "canonical_temporal_expression": canonical_expression,
+        "temporal_relation": relation,
         "event_precision": _event_precision(expression),
-        "event_start": event_range[0] if event_range else None,
-        "event_end": event_range[1] if event_range else None,
+        "event_start": event_start,
+        "event_end": event_end,
+        "event_target_start": event_range[0] if event_range else None,
+        "event_target_end": event_range[1] if event_range else None,
+        "resolved_from_asserted_at": resolved_from_asserted_at,
     }
+
+
+def materialize_temporal_expression(text: str, resolved: dict) -> str:
+    """Completa nel derivato una data ellittica già risolta e tracciata."""
+    value = str(text or "")
+    expression = str(resolved.get("temporal_expression") or "").strip()
+    canonical = str(
+        resolved.get("canonical_temporal_expression") or ""
+    ).strip()
+    if (
+        not expression
+        or not canonical
+        or resolved.get("resolved_from_asserted_at") is not True
+    ):
+        return value
+    start = value.casefold().find(expression.casefold())
+    if start < 0:
+        return value
+    return value[:start] + canonical + value[start + len(expression):]
 
 
 def derive_passive_memory_metadata(
@@ -220,7 +454,7 @@ def derive_passive_memory_metadata(
     # estratto materializza una data numerica diversa da quella risolta dalla
     # fonte, correggiamo soltanto quell'espressione. Il resto del fatto resta
     # invariato e l'originale relativo rimane tracciato nel temporal_context.
-    canonical_content = content
+    canonical_content = materialize_temporal_expression(content, content_event_time)
     content_date_match = _NUMERIC_DATE_RE.search(content)
     content_date_corrected = False
     original_content_date = content_date_match.group(0) if content_date_match else ""
@@ -280,6 +514,70 @@ def derive_passive_memory_metadata(
 
 def memory_time_label(memory: dict, *, reference_at: Any = None) -> str:
     """Prefer event time, then assertion time, then storage time for RAG labels."""
+    ref = _as_timestamp(reference_at) or time.time()
+    event_start = _as_timestamp(memory.get("event_start"))
+    event_end = _as_timestamp(memory.get("event_end"))
+    asserted_at = _as_timestamp(memory.get("asserted_at"))
+    created_at = _as_timestamp(memory.get("created_at"))
+    temporal = memory.get("temporal_context") or {}
+    relation = str(temporal.get("temporal_relation") or "")
+    target_start = _as_timestamp(temporal.get("event_target_start"))
+    target_end = _as_timestamp(temporal.get("event_target_end"))
+    if event_start is not None:
+        start_dt = from_timestamp(event_start)
+        end_dt = from_timestamp(event_end)
+        target_start_dt = from_timestamp(target_start)
+        target_end_dt = from_timestamp(target_end)
+        precision = temporal.get("event_precision")
+        if relation == "until" and target_end_dt is not None:
+            inclusive = target_end_dt - timedelta(microseconds=1)
+            state = "termine futuro" if ref < target_end else "termine trascorso"
+            event = f"valido fino al {inclusive.strftime('%d/%m/%Y')} incluso; {state}"
+        elif relation == "since" and target_start_dt is not None:
+            event = f"valido dal {target_start_dt.strftime('%d/%m/%Y')}"
+        elif relation == "deadline" and target_start_dt is not None:
+            state = "termine futuro" if target_end is not None and ref < target_end else "termine trascorso"
+            event = f"scadenza {target_start_dt.strftime('%d/%m/%Y')}; {state}"
+        elif start_dt is not None and end_dt is not None and precision == "conversation_interval":
+            event = (
+                f"conversazione del {start_dt.strftime('%d/%m/%Y')} "
+                f"tra {start_dt.strftime('%H:%M')} e {end_dt.strftime('%H:%M')}"
+            )
+        elif start_dt is not None and precision == "part_of_day":
+            period = "mattina" if start_dt.hour < 12 else "sera"
+            event = _period_of_day_label(start_dt, period)
+        elif start_dt is not None:
+            event = start_dt.strftime("%d/%m/%Y")
+        else:
+            event = qualitative_distance(event_start, ref)
+        if asserted_at:
+            asserted_dt = from_timestamp(asserted_at)
+            asserted_relative = qualitative_distance(asserted_at, ref)
+            asserted_absolute = (
+                asserted_dt.strftime("%d/%m/%Y %H:%M")
+                if asserted_dt is not None else "tempo non registrato"
+            )
+            return (
+                f"evento: {event}; riferito {asserted_relative}; "
+                f"affermato il {asserted_absolute}"
+            )
+        return f"evento: {event}"
+
+    anchor = asserted_at or created_at
+    if anchor is None:
+        return "tempo non registrato"
+    anchor_dt = from_timestamp(anchor)
+    if anchor_dt is None:
+        return qualitative_distance(anchor, ref)
+    source = "affermato" if asserted_at is not None else "salvato"
+    return (
+        f"{source} il {anchor_dt.strftime('%d/%m/%Y %H:%M')}; "
+        f"{qualitative_distance(anchor, ref)}"
+    )
+
+
+def memory_time_label_legacy_v1(memory: dict, *, reference_at: Any = None) -> str:
+    """Renderer congelato per replay creati prima del contratto temporale v2."""
     ref = _as_timestamp(reference_at) or time.time()
     event_start = _as_timestamp(memory.get("event_start"))
     event_end = _as_timestamp(memory.get("event_end"))

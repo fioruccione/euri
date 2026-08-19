@@ -2,8 +2,10 @@
 """Regression for atomic idempotency mapping plus RedisJSON commit."""
 
 import json
+from datetime import datetime
 from unittest.mock import patch
 
+import config
 from core.memory_manager import MemoryManager
 
 
@@ -173,6 +175,35 @@ def test_temporal_context_is_canonical_memory_metadata():
     assert doc["memory_axes"]["observed_at"] == asserted_at
 
 
+def test_direct_save_materializes_elliptical_date_before_commit():
+    redis = FakeRedis()
+    manager = _manager(redis)
+    naive = datetime(2026, 8, 18, 18, 14)
+    asserted_at = (
+        config.TIMEZONE.localize(naive).timestamp()
+        if hasattr(config.TIMEZONE, "localize")
+        else naive.replace(tzinfo=config.TIMEZONE).timestamp()
+    )
+    with (
+        patch("core.memory_manager.assign_domain", return_value="lavoro"),
+        patch("core.memory_manager.process_memory_outbox_event", return_value=True),
+    ):
+        mid = manager.save_memory(
+            "L'azienda resta ferma fino al 24.",
+            source="user",
+            idempotent=True,
+            temporal_context={"asserted_at": asserted_at},
+        )
+
+    doc = redis.docs[f"euri:memory:{mid}"]
+    assert doc["content"] == "L'azienda resta ferma fino al 24 agosto 2026."
+    assert doc["temporal_context"]["schema_version"] == 2
+    assert doc["temporal_context"]["temporal_relation"] == "until"
+    assert doc["event_start"] == asserted_at
+    end = datetime.fromtimestamp(doc["event_end"], tz=config.TIMEZONE)
+    assert end.isoformat().startswith("2026-08-25T00:00:00")
+
+
 def test_final_fields_are_committed_before_outbox_visibility():
     redis = FakeRedis()
     manager = _manager(redis)
@@ -247,6 +278,7 @@ if __name__ == "__main__":
     test_duplicate_returns_only_existing_document()
     test_stale_mapping_is_replaced()
     test_temporal_context_is_canonical_memory_metadata()
+    test_direct_save_materializes_elliptical_date_before_commit()
     test_final_fields_are_committed_before_outbox_visibility()
     test_final_fields_cannot_replace_canonical_identity()
     test_precommit_guard_can_cancel_stale_background_publication()

@@ -37,11 +37,13 @@ from core.conversation_turns import (
     run_verbatim_lifecycle_maintenance,
 )
 from core.memory_utility_shadow import run_memory_utility_shadow_maintenance
+from core.memory_schema import build_schema_projection
 from core.memory_scope import PERSONAL_SCOPE, scope_of
 from core.loop2f_policy import (
     normalize_assessment as normalize_loop2f_assessment,
     relation_from_assessment as loop2f_relation_from_assessment,
 )
+from core.ideation_tournament import run_tournament_pipeline
 
 
 CROSS_EPISODE_SEEN_KEY = "euri:cross_episode:seen"
@@ -353,11 +355,32 @@ class DreamEngine:
                 logger.warning(
                     f"Insight: riconciliazione epistemica al boot fallita: {e}"
                 )
+            # Loop 2j e' una proiezione ricostruibile: il boot la rende subito
+            # disponibile al retrieval senza attendere la manutenzione successiva.
+            try:
+                schema_result = build_schema_projection(self._r)
+                schema_stats = schema_result.get("stats") or {}
+                logger.info(
+                    "Loop 2j: proiezione schematica riconciliata al boot "
+                    f"({schema_stats.get('schemas', 0)} schemi, "
+                    f"{schema_stats.get('memberships', 0)} appartenenze)"
+                )
+            except Exception as e:
+                logger.warning(f"Loop 2j: riconciliazione al boot fallita: {e}")
             self._running = True
             self._stop_event.clear()
             self._thread = threading.Thread(target=self._loop, daemon=True, name="dream-engine")
             self._thread.start()
-            logger.info("Dream Engine avviato (background)")
+            logger.info(
+                "Dream Engine avviato (background) — model={} rem_think={} "
+                "wake_think={} deep_timeout={}s bridge_budget={} convergence_budget={}",
+                config.DREAM_OLLAMA_MODEL,
+                getattr(config, "DREAM_REM_THINK", True),
+                getattr(config, "DREAM_WAKE_THINK", True),
+                getattr(config, "DREAM_DEEP_REASONING_TIMEOUT_S", 200),
+                getattr(config, "BRIDGE_VALIDITY_BUDGET", 3),
+                getattr(config, "CONVERGENCE_JUDGE_BUDGET", 6),
+            )
 
     def stop(self, timeout: float = 8.0):
         with self._lock:
@@ -403,13 +426,30 @@ class DreamEngine:
         chiamate offline/idle (sogno, sintesi, contraddizioni, plausibilità). Fail-open: se il
         file manca, op_ctx è "" e i messaggi restano invariati."""
         timeout = kwargs.pop("_timeout", 200)
+        call_label = str(kwargs.pop("_label", "") or "").strip()
+        started = time.monotonic()
         op_ctx = load_operational_context()
         if op_ctx and kwargs.get("messages"):
             kwargs["messages"] = [{"role": "system", "content": op_ctx}, *kwargs["messages"]]
         try:
-            return get_dream_client(timeout).chat(**kwargs)
+            response = get_dream_client(timeout).chat(**kwargs)
+            if call_label:
+                message = getattr(response, "message", None)
+                thinking = getattr(message, "thinking", "") or ""
+                content = getattr(message, "content", "") or ""
+                logger.info(
+                    f"[TIMING] Dream LLM[{call_label}]: "
+                    f"{time.monotonic() - started:.1f}s | "
+                    f"done={getattr(response, 'done_reason', None) or 'unknown'} "
+                    f"tokens={getattr(response, 'eval_count', None) or 0} "
+                    f"thinking_chars={len(thinking)} content_chars={len(content)}"
+                )
+            return response
         except (httpx.TimeoutException, TimeoutError):
-            logger.warning(f"Dream Engine: timeout LLM dopo {timeout}s — ciclo abortito")
+            target = f" [{call_label}]" if call_label else ""
+            logger.warning(
+                f"Dream Engine: timeout LLM{target} dopo {timeout}s — chiamata interrotta"
+            )
             raise
 
     def _loop(self):
@@ -540,6 +580,77 @@ class DreamEngine:
         )
         self._evaluate_insights(phase="creative")
 
+    def run_ideation_tournament(
+        self,
+        prompt: str,
+        *,
+        grounding_context: str = "",
+        constraints: list[str] | None = None,
+        source_refs: list[str] | None = None,
+        n_candidates: int | None = None,
+    ):
+        """Esegue esplicitamente Loop 2k senza inserirlo nel calendario idle.
+
+        Il chiamante deve fornire il pacchetto evidenziale gia' selezionato: 2k
+        delibera su quel contesto ma non fa retrieval autonomo e non salva il
+        vincitore come memoria o insight.
+        """
+        if not getattr(config, "IDEATION_ARENA_ENABLED", False):
+            raise RuntimeError("Ideation Arena disabilitata")
+
+        def _model_call(
+            model_prompt: str,
+            *,
+            purpose: str,
+            temperature: float,
+            think: bool,
+            num_predict: int,
+        ) -> str:
+            response = self._ollama_chat(
+                model=config.DREAM_OLLAMA_MODEL,
+                messages=[{"role": "user", "content": model_prompt}],
+                options={
+                    "temperature": float(temperature),
+                    "num_predict": int(num_predict),
+                },
+                format="json",
+                think=bool(think),
+                _timeout=getattr(config, "IDEATION_ARENA_TIMEOUT_S", 240),
+                _label=f"ideation:{purpose}",
+            )
+            return str(response.message.content or "")
+
+        embed_call = None
+        if self._embedder is not None:
+            def _embed(text: str):
+                return self._embedder.encode(text, mode="passage")
+            embed_call = _embed
+
+        return run_tournament_pipeline(
+            prompt,
+            n_candidates=(
+                int(n_candidates)
+                if n_candidates is not None
+                else int(getattr(
+                    config, "IDEATION_ARENA_DEFAULT_CANDIDATES", 4
+                ))
+            ),
+            grounding_context=grounding_context,
+            constraints=constraints,
+            source_refs=source_refs,
+            model_call=_model_call,
+            redis_client=self._r,
+            embed_call=embed_call,
+            artifact_ttl_s=getattr(
+                config, "IDEATION_ARENA_ARTIFACT_TTL_S", 7 * 24 * 3600
+            ),
+            cosine_threshold=getattr(
+                config, "IDEATION_ARENA_DEDUP_COSINE", 0.92
+            ),
+            k_factor=getattr(config, "IDEATION_ARENA_ELO_K_FACTOR", 32.0),
+            temperature=getattr(config, "IDEATION_ARENA_TEMPERATURE", 0.78),
+        )
+
     def _light_cycle(self):
         """Pass leggeri/frequenti: metabolizza feedback e ipotesi senza consolidare."""
         self._evaluate_insights(phase="light")
@@ -574,6 +685,7 @@ class DreamEngine:
             self._consolidation_pass()
             self._consolidation_last_run = time.time()
         self._provenance_propagation_pass()
+        self._schema_organization_pass()
 
     def _run_dream_cycle(self):
         """Esegue un ciclo completo forzato (compatibile con force_full_cycle.py)."""
@@ -638,8 +750,45 @@ class DreamEngine:
             # stesso ciclo.
             self._provenance_propagation_pass()
 
+            # 12. Loop 2j: ricostruisce la mappa associativa solo dopo che 2f, 2e e
+            # la provenienza hanno stabilizzato lo stato canonico del ciclo.
+            self._schema_organization_pass()
+
         except Exception as e:
             logger.error(f"Errore ciclo Dream Engine: {e}")
+
+    def _schema_organization_pass(self):
+        """Loop 2j — vista associativa derivata; non riscrive alcuna memoria."""
+        if not getattr(config, "MEMORY_SCHEMA_ENABLED", True):
+            return
+        try:
+            result = build_schema_projection(self._r)
+            stats = result.get("stats") or {}
+            logger.info(
+                "Loop 2j: proiezione aggiornata — "
+                f"{stats.get('schemas', 0)} schemi, "
+                f"{stats.get('memberships', 0)} appartenenze, "
+                f"{stats.get('documents_eligible', 0)}/"
+                f"{stats.get('documents_seen', 0)} memorie eleggibili"
+            )
+            cognitive_emit(
+                self._r,
+                "memory_schema",
+                "intero",
+                "projection_rebuilt",
+                producer="loop2j",
+                trace_id=f"schema:{result.get('generation')}",
+                logical_event_id=f"schema:{result.get('generation')}",
+                payload={
+                    "generation": result.get("generation"),
+                    **stats,
+                },
+                epistemic_before="flat_memory_projection",
+                epistemic_after="derived_schema_projection",
+                salience=0.2,
+            )
+        except Exception as e:
+            logger.error(f"Loop 2j: aggiornamento proiezione fallito: {e}")
 
     def _provenance_propagation_pass(self):
         """
@@ -1252,7 +1401,7 @@ vuoto fra i due domini. Scrivi soltanto il sogno grezzo, senza introduzioni."""
                 "temperature": float(getattr(config, "DREAM_REM_TEMPERATURE", 0.95)),
                 "num_predict": int(getattr(config, "DREAM_REM_NUM_PREDICT", 4500)),
             },
-            think=True,
+            think=getattr(config, "DREAM_REM_THINK", True),
         )
         raw = response.message.content or ""
         raw_cot = getattr(response.message, "thinking", "") or ""
@@ -1400,6 +1549,10 @@ vuoto fra i due domini. Scrivi soltanto il sogno grezzo, senza introduzioni."""
                     "architecture_version": DREAM_REM_WAKE_VERSION,
                     "rem_dream_id": rem["dream_id"],
                 },
+                generation_num_predict=int(
+                    getattr(config, "DREAM_WAKE_NUM_PREDICT", 4500)
+                ),
+                generation_think=getattr(config, "DREAM_WAKE_THINK", True),
             )
         except Exception as exc:
             wake_duration_s = time.monotonic() - wake_started
@@ -1449,7 +1602,9 @@ vuoto fra i due domini. Scrivi soltanto il sogno grezzo, senza introduzioni."""
                                       extra_insight_fields: dict | None = None,
                                       cognitive_trace_id: str = "",
                                       cognitive_causation_id: str = "",
-                                      emit_cognitive: bool = True) -> dict:
+                                      emit_cognitive: bool = True,
+                                      generation_num_predict: int = 4500,
+                                      generation_think: bool | str = True) -> dict:
         """Un singolo tentativo di sogno su un seme fisso (dom_a/mem_a, dom_b/mem_b).
 
         Logica di generazione, parsing e persistenza estratta da _generate_dream in
@@ -1503,8 +1658,8 @@ REGOLE:
         response = self._ollama_chat(
             model=config.DREAM_OLLAMA_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0.6, "num_predict": 4500},
-            think=True,
+            options={"temperature": 0.6, "num_predict": generation_num_predict},
+            think=generation_think,
         )
         text = response.message.content or ""
         # Il CoT va colto PRIMA dello strip: è la materia prima del residuo di
@@ -1986,6 +2141,8 @@ Rispondi SOLO con SAME, RELATED oppure DIFFERENT."""
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": 0, "num_predict": 5000},
                 think=True,
+                _timeout=getattr(config, "DREAM_DEEP_REASONING_TIMEOUT_S", 200),
+                _label="convergence",
             )
             text = response.message.content or ""
             if "<channel|>" in text:
@@ -2237,6 +2394,8 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": 0, "num_predict": 5000},
                 think=True,
+                _timeout=getattr(config, "DREAM_DEEP_REASONING_TIMEOUT_S", 200),
+                _label="bridge",
             )
             parsed = self._parse_bridge_validity_response(response.message.content or "")
             if not parsed:
@@ -2258,6 +2417,24 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
             return True
         except Exception as e:
             logger.debug(f"bridge_validity fallita (non-critica): {e}")
+            return False
+
+    def _bridge_measurement_pending(self, insight_key: str) -> bool:
+        """True soltanto se chiamare il bridge può realmente spendere il budget.
+
+        Il budget è un limite di *tentativi*, non di soli verdetti riusciti: un
+        timeout ha già occupato modello e tempo e deve quindi consumare lo slot.
+        """
+        if not getattr(config, "BRIDGE_VALIDITY_ENABLED", False):
+            return False
+        try:
+            g = lambda p, d=None: (self._r.json().get(insight_key, p) or [d])[0]
+            return bool(
+                g("$.bridge_measurement_eligible", False)
+                and g("$.bridge_validity", "assente") == "assente"
+            )
+        except Exception as exc:
+            logger.debug(f"bridge_validity: stato pending non leggibile ({exc})")
             return False
 
     def _promotion_quality_decision(self, insight_key: str) -> tuple[str, str]:
@@ -2419,8 +2596,57 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
             logger.debug(f"trace convergence fallito (non-critico): {e}")
 
     def _repromotion_block_reason(self, insight_key: str) -> str | None:
-        """Blocca prima dei judge i candidate che non possono essere ri-promossi."""
+        """Blocca prima dei judge decisioni gia' chiuse e ancora immutate.
+
+        I rifiuti qualitativi terminali conservano il candidate per audit e TTL,
+        ma ripetere fedelta', bridge e confronti a ogni ciclo non aggiunge
+        evidenza. Una conferma esterna o una misura successivamente corretta lo
+        riaprono; i ``defer`` restano invece sempre rivalutabili.
+        """
         try:
+            stored_raw = (
+                self._r.json().get(insight_key, "$.promotion_blocked_reason")
+                or []
+            )
+            stored_reason = stored_raw[0] if stored_raw else ""
+            terminal_quality_reasons = {
+                "premise_fidelity_below_threshold",
+                "bridge_forced",
+            }
+            if (
+                getattr(config, "DREAM_TERMINAL_QUALITY_BLOCK_ENABLED", True)
+                and stored_reason in terminal_quality_reasons
+            ):
+                external_raw = (
+                    self._r.json().get(insight_key, "$.external_reaction") or []
+                )
+                external_verdict = (
+                    (external_raw[0] or {}).get("verdict")
+                    if external_raw else None
+                )
+                if external_verdict != "CONFERMA":
+                    if stored_reason == "premise_fidelity_below_threshold":
+                        fidelity_raw = (
+                            self._r.json().get(insight_key, "$.premise_fidelity")
+                            or []
+                        )
+                        try:
+                            fidelity_still_low = bool(
+                                fidelity_raw and float(fidelity_raw[0]) < 1.0
+                            )
+                        except (TypeError, ValueError):
+                            fidelity_still_low = False
+                        if fidelity_still_low:
+                            return stored_reason
+                    if stored_reason == "bridge_forced":
+                        bridge_raw = (
+                            self._r.json().get(insight_key, "$.bridge_validity")
+                            or []
+                        )
+                        bridge = str(bridge_raw[0] if bridge_raw else "").lower()
+                        if bridge == "forced":
+                            return stored_reason
+
             demoted_raw = self._r.json().get(insight_key, "$.demoted_once") or []
             demoted_once = bool(demoted_raw[0]) if demoted_raw else False
             # La reaction SMENTITA e il cleanup impostano sempre demoted_once:
@@ -2525,6 +2751,7 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
         fidelity_calls = 0
         bridge_seconds = 0.0
         bridge_calls = 0
+        bridge_attempts = 0
         judge_seconds = 0.0
         judge_checks = 0
         judge_model_calls = 0
@@ -2551,6 +2778,10 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
                 # Potrebbe essere già stato eliminato come duplicato in un'iterazione precedente
                 if not self._r.exists(doc.id):
                     continue
+                group_raw = self._r.json().get(
+                    doc.id, "$.generation_group_id"
+                ) or []
+                generation_group_id = str(group_raw[0] or "") if group_raw else ""
 
                 # Questo gate deve precedere fedeltà, bridge e confronti LLM: una
                 # decisione già chiusa dall'uso o da una smentita esterna non deve
@@ -2567,13 +2798,17 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
                     if measured:
                         fidelity_calls += 1
                         fidelity_budget -= 1
-                if bridge_budget > 0:
+                if bridge_budget > 0 and self._bridge_measurement_pending(doc.id):
+                    # Consuma lo slot PRIMA della chiamata: anche un timeout è un
+                    # tentativo reale. La vecchia logica scalava solo i successi e
+                    # poteva accumulare molti timeout nello stesso ciclo.
+                    bridge_budget -= 1
+                    bridge_attempts += 1
                     phase_started = time.monotonic()
                     measured = self._ensure_bridge_validity(doc.id)
                     bridge_seconds += time.monotonic() - phase_started
                     if measured:
                         bridge_calls += 1
-                        bridge_budget -= 1
 
                 vec_str = getattr(doc, "embedding", None)
                 if not vec_str:
@@ -2619,6 +2854,22 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
                     score = float(sim.score)
                     sim_content = getattr(sim, "content", None)
                     neighbor_trace.append((str(sim.id), round(score, 4), (sim_content or "")[:400]))
+                    if generation_group_id:
+                        sim_group_raw = self._r.json().get(
+                            sim.id, "$.generation_group_id"
+                        ) or []
+                        sim_group = (
+                            str(sim_group_raw[0] or "")
+                            if sim_group_raw else ""
+                        )
+                        if sim_group == generation_group_id:
+                            judge_trace.append((
+                                str(sim.id),
+                                round(score, 4),
+                                "SAME_GENERATION_GROUP",
+                                False,
+                            ))
+                            continue
                     if score < 0.15:
                         n_certain += 1
                     if score >= max_distance:
@@ -2920,7 +3171,8 @@ NOTE: <una frase breve che identifica la premessa decisiva o quella mancante>"""
                 f"[TIMING] Dream evaluate[{phase}]: {time.monotonic() - started:.1f}s | "
                 f"candidate={candidate_count} | "
                 f"fidelity={fidelity_seconds:.1f}s/{fidelity_calls} | "
-                f"bridge={bridge_seconds:.1f}s/{bridge_calls} | "
+                f"bridge={bridge_seconds:.1f}s/{bridge_calls} "
+                f"(attempts={bridge_attempts}) | "
                 f"judge={judge_seconds:.1f}s/{judge_checks} "
                 f"(model={judge_model_calls}, cache={judge_cache_hits})"
             )

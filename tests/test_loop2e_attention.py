@@ -7,11 +7,13 @@ canonico; appena diventa sospetta/spesa/superseded deve uscire.
 """
 import time
 
+import config
 from core.memory_attention import (
     LOOP2E_ZSET,
     is_loop2e_candidate,
     loop2e_attention_score,
     remove_loop2e_candidate,
+    supported_use_attention_bonus,
     update_loop2e_candidate_index,
 )
 
@@ -119,22 +121,52 @@ def test_explicit_remove_is_idempotent():
 
 def test_supported_use_is_bounded_attention_not_eligibility_or_truth():
     unused = _doc(id="unused", recalled_count=5, supported_use_count=0)
-    useful = _doc(id="useful", recalled_count=5, supported_use_count=2)
+    useful = _doc(
+        id="useful",
+        recalled_count=5,
+        supported_use_count=2,
+        supported_use_observed_recalled_count=3,
+    )
     assert loop2e_attention_score(useful) > loop2e_attention_score(unused)
 
     # L'uso non apre il gate se mancano i tre richiami canonici.
     assert not is_loop2e_candidate(
         _doc(id="not-eligible", recalled_count=2, supported_use_count=99)
     )
-    # Il cap impedisce crescita illimitata del rinforzo.
-    fixed = {"last_recalled_at": 1000.0, "created_at": 1000.0}
-    capped = _doc(
-        id="same", recalled_count=5, supported_use_count=5, **fixed
+    # A parita' di usi, una memoria selettiva riceve piu' attenzione di una
+    # memoria quasi sempre esposta ma raramente riconoscibile nella risposta.
+    selective = _doc(
+        supported_use_count=8,
+        supported_use_observed_recalled_count=8,
     )
-    excessive = _doc(
-        id="same", recalled_count=5, supported_use_count=500, **fixed
+    overexposed = _doc(
+        supported_use_count=8,
+        supported_use_observed_recalled_count=80,
     )
-    assert loop2e_attention_score(capped) == loop2e_attention_score(excessive)
+    assert supported_use_attention_bonus(selective) > supported_use_attention_bonus(
+        overexposed
+    )
+
+    # Nessun denominatore osservato: durante la migrazione il comportamento e'
+    # fail-safe e non inventa un rapporto favorevole.
+    assert supported_use_attention_bonus(
+        _doc(supported_use_count=5)
+    ) == 0.0
+
+    # Anche con uso perfettamente selettivo il rinforzo resta sotto il vecchio
+    # massimo cap*peso a causa del prior conservativo.
+    assert 0 < supported_use_attention_bonus(selective) < 10
+
+
+def test_absolute_count_policy_remains_an_explicit_rollback():
+    old_policy = config.MEMORY_ATTENTION_POLICY
+    config.MEMORY_ATTENTION_POLICY = "absolute_count_v1"
+    try:
+        assert supported_use_attention_bonus(
+            _doc(supported_use_count=500)
+        ) == 10.0
+    finally:
+        config.MEMORY_ATTENTION_POLICY = old_policy
 
 
 if __name__ == "__main__":
@@ -146,4 +178,5 @@ if __name__ == "__main__":
     test_conversation_context_never_becomes_consolidation_evidence()
     test_explicit_remove_is_idempotent()
     test_supported_use_is_bounded_attention_not_eligibility_or_truth()
+    test_absolute_count_policy_remains_an_explicit_rollback()
     print("test_loop2e_attention: OK")

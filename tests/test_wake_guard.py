@@ -542,6 +542,70 @@ def test_implicit_read_log_requires_sentence_level_commitment():
     print("OK  read_log implicito: azione esplicita, non descrizione metacognitiva")
 
 
+def test_teach_snapshot_requires_a_semantic_authorization_contract():
+    contract = {
+        "recipient": "assistant",
+        "goal": "knowledge_transfer",
+        "interaction": "guided_session",
+        "evidence": "ascoltami e fammi domande",
+        "evidence_grounded": True,
+        "confidence": 0.96,
+    }
+    encoded = vd.VoiceDaemon._encode_teach_snapshot(
+        ["Ti spiego ICMA2", "La vite lavora cosi'"],
+        "ICMA2",
+        contract,
+    )
+    decoded = vd.VoiceDaemon._decode_teach_snapshot(encoded)
+
+    assert decoded is not None
+    assert decoded["buffer"] == ["Ti spiego ICMA2", "La vite lavora cosi'"]
+    assert decoded["contract"] == contract
+    assert vd.VoiceDaemon._decode_teach_snapshot(
+        "Ti spiego ICMA2\nLa vite lavora cosi'"
+    ) is None
+    assert vd.VoiceDaemon._decode_teach_snapshot(
+        '{"schema_version":2,"authorized":false,"buffer":["dato"],'
+        '"contract":{"recipient":"assistant"}}'
+    ) is None
+    print("OK  TEACH recovery: solo snapshot con autorizzazione semantica")
+
+
+def test_teach_confirmation_cannot_save_without_authorized_origin():
+    calls = {"saved": [], "spoken": [], "deleted": []}
+
+    class Memory:
+        def log_conversation(self, *_args, **_kwargs):
+            return None
+
+        def save_memory(self, *args, **kwargs):
+            calls["saved"].append((args, kwargs))
+
+    class Redis:
+        def delete(self, key):
+            calls["deleted"].append(key)
+
+    d = vd.VoiceDaemon.__new__(vd.VoiceDaemon)
+    d.memory = Memory()
+    d.r = Redis()
+    d._speak = lambda text: calls["spoken"].append(text)
+    d._teach_mode = False
+    d._teach_confirm_mode = True
+    d._teach_buffer = ["dato"]
+    d._teach_topic = "ICMA2"
+    d._teach_asked = []
+    d._teach_pending_save = "Una sintesi apparentemente pronta."
+    d._teach_contract = {}
+
+    d._handle_teach_confirm("Si', salva.")
+
+    assert calls["saved"] == []
+    assert calls["deleted"] == ["euri:teach:snapshot"]
+    assert any("Non salvo" in text for text in calls["spoken"])
+    assert d._teach_confirm_mode is False
+    print("OK  TEACH save: conferma insufficiente senza origine autorizzata")
+
+
 if __name__ == "__main__":
     test_addressed_guard()
     test_passive_weak_and_mixed_segment()
@@ -562,6 +626,8 @@ if __name__ == "__main__":
     test_reaction_ack_does_not_prejudge_async_verdict()
     test_initiative_token_is_cancelled_by_voice_inflight()
     test_implicit_read_log_requires_sentence_level_commitment()
+    test_teach_snapshot_requires_a_semantic_authorization_contract()
+    test_teach_confirmation_cannot_save_without_authorized_origin()
     print("PASS")
 
 

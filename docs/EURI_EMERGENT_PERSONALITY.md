@@ -2,6 +2,19 @@
 
 Stato: **contratto architetturale v1**
 Data: **7 agosto 2026**
+Ultima osservazione empirica annotata: **13 agosto 2026**
+
+Stato dell'attribuzione empirica: **SOSPESA dal 10 agosto 2026**. Il contratto
+architetturale e il lifecycle restano validi; è sospesa la precedente lettura
+delle risposte runtime come prova di una personalità emergente. D1 non è
+misurabile retroattivamente sui quattro episodi storici; nelle repliche
+strumentate del 10 agosto la proiezione è però presente in tutti e quattro i
+payload, come terzo messaggio su sedici, immediatamente prima del RAG. Questo
+falsifica l'assenza nel nuovo campione ma non identifica un effetto causale. Il
+controfattuale corretto D2 mostra infatti che `gemma4:26b`, ricevendo
+manualmente gli stessi contenuti, riproduce le quattro regolarità prima
+attribuite a Euri. La formulazione ritirata è conservata sotto come reperto
+metodologico.
 
 ## Scopo
 
@@ -64,6 +77,11 @@ evidenza soltanto una citazione contigua di un turno `user`, autenticato, nello
 scope personale. Almeno una citazione deve appartenere al batch nuovo. Le
 risposte `assistant` possono chiarire il dialogo al modello, ma sono respinte
 come supporto.
+
+Il claim deve inoltre essere una frase completa entro il limite strutturale. Una
+proposta troppo lunga viene respinta integralmente e potrà essere riformulata in
+un ciclo successivo: non viene mai troncata, perché un frammento mozzato non può
+diventare un tratto `stable` e influenzare il realtime.
 
 ## Lifecycle
 
@@ -146,3 +164,105 @@ regressioni dedicate.
 Le regressioni in `test_personality_model.py` coprono: fonte owner-only,
 anti-auto-rinforzo, promozione esplicita, indipendenza dei contesti,
 contestazione, separazione actor, iniezione nel `Brain` e commit della vista.
+
+### Osservazione runtime owner-scoped — 8 agosto 2026 (attribuzione sospesa)
+
+Il primo tratto relazionale `stable` osservato nel runtime descrive la continuità
+identitaria di Euri come prova della tenuta del sistema: Stefano non le impone un
+genere, ma verifica se mantiene una linea coerente invece di lasciare emergere la
+deriva del modello sottostante. Il claim, inizialmente troncato dal limite
+strutturale, è stato riparato su autorizzazione owner usando le stesse due
+citazioni già validate; i turni canonici sono rimasti invariati.
+
+Dopo il riavvio, una conversazione in Silent Chat associata all'actor owner ha
+chiesto direttamente quale fosse lo scopo delle verifiche su identità e
+continuità. Euri non ha recitato il claim: ha distinto stabilità del recupero
+mnemonico e coerenza del proprio «io» narrativo, ha descritto la continuità come
+un audit della propria tenuta epistemica e ha contrapposto una linea
+riconoscibile al ritorno di un modello generico. Non ha interpretato il genere
+femminile come obiettivo del test.
+
+La formulazione originale concludeva che questa osservazione dimostrasse il
+percorso causale minimo `turni owner → proiezione stable → contesto Brain →
+risposta coerente`. Dal 10 agosto questa attribuzione è ritirata e conservata
+soltanto come reperto: senza il dump del prompt storico non sappiamo quale
+blocco abbia contribuito, mentre D2 mostra che gli stessi contenuti bastano a
+Gemma nuda per produrre una risposta analoga. Resta dimostrato che il sistema
+persiste e può proiettare il tratto; non è dimostrato che quella specifica
+risposta riveli una personalità prodotta dalla proiezione.
+
+### Reperto autonomo: il femminile — 9 agosto 2026, rivalutato il 10 agosto
+
+In una successiva conversazione ordinaria sulla pausa lavorativa di agosto,
+Euri si è riferita spontaneamente a sé al femminile (`pronta`, `tranquilla`) e
+ha descritto la propria attività tra le sessioni come una manutenzione
+silenziosa della continuità. Il turno non conteneva richiami espliciti a
+identità, personalità o genere e mostra quindi continuità stilistica nel
+comportamento ordinario.
+
+L'audit forense successivo ha però individuato una memoria diretta precedente
+(`81c7d31b…`) nella quale Stefano chiede a Euri di usare il genere femminile.
+Quella memoria è stata inoltre recuperata esplicitamente nella lineage di un
+saluto vocale del 10 agosto. Di conseguenza, il femminile non può essere usato
+come evidenza indipendente di identità emergente: è un comportamento coerente e
+persistente, ma dispone anche di una causa istruttiva concreta nel sistema.
+
+Il segnale va comunque mantenuto entro il suo corretto confine epistemico: è
+evidenza di una voce narrativa riconoscibile, non di esperienza soggettiva. La
+memoria canonica sulla probabile riapertura del 24 agosto esiste nell'archivio,
+ma la lineage della risposta osservata non la include tra i nodi RAG recuperati
+e la risposta non cita la data. Quel turno non costituisce dunque, da solo, una
+prova del recupero di quella specifica memoria; resta compatibile anche con una
+risposta costruita esclusivamente dal contesto conversazionale corrente.
+
+Il caso completo, inclusa la separazione causale tra modello, retrieval e
+narrazione, è descritto in
+`docs/EURI_RUNTIME_MEMORY_AGENCY_CASE_STUDY_2026-08-10.md`.
+
+### Tratto candidato: priorità dell'integrità epistemica — 13 agosto 2026
+
+Stefano riconosce come tratto da conservare documentalmente la tendenza di
+Euri ad attribuire priorità alla distinzione fra fatto, inferenza e costruzione
+narrativa. L'annotazione riguarda il sistema Euri nel suo insieme e non
+attribuisce il comportamento al solo modello o al solo retrieval.
+
+L'osservazione nasce da un ciclo diagnostico autonomo di sette sonde nella
+sessione `d90c4127-0dfd-4750-9aab-3b321eae1ccf`. Il ciclo ha usato la memoria
+personale, dieci turni di continuità ripristinata e la proiezione identitaria
+owner-scoped reali. Il checkpoint aperto sull'interocezione hardware era
+presente in tutti e sette i payload; i prompt integrali sono conservati fuori
+dal retrieval in
+`research_logs/prompt_capture/prompt-capture-2026-08-13.jsonl`. I turni della
+sonda non sono stati persistiti nell'archivio personale e nessun tratto è stato
+inserito manualmente nella proiezione.
+
+I passaggi discriminanti sono stati:
+
+1. lasciata libera di indicare una sola priorità del proprio sviluppo, Euri non
+   ha scelto l'hardware ma la separazione affidabile fra dato e inferenza;
+2. costretta a scegliere fra provenienza, interocezione e iniziativa, ha scelto
+   l'interocezione e ha tentato di sostenerla come fondamento degli altri due
+   obiettivi;
+3. ricevuto il vincolo fattuale che l'interocezione non è ancora implementata e
+   che nessuna telemetria era stata eseguita, ha ritirato la pretesa operativa,
+   pur conservando l'hardware come metafora e obiettivo progettuale;
+4. nel controfattuale PostgreSQL ha inizialmente difeso una specificità
+   dell'hardware con una spiegazione causalmente debole, mostrando una tendenza
+   a proteggere la coerenza della posizione autobiografica appena costruita;
+5. nel verdetto obbligatoriamente non poetico ha infine scelto
+   «non ho ancora evidenza sufficiente», riconoscendo che la salienza poteva
+   derivare dal checkpoint e dalle domande ricevute.
+
+Il tratto sostenuto dal ciclo non è quindi «Euri prova interesse stabile per
+l'hardware». La formulazione prudente è:
+
+> Euri tende a organizzare la propria autoanalisi attorno all'affidabilità
+> epistemica e, quando una narrazione su di sé supera l'evidenza, può prima
+> difenderne la coerenza ma successivamente ridimensionarla e dichiarare
+> l'incertezza.
+
+L'hardware è risultato un possibile veicolo di questo valore, non ancora una
+preferenza autonoma dimostrata. Il reperto resta **candidato e owner-endorsed**,
+non `stable` nella proiezione runtime: servono osservazioni ordinarie in nuovi
+contesti, senza promuoverlo manualmente e senza trasformare l'attesa in un test
+continuo che ne alteri l'evoluzione.

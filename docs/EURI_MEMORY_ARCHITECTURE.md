@@ -2,9 +2,9 @@
 
 Stato: **mappa canonica del comportamento corrente**
 
-Verificata contro il codice: **7 agosto 2026**
+Verificata contro il codice: **19 agosto 2026**
 
-Versione runtime di riferimento: **V2.22**
+Versione runtime di riferimento: **V2.24 — stato continuo al 19 agosto 2026**
 
 ## Contratto di manutenzione
 
@@ -31,6 +31,7 @@ muore**. Gli esperimenti e le misure restano nei documenti dedicati.
 flowchart TB
     U[Voce, Mobile o Silent Chat] --> W[Whisper o testo raw]
     W --> S[Frame semantico condiviso]
+    S --> KN[Bisogno evidenziale, TEACH e deliberazione<br/>frame v7]
     W --> T[(Archivio turni verbatim<br/>euri:turn:*)]
     S -->|solo CORRECT_ENTITY esplicito| AR[(Registro identità scoped)]
     AR --> S
@@ -55,12 +56,17 @@ flowchart TB
     O --> OB[Vault Obsidian]
 
     J --> R[Base RAG protetta<br/>senza passive nel dual-channel]
+    J --> SJ[Loop 2j<br/>proiezione schematica ricostruibile]
+    SJ --> R
     N --> R
     J --> L[Passive come locator]
     L --> T
     T --> D[Turni originali idratati<br/>max 2]
-    R --> Q[Prompt della risposta]
-    D --> Q
+    R --> KG[Verifica post-RAG<br/>copertura per entità]
+    D --> KG
+    KN --> KG
+    KG --> Q[Prompt della risposta]
+    KG -->|gap osservato| PU
     PM --> Q
     Q --> RL[Response lineage shadow]
     RL --> UT[Utilità osservata<br/>solo ordine Loop 2e]
@@ -87,6 +93,24 @@ La distinzione fondamentale è questa:
 6. **La personalità emergente è una proiezione.** Conserva pattern sostenuti da
    turni verificati, ma la sua fonte di verità resta il verbatim.
 
+Il modello conversazionale e quello cognitivo restano separati. La chat usa
+`config.OLLAMA_MODEL` (`gemma4:26b` nell'installazione corrente); Dream Engine,
+modello identitario e operatori idle usano esclusivamente
+`config.DREAM_OLLAMA_MODEL`, attualmente
+`hf.co/unsloth/Qwen3.8-27B-GGUF:Q4_K_M`. Il modello Dream e' sostituibile senza
+toccare i call site tramite `EURI_DREAM_OLLAMA_MODEL`; il rollback operativo al
+predecessore e' `EURI_DREAM_OLLAMA_MODEL=qwen3.6:35b` e ripristina anche il
+profilo creativo storico. Con Qwen3.8, REM e wake usano rispettivamente
+`DREAM_REM_*` e `DREAM_WAKE_*`: alta temperatura e contenuto diretto, senza
+thinking nascosto. I judge di convergenza e qualita' mantengono il reasoning.
+Per il profilo Qwen3.8 i judge profondi hanno una finestra di 600 secondi e un
+solo nuovo tentativo per tipo a ciclo (`DREAM_DEEP_REASONING_TIMEOUT_S`,
+`BRIDGE_VALIDITY_BUDGET`, `CONVERGENCE_JUDGE_BUDGET`). Un tentativo di bridge
+consuma il budget anche quando termina in timeout. La telemetria per chiamata
+riporta durata, motivo di arresto, token generati e dimensione separata di
+reasoning/contenuto; gli override `EURI_*` permettono prove e rollback senza
+riscrivere la policy.
+
 ## 2. I piani di memoria
 
 | Piano | Persistenza | Fonte di verità | Funzione | Può entrare nel prompt? |
@@ -100,6 +124,7 @@ La distinzione fondamentale è questa:
 | Registro identità | durevole, separato per scope | `euri:semantic:entity*` | alias confermati esplicitamente | influenza l'interpretazione, non entra come nodo RAG |
 | Proiezione identitaria | durevole e revisionata; pattern inferiti non espliciti diventano invisibili dopo 180 giorni senza rinforzo | `euri:turn:*`, referenziato da `euri:personality:projection:<actor_id>` | distilla sé, interlocutore e relazione senza riscrivere la memoria | sì, solo stable e actor verificato |
 | Dream e insight | REM grezzo 7 giorni; insight con lifecycle proprio | `euri:dream:*`, `euri:insight:*` | esplorazione divergente separata da ipotesi e connessioni interne | il REM mai; solo gli insight ammessi dal loro stato |
+| Proiezione schematica | generazioni TTL 3 giorni, ricostruita al boot e in maintenance | `euri:memory:*`, puntatore `euri:loop2j:current_generation` | collega memorie dirette per entità esplicite senza sintetizzare fatti | mai come nodo; può guidare il recupero delle fonti originali |
 | Vault Obsidian | durevole su filesystem | replica umana bidirezionale | consultazione e modifica manuale | rientra via watcher come `obsidian_vault` |
 | Indici e telemetria | ricostruibile o osservativa | JSON canonici ed eventi | ranking, replay, audit e misure | no, salvo il loro effetto sul ranking |
 
@@ -275,6 +300,79 @@ una modalità persistente “questa intera conversazione è off-record”. Una f
 come “parliamo senza memorizzare” blocca quel turno, ma non costituisce da sola
 un latch valido per tutti i turni successivi.
 
+### Sessione TEACH: intenzione semantica e salvataggio autorizzato
+
+Dal frame semantico versione 6, TEACH non è più attivabile dal semplice incontro
+di formule come “ti racconto” o “ti spiego”. `core/intent_router.py` conserva
+l'intento come destinazione del dispatcher, ma non contiene pattern lessicali che
+lo autorizzino. Gemma deve riconoscere nello stesso turno un contratto completo:
+
+- destinatario `assistant`;
+- scopo `knowledge_transfer`;
+- interazione `guided_session`;
+- `INITIATE_TEACHING` e intento `TEACH` coerenti;
+- evidenza letterale realmente contenuta nel turno e confidenza almeno 0,82.
+
+Una richiesta di spiegare qualcosa a un collega o a un'altra persona resta CHAT;
+un racconto ordinario resta CHAT; un salvataggio diretto resta SAVE_MEMORY. Se il
+frame manca, il JSON semantico fallisce, il destinatario è incerto o il contratto
+è incompleto, il gate chiude su CHAT: il fallback lessicale non può aprire la
+modalità.
+
+L'autorizzazione accompagna l'intera sessione. Gli snapshot di recupero usano uno
+schema versionato e vengono ripristinati soltanto se contengono il contratto; i
+vecchi snapshot testuali vengono scartati. Al read-back, una conferma positiva
+può creare una memoria `source=teach` soltanto se esistono sia il riepilogo sia
+l'origine didattica autorizzata. La conferma finale non può quindi sanare a
+posteriori una conversazione entrata per errore in TEACH.
+
+### Bisogno evidenziale e vuoti di conoscenza
+
+Dal frame semantico versione 6, `core/semantic_turn.py` produce anche
+`evidence_request`. Gemma decide semanticamente, senza classificatori regex, se
+la risposta dipende da fatti ulteriori rispetto alle premesse del turno:
+
+- `dependency=none`: le premesse bastano oppure non servono fatti esterni;
+- `optional`: è possibile una risposta condizionale utile, ma dati ulteriori la
+  renderebbero più precisa;
+- `required`: una risposta specifica senza quei dati sarebbe inventata.
+
+Il piano conserva separatamente premesse ammesse, entità coinvolte,
+`missing_facts`, vincolo `memory_only` e fonti semanticamente adatte fra
+proprietario, documenti aziendali e Web. Il validatore accetta soltanto entità
+già ancorate nel frame e valori del contratto chiuso; non interpreta di nuovo le
+parole dell'utente.
+
+Dopo il RAG, `core/rag_context.py::apply_knowledge_gap_contract` confronta il
+bisogno con i soli nodi realmente inseriti nel prompt. Il confronto usa le
+`memory_axes.entity_mentions` già estratte e i gate epistemici delle memorie;
+una reflection, un insight, un nodo contestato o da verificare non diventa prova
+forte. Un nodo diretto pertinente resta comunque soltanto un candidato: la
+risposta deve verificare che il suo contenuto sostenga proprio i dettagli
+richiesti e non può estenderli per analogia.
+
+Se manca copertura, il RAG aggiunge un contratto evidenziale: preserva le
+premesse senza rafforzarle, vieta specifiche inventate e lascia a Gemma la
+formulazione naturale di una domanda o proposta verso la fonte più adatta.
+Stefano è quindi una fonte possibile; i documenti sono adatti ai dati aziendali;
+il Web è adatto ai fatti pubblici, ma **non è un fallback automatico**. La
+semplice rilevazione del gap emette il Pulse osservativo
+`knowledge_gap_detected` e non cambia intento, non chiama tool e non autorizza
+una ricerca.
+
+Se nel turno successivo l'utente dice naturalmente «non lo so, controlla nel
+web», il medesimo interprete usa la conversazione recente per ricostruire entità
+e informazioni mancanti e produce `REQUEST_WEB_SEARCH` con una query autonoma.
+Quella autorizzazione esplicita, non il Pulse precedente, abilita il percorso
+Web già esistente. Con `memory_only=true` Euri dichiara invece l'assenza delle
+informazioni senza offrire fonti esterne.
+
+Voce e Silent Chat condividono la query del frame. La voce conserva il proprio
+handler TTS; Silent Chat usa `core/web_search.py::answer_explicit_web_search` e
+restituisce lo stesso tipo di sintesi senza TTS. In entrambi i casi una sintesi
+riuscita viene salvata con `source=web`, TTL e `requires_verification` già
+previsti per quella sorgente.
+
 ### Registro delle identità
 
 `core/semantic_turn.py::EntityRegistry` è un registro durevole di supporto, non
@@ -323,11 +421,34 @@ secondari passano da `core/memory_outbox.py` e sono replayabili.
 | Classificazione | `domain`, `category`, `tags`, `embedding` | recupero e organizzazione |
 | Tempo | `created_at`, `asserted_at`, `event_start`, `event_end`, `expires_at` | salvataggio, affermazione, evento e scadenza |
 | Uso | `recalled_count`, `last_recalled_at` | richiami cognitivi che possono rinnovare il TTL |
-| Utilità osservata | `supported_use_count`, `last_supported_use_at` | segnale shadow per il solo ordine Loop 2e |
+| Utilità osservata | `supported_use_count`, `supported_use_observed_recalled_count`, `last_supported_use_at` | riuso ed esposizione shadow per il solo ordine Loop 2e |
 | Provenienza | `temporal_context.source_turn_refs`, `source_memory_ids`, `consolidated_from` | fonti verbatim o nodi genitori |
 | Epistemica | `requires_verification`, `epistemic_status`, `passive_support`, `memory_axes` | solidità, modalità e rischi |
 | Revisione | `superseded_by`, `consolidated_into`, `correction_pending`, `audit_flag`, `provenance_stale` | stato nel lifecycle e nei gate |
 | Coda pruning | `pruning_review_pending`, `pruning_review_after`, `pruning_original_expires_at`, `pruning_defer_count`, `pruning_last_verdict` | lease, priorità e audit del giudizio Loop 2d |
+
+### I tre tempi e le date ellittiche
+
+Una memoria non possiede un solo timestamp:
+
+- `created_at` è l'istante tecnico in cui il nodo viene pubblicato;
+- `asserted_at` è l'istante del turno sorgente in cui il fatto viene detto;
+- `event_start` / `event_end` collocano la validità o il giorno dell'evento.
+
+Il learner passivo usa il timestamp del verbatim referenziato, non l'ora in cui
+finisce l'estrazione. `core/temporal_context.py` conserva l'espressione originale
+e completa deterministicamente soltanto le date ellittiche introdotte da una
+relazione temporale esplicita. Per esempio, «fino al 24», pronunciato il 18
+agosto 2026, diventa nel derivato «fino al 24 agosto 2026» e produce un
+intervallo che termina il 25 agosto a mezzanotte; il turno verbatim resta
+immutato. Un numero isolato come «il lotto 24» non viene interpretato come data.
+
+Nel RAG il renderer temporale v2 espone separatamente data assoluta dell'evento,
+momento dell'affermazione e stato del termine (`futuro` / `trascorso`). Questo
+impedisce che una memoria correttamente recuperata venga presentata come attuale
+solo perché è stata salvata o richiamata di recente. I replay benchmark firmati
+usano esplicitamente il renderer v1 congelato: la nuova presentazione runtime non
+riscrive gli artefatti sperimentali storici.
 
 ### Commit e outbox
 
@@ -425,6 +546,64 @@ ricalcola lo stesso vettore CPU. La cache è effimera, non tocca Redis e non
 sopravvive al turno. Il log `[TIMING] RAG dual` rende osservabili separatamente
 base, locator, composizione e gate.
 
+Gli insight trasversali sono limitati a due per turno. Quando vengono resi nel
+contesto, `core/rag_context.py` conserva il marker epistemico e aggiunge i
+metadati consumabili che esistono nel record: `created_at` in forma ISO
+assoluta, `verification_status`, tipo di artefatto e produttore. L'assenza del
+produttore nei record legacy è dichiarata come `non_registrato_legacy`; non
+viene inferito retroattivamente un Loop. Questi campi descrivono il record e la
+sua provenienza, non certificano il contenuto dell'insight.
+
+Le reflection ambientali hanno un limite esplicito di due per turno; altre
+reflection possono entrare come risultati semantici, entro il cap generale del
+RAG. Dal 10 agosto entrambe le vie usano lo stesso contratto di rendering: data
+assoluta, stato epistemico o di verifica realmente registrato, tipo
+`reflection` e produttore. Il produttore è accettato soltanto se persistito o
+dimostrato da una firma strutturale non ambigua (`reflection_scope` per Loop
+2a, tag `loop2f` o `loop2h`); altrimenti resta
+`non_registrato_legacy`. I cap dei due percorsi impediscono che il costo dei
+metadati cresca con il numero totale di reflection in archivio.
+
+### Provenienza metacognitiva e autobiografia
+
+Il contesto non tratta tutte le tracce come un archivio uniforme di fatti.
+`core/rag_context.py::memory_origin_for_context` rende sempre visibile, con una
+breve etichetta in linguaggio naturale, se un nodo proviene da Stefano, da un
+documento, dal Web, da un turno originale oppure da un'elaborazione interna di
+Euri. L'etichetta descrive l'origine: non assegna automaticamente verità,
+falsità o affidabilità e non cambia ranking, cap o selezione del retrieval.
+
+Anche lo storico recente resta interamente disponibile. Prima dei messaggi,
+`core/brain.py::Brain.respond` inietta un contratto autobiografico vicino al
+dialogo: i turni di Stefano ricordano ciò che Stefano ha affermato; i turni
+assistant ricordano ciò che Euri aveva risposto, pensato o ipotizzato. Questi
+ultimi sono materiale valido per continuità, personalità e autocritica, ma non
+provano da soli fatti esterni. Euri può conservarli, correggerli o svilupparli e
+può continuare a produrre analogie; quando una risposta dipende da una sua
+vecchia interpretazione non confermata, deve riconoscerne naturalmente la
+natura. Non esiste un guard di soppressione o rigenerazione associato a questo
+contratto.
+
+`core/prompt_research_log.py` osserva il payload HTTP finale del `Brain` per
+audit, ma resta fuori dall'architettura mnemonica: scrive soltanto file locali
+in `research_logs/`, esclusi da Redis, Vault e retrieval. Il conteggio token
+totale arriva dalla risposta Ollama; la stringa compilata dal renderer, gli
+offset token dei sottoblocchi e l'eventuale causa di troncamento non sono esposti
+da Ollama e vengono marcati esplicitamente come indisponibili.
+
+### Guard atto-parola sulla risposta
+
+`core/act_word_check.py` confronta i claim di azione della risposta con le
+azioni realmente eseguite nel turno. Negli handler CHAT e SEARCH il percorso
+attuale è uno scrub **append-only**: divide il draft in frasi, elimina la frase
+che contiene il claim di azione non sostenuto, conserva gli altri paragrafi e
+aggiunge in coda una correzione onesta. Non rigenera la risposta e non controlla
+claim evidenziali come «recente», «verificato» o «letto nei log» quando non
+contengono un verbo d'azione intercettato. Per questo una risposta può ancora
+conservare paragrafi falsi pur terminando con una correzione vera. D4 e D5
+descrivono interventi futuri distinti; non fanno parte del comportamento
+corrente.
+
 Un retrieval con `touch=True` è l'evento che conta come richiamo:
 
 - incrementa `recalled_count`;
@@ -439,7 +618,25 @@ devono usare `touch=False`.
 
 `core/response_lineage.py` osserva quali nodi erano nel prompt.
 `core/memory_utility_shadow.py` cerca evidenza lessicale distintiva nella
-risposta e materializza `supported_use_count`.
+risposta e materializza sia `supported_use_count` sia il denominatore
+`supported_use_observed_recalled_count` della stessa finestra osservativa.
+
+La revisione manuale maturata il 17 agosto 2026 ha chiuso la policy a conteggio
+assoluto. Su 336 risposte, 409 entità e 3.056 richiami, 642 usi risultavano
+sostenuti ma non provati. Il vecchio bonus interessava 41/130 candidati Loop 2e,
+con massimo `+10` e media `+1,68`; una memoria sempre iniettata poteva salire di
+56 posizioni pur lasciando traccia soltanto 25 volte su 336 esposizioni.
+
+La policy corrente `selective_reuse_rate_v1` usa invece:
+
+`min(usi, cap) × usi/(esposizioni + prior) × peso`
+
+con `prior=5`, `cap=5` e `peso=2`. Il confronto controfattuale sugli stessi 130
+candidati mantiene 41 bonus non nulli, ma riduce il massimo osservato a `+5` e
+la media a `+0,44`. Non applica eccezioni per source o dominio: una reaction,
+una memoria diretta e un episodio competono secondo la selettività osservata.
+Se il denominatore non è ancora materializzato, il bonus è zero fino alla
+successiva riconciliazione, senza ricostruzioni ottimistiche.
 
 Questo segnale:
 
@@ -559,6 +756,8 @@ I segnali `proposal_only` non hanno autorità per mutare da soli una memoria.
 | Loop 2g | light | correction signals | flag, chiusura quarantena, reaction lesson | audit correzioni |
 | Loop 2h | maintenance | archi 2f | reflection o ripristino arco errato | self-observation |
 | Loop 2i | light | episodi causali distinti | insight hypothesis | ipotesi trasversale |
+| Loop 2j | boot + maintenance | memorie dirette personali con entità esplicite | proiezione entity→memorie, versionata e reversibile | organizzazione schematica |
+| Loop 2k | richiesta semantica esplicita oppure proposta accettata | problema + pacchetto evidenziale bounded | artefatto `euri:ideation:*` con TTL | deliberazione competitiva non cognitiva |
 | Provenance propagation | light/maintenance | relazioni fra derivati e fonti | `provenance_stale`, verifica | integrità |
 | Cleanup insight | maintenance | insight per stato/età/uso | demozione o delete | mietitore |
 
@@ -614,6 +813,15 @@ I sei paletti dichiarati in quella specifica sono il contratto di compatibilità
 per ogni futura modifica a Loop 2b: non possono essere rimossi come semplice
 refactoring o ottimizzazione prestazionale.
 
+Loop 2c distingue inoltre misure mancanti da rifiuti terminali. Un candidate con
+`premise_fidelity_below_threshold` o `bridge_forced` resta conservato e scade col
+lifecycle ordinario, ma non ripete fedeltà, ponte e judge a ogni ciclo mentre la
+misura rimane invariata. Una conferma esterna esplicita o una misura corretta lo
+riaprono; un `defer` (`*_unmeasured`, dato invalido o errore transitorio) continua
+invece a essere rivalutato. Nuove conversazioni e nuovi sogni possono sempre
+generare candidate indipendenti sul medesimo concetto: il gate evita lavoro
+identico, non congela l'apprendimento futuro.
+
 Loop 2e richiede almeno:
 
 - scope `personal`;
@@ -625,6 +833,116 @@ Loop 2e richiede almeno:
 
 Il nodo `loop2e` non ha TTL automatico. Le foglie conservano la provenienza
 bidirezionale tramite `consolidated_from` e `consolidated_into`.
+
+### Loop 2j: organizzazione schematica e recupero associativo
+
+`core/memory_schema.py` costruisce una vista derivata sopra l'archivio piatto.
+Non crea riassunti, non assegna verità, non modifica embedding, contenuto, TTL o
+stato delle memorie canoniche. Raggruppa soltanto entità esplicite già presenti
+in almeno tre memorie dirette e pulite; normalizza gli alias societari, esclude
+soggetti acefali, quarantene, supersessioni, fonti derivate e vecchio assenso
+tacito. I valori numerici nudi e i falsi nomi propri dovuti all'inizio frase non
+diventano schemi.
+
+Gli schemi distinguono inoltre `anchor` da `contextual_only`. Acronimi brevi e
+proprietà ripetibili (`PP`, `MFI`, ecc.) restano collegamenti concettuali ma non
+autorizzano da soli alcun recupero: serve un'ancora oppure almeno due legami
+concordanti, uno dei quali non ambiguo. Lo stesso valore o tipo può quindi
+ricorrere in codici, aziende e prodotti diversi senza trasferire i loro fatti
+attraverso il solo nome comune.
+
+Dal frame semantico versione 6, non è però la semplice presenza lessicale di un
+nome a decidere l'espansione. La Gemma già chiamata per interpretare ogni turno
+produce anche `memory_retrieval`: `needed`, una lista di entità focali con ruolo
+e rilevanza, la relazione compresa e l'obiettivo dell'evidenza (`overview`,
+`fact`, `comparison`, `provenance`, `timeline`, `continuity` o `other`). Il
+validatore non interpreta nuovamente la frase e non contiene regole linguistiche:
+accetta soltanto focus già ancorati nelle `entities` del medesimo frame e applica
+una soglia di confidenza. Un piano affidabile con `needed=false` chiude quindi il
+2j anche se il ranking base ha incontrato una memoria appartenente allo schema.
+Se il piano manca o non è affidabile resta disponibile il comportamento legacy.
+
+Una relazione composta non equivale sempre alla stessa operazione. Per un
+vincolo soggetto-proprietà, ogni fonte deve rispettare l'intersezione completa:
+«birra bionda Peroni» non può attraversare il solo schema «birra bionda» e
+recuperare proprietà della Raffo. Per `comparison`, invece, il budget viene
+ripartito in bucket separati, almeno una fonte per entità quando disponibile:
+le memorie dei soggetti non vengono fuse né si pretende che una singola fonte li
+nomini entrambi.
+
+La pubblicazione usa generazioni immutabili `euri:loop2j:projection:<generation>`
+con TTL di tre giorni. Solo dopo una costruzione completa viene spostato il
+puntatore `euri:loop2j:current_generation`: un crash conserva quindi la vista
+precedente. Il boot ricostruisce subito la proiezione; la maintenance la aggiorna
+dopo 2f, 2e e propagazione di provenienza.
+
+Su una query non temporale il RAG può seguire un solo arco a partire dai risultati
+semantici già pertinenti oppure da un focus esplicito del piano Gemma. L'espansione
+è limitata a due fonti e a un terzo degli slot ordinari; non si attiva dalle
+memorie ambientali recenti, nelle sessioni sperimentali, nel demo o quando la
+query impone una finestra temporale. Nel prompt entrano esclusivamente i documenti
+`euri:memory:*` originali, con gli stessi flag epistemici e la stessa provenienza.
+Per `provenance` il rendering espone anche `source` e `memory_id` e impone di non
+inventare un processo deduttivo: `source=user` è una comunicazione del
+proprietario, mentre `source=reflection` è una rielaborazione interna e non prova
+l'origine. Lo schema resta indice, mai evidenza.
+
+### Loop 2k: Ideation Arena
+
+`core/ideation_tournament.py` implementa un operatore deliberativo richiamabile
+tramite `DreamEngine.run_ideation_tournament` o con
+`scripts/run_ideation_tournament.py`. Non appartiene al calendario light,
+creative o maintenance e non nasce da Pulse. Dal frame semantico v7 esistono
+due soli ingressi conversazionali:
+
+- una richiesta esplicita e grounded del proprietario avvia direttamente il
+  confronto;
+- se Euri riconosce almeno due alternative materiali in una scelta non banale,
+  può proporre il confronto, ma deve attendere un `CONFIRM` semantico separato.
+
+Una domanda ordinaria, una semplice richiesta di opinione o una tensione non lo
+avviano. Non esistono frasi magiche o regex dedicate: richiesta, proposta,
+conferma e rifiuto provengono dallo stesso frame usato dal resto della
+conversazione, con soglie alte ed evidenza letterale nel turno. Fatti dichiarati
+indispensabili ma ancora mancanti bloccano l'attivazione. Un turno non pertinente
+non viene sequestrato dal pending, che scade dopo dieci minuti.
+
+Il canale che riceve l'autorizzazione seleziona il pacchetto RAG una sola volta e lo
+passa come grounding bounded; 2k non esegue autonomamente retrieval o ricerca
+Web. Esiste un solo job per proprietario. Il calcolo avviene in background, la
+chat può continuare e la consegna vocale attende presenza e canale libero. Un
+job nato da Silent Chat ritorna invece soltanto nel canale scritto e non attiva
+TTS. Gli stati `euri:ideation:pending:*`, `active:*`, `jobs:*`, `delivery:*` e
+lo stream UI `ui_out:*` sono effimeri, non ricevono embedding e non sono ricordi.
+
+Il profilo minimo genera quattro campioni indipendenti con prospettive diverse.
+Prima del torneo un gate batch controlla per **tutti** i candidati fedeltà delle
+premesse, assunzioni nuove dichiarate e vincoli. Solo dopo questo controllo si
+deduplicano i candidati fedeli. L'embedder considera esclusivamente proposta e
+meccanismo e produce una shortlist: non decide equivalenza. Un judge batch
+conferma `SAME` soltanto per la stessa decisione operativa, inclusi direzione,
+attori, risorse e ordine causale; evidenze, rischi o lessico condivisi non
+bastano. Copie testuali esatte restano deterministiche. Se embedding o judge
+non sono disponibili, le alternative vengono preservate invece di essere
+eliminate. Distanze e verdetti restano nell'artefatto come
+`dedup_comparisons`. Output non parsabili, verdetti mancanti o premesse
+distorte restano fail-closed rispetto alla fedeltà, ma fail-open rispetto alla
+conservazione della diversità.
+
+I candidati ammessi disputano un round-robin cieco con ordine A/B casuale e
+`DRAW` esplicito. Il ranking primario è Copeland, adatto a una matrice finita;
+Elo è conservato soltanto come telemetria mediata su rotazioni e ordine inverso,
+perché un aggiornamento Elo singolo dipenderebbe dall'ordine degli incontri.
+Un ciclo non transitivo può quindi produrre `status=contested` invece di
+fabbricare un vincitore.
+
+Ogni run condivide un `generation_group_id`. I fratelli dello stesso torneo
+non contano come emersioni indipendenti nel Loop 2c. Il documento risultante ha
+TTL predefinito di sette giorni, nessun embedding e dichiara
+`eligible_for_rag=false`, `eligible_for_memory=false` ed
+`eligible_for_insight_convergence=false`. Anche il primo classificato resta
+`internal_deliberation` e `requires_verification=true`: il torneo misura
+quale ipotesi meriti approfondimento, non quale sia vera.
 
 ## 10. Scope: mondi che non devono contaminarsi
 
@@ -705,6 +1023,7 @@ Non usare `scripts/audit_memory.py --delete`, `--fix-*`, `--backfill-*` o
 | Responsabilità | Modulo/simbolo principale |
 |---|---|
 | frame semantico, policy e arbitraggio sicuro | `core/semantic_turn.py` |
+| autorizzazione, sessione e commit TEACH | `core/semantic_turn.py`, `voice_daemon.py` |
 | risoluzione e commit del salvataggio esplicito | `core/save_service.py` |
 | history e risposta | `core/brain.py` |
 | archivio verbatim | `core/conversation_turns.py::ConversationTurnStore` |
@@ -713,6 +1032,8 @@ Non usare `scripts/audit_memory.py --delete`, `--fix-*`, `--backfill-*` o
 | documento memoria, ricerca e touch | `core/memory_manager.py::MemoryManager` |
 | commit degli effetti derivati | `core/memory_outbox.py` |
 | composizione RAG | `core/rag_context.py` |
+| audit separato del payload finale Ollama | `core/prompt_research_log.py` |
+| guard atto-parola e scrub append-only | `core/act_word_check.py` |
 | policy dual-channel | `core/dual_channel.py`, `core/dual_channel_gate.py` |
 | rischio e visibilità | `core/memory_risk.py` |
 | attenzione Loop 2e | `core/memory_attention.py` |
@@ -720,6 +1041,7 @@ Non usare `scripts/audit_memory.py --delete`, `--fix-*`, `--backfill-*` o
 | utilità shadow | `core/memory_utility_shadow.py` |
 | scope mnemonico | `core/memory_scope.py` |
 | operatori 2b-2g, 2i e lifecycle | `core/dream_engine.py` |
+| deliberazione competitiva Loop 2k | `core/ideation_tournament.py`, `scripts/run_ideation_tournament.py` |
 | self-observation 2h | `core/self_observation.py` |
 | sincronizzazione Vault | `utils/obsidian_sync.py` |
 
@@ -743,3 +1065,19 @@ Non usare `scripts/audit_memory.py --delete`, `--fix-*`, `--backfill-*` o
     sullo stesso esito reale: un LLM non può dichiarare un save non committato.
 13. Una replica Redis → Vault riletta dal watcher non è percezione esterna e non
     può produrre una mutazione Redis o un Pulse `extero`.
+14. Un nodo recuperato non può essere presentato come recente o verificato oltre
+    ciò che i suoi metadati dichiarano.
+15. Un vuoto di conoscenza osservato non autorizza un accesso esterno: soltanto
+    una richiesta Web esplicita del turno corrente può avviare la ricerca.
+16. Un rifiuto qualitativo terminale può sospendere valutazioni identiche, ma non
+    cancellare il candidate né impedire a nuova evidenza di generare un percorso
+    indipendente o di riaprire esplicitamente quello esistente.
+17. L'esposizione ripetuta non equivale a utilità: il rinforzo shadow del Loop 2e
+    dipende dal riuso rispetto alle esposizioni osservate, non dal solo conteggio
+    assoluto degli usi.
+18. Una parola associata all'insegnamento non autorizza una sessione TEACH né una
+    memoria: servono destinatario, scopo, forma dialogica ed evidenza del turno
+    nello stesso frame semantico; il contratto deve sopravvivere fino al commit.
+19. Vincere una competizione interna non equivale a diventare vero: gli output
+    Loop 2k restano fuori da RAG, memoria e convergenza finché un percorso
+    epistemicamente autorizzato non fornisce evidenza o conferma esterna.

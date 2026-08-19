@@ -197,6 +197,8 @@ def reconstruct_pair(report: dict, case, question_id: str) -> dict:
             _FrozenBaseMemory(docs),
             mode="search",
             touch=False,
+            render_memory_origins=False,
+            temporal_label_version="v1",
         ).text
     expected_base = rag[question_id]["metadata"]["base_sha256"]
     if P._sha(base) != expected_base:

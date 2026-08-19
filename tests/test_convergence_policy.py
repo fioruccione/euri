@@ -126,6 +126,15 @@ def _restore_config(old):
         setattr(config, name, value)
 
 
+def _evaluate_policy_without_runtime_throttle(engine):
+    """I test della policy isolano la semantica dal profilo runtime Qwen3.8."""
+    old = _patch_config(CONVERGENCE_JUDGE_BUDGET=6)
+    try:
+        engine._evaluate_insights()
+    finally:
+        _restore_config(old)
+
+
 def test_zero_distance_requires_semantic_confirmation():
     subject = _candidate("seed", "claim operativo del seed")
     neighbors = [
@@ -136,7 +145,7 @@ def test_zero_distance_requires_semantic_confirmation():
     calls = []
     engine._llm_judge_same_insight = lambda a, b: calls.append((a, b)) or False
 
-    engine._evaluate_insights()
+    _evaluate_policy_without_runtime_throttle(engine)
 
     assert len(calls) == 2
     assert redis.docs["seed"]["status"] == "candidate"
@@ -204,7 +213,7 @@ def test_only_judge_confirmed_neighbors_are_absorbed():
     de_mod.pulse_emit = lambda *_args, **_kwargs: None
     de_mod.write_insight = lambda *_args, **_kwargs: None
     try:
-        engine._evaluate_insights()
+        _evaluate_policy_without_runtime_throttle(engine)
     finally:
         de_mod.pulse_emit, de_mod.write_insight = old_pulse, old_write
 
@@ -259,6 +268,8 @@ def test_judge_accepts_only_exact_same_label():
     assert engine._llm_judge_same_insight("a", "b") is True
     assert requests[-1]["think"] is True
     assert requests[-1]["options"]["num_predict"] == 5000
+    assert requests[-1]["_timeout"] == config.DREAM_DEEP_REASONING_TIMEOUT_S
+    assert requests[-1]["_label"] == "convergence"
     engine._ollama_chat = lambda **_kwargs: response("RELATED")
     assert engine._llm_judge_same_insight("a", "b") is False
     engine._ollama_chat = lambda **_kwargs: response("SAME perché sono simili")
@@ -310,9 +321,9 @@ def test_external_refutation_skips_all_expensive_repromotion_work_once():
         lambda *_args, **_kwargs: calls.append("judge") or (True, True, False)
     )
 
-    engine._evaluate_insights()
+    _evaluate_policy_without_runtime_throttle(engine)
     first_stream_count = len(redis.streams)
-    engine._evaluate_insights()
+    _evaluate_policy_without_runtime_throttle(engine)
 
     assert calls == []
     assert redis.docs["seed"]["status"] == "candidate"
@@ -335,7 +346,7 @@ def test_unused_age_demotion_is_blocked_before_judges():
         lambda *_args, **_kwargs: calls.append("fidelity") or True
     )
 
-    engine._evaluate_insights()
+    _evaluate_policy_without_runtime_throttle(engine)
 
     assert calls == []
     assert redis.docs["seed"]["promotion_blocked_reason"] == "demoted_without_use"
@@ -370,6 +381,36 @@ def test_bridge_validity_classifies_and_preserves_candidate_until_convergence():
     assert redis.docs[insight_key]["status"] == "candidate"
     assert requests[-1]["think"] is True
     assert requests[-1]["options"]["num_predict"] == 5000
+    assert requests[-1]["_timeout"] == config.DREAM_DEEP_REASONING_TIMEOUT_S
+    assert requests[-1]["_label"] == "bridge"
+
+
+def test_bridge_timeout_consumes_attempt_budget_for_the_cycle():
+    first = _candidate("first", "primo claim")
+    second = _candidate("second", "secondo claim")
+    engine, redis, _traces = _engine_for(first, [])
+    redis.candidates = [first, second]
+    redis.docs[second.id] = {
+        "id": second.id,
+        "content": second.content,
+        "status": "candidate",
+        "convergence_count": 1,
+        "source_memory_ids": ["second:a", "second:b"],
+        "premise_fidelity": 1.0,
+    }
+    for key in (first.id, second.id):
+        redis.docs[key].pop("bridge_validity", None)
+        redis.docs[key]["bridge_measurement_eligible"] = True
+
+    attempts = []
+    engine._ensure_bridge_validity = lambda key: attempts.append(key) or False
+    old = _patch_config(BRIDGE_VALIDITY_BUDGET=1, CONVERGENCE_JUDGE_BUDGET=0)
+    try:
+        engine._evaluate_insights()
+    finally:
+        _restore_config(old)
+
+    assert attempts == ["first"]
 
 
 def test_convergent_hypothesis_emits_pulse_without_entering_rag():
@@ -387,7 +428,7 @@ def test_convergent_hypothesis_emits_pulse_without_entering_rag():
     redis.docs["seed"]["bridge_validity"] = "hypothesis"
     engine._llm_judge_same_insight = lambda *_args: True
 
-    engine._evaluate_insights()
+    _evaluate_policy_without_runtime_throttle(engine)
 
     assert redis.docs["seed"]["status"] == "hypothesis"
     assert (
@@ -415,7 +456,7 @@ def test_unmeasured_bridge_blocks_promotion_without_absorbing_neighbors():
     redis.docs["seed"].pop("bridge_validity")
     engine._llm_judge_same_insight = lambda *_args: True
 
-    engine._evaluate_insights()
+    _evaluate_policy_without_runtime_throttle(engine)
 
     assert redis.docs["seed"]["status"] == "candidate"
     assert redis.docs["seed"]["promotion_blocked_reason"] == "bridge_unmeasured"
@@ -435,9 +476,15 @@ def test_unfaithful_premise_blocks_promotion():
     ]
     engine, redis, traces = _engine_for(subject, neighbors)
     redis.docs["seed"]["premise_fidelity"] = 0.5
-    engine._llm_judge_same_insight = lambda *_args: True
+    judge_calls = []
+    engine._llm_judge_same_insight = (
+        lambda *args: judge_calls.append(args) or True
+    )
 
-    engine._evaluate_insights()
+    _evaluate_policy_without_runtime_throttle(engine)
+    calls_after_rejection = len(judge_calls)
+    traces_after_rejection = len(traces)
+    _evaluate_policy_without_runtime_throttle(engine)
 
     assert redis.docs["seed"]["status"] == "candidate"
     assert (
@@ -449,6 +496,59 @@ def test_unfaithful_premise_blocks_promotion():
         traces[-1][0][4]
         == "denied_quality_premise_fidelity_below_threshold"
     )
+    assert len(judge_calls) == calls_after_rejection
+    assert len(traces) == traces_after_rejection
+
+    # La chiusura non e' una cancellazione: una conferma esterna esplicita
+    # riapre il candidate e consente alla policy ordinaria di promuoverlo.
+    redis.docs["seed"]["external_reaction"] = {"verdict": "CONFERMA"}
+    old_write = de_mod.write_insight
+    de_mod.write_insight = lambda *_args, **_kwargs: None
+    try:
+        _evaluate_policy_without_runtime_throttle(engine)
+    finally:
+        de_mod.write_insight = old_write
+    assert len(traces) > traces_after_rejection
+    assert redis.docs["seed"]["status"] == "promoted"
+
+
+def test_forced_bridge_blocks_repeated_evaluation_and_can_reopen():
+    subject = _candidate(
+        "seed",
+        "Nel dominio [a] succede: A. Nel dominio [b] succede: B. "
+        "La connessione operativa non ovvia è: C.",
+    )
+    neighbors = [
+        _candidate("same1", "stesso claim uno", 0.0),
+        _candidate("same2", "stesso claim due", 0.0),
+    ]
+    engine, redis, traces = _engine_for(subject, neighbors)
+    redis.docs["seed"]["bridge_validity"] = "forced"
+    judge_calls = []
+    engine._llm_judge_same_insight = (
+        lambda *args: judge_calls.append(args) or True
+    )
+
+    _evaluate_policy_without_runtime_throttle(engine)
+    calls_after_rejection = len(judge_calls)
+    traces_after_rejection = len(traces)
+    _evaluate_policy_without_runtime_throttle(engine)
+
+    assert redis.docs["seed"]["status"] == "candidate"
+    assert redis.docs["seed"]["promotion_blocked_reason"] == "bridge_forced"
+    assert redis.deleted == []
+    assert len(judge_calls) == calls_after_rejection
+    assert len(traces) == traces_after_rejection
+
+    redis.docs["seed"]["external_reaction"] = {"verdict": "CONFERMA"}
+    old_write = de_mod.write_insight
+    de_mod.write_insight = lambda *_args, **_kwargs: None
+    try:
+        _evaluate_policy_without_runtime_throttle(engine)
+    finally:
+        de_mod.write_insight = old_write
+    assert len(traces) > traces_after_rejection
+    assert redis.docs["seed"]["status"] == "promoted"
 
 
 def test_bridge_parser_rejects_explanatory_free_text():
@@ -457,6 +557,33 @@ def test_bridge_parser_rejects_explanatory_free_text():
         "supported", 1.0, "segue dalle fonti"
     )
     assert parse("Secondo me è una buona ipotesi") is None
+
+
+def test_same_generation_group_is_not_independent_convergence():
+    """Due ipotesi sorelle non possono confermarsi a vicenda nel Loop 2c."""
+    subject = _candidate("seed", "claim nato nel torneo")
+    sibling = _candidate("sibling", "variante sorella dello stesso torneo", 0.0)
+    independent = _candidate("independent", "claim emerso indipendentemente", 0.0)
+    engine, redis, traces = _engine_for(subject, [sibling, independent])
+    redis.docs["seed"]["generation_group_id"] = "arena-1"
+    redis.docs["sibling"]["generation_group_id"] = "arena-1"
+    redis.docs["independent"]["generation_group_id"] = "arena-2"
+    judge_calls = []
+    engine._llm_judge_same_insight = (
+        lambda _a, b: judge_calls.append(b) or True
+    )
+
+    _evaluate_policy_without_runtime_throttle(engine)
+
+    assert judge_calls == ["claim emerso indipendentemente"]
+    assert redis.docs["seed"]["status"] == "candidate"
+    args, meta = traces[-1]
+    assert args[1] == 2
+    assert meta["n_vector_shortlisted"] == 1
+    assert meta["n_judge_confirmed"] == 1
+    assert (
+        "sibling", 0.0, "SAME_GENERATION_GROUP", False
+    ) in meta["judge_trace"]
 
 
 if __name__ == "__main__":
@@ -473,5 +600,7 @@ if __name__ == "__main__":
     test_convergent_hypothesis_emits_pulse_without_entering_rag()
     test_unmeasured_bridge_blocks_promotion_without_absorbing_neighbors()
     test_unfaithful_premise_blocks_promotion()
+    test_forced_bridge_blocks_repeated_evaluation_and_can_reopen()
     test_bridge_parser_rejects_explanatory_free_text()
+    test_same_generation_group_is_not_independent_convergence()
     print("test_convergence_policy: OK")

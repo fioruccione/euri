@@ -15,8 +15,14 @@ from core.semantic_turn import (
     frame_requests_contextual_action,
     frame_requests_linguistic_response,
     frame_vetoes_contextual_action,
+    gate_teaching_route,
     semantic_intent,
+    trusted_teaching_session,
+    trusted_deliberation_request,
+    trusted_evidence_request,
+    trusted_memory_retrieval_plan,
 )
+from core.web_search import answer_explicit_web_search
 
 
 class FakeJSON:
@@ -84,6 +90,227 @@ def _correction_response(_prompt):
     }, ensure_ascii=False)
 
 
+def _teaching_frame(raw_text: str, *, evidence: str | None = None) -> dict:
+    evidence = evidence if evidence is not None else raw_text
+    return {
+        "status": "interpreted",
+        "raw_text": raw_text,
+        "primary_intent": "TEACH",
+        "speech_acts": ["INITIATE_TEACHING"],
+        "confidence": 0.96,
+        "requires_clarification": False,
+        "teaching_session": {
+            "recipient": "assistant",
+            "goal": "knowledge_transfer",
+            "interaction": "guided_session",
+            "evidence": evidence,
+            "evidence_grounded": evidence.casefold() in raw_text.casefold(),
+            "confidence": 0.95,
+        },
+    }
+
+
+def test_semantic_teaching_contract_can_open_teach_from_chat():
+    raw = "Ti spiego come funziona ICMA2: ascoltami e fammi delle domande."
+    frame = _teaching_frame(raw, evidence="ascoltami e fammi delle domande")
+
+    contract = trusted_teaching_session(frame)
+
+    assert contract is not None
+    assert contract["recipient"] == "assistant"
+    assert semantic_intent(frame) == "TEACH"
+    assert arbitrate_routable_intent(
+        frame,
+        Intent.CHAT,
+        allowed={"CHAT", "TEACH"},
+    ) == "TEACH"
+    assert gate_teaching_route(frame, Intent.TEACH) == "TEACH"
+
+
+def test_third_party_explanation_cannot_open_teach():
+    raw = (
+        "Lui e' una guardia giurata: per fargli capire che non sei solo "
+        "un assistente, spiegagli su quale azienda lavori."
+    )
+    frame = {
+        "status": "interpreted",
+        "raw_text": raw,
+        "primary_intent": "CHAT",
+        "speech_acts": ["ASK"],
+        "confidence": 0.97,
+        "requires_clarification": False,
+        "teaching_session": {
+            "recipient": "third_party",
+            "goal": "explanation",
+            "interaction": "single_turn",
+            "evidence": "spiegagli su quale azienda lavori",
+            "evidence_grounded": True,
+            "confidence": 0.98,
+        },
+    }
+
+    assert trusted_teaching_session(frame) is None
+    assert gate_teaching_route(frame, Intent.TEACH) == "CHAT"
+    assert arbitrate_routable_intent(
+        frame,
+        Intent.TEACH,
+        allowed={"CHAT", "TEACH"},
+    ) == "CHAT"
+
+
+def test_teach_is_fail_closed_when_semantic_parser_falls_back():
+    fallback = {
+        "status": "fallback",
+        "raw_text": "Ti racconto una cosa.",
+        "primary_intent": "",
+        "speech_acts": [],
+        "confidence": 0.0,
+    }
+
+    assert trusted_teaching_session(fallback) is None
+    assert gate_teaching_route(fallback, Intent.TEACH) == "CHAT"
+
+
+def test_teaching_words_are_not_a_lexical_authorization():
+    assert classify("Ti racconto una cosa.")[0] == Intent.CHAT
+    assert classify("Posso spiegarti come funziona.")[0] == Intent.CHAT
+    assert classify(
+        "Spiegagli su quale azienda lavori, cosi' capisce meglio."
+    )[0] == Intent.CHAT
+
+
+def test_teach_requires_evidence_grounded_in_current_turn():
+    frame = _teaching_frame(
+        "Parliamo della manutenzione.",
+        evidence="voglio insegnarti la manutenzione",
+    )
+
+    assert frame["teaching_session"]["evidence_grounded"] is False
+    assert trusted_teaching_session(frame) is None
+    assert semantic_intent(frame) == ""
+
+
+def test_semantic_service_normalizes_grounded_teaching_contract():
+    raw = "Ora ti insegno il ciclo di ICMA2: ascolta e poi fammi domande."
+
+    def model(_prompt):
+        return json.dumps({
+            "interpreted_text": raw,
+            "primary_intent": "TEACH",
+            "speech_acts": ["INITIATE_TEACHING"],
+            "entities": [],
+            "facts": [],
+            "actions": [],
+            "web_query": "",
+            "preservation_mode": "semantic",
+            "requires_clarification": False,
+            "meaning_preserved": True,
+            "confidence": 0.96,
+            "memory_disposition": "no_store",
+            "teaching_session": {
+                "recipient": "assistant",
+                "goal": "knowledge_transfer",
+                "interaction": "guided_session",
+                "evidence": "ti insegno il ciclo di ICMA2",
+                "confidence": 0.95,
+            },
+        }, ensure_ascii=False)
+
+    frame = SemanticTurnService(FakeRedis(), model_call=model).interpret(raw)
+
+    assert frame["schema_version"] == 7
+    assert frame["teaching_session"]["evidence_grounded"] is True
+    assert trusted_teaching_session(frame) is not None
+
+
+def test_semantic_service_normalizes_explicit_deliberation_contract():
+    raw = "Confronta quattro strategie diverse e mettile alla prova prima di scegliere."
+
+    def model(_prompt):
+        return json.dumps({
+            "interpreted_text": raw,
+            "primary_intent": "CHAT",
+            "speech_acts": ["ASK", "REQUEST_DELIBERATION"],
+            "entities": [], "facts": [], "actions": [], "web_query": "",
+            "preservation_mode": "semantic", "requires_clarification": False,
+            "meaning_preserved": True, "confidence": 0.96,
+            "memory_disposition": "no_store",
+            "evidence_request": {
+                "dependency": "none", "entities": [], "premises": [],
+                "missing_facts": [], "acceptable_sources": [],
+                "memory_only": False, "confidence": 0.95,
+            },
+            "deliberation_request": {
+                "mode": "explicit",
+                "problem": "Scegliere fra quattro strategie diverse dopo averle messe alla prova",
+                "reason": "multiple_hypotheses",
+                "alternatives_visible": True,
+                "constraints": ["confrontare quattro strategie"],
+                "evidence": "Confronta quattro strategie diverse",
+                "confidence": 0.95,
+            },
+            "addressed_to_assistant": True,
+            "address_relation": "direct_address", "address_confidence": 0.98,
+        }, ensure_ascii=False)
+
+    frame = SemanticTurnService(FakeRedis(), model_call=model).interpret(raw)
+
+    contract = trusted_deliberation_request(frame)
+    assert frame["schema_version"] == 7
+    assert contract is not None
+    assert contract["mode"] == "explicit"
+    assert contract["evidence_grounded"] is True
+
+
+def test_deliberation_is_fail_closed_without_grounded_evidence():
+    frame = {
+        "status": "interpreted", "primary_intent": "CHAT",
+        "speech_acts": ["REQUEST_DELIBERATION"], "confidence": 0.98,
+        "requires_clarification": False, "addressed_to_assistant": True,
+        "deliberation_request": {
+            "mode": "explicit", "problem": "Valutare alternative",
+            "reason": "tradeoff", "alternatives_visible": True,
+            "evidence": "", "evidence_grounded": False, "confidence": 0.98,
+        },
+    }
+    assert trusted_deliberation_request(frame) is None
+
+
+def test_suggested_deliberation_requires_visible_alternatives_and_high_confidence():
+    frame = {
+        "status": "interpreted", "primary_intent": "CHAT",
+        "speech_acts": ["ASK"], "confidence": 0.90,
+        "requires_clarification": False, "addressed_to_assistant": True,
+        "deliberation_request": {
+            "mode": "suggest", "problem": "Scegliere una strategia",
+            "reason": "tradeoff", "alternatives_visible": True,
+            "evidence": "quale strada conviene", "evidence_grounded": True,
+            "confidence": 0.90,
+        },
+    }
+    assert trusted_deliberation_request(frame) is not None
+    frame["deliberation_request"]["alternatives_visible"] = False
+    assert trusted_deliberation_request(frame) is None
+
+
+def test_missing_required_evidence_blocks_deliberation():
+    frame = {
+        "status": "interpreted", "primary_intent": "CHAT",
+        "speech_acts": ["REQUEST_DELIBERATION"], "confidence": 0.98,
+        "requires_clarification": False, "addressed_to_assistant": True,
+        "evidence_request": {
+            "dependency": "required", "missing_facts": ["capacita' reale"],
+        },
+        "deliberation_request": {
+            "mode": "explicit", "problem": "Scegliere fra due impianti",
+            "reason": "tradeoff", "alternatives_visible": True,
+            "evidence": "scegliere fra due impianti", "evidence_grounded": True,
+            "confidence": 0.98,
+        },
+    }
+    assert trusted_deliberation_request(frame) is None
+
+
 def test_explicit_entity_correction_updates_history_and_passive_journal():
     redis = FakeRedis()
     brain = Brain()
@@ -149,6 +376,277 @@ def test_ordinary_entity_mention_never_creates_an_alias():
     assert frame["canonicalizations"] == []
     assert redis.hashes == {}
     assert redis.events == []
+
+
+def test_memory_retrieval_plan_is_semantic_and_grounded_in_frame_entities():
+    redis = FakeRedis()
+
+    def model(_prompt):
+        return json.dumps({
+            "interpreted_text": "Cosa ricordi di Lucy Plast?",
+            "primary_intent": "SEARCH",
+            "speech_acts": ["ASK", "REQUEST_MEMORY_SEARCH"],
+            "entities": [{
+                "observed_form": "Lucy Plast",
+                "canonical_name": "Lucy Plast",
+                "entity_type": "organization",
+                "status": "mentioned",
+                "evidence": "Lucy Plast",
+                "confidence": 0.99,
+            }],
+            "facts": [], "actions": [], "web_query": "",
+            "preservation_mode": "semantic",
+            "requires_clarification": False,
+            "meaning_preserved": True,
+            "confidence": 0.97,
+            "memory_disposition": "no_store",
+            "memory_retrieval": {
+                "needed": True,
+                "focus": [
+                    {"entity": "Lucy Plast", "role": "focus", "relevance": 0.98},
+                    # Un nome che Gemma non ha ancorato in entities non puo'
+                    # aprire uno schema per conto proprio.
+                    {"entity": "Eurostampi", "role": "comparison", "relevance": 0.9},
+                ],
+                "relation": "panoramica aziendale",
+                "evidence_goal": "overview",
+                "confidence": 0.96,
+            },
+        }, ensure_ascii=False)
+
+    frame = SemanticTurnService(redis, model_call=model).interpret(
+        "Cosa ricordi di Lucy Plast?", memory_scope="personal"
+    )
+
+    assert frame["memory_retrieval"]["focus"] == [{
+        "entity": "Lucy Plast",
+        "role": "focus",
+        "relevance": 0.98,
+    }]
+    assert trusted_memory_retrieval_plan(frame)["evidence_goal"] == "overview"
+
+
+def test_trusted_memory_plan_preserves_explicit_no_retrieval_decision():
+    frame = {
+        "status": "interpreted",
+        "confidence": 0.95,
+        "memory_retrieval": {
+            "needed": False,
+            "focus": [{"entity": "Lucy Plast", "role": "context", "relevance": 0.2}],
+            "relation": "menzione incidentale",
+            "evidence_goal": "other",
+            "confidence": 0.94,
+        },
+    }
+
+    plan = trusted_memory_retrieval_plan(frame)
+    assert plan is not None
+    assert plan["needed"] is False
+
+
+def test_evidence_request_is_semantic_and_cannot_introduce_unknown_entities():
+    redis = FakeRedis()
+
+    def model(_prompt):
+        return json.dumps({
+            "interpreted_text": (
+                "Noi di Lucy Plast vorremmo essere piu' produttivi al pari di "
+                "Eurostampi: cosa potremmo imparare?"
+            ),
+            "primary_intent": "SEARCH",
+            "speech_acts": ["ASK", "REQUEST_MEMORY_SEARCH"],
+            "entities": [
+                {
+                    "observed_form": "Lucy Plast",
+                    "canonical_name": "Lucy Plast",
+                    "entity_type": "organization",
+                    "status": "mentioned",
+                    "evidence": "Lucy Plast",
+                    "confidence": 0.99,
+                },
+                {
+                    "observed_form": "Eurostampi",
+                    "canonical_name": "Eurostampi",
+                    "entity_type": "organization",
+                    "status": "mentioned",
+                    "evidence": "Eurostampi",
+                    "confidence": 0.99,
+                },
+            ],
+            "facts": [], "actions": [], "web_query": "",
+            "preservation_mode": "semantic",
+            "requires_clarification": False,
+            "meaning_preserved": True,
+            "confidence": 0.97,
+            "memory_disposition": "no_store",
+            "memory_retrieval": {
+                "needed": True,
+                "focus": [
+                    {"entity": "Lucy Plast", "role": "focus", "relevance": 0.9},
+                    {"entity": "Eurostampi", "role": "comparison", "relevance": 0.9},
+                ],
+                "relation": "confronto di produttivita'",
+                "evidence_goal": "comparison",
+                "confidence": 0.95,
+            },
+            "evidence_request": {
+                "dependency": "optional",
+                "entities": ["Eurostampi", "Azienda inventata"],
+                "premises": [
+                    "L'utente considera Eurostampi un riferimento di produttivita'"
+                ],
+                "missing_facts": [
+                    "processi o indicatori che rendono Eurostampi piu' produttiva"
+                ],
+                "acceptable_sources": ["current_user", "web", "database_segreto"],
+                "memory_only": False,
+                "confidence": 0.96,
+            },
+        }, ensure_ascii=False)
+
+    frame = SemanticTurnService(redis, model_call=model).interpret(
+        "Noi di Lucy Plast vorremmo essere piu' produttivi al pari di Eurostampi: "
+        "cosa potremmo imparare?",
+        memory_scope="personal",
+    )
+
+    request = trusted_evidence_request(frame)
+    assert request is not None
+    assert request["dependency"] == "optional"
+    assert request["entities"] == ["Eurostampi"]
+    assert request["acceptable_sources"] == ["current_user", "web"]
+    assert request["premises"] == [
+        "L'utente considera Eurostampi un riferimento di produttivita'"
+    ]
+
+
+def test_premise_sufficient_analogy_does_not_create_a_knowledge_gap():
+    frame = {
+        "status": "interpreted",
+        "confidence": 0.98,
+        "evidence_request": {
+            "dependency": "none",
+            "entities": [],
+            "premises": ["Peroni e Raffo hanno entrambe una birra bionda"],
+            "missing_facts": [],
+            "acceptable_sources": [],
+            "memory_only": False,
+            "confidence": 0.97,
+        },
+    }
+
+    request = trusted_evidence_request(frame)
+    assert request is not None
+    assert request["dependency"] == "none"
+
+
+def test_elliptical_web_authorization_is_resolved_from_recent_dialogue():
+    redis = FakeRedis()
+    captured = {}
+
+    def model(prompt):
+        captured["prompt"] = prompt
+        return json.dumps({
+            "interpreted_text": "Non lo so, controlla nel web.",
+            "primary_intent": "WEB_SEARCH",
+            "speech_acts": ["REQUEST_WEB_SEARCH"],
+            "entities": [{
+                "observed_form": "Eurostampi",
+                "canonical_name": "Eurostampi",
+                "entity_type": "organization",
+                "status": "resolved",
+                "evidence": "dialogo recente",
+                "confidence": 0.95,
+            }],
+            "facts": [], "actions": [],
+            "web_query": "Eurostampi processi indicatori produttivita'",
+            "preservation_mode": "semantic",
+            "requires_clarification": False,
+            "meaning_preserved": True,
+            "confidence": 0.96,
+            "memory_disposition": "no_store",
+            "memory_retrieval": {
+                "needed": False, "focus": [], "relation": "",
+                "evidence_goal": "other", "confidence": 0.95,
+            },
+            "evidence_request": {
+                "dependency": "none", "entities": [], "premises": [],
+                "missing_facts": [], "acceptable_sources": [],
+                "memory_only": False, "confidence": 0.95,
+            },
+        }, ensure_ascii=False)
+
+    history = [{
+        "role": "assistant",
+        "content": (
+            "Non ho dati sui processi e sugli indicatori di produttivita' di "
+            "Eurostampi. Puoi dirmeli tu oppure posso cercarli sul Web."
+        ),
+        "memory_scope": "personal",
+    }]
+    frame = SemanticTurnService(redis, model_call=model).interpret(
+        "Non lo so, controlla nel web.",
+        recent_history=history,
+        memory_scope="personal",
+    )
+
+    assert frame["primary_intent"] == "WEB_SEARCH"
+    assert frame["web_query"] == "Eurostampi processi indicatori produttivita'"
+    assert "Eurostampi" in captured["prompt"]
+    assert "dialogo recente" in captured["prompt"]
+
+
+def test_explicit_web_service_uses_semantic_query_and_persists_external_source():
+    class FakeBrain:
+        def __init__(self):
+            self.frame_seen = None
+
+        def extract_search_query(self, _text, semantic_frame=None):
+            self.frame_seen = semantic_frame
+            return semantic_frame["web_query"]
+
+        def extract_query_fallback(self, query):
+            raise AssertionError(f"fallback inatteso per {query}")
+
+        def summarize_web_results(self, results, query):
+            assert results[0]["title"] == "Eurostampi"
+            return f"Sintesi verificabile per {query}."
+
+    class FakeMemory:
+        def __init__(self):
+            self.saved = None
+
+        def save_memory(self, **kwargs):
+            self.saved = kwargs
+            return "web-memory-1"
+
+    frame = {
+        "status": "interpreted",
+        "confidence": 0.97,
+        "primary_intent": "WEB_SEARCH",
+        "speech_acts": ["REQUEST_WEB_SEARCH"],
+        "web_query": "Eurostampi processi indicatori produttivita'",
+    }
+    brain = FakeBrain()
+    memory = FakeMemory()
+    result = answer_explicit_web_search(
+        "Non lo so, controlla nel web.",
+        brain,
+        memory,
+        semantic_frame=frame,
+        online_check=lambda: True,
+        search_fn=lambda query: [{
+            "title": "Eurostampi",
+            "url": "https://example.test/eurostampi",
+            "body": query,
+        }],
+    )
+
+    assert result["status"] == "ok"
+    assert result["query"] == frame["web_query"]
+    assert brain.frame_seen is frame
+    assert memory.saved["source"] == "web"
+    assert memory.saved["final_fields"] == {"requires_verification": True}
 
 
 def test_resolved_entity_is_projected_only_into_the_current_turn():
@@ -753,8 +1251,24 @@ def test_pre_gate_frame_does_not_persist_corrections_until_accepted():
 
 
 if __name__ == "__main__":
+    test_semantic_teaching_contract_can_open_teach_from_chat()
+    test_third_party_explanation_cannot_open_teach()
+    test_teach_is_fail_closed_when_semantic_parser_falls_back()
+    test_teaching_words_are_not_a_lexical_authorization()
+    test_teach_requires_evidence_grounded_in_current_turn()
+    test_semantic_service_normalizes_grounded_teaching_contract()
+    test_semantic_service_normalizes_explicit_deliberation_contract()
+    test_deliberation_is_fail_closed_without_grounded_evidence()
+    test_suggested_deliberation_requires_visible_alternatives_and_high_confidence()
+    test_missing_required_evidence_blocks_deliberation()
     test_explicit_entity_correction_updates_history_and_passive_journal()
     test_ordinary_entity_mention_never_creates_an_alias()
+    test_memory_retrieval_plan_is_semantic_and_grounded_in_frame_entities()
+    test_trusted_memory_plan_preserves_explicit_no_retrieval_decision()
+    test_evidence_request_is_semantic_and_cannot_introduce_unknown_entities()
+    test_premise_sufficient_analogy_does_not_create_a_knowledge_gap()
+    test_elliptical_web_authorization_is_resolved_from_recent_dialogue()
+    test_explicit_web_service_uses_semantic_query_and_persists_external_source()
     test_resolved_entity_is_projected_only_into_the_current_turn()
     test_anaphora_is_not_projected_as_a_canonical_name()
     test_verbatim_mode_keeps_raw_text_even_if_model_rewrites_it()

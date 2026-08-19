@@ -15,6 +15,7 @@ from core.operational_context import load_operational_context
 import config
 from utils.date_utils import now, format_datetime_full, from_timestamp
 from core.memory_scope import current_scope, normalize_scope
+from core.prompt_research_log import capture_final_prompt
 
 
 _OWNER_NAME = config.OWNER_DISPLAY_NAME
@@ -363,6 +364,7 @@ class Brain:
         # Il contenuto non e' una persona scritta a mano: e' la proiezione
         # ricostruibile dei turni verificati. Senza actor_id non si presume mai
         # che il modello relazionale del proprietario valga per un ospite.
+        learned_identity = ""
         if actor_id and self._personality_context_callback:
             try:
                 learned_identity = str(
@@ -434,6 +436,24 @@ class Brain:
                 + "\nTimeline dei messaggi storici (solo metadati interni):\n"
                 + "\n".join(timeline),
             })
+            messages.append({
+                "role": "system",
+                "content": (
+                    "Contratto autobiografico dello storico seguente:\n"
+                    f"- i turni di {_OWNER_NAME} conservano cio' che {_OWNER_NAME} "
+                    "ha detto, con la certezza o l'incertezza che aveva in origine;\n"
+                    f"- i turni di {_ASSISTANT_NAME} conservano cio' che tu avevi "
+                    "risposto, pensato o ipotizzato: sono parte della tua continuita', "
+                    "ma non provano da soli un fatto sul mondo;\n"
+                    "- non ignorare le tue vecchie risposte: usale per continuita', "
+                    "personalita' e autocritica. Se una risposta attuale dipende da "
+                    "una tua interpretazione precedente non confermata, riconoscila "
+                    "spontaneamente come tale;\n"
+                    "- puoi formulare nuove inferenze e analogie. Distingui con "
+                    "naturalezza cio' che ricordi direttamente, cio' che avevi "
+                    "interpretato e cio' che stai deducendo ora."
+                ),
+            })
             messages.extend(
                 {
                     "role": m["role"],
@@ -454,12 +474,26 @@ class Brain:
                 ),
             }
             try:
-                response = chat_client.chat(
-                    model=config.OLLAMA_MODEL,
-                    messages=messages,
-                    options=options,
-                    think=actual_thinking,
-                )
+                _request_started = time.perf_counter()
+                with capture_final_prompt(
+                    chat_client,
+                    identity_block=learned_identity,
+                    rag_context=context,
+                    capture_label="brain_primary",
+                    conversation_id=self._conversation_id,
+                    memory_scope=memory_scope,
+                    thinking_reason=thinking_reason,
+                ) as prompt_capture:
+                    response = chat_client.chat(
+                        model=config.OLLAMA_MODEL,
+                        messages=messages,
+                        options=options,
+                        think=actual_thinking,
+                    )
+                    prompt_capture.complete(
+                        response,
+                        latency_ms=(time.perf_counter() - _request_started) * 1000,
+                    )
                 reply = self._clean(response.message.content or "")
                 if actual_thinking and not reply:
                     raise RuntimeError("risposta vuota con thinking selettivo")
@@ -471,12 +505,26 @@ class Brain:
                     thinking_error,
                 )
                 actual_thinking = False
-                response = chat_client.chat(
-                    model=config.OLLAMA_MODEL,
-                    messages=messages,
-                    options={"temperature": 0.7, "num_predict": 1500},
-                    think=False,
-                )
+                _retry_started = time.perf_counter()
+                with capture_final_prompt(
+                    chat_client,
+                    identity_block=learned_identity,
+                    rag_context=context,
+                    capture_label="brain_retry_direct",
+                    conversation_id=self._conversation_id,
+                    memory_scope=memory_scope,
+                    thinking_reason=thinking_reason,
+                ) as prompt_capture:
+                    response = chat_client.chat(
+                        model=config.OLLAMA_MODEL,
+                        messages=messages,
+                        options={"temperature": 0.7, "num_predict": 1500},
+                        think=False,
+                    )
+                    prompt_capture.complete(
+                        response,
+                        latency_ms=(time.perf_counter() - _retry_started) * 1000,
+                    )
                 reply = self._clean(response.message.content or "")
             logger.info(
                 "[TIMING] brain.respond() Ollama: {:.0f}ms | think={} reason={}",

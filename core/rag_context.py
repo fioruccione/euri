@@ -16,9 +16,18 @@ from loguru import logger
 
 import config
 from core.conversation_turns import TURN_RENDER_VERSION
+from core.memory_axes import analyze_memory_axes
 from core.memory_risk import is_document_summary, memory_verification_suffix
-from core.temporal_context import memory_time_label, temporal_prompt_contract, turn_time_label
-from utils.date_utils import now
+from core.memory_schema import expand_memories_via_schema, schema_memory_rejection_reason
+from core.pulse import pulse_emit
+from core.temporal_context import (
+    memory_time_label,
+    memory_time_label_legacy_v1,
+    temporal_prompt_contract,
+    temporal_prompt_contract_legacy_v1,
+    turn_time_label,
+)
+from utils.date_utils import from_timestamp, now
 
 
 _RECENT_CONTEXT_RE = re.compile(
@@ -123,6 +132,190 @@ def insight_requires_external_validation(insight: dict) -> bool:
     )
 
 
+def _insight_created_at_absolute(insight: dict) -> str:
+    """Rende la data del record assoluta, senza inferire recenza."""
+    raw = insight.get("created_at")
+    if isinstance(raw, (int, float)):
+        created = from_timestamp(raw)
+        if created is not None:
+            return created.isoformat(timespec="seconds")
+    if isinstance(raw, str) and raw.strip():
+        # Alcuni record importati possono avere già un timestamp ISO. Lo si
+        # propaga come dato del record, senza reinterpretarlo come data relativa.
+        return raw.strip()
+    return "non_registrata"
+
+
+def _insight_producer(insight: dict) -> str:
+    """Espone soltanto un produttore registrato o strutturalmente dimostrabile."""
+    for field in ("producer", "created_by", "generator", "source"):
+        value = insight.get(field)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+
+    # I due schemi correnti hanno firme persistite non ambigue. Per i record
+    # legacy non si attribuisce retroattivamente un loop che il dato non prova.
+    if insight.get("hypothesis_kind") == "cross_episode_pattern":
+        return "loop2i"
+    if str(insight.get("cognitive_trace_id") or "").startswith("dream:"):
+        return "loop2b"
+    if insight.get("verification_status") == "legacy_internally_promoted":
+        return "non_registrato_legacy"
+    return "non_registrato"
+
+
+def _reflection_producer(reflection: dict) -> str:
+    """Espone il produttore persistito o deducibile dalla firma del record."""
+    for field in ("producer", "created_by", "generator"):
+        value = reflection.get(field)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+
+    tags = {
+        str(tag).strip().lower()
+        for tag in (reflection.get("tags") or [])
+        if str(tag).strip()
+    }
+    for loop in ("loop2a", "loop2f", "loop2h"):
+        if loop in tags:
+            return loop
+    if reflection.get("reflection_scope"):
+        return "loop2a"
+    return "non_registrato_legacy"
+
+
+def reflection_metadata_for_context(reflection: dict) -> str:
+    """Metadati compatti condivisi da ogni percorso di rendering reflection."""
+    verification = str(
+        reflection.get("verification_status")
+        or reflection.get("epistemic_status")
+        or (
+            "requires_verification"
+            if reflection.get("requires_verification")
+            else "non_registrato"
+        )
+    ).strip()
+    artifact_type = str(
+        reflection.get("artifact_type")
+        or reflection.get("memory_kind")
+        or (
+            "reflection"
+            if reflection.get("source") == "reflection"
+            else "memory"
+        )
+    ).strip()
+    return (
+        f"[creato={_insight_created_at_absolute(reflection)}; "
+        f"verifica={verification}; tipo={artifact_type}; "
+        f"produttore={_reflection_producer(reflection)}]"
+    )
+
+
+def format_reflection_for_context(reflection: dict) -> str:
+    """Render ambientale di una reflection con provenienza consumabile."""
+    metadata = reflection_metadata_for_context(reflection)
+    assistant_label = config.ASSISTANT_DISPLAY_NAME.upper()
+    return (
+        f"- [INTERPRETAZIONE DI {assistant_label}] {metadata} "
+        f"{reflection.get('content', '')}"
+    )
+
+
+def format_insight_for_context(insight: dict) -> str:
+    """Render compatto di un insight con provenienza consumabile dal modello."""
+    dom_a = insight.get("domain_a", "?")
+    dom_b = insight.get("domain_b", "?")
+    ext = insight.get("external_reaction") or {}
+    tentative = insight_requires_external_validation(insight)
+    marker = (
+        "[CONNESSIONE EMERSA INTERNAMENTE — DA VERIFICARE] "
+        if tentative else
+        "[CONNESSIONE CONFERMATA ESTERNAMENTE] "
+    )
+    verification = str(
+        insight.get("verification_status") or "non_registrato"
+    ).strip()
+    artifact_type = str(
+        insight.get("artifact_type") or insight.get("type") or "insight"
+    ).strip()
+    metadata = (
+        f"[creato={_insight_created_at_absolute(insight)}; "
+        f"verifica={verification}; tipo={artifact_type}; "
+        f"produttore={_insight_producer(insight)}]"
+    )
+    line = (
+        f"- {marker}[{dom_a} ↔ {dom_b}] {metadata} "
+        f"{insight.get('content', '')}"
+    )
+    if ext.get("verdict") == "PARZIALE":
+        patch = ext.get("reaction_patch") or insight.get("reaction_patch") or {}
+        patch_parts = []
+        for field, label in (
+            ("confirmed_claims", "confermato"),
+            ("refuted_claims", "smentito"),
+            ("replacement_claims", "sostituzione affermata"),
+        ):
+            claims = [
+                str(item.get("claim") or "").strip()
+                for item in patch.get(field, [])
+                if isinstance(item, dict) and item.get("claim")
+            ]
+            if claims:
+                patch_parts.append(f"{label}: {'; '.join(claims)}")
+        correction = " | ".join(patch_parts)
+        if not correction:
+            correction = str(ext.get("reaction") or "").strip()
+        if correction:
+            line += (
+                f"\n  [CORREZIONE PARZIALE DI {config.OWNER_DISPLAY_NAME.upper()}] "
+                f"{correction[:1200]}"
+            )
+    return line
+
+
+def memory_origin_for_context(memory: dict) -> str:
+    """Rende leggibile l'origine senza trasformarla in un voto di verita'.
+
+    Il modello deve poter ricordare anche le proprie elaborazioni. Questa
+    etichetta non le filtra e non stabilisce una gerarchia automatica: distingue
+    soltanto un ricordo comunicato dall'owner, una fonte esterna e una
+    rielaborazione autobiografica di Euri.
+    """
+    source = str(memory.get("source") or "").strip().lower()
+    kind = str(memory.get("memory_kind") or "").strip().lower()
+
+    if source == "explicit_owner_correction":
+        origin = f"correzione esplicita di {config.OWNER_DISPLAY_NAME}"
+    elif source == "user":
+        origin = f"comunicato da {config.OWNER_DISPLAY_NAME}"
+    elif source == "teach":
+        origin = f"contenuto salvato su richiesta di {config.OWNER_DISPLAY_NAME}"
+    elif source == "obsidian_vault":
+        origin = "documento nel Vault"
+    elif source == "web":
+        origin = "risultato Web salvato, fonte esterna"
+    elif source == "conversation_verbatim":
+        origin = "turno conversazionale originale"
+    elif source == "passive":
+        origin = "estrazione da una conversazione"
+    elif source == "reflection" or kind == "reflection":
+        origin = f"interpretazione autobiografica di {config.ASSISTANT_DISPLAY_NAME}"
+    elif source == "reaction" or kind == "reaction_lesson":
+        origin = f"lezione formulata da {config.ASSISTANT_DISPLAY_NAME} dopo un feedback"
+    elif source == "loop2e" or kind == "derived_consolidation":
+        origin = f"consolidamento interno di {config.ASSISTANT_DISPLAY_NAME}"
+    elif source in {"conversation", "episode"} or kind in {
+        "conversation_anchor",
+        "conversation_episode",
+    }:
+        origin = "continuita' narrativa della conversazione"
+    elif source:
+        origin = f"fonte registrata: {source}"
+    else:
+        origin = "origine non registrata"
+    return f"[ORIGINE: {origin}]"
+
+
 def infer_context_mode(text: str, default: str = "chat") -> str:
     """Inferenza cheap per canali senza intent router, come Silent Chat."""
     from utils.temporal import detect_recent_memory_intent
@@ -192,19 +385,28 @@ def build_rag_context(
     excluded_sources: set[str] | None = None,
     touch: bool = True,
     enable_recent_memory_intent: bool = True,
+    render_memory_origins: bool = True,
+    temporal_label_version: str = "v2",
     query_feature_cache: dict | None = None,
+    semantic_frame: dict | None = None,
 ) -> RagContext:
     """Costruisce il contesto RAG base e ritorna anche gli ID iniettati.
 
     ``enable_recent_memory_intent=False`` esiste soltanto per riprodurre
     byte-per-byte artefatti benchmark creati prima della policy del 29/07/2026.
+    ``render_memory_origins=False`` ha lo stesso scopo per artefatti precedenti
+    al contratto metacognitivo dell'11/08/2026.
+    ``temporal_label_version='v1'`` congela il renderer precedente al contratto
+    temporale assoluto del 18/08/2026, esclusivamente per replay firmati.
     I dispatcher runtime conservano sempre il default attivo.
     """
     from utils.temporal import detect_recent_memory_intent, extract_temporal_range
     from core.temporal_recall import prioritize_recent_window, prioritize_window
+    from core.semantic_turn import trusted_memory_retrieval_plan
 
     source_filter = config.DEMO_CONTEXT_SOURCES if config.DEMO_MODE else None
     source_exclude = sorted(excluded_sources or ())
+    semantic_memory_plan = trusted_memory_retrieval_plan(semantic_frame)
     search_mode = mode == "search"
     recent_context_query = bool(_RECENT_CONTEXT_RE.search(text or ""))
     reference_dt = now()
@@ -226,10 +428,11 @@ def build_rag_context(
 
     reflection_lines: list[str] = []
     reflection_docs: list[dict] = []
+    schema_seed_docs: list[dict] = []
+    schema_diagnostics: dict = {"enabled": False, "added_memory_ids": []}
     if not history_resolves_query and not config.DEMO_MODE and (not search_mode or recent_context_query):
         for r in memory.get_recent_reflections(limit=2, touch=False):
-            assistant_label = config.ASSISTANT_DISPLAY_NAME.upper()
-            reflection_lines.append(f"- [INTERPRETAZIONE DI {assistant_label}] {r['content']}")
+            reflection_lines.append(format_reflection_for_context(r))
             reflection_docs.append(r)
 
     if history_resolves_query:
@@ -309,6 +512,9 @@ def build_rag_context(
         if query_feature_cache is not None:
             search_kwargs["query_feature_cache"] = query_feature_cache
         extra_memories = memory.search_memories(text, **search_kwargs)
+        # Solo i risultati semantici della query attivano lo schema. Le memorie
+        # ambientali recenti non devono trascinare la conversazione fuori tema.
+        schema_seed_docs = list(extra_memories)
         kw_query = " | ".join(keywords[:8])
         from core.memory_scope import PERSONAL_SCOPE, current_scope
         extra_notes = (
@@ -362,40 +568,7 @@ def build_rag_context(
         and recent_memory_intent is None
     ):
         for ins in memory.search_insights(text, limit=2):
-            dom_a = ins.get("domain_a", "?")
-            dom_b = ins.get("domain_b", "?")
-            ext = ins.get("external_reaction") or {}
-            tentative = insight_requires_external_validation(ins)
-            marker = (
-                "[CONNESSIONE EMERSA INTERNAMENTE — DA VERIFICARE] "
-                if tentative else
-                "[CONNESSIONE CONFERMATA ESTERNAMENTE] "
-            )
-            line = f"- {marker}[{dom_a} ↔ {dom_b}] {ins['content']}"
-            if ext.get("verdict") == "PARZIALE":
-                patch = ext.get("reaction_patch") or ins.get("reaction_patch") or {}
-                patch_parts = []
-                for field, label in (
-                    ("confirmed_claims", "confermato"),
-                    ("refuted_claims", "smentito"),
-                    ("replacement_claims", "sostituzione affermata"),
-                ):
-                    claims = [
-                        str(item.get("claim") or "").strip()
-                        for item in patch.get(field, [])
-                        if isinstance(item, dict) and item.get("claim")
-                    ]
-                    if claims:
-                        patch_parts.append(f"{label}: {'; '.join(claims)}")
-                correction = " | ".join(patch_parts)
-                if not correction:
-                    correction = str(ext.get("reaction") or "").strip()
-                if correction:
-                    line += (
-                        f"\n  [CORREZIONE PARZIALE DI {config.OWNER_DISPLAY_NAME.upper()}] "
-                        f"{correction[:1200]}"
-                    )
-            insight_lines.append(line)
+            insight_lines.append(format_insight_for_context(ins))
             insight_docs.append(ins)
 
     sections: list[str] = []
@@ -430,6 +603,77 @@ def build_rag_context(
             )
 
     mem_cap = config.RAG_MEM_CAP_TEMPORAL if time_range else config.RAG_MEM_CAP
+    if (
+        getattr(config, "MEMORY_SCHEMA_ENABLED", True)
+        and not config.DEMO_MODE
+        and keywords
+        and (
+            schema_seed_docs
+            or (
+                semantic_memory_plan is not None
+                and semantic_memory_plan.get("needed")
+                and semantic_memory_plan.get("focus")
+            )
+        )
+        and not (
+            semantic_memory_plan is not None
+            and not semantic_memory_plan.get("needed")
+        )
+        and not history_resolves_query
+        and recent_memory_intent is None
+        and time_range is None
+    ):
+        schema_added, schema_diagnostics = expand_memories_via_schema(
+            memory,
+            schema_seed_docs,
+            text,
+            limit=min(
+                int(getattr(config, "MEMORY_SCHEMA_RETRIEVAL_MAX", 2)),
+                max(0, mem_cap // 3),
+            ),
+            source_exclude=set(source_exclude),
+            query_feature_cache=query_feature_cache,
+            semantic_plan=semantic_memory_plan,
+        )
+        existing_ids = {
+            str(doc.get("id") or "").removeprefix("euri:memory:")
+            for doc in results
+        }
+        schema_added = [
+            doc for doc in schema_added
+            if str(doc.get("id") or "").removeprefix("euri:memory:") not in existing_ids
+        ]
+        if schema_added:
+            # Riserva al massimo un terzo del contesto. Le sorgenti ottenute dallo
+            # schema sostituiscono soltanto la coda del ranking base, mai i primi hit.
+            reserve = min(len(schema_added), max(1, mem_cap // 3))
+            schema_added = schema_added[:reserve]
+            base_head = results[: max(0, mem_cap - reserve)]
+            kept_ids = {
+                str(doc.get("id") or "").removeprefix("euri:memory:")
+                for doc in base_head + schema_added
+            }
+            tail = [
+                doc for doc in results
+                if str(doc.get("id") or "").removeprefix("euri:memory:") not in kept_ids
+            ]
+            results = base_head + schema_added + tail
+            seen_ids.update(
+                str(doc.get("id") or "").removeprefix("euri:memory:")
+                for doc in schema_added
+            )
+            schema_diagnostics["added_memory_ids"] = [
+                str(doc.get("id") or "").removeprefix("euri:memory:")
+                for doc in schema_added
+            ]
+            if touch and hasattr(memory, "_touch_memories"):
+                memory._touch_memories(schema_added)
+            logger.info(
+                "RAG schema 2j: {} schema attivati, {} fonti aggiunte ({})",
+                len(schema_diagnostics.get("activated_schema_ids") or []),
+                len(schema_added),
+                ", ".join(schema_diagnostics["added_memory_ids"]),
+            )
     if reflection_lines:
         sections.append(
             f"Interpretazioni recenti di {config.ASSISTANT_DISPLAY_NAME} "
@@ -443,12 +687,37 @@ def build_rag_context(
         )
     if results:
         mem_lines = []
+        provenance_requested = bool(
+            semantic_memory_plan is not None
+            and semantic_memory_plan.get("needed")
+            and semantic_memory_plan.get("evidence_goal") == "provenance"
+        )
+        if provenance_requested:
+            sections.append(
+                "Vincolo di provenienza richiesto:\n"
+                "- distingui la fonte registrata dal modo in cui il ricordo e' stato "
+                "recuperato; non inventare deduzioni o processi interni;\n"
+                f"- source=user significa che il fatto e' stato comunicato da "
+                f"{config.OWNER_DISPLAY_NAME}; source=reflection e' invece una "
+                "rielaborazione interna e non prova l'origine del fatto;\n"
+                "- se i metadati non stabiliscono l'origine, dichiaralo."
+            )
         for r in results[:mem_cap]:
             if r.get("id") in commitment_ids:
                 continue  # già nel blocco impegni, non duplicare
-            age = memory_time_label(r, reference_at=reference_at)
+            age = (
+                memory_time_label_legacy_v1(r, reference_at=reference_at)
+                if temporal_label_version == "v1"
+                else memory_time_label(r, reference_at=reference_at)
+            )
             kind = r.get("memory_kind") or ""
             source = r.get("source") or ""
+            origin_label = memory_origin_for_context(r) if render_memory_origins else ""
+            reflection_metadata = (
+                reflection_metadata_for_context(r)
+                if source == "reflection" or kind == "reflection"
+                else ""
+            )
             if kind == "conversation_anchor":
                 kind_label = "FILO CONVERSAZIONALE | "
             elif kind == "conversation_episode":
@@ -486,9 +755,16 @@ def build_rag_context(
                 f"affermazione di {config.OWNER_DISPLAY_NAME}]"
                 if r.get("passive_support") == "tacit_acceptance" else ""
             )
+            provenance_note = (
+                f" [PROVENIENZA: source={source or 'ignota'}; "
+                f"memory_id={str(r.get('id') or '').removeprefix('euri:memory:')}]"
+                if provenance_requested else ""
+            )
             mem_lines.append(
-                f"- {label} {r['content']}{anchor_note}{episode_note}{reaction_note}"
-                f"{tacit_note}{suffix}"
+                f"- {label} {origin_label + ' ' if origin_label else ''}"
+                f"{reflection_metadata + ' ' if reflection_metadata else ''}"
+                f"{r['content']}{anchor_note}{episode_note}{reaction_note}"
+                f"{tacit_note}{suffix}{provenance_note}"
             )
         if mem_lines:
             memory_heading = (
@@ -509,7 +785,12 @@ def build_rag_context(
         )
 
     if results and not recent_history:
-        sections.insert(0, "Regola cronologica interna:\n" + temporal_prompt_contract())
+        contract = (
+            temporal_prompt_contract_legacy_v1()
+            if temporal_label_version == "v1"
+            else temporal_prompt_contract()
+        )
+        sections.insert(0, "Regola cronologica interna:\n" + contract)
 
     ids = [r.get("id") for r in results[:mem_cap] if r.get("id")]
     nodes: list[dict] = []
@@ -533,6 +814,11 @@ def build_rag_context(
             )
         except (TypeError, ValueError):
             retrieval_score = None
+        axes = doc.get("memory_axes") or analyze_memory_axes(
+            content,
+            source=str(doc.get("source") or ""),
+            created_at=doc.get("created_at"),
+        )
         nodes.append({
             "kind": kind,
             "id": node_id,
@@ -548,6 +834,19 @@ def build_rag_context(
                 or doc.get("domain_a")
                 or ""
             ),
+            # Etichette gia' estratte dal livello semantico della memoria. Non
+            # classificano il turno corrente e non aprono rami tramite parole.
+            "entity_mentions": [
+                str(item).strip()
+                for item in (axes.get("entity_mentions") or [])
+                if str(item).strip()
+            ],
+            "memory_kind": str(doc.get("memory_kind") or ""),
+            "requires_verification": bool(doc.get("requires_verification")),
+            "epistemic_status": str(doc.get("epistemic_status") or ""),
+            "factual_support_eligible": (
+                kind == "memory" and schema_memory_rejection_reason(doc) is None
+            ),
         })
 
     for position, doc in enumerate(reflection_docs, 1):
@@ -558,7 +857,12 @@ def build_rag_context(
         doc for doc in results[:mem_cap] if doc.get("id") not in commitment_ids
     ]
     for position, doc in enumerate(visible_results, 1):
-        _append_node(doc, kind="memory", path="base_rag", position=position)
+        _append_node(
+            doc,
+            kind="memory",
+            path="schema_expansion" if doc.get("_schema_retrieval") else "base_rag",
+            position=position,
+        )
     for position, doc in enumerate(insight_docs, 1):
         _append_node(doc, kind="insight", path="insight_rag", position=position)
     if results:
@@ -603,6 +907,8 @@ def build_rag_context(
         diagnostics={
             "mode": "base",
             "temporal_query": temporal_diagnostics,
+            "schema_expansion": schema_diagnostics,
+            "semantic_memory_plan": semantic_memory_plan,
         },
     )
 
@@ -654,6 +960,7 @@ def build_dual_channel_context(
     touch: bool = True,
     presentation: str = "append",
     observe_selective: bool = False,
+    semantic_frame: dict | None = None,
 ) -> RagContext:
     """Base senza passive + note passive come locator verso turni originali."""
     from core.dual_channel import FROZEN_POLICY, POLICY_ID, compose_dual_channel
@@ -679,6 +986,7 @@ def build_dual_channel_context(
         excluded_sources={"passive"},
         touch=touch,
         query_feature_cache=query_feature_cache,
+        semantic_frame=semantic_frame,
     )
     base_ms = (time.perf_counter() - base_started) * 1000
     locator_started = time.perf_counter()
@@ -689,6 +997,7 @@ def build_dual_channel_context(
         recent_history=recent_history,
         touch=False,
         query_feature_cache=query_feature_cache,
+        semantic_frame=semantic_frame,
     )
     locator_ms = (time.perf_counter() - locator_started) * 1000
     passive_nodes = [
@@ -732,6 +1041,12 @@ def build_dual_channel_context(
         if not turn or turn.memory_scope != expected_scope:
             continue
         addition = addition_by_turn[turn_ref]
+        locator_index = max(0, int(addition["from_note_index"]) - 1)
+        locator_node = (
+            passive_nodes[locator_index]
+            if locator_index < len(passive_nodes)
+            else {}
+        )
         addition_gate_inputs.append(
             {
                 "turn_id": turn_ref,
@@ -748,6 +1063,17 @@ def build_dual_channel_context(
                 "retrieval_path": "passive_locator_hydrated",
                 "source": "conversation_verbatim",
                 "domain": "",
+                "entity_mentions": list(locator_node.get("entity_mentions") or []),
+                "memory_kind": "conversation_turn",
+                "requires_verification": bool(
+                    locator_node.get("requires_verification")
+                ),
+                "epistemic_status": str(
+                    locator_node.get("epistemic_status") or ""
+                ),
+                "factual_support_eligible": bool(
+                    turn.role == "user" and turn.trusted
+                ),
             }
         )
 
@@ -885,6 +1211,193 @@ def build_dual_channel_context(
     )
 
 
+_NON_AUTHORITATIVE_EPISTEMIC_STATES = frozenset({
+    "hypothesis_to_test",
+    "partially_refuted_by_user",
+    "internally_emergent",
+    "internally_convergent",
+    "legacy_internally_promoted",
+    "contested",
+})
+
+
+def apply_knowledge_gap_contract(
+    rag: RagContext,
+    memory,
+    semantic_frame: dict | None,
+) -> RagContext:
+    """Confronta il bisogno semantico con le prove realmente nel prompt.
+
+    Gemma stabilisce *che cosa* servirebbe prima del retrieval. Questo bordo
+    deterministico controlla soltanto se esistono nodi fattuali per le entita'
+    indicate. Non interpreta parole dell'utente, non avvia il Web e non emette
+    domande prefabbricate: consegna al modello una policy di risposta naturale.
+    """
+    from core.semantic_turn import (
+        semantic_entity_key,
+        trusted_evidence_request,
+    )
+
+    request = trusted_evidence_request(semantic_frame)
+    diagnostics = dict(rag.diagnostics or {})
+    if (
+        request is None
+        or request.get("dependency") == "none"
+        or not request.get("entities")
+        or "REQUEST_WEB_SEARCH" in set((semantic_frame or {}).get("speech_acts") or [])
+    ):
+        diagnostics["knowledge_gap"] = {
+            "evaluated": False,
+            "reason": (
+                "web_already_authorized"
+                if request is not None
+                and "REQUEST_WEB_SEARCH" in set(
+                    (semantic_frame or {}).get("speech_acts") or []
+                )
+                else "no_trusted_fact_dependency"
+            ),
+        }
+        rag.diagnostics = diagnostics
+        return rag
+
+    coverage: dict[str, dict] = {}
+    for entity in request["entities"]:
+        entity_key = semantic_entity_key(entity)
+        strong: list[str] = []
+        limited: list[str] = []
+        for node in rag.nodes:
+            mentions = {
+                semantic_entity_key(item)
+                for item in (node.get("entity_mentions") or [])
+                if semantic_entity_key(item)
+            }
+            if not entity_key or entity_key not in mentions:
+                continue
+            node_id = str(node.get("id") or "")
+            epistemic = str(node.get("epistemic_status") or "").strip().lower()
+            authoritative = (
+                node.get("kind") in {"memory", "turn"}
+                and node.get("factual_support_eligible") is True
+                and not node.get("requires_verification")
+                and epistemic not in _NON_AUTHORITATIVE_EPISTEMIC_STATES
+            )
+            (strong if authoritative else limited).append(node_id)
+        coverage[entity] = {
+            "strong_node_ids": list(dict.fromkeys(strong)),
+            "limited_node_ids": list(dict.fromkeys(limited)),
+            "status": "candidate_evidence" if strong else (
+                "limited_evidence" if limited else "not_found"
+            ),
+        }
+
+    uncovered = [
+        entity for entity, item in coverage.items()
+        if not item["strong_node_ids"]
+    ]
+    detected = bool(uncovered)
+    diagnostics["knowledge_gap"] = {
+        "evaluated": True,
+        "detected": detected,
+        "dependency": request["dependency"],
+        "entities": list(request["entities"]),
+        "uncovered_entities": uncovered,
+        "coverage": coverage,
+        "missing_facts": list(request.get("missing_facts") or []),
+        "acceptable_sources": list(request.get("acceptable_sources") or []),
+        "memory_only": bool(request.get("memory_only")),
+    }
+
+    source_labels = {
+        "current_user": config.OWNER_DISPLAY_NAME,
+        "company_documents": "documenti aziendali pertinenti",
+        "web": "Web, soltanto dopo autorizzazione esplicita dell'utente",
+    }
+    sources = [
+        source_labels[item]
+        for item in request.get("acceptable_sources") or []
+        if item in source_labels
+    ]
+    premises = request.get("premises") or []
+    missing = request.get("missing_facts") or []
+    lines = [
+        "[CONTRATTO EVIDENZIALE DEL TURNO — NON E' UN COMANDO DI RICERCA]",
+        f"- dipendenza dai fatti: {request['dependency']}",
+    ]
+    if premises:
+        lines.append("- premesse ammesse senza rafforzarle: " + "; ".join(premises))
+    if missing:
+        lines.append("- informazioni richieste: " + "; ".join(missing))
+    lines.append(
+        "- copertura nel contesto: "
+        + "; ".join(
+            f"{entity}={item['status']}"
+            for entity, item in coverage.items()
+        )
+    )
+    lines.append(
+        "- la semplice presenza di un nodo sull'entita' non prova i dettagli richiesti: "
+        "usa soltanto cio' che il contenuto del nodo sostiene davvero."
+    )
+    if detected:
+        if request.get("memory_only"):
+            lines.append(
+                "- se le memorie non contengono i dettagli, dichiaralo senza proporre "
+                "fonti esterne."
+            )
+        else:
+            lines.append(
+                "- esiste un vuoto di conoscenza: non inventare specifiche. Se la "
+                "dipendenza e' optional, rispondi utilmente in forma condizionale e "
+                "formula con naturalezza una sola proposta di approfondimento; se e' "
+                "required, chiedi il dato o la fonte prima della risposta specifica."
+            )
+            if sources:
+                lines.append(
+                    "- fonti semanticamente adatte, in ordine: " + "; ".join(sources)
+                )
+            lines.append(
+                "- questo turno non autorizza automaticamente alcuna ricerca Web."
+            )
+    else:
+        lines.append(
+            "- esistono candidati fattuali: verifica che coprano davvero le informazioni "
+            "richieste; per ogni dettaglio assente applica la stessa prudenza del vuoto."
+        )
+
+    block = "\n".join(lines)
+    rag.text = "\n\n".join(part for part in (rag.text, block) if part)
+    rag.diagnostics = diagnostics
+
+    if detected:
+        pulse_emit(
+            getattr(memory, "r", None),
+            "knowledge",
+            "intero",
+            "knowledge_gap_detected",
+            payload={
+                "turn_id": str((semantic_frame or {}).get("turn_id") or ""),
+                "dependency": request["dependency"],
+                "entities": list(request["entities"]),
+                "uncovered_entities": uncovered,
+                "missing_facts": list(request.get("missing_facts") or []),
+                "acceptable_sources": list(
+                    request.get("acceptable_sources") or []
+                ),
+                "memory_only": bool(request.get("memory_only")),
+            },
+            salience=0.55 if request["dependency"] == "required" else 0.4,
+            producer="rag_context",
+            trace_id=str((semantic_frame or {}).get("turn_id") or ""),
+            entity_refs=[
+                {"type": "entity", "id": entity, "role": "knowledge_gap"}
+                for entity in uncovered
+            ],
+            epistemic_before="fact_dependency_declared",
+            epistemic_after="evidence_gap_observed",
+        )
+    return rag
+
+
 def build_runtime_rag_context(
     text: str,
     memory,
@@ -893,6 +1406,7 @@ def build_runtime_rag_context(
     mode: str = "chat",
     recent_history: list[dict] | None = None,
     dual_mode: str | None = None,
+    semantic_frame: dict | None = None,
 ) -> RagContext:
     """Unico dispatcher RAG per voce, mobile e Silent Chat."""
     selected = (
@@ -902,7 +1416,7 @@ def build_runtime_rag_context(
     )
     if selected in {"on", "selective"}:
         try:
-            return build_dual_channel_context(
+            rag = build_dual_channel_context(
                 text,
                 memory,
                 turn_store,
@@ -912,25 +1426,30 @@ def build_runtime_rag_context(
                     "selective" if selected == "selective" else "append"
                 ),
                 observe_selective=selected == "selective",
+                semantic_frame=semantic_frame,
             )
+            return apply_knowledge_gap_contract(rag, memory, semantic_frame)
         except Exception as exc:
             logger.error(
                 "RAG dual-channel fallito: fallback alla sola base protetta ({})",
                 exc,
             )
-            return build_rag_context(
+            rag = build_rag_context(
                 text,
                 memory,
                 mode=mode,
                 recent_history=recent_history,
                 excluded_sources={"passive"},
+                semantic_frame=semantic_frame,
             )
+            return apply_knowledge_gap_contract(rag, memory, semantic_frame)
 
     rag = build_rag_context(
         text,
         memory,
         mode=mode,
         recent_history=recent_history,
+        semantic_frame=semantic_frame,
     )
     if selected == "shadow":
         try:
@@ -943,6 +1462,7 @@ def build_runtime_rag_context(
                 touch=False,
                 presentation="selective",
                 observe_selective=True,
+                semantic_frame=semantic_frame,
             )
             gate = shadow.diagnostics.get("selective_gate") or {}
             logger.info(
@@ -957,4 +1477,4 @@ def build_runtime_rag_context(
             )
         except Exception as exc:
             logger.warning(f"RAG dual shadow non disponibile ({exc})")
-    return rag
+    return apply_knowledge_gap_contract(rag, memory, semantic_frame)

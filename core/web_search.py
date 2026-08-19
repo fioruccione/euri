@@ -110,3 +110,89 @@ def search(query: str, max_results: int = 5) -> list[dict]:
     except Exception as e:
         logger.error(f"Errore web search: {e}")
         return []
+
+
+def answer_explicit_web_search(
+    text: str,
+    brain,
+    memory,
+    *,
+    semantic_frame: dict | None = None,
+    online_check=None,
+    search_fn=None,
+) -> dict:
+    """Esegue una ricerca gia' autorizzata e restituisce un esito per ogni UI.
+
+    Questa funzione non decide l'intento: il chiamante deve aver gia' ricevuto
+    ``WEB_SEARCH`` dal frame condiviso. Le dipendenze opzionali servono alle
+    regressioni offline e non aprono un secondo classificatore linguistico.
+    """
+    check = online_check or is_online
+    perform_search = search_fn or search
+    if not check():
+        return {
+            "status": "offline",
+            "reply": "Non ho internet adesso. Posso rispondere solo da quello che ricordo.",
+            "query": "",
+            "memory_id": None,
+        }
+
+    query = brain.extract_search_query(text, semantic_frame=semantic_frame)
+    if not query:
+        return {
+            "status": "missing_query",
+            "reply": "Cosa vuoi che cerchi?",
+            "query": "",
+            "memory_id": None,
+        }
+
+    results = perform_search(query)
+    weak_domains = (
+        "youtube.com", "youtu.be", "threads.com", "instagram.com",
+        "facebook.com", "tiktok.com", "twitter.com", "x.com",
+    )
+    weak = not results or all(
+        any(domain in item.get("url", "") for domain in weak_domains)
+        for item in results
+    )
+    if weak:
+        fallback_query = brain.extract_query_fallback(query)
+        if fallback_query != query:
+            logger.info("Query fallback: '{}' → '{}'", query, fallback_query)
+            results = perform_search(fallback_query)
+            query = fallback_query
+
+    if not results:
+        return {
+            "status": "not_found",
+            "reply": f"Non ho trovato niente di utile su '{query}'.",
+            "query": query,
+            "memory_id": None,
+        }
+
+    summary = brain.summarize_web_results(results, query)
+    memory_id = memory.save_memory(
+        content=f"Ricerca web '{query}':\n{summary}",
+        category="web",
+        tags=["web_search"],
+        source="web",
+        final_fields={"requires_verification": True},
+    )
+    if memory_id:
+        logger.info(
+            "Web search salvata in memoria: {}… (query: '{}')",
+            str(memory_id)[:8],
+            query[:50],
+        )
+    else:
+        logger.warning(
+            "Web search NON salvata: contenuto sospetto bloccato dal MemoryGuard "
+            "(query '{}')",
+            query[:50],
+        )
+    return {
+        "status": "ok",
+        "reply": summary,
+        "query": query,
+        "memory_id": memory_id,
+    }

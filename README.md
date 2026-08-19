@@ -70,7 +70,7 @@ fatto.
 
 La classificazione di fallback resta a cascata:
 
-**Layer 1 — Regex Router (0ms):** ~18 categorie di intent con pattern ordinati per specificità. Copre la quasi totalità dei comandi strutturati (SAVE_MEMORY, SAVE_TODO, WEB_SEARCH, EXECUTE, TEACH, DICTATION…).
+**Layer 1 — Regex Router (0ms):** categorie di intent con pattern ordinati per specificità. Copre i comandi strutturati inequivoci (SAVE_MEMORY, SAVE_TODO, WEB_SEARCH, EXECUTE, DICTATION…). TEACH è escluso: una parola come “spiego” non basta ad aprire una sessione capace di salvare memoria.
 
 **Layer 2 — LLM Fallback Gemma 26B:** interviene soltanto se il router restituisce
 CHAT e il frame condiviso non è disponibile/affidabile. Classifica gli intent
@@ -286,6 +286,16 @@ Quando non gli parli per un po', Euri entra in cicli cognitivi offline. Non è p
   cleanup, pruning e consolidamento semantico. Il pruning Loop 2d usa un budget
   LLM per ciclo (16 chiamate/60 s di default): l'eccesso entra in una coda
   RedisJSON durevole con proroga TTL, non viene eliminato per euristica.
+- **Loop 2k — Ideation Arena (semantico e consent-first):** genera da 4 a 8 alternative
+  sullo stesso problema, applica a tutte un gate di fedeltà e poi usa
+  l'embedding soltanto per proporre al judge possibili duplicati operativi.
+  Assegnazioni inverse restano distinte. I candidati ammessi si confrontano in
+  un torneo pairwise: Copeland decide il ranking ed Elo resta telemetria. Il
+  risultato scade, non ha embedding e non entra automaticamente in memoria,
+  RAG o convergenza. Una richiesta esplicita del proprietario lo avvia; Euri
+  può anche proporlo quando riconosce un trade-off sostanziale, ma in quel caso
+  attende una conferma semantica separata. Non usa regex o parole magiche, non
+  parte per una normale domanda e lavora in background lasciando libera la chat.
 - Pesca due memorie appartenenti a due domini *completamente diversi*, ma solo da
   fonti dirette o deliberatamente acquisite. Reflection, reaction, consolidamenti,
   anchor/episodi conversazionali, nodi superseded, contestati o da verificare non
@@ -293,7 +303,7 @@ Quando non gli parli per un po', Euri entra in cicli cognitivi offline. Non è p
 - Fra i semi puliti privilegia quelli dotati di provenienza verbatim, prima nel
   dominio e poi nel campione cross-domain. Il fallback legacy resta possibile per
   non perdere memorie storiche autosufficienti, ma viene dichiarato nei log.
-- **Loop 2b-REM — divergenza:** **Qwen3.6 35B** (*thinking attivo*, modello dedicato) lascia collidere i due semi senza dover produrre una soluzione, un fatto o il formato operativo degli insight. Associazioni lontane, metafore, inversioni e trasformazioni anche assurde vengono conservate per sette giorni come `euri:dream:*`, con `stage=rem_divergent`. Questo materiale non ha embedding, non entra nel RAG, non va in Obsidian e non può diventare memoria: è sonno, non conoscenza.
+- **Loop 2b-REM — divergenza:** **Qwen3.8 27B Q4_K_M** (alta temperatura, modello dedicato) lascia collidere i due semi senza dover produrre una soluzione, un fatto o il formato operativo degli insight. Per questo modello REM e risveglio producono direttamente il contenuto, senza consumare il budget nel reasoning nascosto; i giudici epistemici conservano invece il thinking dove serve. Associazioni lontane, metafore, inversioni e trasformazioni anche assurde vengono conservate per sette giorni come `euri:dream:*`, con `stage=rem_divergent`. Questo materiale non ha embedding, non entra nel RAG, non va in Obsidian e non può diventare memoria: è sonno, non conoscenza.
 - **Loop 2b-Wake — risveglio lucido:** una seconda chiamata riceve le stesse fonti reidratate e il REM grezzo, esplicitamente marcato come non fattuale e non eseguibile. Cerca soltanto l'eventuale lampo traducibile in una connessione operativa verificabile; se non esiste risponde `NESSUN INSIGHT`. Solo questa distillazione può generare un **CANDIDATE Insight** e viene collegata al sogno sorgente tramite `rem_dream_id`.
 - **Principio REM→wake:** il caos è permesso a monte e il rigore è applicato a valle, ma il caos avviene fra **ancore complete**, non a causa di frammenti amputati. Memoria compatta, turni sorgente e contesto bounded restituiscono referenti, situazione, scopo e filo argomentativo; la fase divergente può deformarli, mentre il risveglio ricostruisce le premesse esclusivamente dalle fonti reali. Specifica e invarianti: [`docs/EURI_REM_WAKE_ARCHITECTURE.md`](docs/EURI_REM_WAKE_ARCHITECTURE.md).
 - **Novità misurabile, non impressionistica:** una sorpresa utile per Stefano e una connessione tecnicamente non ovvia sono assi distinti. La composizione diretta «applica A a B» è `V1`; `V2` richiede un meccanismo, vincolo, previsione o criterio decisionale nuovo e fondato. Rubrica prospettica e caso di calibrazione escluso dal blind: [`docs/EURI_DREAM_NOVELTY_CALIBRATION_2026-08-07.md`](docs/EURI_DREAM_NOVELTY_CALIBRATION_2026-08-07.md).
@@ -311,7 +321,7 @@ Quando non gli parli per un po', Euri entra in cicli cognitivi offline. Non è p
   vengono scritti in Obsidian. `PROMOTED` significa però *sostenuto
   internamente e recuperabile*, non *vero nel mondo*: senza una conferma esterna
   l'insight conserva `requires_verification=True`.
-- **Loop 2e — Memory Consolidation:** una volta ogni 24h, Euri raggruppa le memorie episodiche più richiamate (recalled_count ≥ 3) per dominio, individua i cluster semanticamente coerenti via KNN, **pre-filtra i candidati con un indice leggero ordinato per salienza in Redis ZSET** e poi **filtra i frammenti di soggetto diverso con il same-subject gate** (V2.19 — anti-conflazione, vedi changelog 08/06) prima di chiedere a Qwen3.6 di sintetizzare i soli frammenti coerenti in un unico nodo di conoscenza stabile. Il nodo consolidato preserva tutti i dati specifici (numeri, nomi, misure) eliminando la ridondanza episodica. Ogni cluster viene marcato con fingerprint per evitare ri-consolidazioni. Ispirato al consolidamento ippocampale durante il sonno REM: i frammenti episodici diventano conoscenza semantica a lungo termine. Max 3 consolidazioni per ciclo.
+- **Loop 2e — Memory Consolidation:** una volta ogni 24h, Euri raggruppa le memorie episodiche più richiamate (recalled_count ≥ 3) per dominio, individua i cluster semanticamente coerenti via KNN, **pre-filtra i candidati con un indice leggero ordinato per salienza in Redis ZSET** e poi **filtra i frammenti di soggetto diverso con il same-subject gate** (V2.19 — anti-conflazione, vedi changelog 08/06) prima di chiedere al modello Dream dedicato di sintetizzare i soli frammenti coerenti in un unico nodo di conoscenza stabile. Il nodo consolidato preserva tutti i dati specifici (numeri, nomi, misure) eliminando la ridondanza episodica. Ogni cluster viene marcato con fingerprint per evitare ri-consolidazioni. Ispirato al consolidamento ippocampale durante il sonno REM: i frammenti episodici diventano conoscenza semantica a lungo termine. Max 3 consolidazioni per ciclo.
 - **Loop 2f — Contradiction Resolution:** nel ciclo manutentivo, Euri cerca
   coppie di memorie fattuali vicine nello stesso dominio e usa
   `_llm_classify_pair` come prima barriera semantica. Il suo vocabolario
@@ -445,7 +455,7 @@ Un'interfaccia web leggera (`ui/app.py`) per:
 | Componente | Tecnologia |
 |---|---|
 | Ragionamento / LLM (conversazione) | Ollama — `gemma4:26b` |
-| Ragionamento / LLM (Dream Engine) | Ollama — `qwen3.6:35b` |
+| Ragionamento / LLM (Dream Engine) | Ollama — `hf.co/unsloth/Qwen3.8-27B-GGUF:Q4_K_M` (override `EURI_DREAM_OLLAMA_MODEL`) |
 | Visione Artificiale | Gemma 4 Vision (multimodale, offline) |
 | Memoria Attiva | Redis 8.8.0 vanilla (ReJSON / RediSearch / TimeSeries / Bloom / VectorSet integrati nel core + struttura `Array` nativa) |
 | Memoria Passiva/UI | Obsidian Vault sincronizzato via `watchdog` |
@@ -500,7 +510,7 @@ cd /home/fio/Euri
 | *"Ricordati il [soggetto discusso]"* | Cattura la **sostanza** di ciò che avete detto su quel soggetto, non solo l'etichetta nel comando (V2.19) |
 | *"Salva tutto"* | Il Passive Learner salva il riassunto della conversazione |
 | *"Cosa sai di me?"* | Audit delle memorie salvate |
-| *"Ti racconto una cosa..."* | Modalità insegnamento esplicito |
+| *“Voglio insegnarti [argomento]: ascoltami, fammi domande e poi proponimi un riepilogo da salvare”* | Chiede semanticamente una sessione di insegnamento; parte solo se destinatario, scopo e forma guidata risultano chiari |
 
 ### Elaborazione File (CodeRunner)
 | Comando | Cosa fa |

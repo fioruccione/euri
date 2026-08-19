@@ -85,6 +85,24 @@ def test_old_evidence_cannot_self_reinforce():
     ) == []
 
 
+def test_oversized_claim_is_rejected_instead_of_truncated():
+    owner = _turn(
+        "c1:1", "Prima di fare modifiche ragioniamo sul meccanismo.",
+        conversation="c1", observed_at=NOW - 30,
+    )
+    proposal = _proposal(evidence=[{
+        "turn_ref": "c1:1",
+        "quote": "Prima di fare modifiche ragioniamo sul meccanismo",
+    }])
+    proposal["claim"] = "x" * 321
+    assert validate_proposals(
+        {"proposals": [proposal]},
+        projection=empty_projection(ACTOR),
+        turns=(owner,),
+        new_owner_refs=frozenset({"c1:1"}),
+    ) == []
+
+
 def test_explicit_trait_is_stable_but_actor_scoped():
     proposal = _proposal(
         strength="declared",
@@ -309,6 +327,7 @@ def test_invalid_output_uses_short_retry_without_partial_projection():
 def main():
     test_only_owner_verbatim_is_evidence()
     test_old_evidence_cannot_self_reinforce()
+    test_oversized_claim_is_rejected_instead_of_truncated()
     test_explicit_trait_is_stable_but_actor_scoped()
     test_pattern_requires_independent_conversations()
     test_single_feedback_does_not_become_personality()
@@ -316,7 +335,7 @@ def main():
     test_brain_injects_projection_only_with_actor()
     test_store_bootstraps_from_turns_and_commits_validated_view()
     test_invalid_output_uses_short_retry_without_partial_projection()
-    print("test_personality_model: 9/9 OK")
+    print("test_personality_model: 10/10 OK")
 
 
 if __name__ == "__main__":

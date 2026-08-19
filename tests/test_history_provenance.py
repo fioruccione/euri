@@ -72,8 +72,43 @@ def test_selective_thinking_retries_direct_on_failure():
     assert chat.call_args_list[1].kwargs["options"]["num_predict"] == 1500
 
 
+def test_history_is_presented_as_autobiography_not_uniform_evidence():
+    brain = Brain()
+    brain.inject_tool_result(
+        "Eurostampi costruisce stampi e fa prove di stampaggio.",
+        "Avevo interpretato Eurostampi come produzione massiva e standardizzata.",
+    )
+
+    with patch(
+        "core.brain.chat_client.chat", return_value=_Response("risposta")
+    ) as chat:
+        brain.respond("Che cosa ricordi di Eurostampi?")
+
+    messages = chat.call_args.kwargs["messages"]
+    contract = next(
+        message["content"]
+        for message in messages
+        if message["role"] == "system"
+        and message["content"].startswith("Contratto autobiografico")
+    )
+    assert "non provano da soli un fatto sul mondo" in contract
+    assert "continuita', personalita' e autocritica" in contract
+    assert "interpretazione precedente non confermata" in contract
+    assert any(
+        message["role"] == "assistant"
+        and "produzione massiva e standardizzata" in message["content"]
+        for message in messages
+    )
+    assert any(
+        message["role"] == "user"
+        and "costruisce stampi" in message["content"]
+        for message in messages
+    )
+
+
 if __name__ == "__main__":
     test_trusted_is_local_to_one_turn()
     test_compression_does_not_invalidate_passive_journal()
     test_selective_thinking_retries_direct_on_failure()
+    test_history_is_presented_as_autobiography_not_uniform_evidence()
     print("test_history_provenance: OK")

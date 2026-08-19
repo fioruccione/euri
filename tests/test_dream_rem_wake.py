@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
+import config
 from core.dream_engine import DREAM_REM_WAKE_VERSION, DreamEngine
 
 
@@ -102,10 +103,14 @@ def test_rem_is_free_but_only_wake_can_create_an_insight():
     assert "fase REM divergente" in calls[0]["messages"][0]["content"]
     assert "Puoi violare" in calls[0]["messages"][0]["content"]
     assert calls[0]["options"]["temperature"] > 0.6
+    assert calls[0]["think"] is config.DREAM_REM_THINK
+    assert calls[0]["options"]["num_predict"] == config.DREAM_REM_NUM_PREDICT
     wake_prompt = calls[1]["messages"][0]["content"]
     assert raw_dream in wake_prompt
     assert "non e' una memoria" in wake_prompt
     assert "rispondi ESATTAMENTE" in wake_prompt
+    assert calls[1]["think"] is config.DREAM_WAKE_THINK
+    assert calls[1]["options"]["num_predict"] == config.DREAM_WAKE_NUM_PREDICT
 
     dreams = [doc for key, doc in engine._r.docs.items() if key.startswith("euri:dream:")]
     insights = [doc for key, doc in engine._r.docs.items() if key.startswith("euri:insight:")]

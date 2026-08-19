@@ -488,8 +488,14 @@ def reconstruct_one(report: dict, case, question_id: str, *, freeze: bool = True
 
     ctx_manager = frozen_clock(report["created_at"]) if freeze else contextlib.nullcontext()
     with ctx_manager as reference:
-        base = build_rag_context(questions[question_id].text, _FrozenBaseMemory(docs),
-                                 mode="search", touch=False).text
+        base = build_rag_context(
+            questions[question_id].text,
+            _FrozenBaseMemory(docs),
+            mode="search",
+            touch=False,
+            render_memory_origins=False,
+            temporal_label_version="v1",
+        ).text
     reference_iso = reference.isoformat() if freeze and reference is not None else None
 
     expected_base = rag[question_id]["metadata"]["base_sha256"]

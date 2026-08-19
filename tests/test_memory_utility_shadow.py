@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+import config
 from core.memory_utility_shadow import (
     UTILITY_REPORT_KEY,
     UTILITY_REVIEW_PENDING_KEY,
@@ -11,6 +12,7 @@ from core.memory_utility_shadow import (
     aggregate_lineage_events,
     build_memory_utility_report,
     explain_insight_promotion,
+    get_memory_utility_review_pending,
     migrate_legacy_utility_shadow_keys,
     run_memory_utility_shadow_maintenance,
     sync_supported_use_metadata,
@@ -223,6 +225,7 @@ def test_supported_use_is_materialized_idempotently_for_attention_only():
             "memory:m1": {
                 "kind": "memory",
                 "id": "m1",
+                "recalled": 10,
                 "used_supported_not_proven": 3,
                 "last_used_at": 1200.0,
             }
@@ -233,13 +236,41 @@ def test_supported_use_is_materialized_idempotently_for_attention_only():
     assert first["updated_memories"] == 1
     assert second["updated_memories"] == 0
     assert redis.docs["euri:memory:m1"]["supported_use_count"] == 3
+    assert (
+        redis.docs["euri:memory:m1"][
+            "supported_use_observed_recalled_count"
+        ]
+        == 10
+    )
     assert redis.docs["euri:memory:m1"]["last_supported_use_at"] == 1200.0
     assert redis.docs["euri:memory:m1"]["supported_use_signal"][
         "attention_only"
     ] is True
+    assert redis.docs["euri:memory:m1"]["supported_use_signal"][
+        "observed_selective_reuse_ratio"
+    ] == 0.3
+
+    # Anche nuove esposizioni senza nuovi riusi devono aggiornare il
+    # denominatore e quindi ridurre il rinforzo futuro.
+    state["entities"]["memory:m1"]["recalled"] = 12
+    third = sync_supported_use_metadata(redis, state)
+    assert third["updated_memories"] == 1
+    assert redis.docs["euri:memory:m1"][
+        "supported_use_observed_recalled_count"
+    ] == 12
 
 
-def test_daily_maintenance_persists_and_does_not_duplicate_reminder():
+def test_resolved_review_is_not_reported_as_pending():
+    redis = FakeRedis()
+    redis.values[UTILITY_REVIEW_PENDING_KEY] = json.dumps({
+        "status": "review_pending",
+        "observation_age_days": 19.1,
+    })
+    assert config.MEMORY_ATTENTION_POLICY == "selective_reuse_rate_v1"
+    assert get_memory_utility_review_pending(redis) == {}
+
+
+def test_daily_maintenance_persists_and_closes_review_without_reminder():
     redis = FakeRedis(_rows())
 
     # Prima passata: apre la finestra, ma non è ancora matura.
@@ -263,7 +294,10 @@ def test_daily_maintenance_persists_and_does_not_duplicate_reminder():
     )
     assert second["review_due"] is True
     assert UTILITY_REVIEW_PENDING_KEY in redis.values
-    assert len(redis.events) == 1
+    review = json.loads(redis.values[UTILITY_REVIEW_PENDING_KEY])
+    assert review["status"] == "review_completed"
+    assert review["decision"] == "selective_reuse_rate_v1"
+    assert len(redis.events) == 0
 
     run_memory_utility_shadow_maintenance(
         redis,
@@ -272,7 +306,7 @@ def test_daily_maintenance_persists_and_does_not_duplicate_reminder():
         min_responded_turns=1,
         max_days=2,
     )
-    assert len(redis.events) == 1
+    assert len(redis.events) == 0
 
 
 def test_legacy_utility_state_is_copied_without_deleting_rollback():
@@ -325,7 +359,8 @@ if __name__ == "__main__":
     test_aggregate_is_private_deduplicated_and_observational()
     test_review_matures_by_data_or_by_max_wait_without_policy_change()
     test_supported_use_is_materialized_idempotently_for_attention_only()
-    test_daily_maintenance_persists_and_does_not_duplicate_reminder()
+    test_resolved_review_is_not_reported_as_pending()
+    test_daily_maintenance_persists_and_closes_review_without_reminder()
     test_legacy_utility_state_is_copied_without_deleting_rollback()
     test_embedding_backfill_ignores_non_json_keys_in_memory_namespace()
     test_promotion_explain_uses_existing_signals_without_deciding_again()
