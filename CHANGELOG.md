@@ -1,5 +1,116 @@
 # Changelog
 
+## 2026-08-23 - Coding agent: risultato osservabile obbligatorio
+
+- Un exit code `0` non viene piu' confuso con la riuscita del calcolo: il job
+  richiede stdout reale oppure un artefatto persistente.
+- Un programma incompleto ma formalmente valido viene classificato come
+  `missing_observable_result` e rimandato a OpenCode per la correzione entro il
+  normale budget di tentativi.
+- La regola e' limitata al coding agent temporaneo; il comportamento del
+  `run_code` storico resta invariato.
+
+## 2026-08-23 - Ground truth dei tentativi OpenCode
+
+- Prima del cleanup di ogni sessione, il coding agent salva prompt, risposta
+  strutturata, transcript, parti tool, artefatto ed esito della sandbox.
+- L'audit vive soltanto in `research_logs/coding_agent/`, con permessi privati
+  e retention predefinita di sette giorni; resta fuori da memoria e retrieval.
+- La strumentazione e' best-effort e non modifica prompt, timeout, retry o
+  decisioni operative.
+
+## 2026-08-23 - OpenCode osservabile nella Silent Chat
+
+- I job del coding agent espongono ora fasi reali: backend, tentativo, artefatto,
+  sandbox, correzione ed esito.
+- L'Executor inoltra gli eventi dal worker al thread Streamlit tramite una coda,
+  evitando chiamate UI dal thread del tool.
+- Il pannello mostra tempo trascorso e snapshot locali `nvidia-smi` di utilizzo,
+  VRAM e potenza per ogni GPU; nessuna percentuale di completamento simulata.
+- La telemetria e' best-effort e non puo' cambiare l'esito del programma.
+- Il primo test live non mostrava il pannello perche' un frame semantico lungo,
+  troncato a 700 token, non era JSON valido: la richiesta ricadeva in CHAT e
+  OpenCode non partiva affatto. Il budget del frame sale a 1000 token e, se il
+  frame ricco resta indecodificabile, una seconda classificazione semantica
+  compatta recupera soltanto il gesto operativo; non esistono trigger regex per
+  scegliere il tool.
+- Il pavimento di onesta' intercetta ora anche «sto riscrivendo»: nel test live
+  la chat aveva descritto un retry inesistente dopo il mancato instradamento.
+- Un secondo test live ha isolato il timeout residuo: il primo tentativo OpenCode
+  restava 420 secondi senza creare `main.py` e consumava da solo il budget del
+  prompt. Un watchdog separato interrompe ora dopo 150 secondi senza artefatto,
+  elimina il transcript del tentativo, apre una sessione pulita e ripresenta il
+  problema completo; i tentativi successivi possono quindi avvenire davvero.
+
+## 2026-08-22 - No-store episodico condiviso tra voce e Silent Chat
+
+- Un test live ha mostrato che «questi dati ipotetici non devono essere
+  memorizzati» bloccava soltanto il primo turno: i prompt tecnici successivi
+  venivano riclassificati come riutilizzabili e il learner inline ne ha salvati
+  otto.
+- Il frame semantico passa a v8 e rappresenta una direttiva mnemonica grounded
+  separata dalla semplice `memory_disposition`: `suppress`/`resume`, limitata al
+  turno oppure all'episodio.
+- Il divieto episodico viene propagato nei frame successivi e termina su revoca
+  esplicita o sul normale confine temporale dell'episodio. Nessun trigger regex.
+- Voce e Silent Chat usano ora lo stesso filtro prima dell'estrazione passiva;
+  turno protetto e risposta associata restano nel verbatim locale ma non
+  diventano memoria cognitiva.
+- Gli otto record ipotetici del test sono stati rimossi da Redis e dagli indici;
+  le otto note Vault sono state spostate in una cartella temporanea recuperabile.
+
+## 2026-08-22 - OpenCode: stop sull'artefatto, non sul monologo
+
+- Il primo job reale dalla Silent Chat ha mostrato che OpenCode poteva creare
+  `main.py` e continuare a generare fino al timeout di 420 secondi.
+- `OpenCodeAdapter.prompt()` ora osserva l'artefatto richiesto e, quando la nuova
+  versione resta stabile, interrompe il turno residuo e restituisce il controllo
+  al `CodingJob`.
+- Il monitor conserva deadline, interruzione utente e cleanup fail-closed; nei
+  retry considera completamento anticipato soltanto una nuova modifica stabile,
+  non la versione precedente gia' presente.
+- Aggiunto il test di regressione che simula un modello ancora occupato dopo la
+  scrittura e verifica il ritorno anticipato.
+- Riprova live riuscita: tre tentativi OpenCode, due stop anticipati
+  sull'artefatto, esecuzione sandbox in 200 ms e risposta completa in circa 166
+  secondi invece dei circa 447 del caso fallito.
+
+## 2026-08-22 - OpenCode come costruttore di strumenti temporanei
+
+- Aggiunta la capability semantica `build_computational_tool`: Euri resta
+  orchestratore, OpenCode costruisce/corregge `main.py` e il CodeRunner esegue.
+- Il percorso è separato dal `run_code` legacy e non introduce trigger regex,
+  Dream, promozione automatica o memoria permanente del programma.
+- I job vivono in workspace privati fuori dal repository; OpenCode non riceve
+  shell, rete, sub-agent o directory esterne. L'esecuzione richiede bubblewrap:
+  senza sandbox il nuovo tool fallisce chiuso.
+- Timeout a parete, budget totale, massimo tre tentativi, feedback stderr, limite
+  dimensione e cleanup di workspace e sessione OpenCode impediscono job orfani
+  o transcript persistenti.
+- Il preflight Ollama richiede `tools`: Gemma4 26B è il default; il GGUF
+  Qwen3.8 corrente resta ai Dream perché espone solo completion e vision.
+- Prova reale: il primo tentativo non ha materializzato il file, il secondo lo
+  ha corretto; bilancio di massa chiuso ed eseguito in bubblewrap in 200 ms.
+- Sonde Gemma reali: richieste prive dei dati falliscono chiuse, una domanda di
+  opinione resta conversazione, due problemi numerici completi selezionano il
+  nuovo tool con autorità esplicita e confidenza 1,0.
+
+
+## 2026-08-20 - D4 conservativo: il veto semantico arriva al guard finale
+
+- CHAT e SEARCH propagano al controllo atto-parola il veto d'azione già emesso
+  dal frame semantico. Una promessa morbida in un turno riflessivo non provoca
+  più una seconda chiamata all'ActionController.
+- Il guard rimuove soltanto la frase sospetta e conserva il resto della risposta
+  senza aggiungere una falsa correzione sul background. Se non resta alcun testo,
+  mantiene la correzione per non produrre una risposta vuota.
+- I claim forti su azioni dichiarate come già compiute restano fail-closed. Il
+  log espone ora categoria e frase esatta che hanno attivato il controllo.
+- Il caso live del 20 agosto evita circa 14,4 secondi di deviazione sulla X99.
+  D5, recenza e provenienza non sono stati modificati.
+- Regressioni: guard atto-parola 54/54, semantic turn completo e 23 test senza
+  fixture dell'ActionController.
+
 ## 2026-08-19 - Attivazione semantica e consent-first di Loop 2k
 
 - Il frame semantico passa a v7 e distingue `explicit`, `suggest` e `none` per

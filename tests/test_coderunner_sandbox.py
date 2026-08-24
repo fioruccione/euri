@@ -52,9 +52,13 @@ print("4) allowlist ambiente: variabile applicativa non ereditata OK")
 # 5. Codice legittimo e data stack continuano a funzionare.
 r = run("print(6 * 7)")
 assert r.success and "42" in r.output, f"codice legittimo fallito: {r.output} {r.error}"
+assert r.stdout_chars == 2, f"telemetria stdout inattesa: {r.stdout_chars}"
 r = run("import pandas as pd\nprint(int(pd.Series([10,20,30]).sum()))")
 assert r.success and "60" in r.output, f"pandas fallito: {r.output} {r.error}"
-print("5) codice legittimo e pandas OK")
+r = run("value = 6 * 7")
+assert r.success and r.stdout_chars == 0
+assert r.output == "Operazione completata senza errori."
+print("5) codice legittimo, pandas e telemetria stdout OK")
 
 # 6. kill-switch off → lancio diretto (nessun bwrap)
 config.CODE_RUNNER_BWRAP_ENABLED = False
@@ -80,4 +84,14 @@ time.sleep(0.2)
 cr._terminate_process_group(stubborn, grace=0.2)
 assert stubborn.poll() is not None
 print("8) fallback SIGKILL verificato OK")
+
+# 9. Il percorso coding-agent e' fail-closed: se bwrap non parte, nessuna
+# esecuzione diretta viene tentata anche se il legacy resta disponibile.
+cr_agent = CodeRunner()
+with patch.object(cr_agent, "_usable_bwrap", return_value=None):
+    r = cr_agent.execute_generated_code(
+        "print(6 * 7)", threading.Event(), require_bwrap=True
+    )
+assert not r.success and r.error == "sandbox_unavailable"
+print("9) coding agent senza bwrap: fail-closed OK")
 print("PASS")

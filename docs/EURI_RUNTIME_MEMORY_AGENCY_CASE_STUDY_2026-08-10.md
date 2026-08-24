@@ -269,14 +269,29 @@ Il test dimostra che i due errori non sono varianti dello stesso pattern:
 
 D5 resta rinviata; non è stato aggiunto alcun nuovo guard in questo ciclo.
 
-## D4 — sola fattibilità, nessuna modifica
+## D4 — baseline iniziale e chiusura conservativa del 20 agosto
 
-La fattibilità di suppress-and-regenerate è confermata in
+La fattibilità di suppress-and-regenerate era stata confermata in
 `voice_daemon.py`, handler SEARCH: il controllo avviene dopo il draft e prima
-della chiusura della lineage, del salvataggio della risposta e del TTS; testo
-utente, contesto e draft sono ancora disponibili. In questo ciclo il flusso non
-è stato modificato: lo scrub resta quello esistente e D4 mantiene una baseline
-separata.
+della chiusura della lineage, del salvataggio della risposta e del TTS. Quella
+conclusione e la baseline append-only restano conservate come dato storico.
+
+Il caso live del 20 agosto ha però mostrato perché una rigenerazione integrale
+non è la prima scelta corretta. A una richiesta di riflessione sulla barzelletta,
+il frame aveva già prodotto `CHAT acts=ASK` e aveva evitato correttamente
+l'ActionController. Gemma ha poi generato un'analisi valida di 503 token. Il
+guard finale ha scambiato una frase di raccordo per una promessa operativa,
+riaprendo il controller per circa 14,4 secondi e aggiungendo alla risposta la
+coda falsa sul lavoro in background.
+
+La chiusura implementata conserva il contenuto valido e usa il verdetto
+semantico già disponibile. Se il solo pattern morbido scatta dentro un turno su
+cui esiste un veto semantico d'azione, il secondo controller non parte, la sola
+frase sospetta viene rimossa e non viene aggiunta alcuna coda; categoria e frase
+sono loggate. I claim forti su effetti dichiarati come compiuti restano invece
+corretti anche in presenza del veto. Se la rimozione svuoterebbe interamente la
+risposta, la correzione resta, così il sistema non produce silenzio. D5 non è
+coinvolto.
 
 ## D3 — metadati di provenienza: cosa è misurato e cosa non lo è
 

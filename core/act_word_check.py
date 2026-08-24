@@ -83,7 +83,7 @@ _DIRECT_PRESENT_ACTION_RE = re.compile(
 )
 _IN_PROGRESS_COMMITMENT_RE = re.compile(
     r"\b(?:sto|stiamo)\s+(?:ora\s+|adesso\s+|già\s+)?"
-    r"(?:preparando|generando|creando|scrivendo|esportando|salvando|"
+    r"(?:preparando|generando|creando|scrivendo|riscrivendo|esportando|salvando|"
     r"modificando|aggiornando|analizzando|controllando|verificando)\b",
     re.IGNORECASE,
 )
@@ -167,6 +167,24 @@ def needs_honest_correction(reply: str, turn_actions: set) -> bool:
     ) and not turn_actions
 
 
+def unbacked_action_claim_details(reply: str, turn_actions: set) -> list[dict[str, str]]:
+    """Restituisce categoria e frase dei claim non coperti osservati nel draft.
+
+    È diagnostica, non decide se eseguire o correggere: il chiamante può così
+    distinguere un effetto dichiarato come già compiuto da una promessa futura
+    e lasciare nei log la porzione esatta che ha attivato il guard.
+    """
+    if turn_actions or not reply:
+        return []
+    details: list[dict[str, str]] = []
+    for sentence in re.split(r"(?<=[.!?…])\s+", reply.strip()):
+        if claims_completed_action(sentence):
+            details.append({"category": "completed_action", "sentence": sentence})
+        elif claims_immediate_action_commitment(sentence):
+            details.append({"category": "immediate_commitment", "sentence": sentence})
+    return details
+
+
 def honest_correction() -> str:
     """Riga onesta da pronunciare al posto del claim falso."""
     return ("Aspetta — in realtà non ho eseguito quell'azione in questo turno. "
@@ -204,7 +222,12 @@ def strip_leading_stage_direction(text: str) -> str:
     return value
 
 
-def scrub_unbacked_action_claim(reply: str, turn_actions: set) -> str:
+def scrub_unbacked_action_claim(
+    reply: str,
+    turn_actions: set,
+    *,
+    semantic_action_veto: bool = False,
+) -> str:
     """
     Pavimento di onestà sull'AZIONE — fratello più largo di
     honesty.scrub_unbacked_save_claim (che copre il solo salvataggio).
@@ -229,6 +252,13 @@ def scrub_unbacked_action_claim(reply: str, turn_actions: set) -> str:
         and not _ARTIFACT_AVAILABILITY_RE.search(s)
     ]
     cleaned = " ".join(kept).strip()
+    # Un frame affidabile può avere già stabilito che il turno richiede solo
+    # ragionamento/linguaggio. In quel caso una frase intercettata dal pattern
+    # morbido (es. "provo a elaborare il parallelo...") non deve produrre una
+    # falsa coda su tool/background. La frase sospetta cade comunque; i claim
+    # forti su azioni già compiute conservano sempre la correzione.
+    if semantic_action_veto and commitment and not completed and cleaned:
+        return cleaned
     tail = honest_correction() if completed else honest_commitment_correction()
     return f"{cleaned}\n\n{tail}" if cleaned else tail
 

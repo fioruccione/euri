@@ -7,6 +7,7 @@ Flusso:
 import json
 import os
 import re
+import shutil
 import sys
 import signal
 import threading
@@ -54,6 +55,7 @@ from core.act_word_check import (
     needs_honest_correction,
     scrub_unbacked_action_claim,
     strip_leading_stage_direction,
+    unbacked_action_claim_details,
 )
 from core.action_controller import (
     ActionController,
@@ -77,8 +79,8 @@ from core.cognitive_present import (
 from core.worker_supervisor import WorkerSupervisor
 from core.semantic_turn import (
     SemanticTurnService,
+    filter_passive_memory_history,
     frame_bootstraps_owner_session,
-    frame_blocks_passive_memory,
     frame_is_correction,
     frame_requests_linguistic_response,
     frame_requests_contextual_action,
@@ -470,6 +472,21 @@ class VoiceDaemon:
         else:
             logger.warning("Audio output: Jabra non trovato — uso device di sistema")
         logger.info("Euri pronto. In ascolto...")
+        if getattr(config, "CODE_AGENT_ENABLED", False):
+            opencode_path = shutil.which(config.CODE_AGENT_OPENCODE_BIN)
+            if opencode_path:
+                logger.info(
+                    "Coding agent: configurato — OpenCode={} model={} "
+                    "workspace={} sandbox=bubblewrap-obbligatoria",
+                    opencode_path,
+                    config.CODE_AGENT_MODEL,
+                    config.CODE_AGENT_WORKSPACE_ROOT,
+                )
+            else:
+                logger.warning(
+                    "Coding agent: abilitato ma OpenCode non trovato nel PATH ({})",
+                    config.CODE_AGENT_OPENCODE_BIN,
+                )
         logger.info(
             "Memoria dual-channel: mode={} (archivio turni durevole attivo; "
             "gate q_src>={} margin>={} redundancy<={}; thinking_selettivo={} "
@@ -1232,9 +1249,46 @@ class VoiceDaemon:
         self.memory.log_conversation(_ASSISTANT_NAME, reply)
         self._speak(reply)
 
+    def _finalize_unbacked_action_claims(
+        self,
+        reply: str,
+        user_text: str,
+        *,
+        channel: str,
+        semantic_action_veto: bool = False,
+    ) -> tuple[str, bool]:
+        """Applica il guard finale senza scavalcare un veto semantico già emesso.
+
+        Ritorna ``(testo, rerouted)``. Il veto riguarda soltanto le promesse
+        morbide: un claim forte su un'azione dichiarata come già compiuta resta
+        soggetto alla correzione ordinaria.
+        """
+        claim_details = unbacked_action_claim_details(reply, set())
+        semantic_soft_veto = (
+            semantic_action_veto
+            and bool(claim_details)
+            and all(item["category"] == "immediate_commitment" for item in claim_details)
+        )
+        for item in claim_details:
+            logger.info(
+                "Guard atto-parola: category={} semantic_veto={} sentence={!r}",
+                item["category"], semantic_soft_veto, item["sentence"],
+            )
+        if (
+            needs_honest_correction(reply, set())
+            and not semantic_soft_veto
+            and self._try_euri_readonly_action(reply, user_text)
+        ):
+            return "", True
+        if not semantic_soft_veto:
+            emit_unbacked_action_commitment(self.r, reply, set(), channel=channel)
+        return scrub_unbacked_action_claim(
+            reply, set(), semantic_action_veto=semantic_soft_veto
+        ), False
+
     def _handle_search(
         self, text: str, *, trusted: bool = False, observed_at: float | None = None,
-        semantic_frame: dict | None = None,
+        semantic_frame: dict | None = None, semantic_action_veto: bool = False,
     ):
         """SEARCH path allineato a CHAT: usa _build_context per evitare
         l'allucinazione di assenza ('non ce l'ho' su memorie che invece esistono).
@@ -1294,13 +1348,17 @@ class VoiceDaemon:
             )
             raise
         reply = scrub_unbacked_save_claim(reply)  # pavimento di onestà: SEARCH non salva
-        if needs_honest_correction(reply, set()) and self._try_euri_readonly_action(reply, text):
+        reply, rerouted = self._finalize_unbacked_action_claims(
+            reply,
+            text,
+            channel="voice_search",
+            semantic_action_veto=semantic_action_veto,
+        )
+        if rerouted:
             self._finish_response_lineage(
                 lineage, "", outcome="rerouted", attribute_usage=False
             )
             return
-        emit_unbacked_action_commitment(self.r, reply, set(), channel="voice_search")
-        reply = scrub_unbacked_action_claim(reply, set())  # SEARCH non agisce: niente claim d'azione
         self._finish_response_lineage(lineage, reply)
         self.memory.log_conversation(_ASSISTANT_NAME, reply)
         self._speak(reply)
@@ -2115,7 +2173,9 @@ class VoiceDaemon:
                 call.parameters[_k] = text
 
         # Feedback vocale differenziato
-        if call.tool_name == "run_code":
+        if call.tool_name == "build_computational_tool":
+            self._speak("Costruisco uno strumento temporaneo e verifico il risultato.")
+        elif call.tool_name == "run_code":
             self._speak("Ci penso, genero ed eseguo il codice.")
         elif call.tool_name == "read_document":
             self._speak("Leggo il documento.")
@@ -2139,7 +2199,7 @@ class VoiceDaemon:
         # (es. "cosa ne pensi?" subito dopo un'analisi). log_conversation scrive su
         # Redis, ma respond() costruisce il contesto solo da _conversation_history:
         # senza questo inject il CodeRunner risponderebbe "non vedo nulla".
-        if call.tool_name in ("analyze_image", "clipboard_read", "clipboard_analyze", "clipboard_analyze_save", "run_code", "read_document", "ingest_documents", "read_url", "teach_text", "compose_document"):
+        if call.tool_name in ("analyze_image", "clipboard_read", "clipboard_analyze", "clipboard_analyze_save", "run_code", "build_computational_tool", "read_document", "ingest_documents", "read_url", "teach_text", "compose_document"):
             # Disaccoppia "cosa dice" da "cosa ricorda": nel contesto va anche il
             # contenuto FEDELE (run_code → CSV prodotto; read_document → testo grezzo
             # del documento), così le domande quantitative successive ("quanto era
@@ -2750,7 +2810,7 @@ class VoiceDaemon:
 
     def _handle_chat(
         self, text: str, *, trusted: bool = False, observed_at: float | None = None,
-        semantic_frame: dict | None = None,
+        semantic_frame: dict | None = None, semantic_action_veto: bool = False,
     ):
         # Audit di Coerenza: capture correction signal PRIMA di loggare/rispondere,
         # così last_rag_ctx contiene ancora il ctx del turno precedente (corretto).
@@ -2818,13 +2878,17 @@ class VoiceDaemon:
             reply = strip_leading_stage_direction(reply)
         else:
             reply = scrub_unbacked_save_claim(reply)  # CHAT non salva
-            if needs_honest_correction(reply, set()) and self._try_euri_readonly_action(reply, text):
+            reply, rerouted = self._finalize_unbacked_action_claims(
+                reply,
+                text,
+                channel="voice_chat",
+                semantic_action_veto=semantic_action_veto,
+            )
+            if rerouted:
                 self._finish_response_lineage(
                     lineage, "", outcome="rerouted", attribute_usage=False
                 )
                 return
-            emit_unbacked_action_commitment(self.r, reply, set(), channel="voice_chat")
-            reply = scrub_unbacked_action_claim(reply, set())
         self._finish_response_lineage(lineage, reply)
         self.memory.log_conversation(_ASSISTANT_NAME, reply)
         if len(reply) > 150:
@@ -3811,6 +3875,7 @@ class VoiceDaemon:
                 trusted=trusted,
                 observed_at=observed_at,
                 semantic_frame=semantic_frame,
+                semantic_action_veto=frame_action_veto,
             )
         elif intent == Intent.WEB_SEARCH:
             handler(text, semantic_frame=semantic_frame)
@@ -5323,26 +5388,13 @@ class VoiceDaemon:
         criterio e' fail-open: un frame assente, incerto o di fallback continua
         a seguire la validazione passiva preesistente.
         """
-        eligible: list[dict] = []
-        suppress_assistant = False
         minimum_confidence = getattr(
             config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72
         )
-        for message in history:
-            role = str(message.get("role") or "")
-            if role == "user":
-                suppress_assistant = frame_blocks_passive_memory(
-                    message.get("semantic_frame"),
-                    minimum_confidence=minimum_confidence,
-                )
-                if not suppress_assistant:
-                    eligible.append(message)
-                continue
-            if role == "assistant" and suppress_assistant:
-                suppress_assistant = False
-                continue
-            eligible.append(message)
-        return eligible
+        return filter_passive_memory_history(
+            history,
+            minimum_confidence=minimum_confidence,
+        )
 
     @classmethod
     def _passive_extraction_batches(cls, history: list[dict]) -> list[tuple[bool, list[dict]]]:

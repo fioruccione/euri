@@ -6,6 +6,7 @@ import json
 import sys
 import threading
 import types
+from dataclasses import replace as dataclass_replace
 from datetime import datetime
 from enum import Enum
 from types import SimpleNamespace
@@ -193,6 +194,11 @@ def test_policy_boundaries():
     )
     external = ActionCapability("send.mail", "invia", ActionEffect.EXTERNAL)
     readonly = ActionCapability("gpu.read", "legge", ActionEffect.READ_ONLY)
+    local_write = ActionCapability(
+        "executor.build_computational_tool",
+        "costruisce uno strumento temporaneo",
+        ActionEffect.LOCAL_WRITE,
+    )
     controller = ActionController(chat=_Chat({}), model="fake")
 
     explicit = ActionProposal(
@@ -212,6 +218,22 @@ def test_policy_boundaries():
     assert controller.decide(
         self_read, [readonly], allow_euri_read_only=True
     ).disposition == ActionDisposition.EXECUTE
+    explicit_build = ActionProposal(
+        "executor.build_computational_tool",
+        {"task": "verifica il bilancio"},
+        None,
+        ActionAuthority.USER_EXPLICIT,
+        0.99,
+    )
+    assert controller.decide(
+        explicit_build, [local_write]
+    ).disposition == ActionDisposition.EXECUTE
+    self_build = dataclass_replace(
+        explicit_build, authority=ActionAuthority.EURI_PROPOSED
+    )
+    assert controller.decide(
+        self_build, [local_write]
+    ).disposition == ActionDisposition.CONFIRM
 
 
 def test_controller_can_return_an_explicit_conversation_decision():
@@ -382,6 +404,36 @@ def test_euri_can_fulfil_only_read_only_intention():
     assert [call.tool_name for call in daemon.executor.calls] == ["gpu_usage"]
     assert "sottopasso" in daemon.spoken[-1]
     assert "Esito: GPU libera: 7.8 GiB" in daemon.brain.responses[-1][1]
+
+
+def test_semantic_action_veto_skips_second_controller_on_reflective_draft():
+    daemon = _daemon({}, contextual=[{
+        "name": "read_log",
+        "description": "Legge il log del servizio",
+        "parameters_schema": {},
+        "effect": "read_only",
+        "requires_confirm": False,
+    }])
+    recovery_calls = []
+    daemon._try_euri_readonly_action = (
+        lambda draft, user_text: recovery_calls.append((draft, user_text)) or False
+    )
+    draft = (
+        "La distinzione regge. Provo a elaborare il parallelo su un altro piano. "
+        "La conclusione resta prudente."
+    )
+
+    reply, rerouted = daemon._finalize_unbacked_action_claims(
+        draft,
+        "Prova a fare un pensiero più profondo.",
+        channel="test",
+        semantic_action_veto=True,
+    )
+
+    assert rerouted is False
+    assert recovery_calls == []
+    assert reply == "La distinzione regge. La conclusione resta prudente."
+    assert "background" not in reply
 
 
 def test_unavailable_action_can_use_grounded_read_only_alternative():

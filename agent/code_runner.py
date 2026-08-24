@@ -20,6 +20,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -44,6 +45,10 @@ class CodeResult:
                               # riletto dal disco per iniettarlo nel contesto LLM
                               # (la "memoria del collega": valori esatti, non il
                               # riassunto che lo script ha scelto di stampare).
+    # None = informazione non disponibile (compatibilita' con executor/fake
+    # storici); 0 = stdout realmente vuoto; >0 = caratteri osservati. Il testo
+    # di fallback in ``output`` non deve essere scambiato per un risultato.
+    stdout_chars: int | None = None
 
 
 # ─────────────────────────────────────────
@@ -491,8 +496,9 @@ class CodeRunner:
             "TMPDIR": "/tmp",
         }
 
-    def _bwrap_base_cmd(self, bwrap: str) -> list[str]:
+    def _bwrap_base_cmd(self, bwrap: str, sandbox_dir: Path | None = None) -> list[str]:
         """Namespace usato sia dal preflight sia dall'esecuzione reale."""
+        sandbox_dir = Path(sandbox_dir or self._sandbox_dir).resolve()
         venv = str(Path(sys.executable).parent.parent)
         env_args = []
         for key, value in self._subprocess_env().items():
@@ -504,13 +510,13 @@ class CodeRunner:
             "--symlink", "usr/bin", "/bin", "--symlink", "usr/sbin", "/sbin",
             "--ro-bind-try", "/etc/ld.so.cache", "/etc/ld.so.cache",
             "--ro-bind", venv, venv,
-            "--bind", str(self._sandbox_dir), str(self._sandbox_dir),
+            "--bind", str(sandbox_dir), str(sandbox_dir),
             "--ro-bind-try", str(self._input_dir), str(self._input_dir),
             "--bind-try", str(self._output_dir), str(self._output_dir),
             "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
             "--clearenv", *env_args,
             "--unshare-all", "--die-with-parent", "--new-session",
-            "--chdir", str(self._sandbox_dir),
+            "--chdir", str(sandbox_dir),
         ]
 
     def _probe_bwrap(self, bwrap: str) -> tuple[bool, str]:
@@ -552,7 +558,13 @@ class CodeRunner:
         )
         return None
 
-    def _wrap_cmd(self, script_path: Path) -> list[str]:
+    def _wrap_cmd(
+        self,
+        script_path: Path,
+        *,
+        sandbox_dir: Path | None = None,
+        require_bwrap: bool = False,
+    ) -> list[str]:
         """Confinamento OS del subprocess via bubblewrap (punto 2 hardening): difesa
         RUNTIME, non solo scansione AST. Il processo gira in un namespace mount dove
         il filesystem è read-only tranne sandbox+output, /tmp è isolato, e $HOME/etc
@@ -563,11 +575,17 @@ class CodeRunner:
         con warning una-tantum."""
         direct = [sys.executable, "-u", str(script_path)]
         if not getattr(config, "CODE_RUNNER_BWRAP_ENABLED", True):
+            if require_bwrap:
+                raise RuntimeError("sandbox_unavailable: bubblewrap disabilitato")
             return direct
         bwrap = self._usable_bwrap()
         if not bwrap:
+            if require_bwrap:
+                raise RuntimeError("sandbox_unavailable: bubblewrap non utilizzabile")
             return direct
-        return self._bwrap_base_cmd(bwrap) + [sys.executable, "-u", str(script_path)]
+        return self._bwrap_base_cmd(bwrap, sandbox_dir=sandbox_dir) + [
+            sys.executable, "-u", str(script_path)
+        ]
 
     @staticmethod
     def _terminate_process_group(process: subprocess.Popen, grace: float = 3) -> None:
@@ -594,12 +612,68 @@ class CodeRunner:
             pass
         process.wait()
 
-    def _execute_code(self, code: str, stop_event: threading.Event,
-                      timeout: int) -> CodeResult:
+    def execute_generated_code(
+        self,
+        code: str,
+        stop_event: threading.Event,
+        *,
+        timeout: int | None = None,
+        workspace_dir: str | Path | None = None,
+        require_bwrap: bool = True,
+    ) -> CodeResult:
+        """Valida ed esegue codice gia' generato da un backend esterno.
+
+        E' il contratto usato dal coding agent: OpenCode puo' costruire e
+        correggere ``main.py``, ma l'esecuzione passa sempre da scanner e
+        bubblewrap. Diversamente dal percorso legacy, il default e' fail-closed
+        quando il confinamento OS non e' disponibile.
+        """
+        if not code or len(code.strip()) < 10:
+            return CodeResult(False, "Il coding agent non ha prodotto codice eseguibile.", "empty_code")
+
+        run_sandbox = Path(workspace_dir or self._sandbox_dir).resolve()
+        allowed_roots = [
+            str(self._input_dir.resolve()),
+            str(self._output_dir.resolve()),
+            str(run_sandbox),
+            "/tmp",
+        ]
+        is_safe, reason = self._scanner.scan(code, allowed_roots=allowed_roots)
+        if not is_safe:
+            return CodeResult(
+                False,
+                f"Ho bloccato il programma per sicurezza: {reason}",
+                f"security: {reason}",
+            )
+        if require_bwrap:
+            if not getattr(config, "CODE_RUNNER_BWRAP_ENABLED", True):
+                return CodeResult(False, "La sandbox sicura non e' disponibile.", "sandbox_unavailable")
+            if not self._usable_bwrap():
+                return CodeResult(False, "La sandbox sicura non e' disponibile.", "sandbox_unavailable")
+        return self._execute_code(
+            code,
+            stop_event,
+            timeout or config.CODE_RUNNER_TIMEOUT,
+            sandbox_dir=run_sandbox,
+            require_bwrap=require_bwrap,
+        )
+
+    def _execute_code(
+        self,
+        code: str,
+        stop_event: threading.Event,
+        timeout: int,
+        *,
+        sandbox_dir: Path | None = None,
+        require_bwrap: bool = False,
+    ) -> CodeResult:
         """Esegue il codice in subprocess isolato."""
         # Salva lo script in un file temporaneo nella sandbox
-        self._sandbox_dir.mkdir(parents=True, exist_ok=True)
-        script_path = self._sandbox_dir / f"euri_script_{int(time.time())}.py"
+        run_sandbox = Path(sandbox_dir or self._sandbox_dir).resolve()
+        run_sandbox.mkdir(parents=True, exist_ok=True)
+        script_path = run_sandbox / f"euri_script_{uuid.uuid4().hex}.py"
+        stdout_file = None
+        stderr_file = None
 
         try:
             script_path.write_text(code, encoding="utf-8")
@@ -622,11 +696,19 @@ class CodeRunner:
                             pass
 
             # Lancia il subprocess (confinato in bwrap se disponibile — vedi _wrap_cmd)
+            # File temporanei invece di PIPE: un programma molto verboso non puo'
+            # riempire il buffer della pipe e restare bloccato prima del timeout.
+            stdout_file = tempfile.TemporaryFile()
+            stderr_file = tempfile.TemporaryFile()
             process = subprocess.Popen(
-                self._wrap_cmd(script_path),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                cwd=str(self._sandbox_dir),
+                self._wrap_cmd(
+                    script_path,
+                    sandbox_dir=run_sandbox,
+                    require_bwrap=require_bwrap,
+                ),
+                stdout=stdout_file,
+                stderr=stderr_file,
+                cwd=str(run_sandbox),
                 env=env,
                 preexec_fn=os.setsid,  # nuovo process group per kill pulito
             )
@@ -660,13 +742,19 @@ class CodeRunner:
                 time.sleep(0.2)  # poll ogni 200ms
 
             # Processo terminato normalmente
-            stdout = process.stdout.read().decode("utf-8", errors="replace")
-            stderr = process.stderr.read().decode("utf-8", errors="replace")
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            stdout = stdout_file.read().decode("utf-8", errors="replace")
+            stderr = stderr_file.read().decode("utf-8", errors="replace")
 
             # Limita output
             max_out = config.CODE_RUNNER_MAX_OUTPUT_BYTES
             if len(stdout) > max_out:
                 stdout = stdout[:max_out] + f"\n... (troncato, {len(stdout)} caratteri totali)"
+            max_err = int(getattr(config, "CODE_AGENT_MAX_ERROR_CHARS", 12000))
+            if len(stderr) > max_err:
+                stderr = stderr[-max_err:]
+                stderr = f"...[inizio stderr troncato]...\n{stderr}"
 
             exit_code = process.returncode
             elapsed_ms = int((time.monotonic() - start_time) * 1000)
@@ -674,7 +762,8 @@ class CodeRunner:
             if exit_code == 0:
                 logger.success(f"CodeRunner: completato in {elapsed_ms}ms")
                 # Restituisci l'output oppure un messaggio di default
-                output = stdout.strip() if stdout.strip() else "Operazione completata senza errori."
+                stdout_clean = stdout.strip()
+                output = stdout_clean if stdout_clean else "Operazione completata senza errori."
                 artifacts = self._read_output_artifacts(before_outputs)
                 if artifacts:
                     logger.debug(f"CodeRunner: artefatti riletti per il contesto ({len(artifacts)} char)")
@@ -684,6 +773,7 @@ class CodeRunner:
                     exit_code=exit_code,
                     script_path=str(script_path),
                     artifacts=artifacts,
+                    stdout_chars=len(stdout_clean),
                 )
             else:
                 logger.error(f"CodeRunner: errore (exit={exit_code})")
@@ -697,6 +787,7 @@ class CodeRunner:
                     error=error_msg,
                     exit_code=exit_code,
                     script_path=str(script_path),
+                    stdout_chars=len(stdout.strip()),
                 )
 
         except Exception as e:
@@ -713,3 +804,9 @@ class CodeRunner:
                     script_path.unlink()
             except Exception:
                 pass
+            for stream in (stdout_file, stderr_file):
+                try:
+                    if stream is not None:
+                        stream.close()
+                except Exception:
+                    pass

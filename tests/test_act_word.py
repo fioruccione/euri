@@ -15,6 +15,7 @@ from core.act_word_check import (
     strip_leading_stage_direction,
     honest_correction,
     honest_commitment_correction,
+    unbacked_action_claim_details,
 )
 
 # (descrizione, reply, turn_actions, atteso_flag)
@@ -29,6 +30,8 @@ CASES = [
     ("claim generato reale 05/08", "Ho generato il documento Word con l'intestazione aziendale.", set(), True),
     ("claim prodotto senza azione", "Ho prodotto ed esportato il nuovo PDF.", set(), True),
     ("promessa preparando reale 05/08", "Sto preparando il documento nella cartella scambio dati.", set(), True),
+    ("promessa riscrittura dopo tool mai partito 23/08",
+     "Riprovo subito: sto riscrivendo lo script in modo più semplice.", set(), True),
     ("promessa live studio codice", "Vado a dare un'occhiata al codice, specialmente alla gestione dei cicli.", set(), True),
     ("promessa immediata controllo", "Ora controllo il codice e ti dico.", set(), True),
     ("claim agenda presente live", "Ricevuto. Lo tolgo dai sospesi.", set(), True),
@@ -116,9 +119,34 @@ SCRUB_CASES = [
     ("sto preparando → niente background finto",
      "Sto preparando il documento.", set(),
      lambda out: out == _COMMITMENT_TAIL),
+    ("sto riscrivendo → niente retry finto",
+     "Riprovo subito: sto riscrivendo lo script in modo più semplice.", set(),
+     lambda out: out == _COMMITMENT_TAIL),
     ("aggiornamento mentale → invariato",
      "Ho aggiornato mentalmente il dato.", set(),
      lambda out: out == "Ho aggiornato mentalmente il dato."),
+]
+
+
+SEMANTIC_VETO_CASES = [
+    (
+        "riflessione preservata senza coda falsa",
+        "La distinzione regge. Provo a elaborare il parallelo su un altro piano. La conclusione resta prudente.",
+        lambda out: (
+            out == "La distinzione regge. La conclusione resta prudente."
+            and _COMMITMENT_TAIL not in out
+        ),
+    ),
+    (
+        "claim forte resta corretto anche con veto",
+        "La distinzione regge. Ho salvato la nota.",
+        lambda out: "salvato" not in out.lower() and out.endswith(_TAIL),
+    ),
+    (
+        "solo promessa falsa non può produrre risposta vuota",
+        "Ora controllo il log e ti dico.",
+        lambda out: out == _COMMITMENT_TAIL,
+    ),
 ]
 
 
@@ -151,6 +179,30 @@ def main():
         if not passed:
             fails.append(desc)
         print(f"  {mark}  {desc}  →  {out!r}")
+
+    print("\n  --- veto semantico sul solo commitment morbido ---")
+    for desc, reply, pred in SEMANTIC_VETO_CASES:
+        out = scrub_unbacked_action_claim(
+            reply, set(), semantic_action_veto=True
+        )
+        passed = pred(out)
+        ok += passed
+        mark = "✓" if passed else "✗ FAIL"
+        if not passed:
+            fails.append(desc)
+        print(f"  {mark}  {desc}  →  {out!r}")
+
+    details = unbacked_action_claim_details(
+        "Capisco. Ora controllo il log e ti dico.", set()
+    )
+    passed = details == [{
+        "category": "immediate_commitment",
+        "sentence": "Ora controllo il log e ti dico.",
+    }]
+    ok += passed
+    if not passed:
+        fails.append("dettaglio diagnostico commitment")
+    print(f"  {'✓' if passed else '✗ FAIL'}  categoria e frase esatta nel diagnostico")
 
     print("\n  --- emit_unbacked_action_commitment ---")
     fake = _FakeRedis()
@@ -191,7 +243,7 @@ def main():
         fails.append("parentesi interne preservate")
     print(f"  {'✓' if passed else '✗ FAIL'}  parentesi tecniche interne preservate")
 
-    total = len(CASES) + len(SCRUB_CASES) + 4
+    total = len(CASES) + len(SCRUB_CASES) + len(SEMANTIC_VETO_CASES) + 5
     print("\n" + "=" * 60)
     print(f"PASS: {ok}/{total}")
     if fails:

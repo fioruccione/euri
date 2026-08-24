@@ -2,9 +2,9 @@
 
 Stato: **mappa canonica del comportamento corrente**
 
-Verificata contro il codice: **19 agosto 2026**
+Verificata contro il codice: **22 agosto 2026**
 
-Versione runtime di riferimento: **V2.24 — stato continuo al 19 agosto 2026**
+Versione runtime di riferimento: **V2.25 — stato continuo al 22 agosto 2026**
 
 ## Contratto di manutenzione
 
@@ -31,7 +31,7 @@ muore**. Gli esperimenti e le misure restano nei documenti dedicati.
 flowchart TB
     U[Voce, Mobile o Silent Chat] --> W[Whisper o testo raw]
     W --> S[Frame semantico condiviso]
-    S --> KN[Bisogno evidenziale, TEACH e deliberazione<br/>frame v7]
+    S --> KN[Bisogno evidenziale, TEACH, deliberazione<br/>e policy mnemonica — frame v8]
     W --> T[(Archivio turni verbatim<br/>euri:turn:*)]
     S -->|solo CORRECT_ENTITY esplicito| AR[(Registro identità scoped)]
     AR --> S
@@ -262,6 +262,8 @@ sequenceDiagram
 `core/semantic_turn.py` assegna a ogni turno:
 
 - `memory_disposition`: `candidate`, `ephemeral` oppure `no_store`;
+- `memory_policy`: eventuale direttiva esplicita `suppress`/`resume`, con scope
+  `turn` oppure `episode` ed evidenza letterale grounded;
 - per ogni fatto, `modality`: `asserted`, `probable`, `planned`, `pending` o
   `counterfactual`;
 - per ogni fatto, `durability`: `reusable` oppure `session_only`.
@@ -275,6 +277,22 @@ Effetti:
 - un fatto `reusable` informato impedisce che una label globale `ephemeral`
   incoerente lo faccia sparire;
 - il raw viene archiviato comunque.
+
+Dal frame v8 un divieto esplicito può valere per l'intero episodio corrente.
+Gemma comprende la volontà dell'utente e ne cita l'evidenza; il bordo
+deterministico convalida soltanto che quella citazione sia realmente nel turno.
+Con `scope=episode`, ogni frame successivo viene marcato
+`passive_memory_blocked` prima di essere archiviato: il divieto sopravvive quindi
+alle finestre del learner e ai suoi checkpoint senza dipendere dalla presenza
+del turno iniziale nel batch. Una revoca esplicita (`resume`) lo chiude; in
+assenza di revoca termina al normale confine temporale episodico. Non esistono
+regex o parole magiche dedicate.
+
+`filter_passive_memory_history` è il gate condiviso: lo usano sia il worker del
+daemon sia l'estrazione inline della Silent Chat. Esclude il turno protetto e la
+risposta associata. Il verbatim resta nell'archivio locale dei turni per la
+continuità e l'audit, ma non viene trasformato in memoria cognitiva, reflection,
+schema 2j o seme Dream.
 
 Il frame può però **instradare** un'azione mnemonica esplicita. Se riconosce ad
 alta confidenza `intent=SAVE_MEMORY` e `REQUEST_SAVE`, il dispatcher del canale
@@ -295,10 +313,11 @@ testuale non deve impedire la promozione di autorità. Il learner passivo può
 continuare a osservare il turno, ma la deduplica vedrà il fatto già fissato e
 non diventa il surrogato ritardato di un'azione richiesta dall'utente.
 
-**Limite corrente:** `no_store` è una decisione per turno, non esiste ancora
-una modalità persistente “questa intera conversazione è off-record”. Una frase
-come “parliamo senza memorizzare” blocca quel turno, ma non costituisce da sola
-un latch valido per tutti i turni successivi.
+**Limite corrente:** la policy episodica non è una modalità off-record globale.
+Non elimina il verbatim locale e non oltrepassa il confine temporale
+dell'episodio; per un ambiente di prova durevole e recuperabile resta corretto
+usare uno scope `experiment_*`, mentre per un blocco da non apprendere si usa la
+policy `suppress`.
 
 ### Sessione TEACH: intenzione semantica e salvataggio autorizzato
 
@@ -594,15 +613,20 @@ da Ollama e vengono marcati esplicitamente come indisponibili.
 ### Guard atto-parola sulla risposta
 
 `core/act_word_check.py` confronta i claim di azione della risposta con le
-azioni realmente eseguite nel turno. Negli handler CHAT e SEARCH il percorso
-attuale è uno scrub **append-only**: divide il draft in frasi, elimina la frase
-che contiene il claim di azione non sostenuto, conserva gli altri paragrafi e
-aggiunge in coda una correzione onesta. Non rigenera la risposta e non controlla
-claim evidenziali come «recente», «verificato» o «letto nei log» quando non
-contengono un verbo d'azione intercettato. Per questo una risposta può ancora
-conservare paragrafi falsi pur terminando con una correzione vera. D4 e D5
-descrivono interventi futuri distinti; non fanno parte del comportamento
-corrente.
+azioni realmente eseguite nel turno. Negli handler CHAT e SEARCH divide il
+draft in frasi ed elimina quella che contiene un claim non sostenuto. Un claim
+forte su un effetto già compiuto, come «ho salvato», conserva sempre la
+correzione onesta. Una promessa morbida incontrata dopo che il frame semantico
+ha già escluso un'azione non riapre invece l'ActionController: la frase sospetta
+viene rimossa senza aggiungere la falsa coda «nessun tool in background», purché
+resti una risposta significativa. Categoria e frase esatta sono registrate nel
+log. Questo evita sia la seconda inferenza sia una rigenerazione che potrebbe
+distruggere paragrafi validi.
+
+Il guard non controlla claim evidenziali come «recente», «verificato» o «letto
+nei log» quando non contengono un verbo d'azione intercettato. D5 resta quindi
+un problema distinto e non è stato modificato. Il percorso conservativo sopra
+è la chiusura operativa di D4; suppress-and-regenerate integrale non è attivo.
 
 Un retrieval con `touch=True` è l'evento che conta come richiamo:
 
@@ -892,7 +916,7 @@ l'origine. Lo schema resta indice, mai evidenza.
 `core/ideation_tournament.py` implementa un operatore deliberativo richiamabile
 tramite `DreamEngine.run_ideation_tournament` o con
 `scripts/run_ideation_tournament.py`. Non appartiene al calendario light,
-creative o maintenance e non nasce da Pulse. Dal frame semantico v7 esistono
+creative o maintenance e non nasce da Pulse. Dal frame semantico v8 esistono
 due soli ingressi conversazionali:
 
 - una richiesta esplicita e grounded del proprietario avvia direttamente il

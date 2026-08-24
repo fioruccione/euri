@@ -25,7 +25,7 @@ from core.ollama_client import chat_client
 from core.pulse import cognitive_emit
 
 
-SEMANTIC_FRAME_VERSION = 7
+SEMANTIC_FRAME_VERSION = 8
 ENTITY_SCHEMA_VERSION = 1
 _ALIAS_KEY_PREFIX = "euri:semantic:entity_aliases:"
 _ENTITY_KEY_PREFIX = "euri:semantic:entity:"
@@ -44,6 +44,8 @@ _ALLOWED_SPEECH_ACTS = frozenset({
 _ALLOWED_MEMORY_DISPOSITIONS = frozenset({
     "candidate", "ephemeral", "no_store", "unspecified",
 })
+_ALLOWED_MEMORY_POLICY_ACTIONS = frozenset({"none", "suppress", "resume"})
+_ALLOWED_MEMORY_POLICY_SCOPES = frozenset({"turn", "episode"})
 _ALLOWED_FACT_MODALITIES = frozenset({
     "asserted", "probable", "planned", "pending", "counterfactual", "unspecified",
 })
@@ -171,6 +173,11 @@ class SemanticTurnFrame:
     memory_scope: str = "personal"
     memory_disposition: str = "unspecified"
     memory_reason: str = ""
+    memory_policy: dict = field(default_factory=dict)
+    passive_memory_blocked: bool = False
+    passive_memory_block_scope: str = ""
+    passive_memory_block_reason: str = ""
+    passive_memory_block_source_turn_id: str = ""
     memory_retrieval: dict = field(default_factory=dict)
     evidence_request: dict = field(default_factory=dict)
     teaching_session: dict = field(default_factory=dict)
@@ -201,6 +208,13 @@ class SemanticTurnFrame:
             "memory_scope": self.memory_scope,
             "memory_disposition": self.memory_disposition,
             "memory_reason": self.memory_reason,
+            "memory_policy": dict(self.memory_policy),
+            "passive_memory_blocked": self.passive_memory_blocked,
+            "passive_memory_block_scope": self.passive_memory_block_scope,
+            "passive_memory_block_reason": self.passive_memory_block_reason,
+            "passive_memory_block_source_turn_id": (
+                self.passive_memory_block_source_turn_id
+            ),
             "memory_retrieval": dict(self.memory_retrieval),
             "evidence_request": dict(self.evidence_request),
             "teaching_session": dict(self.teaching_session),
@@ -375,6 +389,7 @@ class SemanticTurnService:
         self.registry = EntityRegistry(redis_client)
         self._model_call = model_call
         self._model_lock = threading.Lock()
+        self._last_model_meta: dict = {}
 
     def _call_model(self, prompt: str) -> str:
         if self._model_call is not None:
@@ -382,7 +397,55 @@ class SemanticTurnService:
         response = chat_client.chat(
             model=config.OLLAMA_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0, "num_predict": 700},
+            options={"temperature": 0, "num_predict": 1000},
+            format="json",
+            think=False,
+        )
+        self._last_model_meta = {
+            "done_reason": str(getattr(response, "done_reason", "") or ""),
+            "eval_count": int(getattr(response, "eval_count", 0) or 0),
+        }
+        return str(response.message.content or "")
+
+    def _call_routing_recovery_model(self, raw_text: str) -> str:
+        """Recupera solo il contratto operativo se il frame ricco non e' JSON.
+
+        Non indovina una capability e non esegue: rappresenta soltanto il gesto
+        espresso nel turno. L'ActionController applichera' poi catalogo,
+        grounding, autorita' e policy come nel percorso ordinario.
+        """
+        prompt = f"""Il frame semantico completo non era decodificabile. Classifica
+SOLTANTO il gesto operativo del turno corrente, senza rispondere al contenuto.
+
+Turno corrente:
+---
+{raw_text}
+---
+
+Restituisci un solo oggetto JSON compatto con questa forma:
+{{"interpreted_text":"testo fedele", "primary_intent":"CHAT|EXECUTE|ACTION_REASONING",
+"speech_acts":["INFORM|ASK|REQUEST_ACTION"],
+"actions":[{{"effect":"azione richiesta", "target":"oggetto esplicito",
+"capability_class":"classe generica", "effect_scope":"read|write|state_change|external|none",
+"polarity":"requested|proposed|described|negated"}}],
+"requires_clarification":false, "meaning_preserved":true, "confidence":0.0,
+"memory_disposition":"candidate|ephemeral|no_store",
+"memory_policy":{{"action":"none|suppress|resume", "scope":"episode|turn",
+"evidence":"", "scope_evidence":"", "confidence":0.0}}}}
+
+Regole:
+- REQUEST_ACTION solo se l'utente chiede davvero di eseguire/costruire/modificare;
+- per REQUEST_ACTION compila effect, target, capability_class, effect_scope e
+  polarity=requested usando soltanto elementi del turno;
+- non scegliere il nome di un tool;
+- memory_policy richiede evidenza letterale nel turno corrente;
+- niente markdown e nessun campo aggiuntivo."""
+        if self._model_call is not None:
+            return self._model_call(prompt)
+        response = chat_client.chat(
+            model=config.OLLAMA_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0, "num_predict": 350},
             format="json",
             think=False,
         )
@@ -488,6 +551,22 @@ class SemanticTurnService:
             "e per una richiesta esplicita di salvataggio, gia' gestita dal flusso attivo e "
             "da non duplicare passivamente. Questa classificazione puo' soltanto candidare o "
             "impedire l'estrazione passiva: non salva direttamente nulla.\n"
+            "Produci inoltre memory_policy per le istruzioni ESPLICITE dell'utente sul "
+            "non memorizzare. Per action=suppress usa episode come scelta prudente. Usa "
+            "scope=turn soltanto se il contenuto protetto e' gia' tutto nel turno corrente "
+            "e l'utente limita esplicitamente il divieto a quel singolo messaggio; usa "
+            "scope=episode se introduce una serie, scenario o "
+            "blocco di dati che seguira' nella conversazione. Se il turno stabilisce il "
+            "divieto ma non contiene ancora i dati sostanziali da proteggere, scope=turn "
+            "non avrebbe oggetto: usa episode, perché il contenuto protetto arrivera' nei "
+            "turni successivi. Usa action=resume solo quando "
+            "l'utente revoca esplicitamente il divieto. In tutti gli altri casi usa none. "
+            "Non dedurre questa policy dal fatto che un esempio sia ipotetico: serve una "
+            "volonta' esplicita sul salvataggio. evidence deve citare letteralmente il "
+            "passaggio del turno corrente che esprime tale volonta'. scope_evidence deve "
+            "citare il passaggio che limita esplicitamente il divieto al solo turno; "
+            "lascialo vuoto per una policy episodica. Non ereditare qui la "
+            "policy dai turni precedenti, perche' lo fara' il sistema dopo la validazione.\n"
             "Produci anche memory_retrieval: e' un piano semantico per decidere se la "
             "risposta corrente beneficia della memoria durevole, non un comando di ricerca. "
             "needed=true soltanto quando recuperare conoscenza pregressa aiuta davvero a "
@@ -585,7 +664,10 @@ class SemanticTurnService:
             "\"web_query\":\"\",\"preservation_mode\":\"semantic|verbatim\","
             "\"requires_clarification\":false,\"meaning_preserved\":true,"
             "\"confidence\":0.0,\"memory_disposition\":\"candidate|ephemeral|no_store\","
-            "\"memory_reason\":\"\",\"memory_retrieval\":{\"needed\":false,"
+            "\"memory_reason\":\"\",\"memory_policy\":{"
+            "\"action\":\"none|suppress|resume\",\"scope\":\"episode|turn\","
+            "\"evidence\":\"\",\"scope_evidence\":\"\",\"confidence\":0.0},"
+            "\"memory_retrieval\":{\"needed\":false,"
             "\"focus\":[{\"entity\":\"\",\"role\":\"focus|comparison|context|modifier\","
             "\"relevance\":0.0}],\"relation\":\"\","
             "\"evidence_goal\":\"overview|fact|comparison|provenance|timeline|continuity|other\","
@@ -948,6 +1030,55 @@ class SemanticTurnService:
         }
 
     @staticmethod
+    def _normalized_memory_policy(data: dict, raw_text: str) -> dict:
+        """Valida una direttiva mnemonica senza riconoscerla con regole lessicali.
+
+        Gemma decide se l'utente stia imponendo o revocando un confine. Il bordo
+        deterministico richiede soltanto che la motivazione citata compaia davvero
+        nel turno corrente; una spiegazione astratta del modello non puo' aprire
+        una policy multi-turn.
+        """
+        raw = data.get("memory_policy")
+        if not isinstance(raw, dict):
+            return {
+                "action": "none", "scope": "turn", "evidence": "",
+                "evidence_grounded": False, "scope_evidence": "",
+                "scope_evidence_grounded": False, "confidence": 0.0,
+            }
+        action = str(raw.get("action") or "none").strip().lower()
+        if action not in _ALLOWED_MEMORY_POLICY_ACTIONS:
+            action = "none"
+        scope = str(raw.get("scope") or "turn").strip().lower()
+        if scope not in _ALLOWED_MEMORY_POLICY_SCOPES:
+            scope = "turn"
+        evidence = str(raw.get("evidence") or "").strip()[:320]
+        evidence_key = _alias_token(evidence)
+        raw_key = _alias_token(raw_text)
+        grounded = bool(evidence_key and evidence_key in raw_key)
+        scope_evidence = str(raw.get("scope_evidence") or "").strip()[:320]
+        scope_evidence_key = _alias_token(scope_evidence)
+        scope_grounded = bool(
+            scope_evidence_key and scope_evidence_key in raw_key
+        )
+        if action != "none" and not grounded:
+            action = "none"
+            scope = "turn"
+        # Privacy fail-safe: il singolo turno e' un'eccezione ammessa soltanto
+        # quando il modello puo' indicare le parole con cui l'utente l'ha
+        # delimitata. In assenza di quella prova, il divieto vale per l'episodio.
+        if action == "suppress" and scope == "turn" and not scope_grounded:
+            scope = "episode"
+        return {
+            "action": action,
+            "scope": scope,
+            "evidence": evidence if grounded else "",
+            "evidence_grounded": grounded,
+            "scope_evidence": scope_evidence if scope_grounded else "",
+            "scope_evidence_grounded": scope_grounded,
+            "confidence": _confidence(raw.get("confidence")),
+        }
+
+    @staticmethod
     def _normalized_deliberation_request(data: dict, raw_text: str) -> dict:
         """Valida il motivo semantico senza cercare parole di attivazione.
 
@@ -1017,6 +1148,7 @@ class SemanticTurnService:
         evidence_request = cls._normalized_evidence_request(data, entities)
         teaching_session = cls._normalized_teaching_session(data, raw_text)
         deliberation_request = cls._normalized_deliberation_request(data, raw_text)
+        memory_policy = cls._normalized_memory_policy(data, raw_text)
         facts = cls._normalized_facts(data)
         preservation = str(data.get("preservation_mode") or "semantic").lower()
         if preservation not in {"semantic", "verbatim"}:
@@ -1039,7 +1171,16 @@ class SemanticTurnService:
         # reale una prova industriale era stata scambiata per un test del runtime.
         # La richiesta esplicita di salvataggio resta esclusa per non duplicare
         # il flusso attivo con il learner passivo.
-        if "REQUEST_SAVE" in acts:
+        trusted_policy_suppression = (
+            memory_policy.get("action") == "suppress"
+            and memory_policy.get("evidence_grounded") is True
+            and _confidence(memory_policy.get("confidence")) >= 0.72
+            and confidence >= 0.72
+        )
+        if trusted_policy_suppression:
+            memory_disposition = "no_store"
+            data["memory_reason"] = "direttiva esplicita di non memorizzazione"
+        elif "REQUEST_SAVE" in acts:
             memory_disposition = "no_store"
         elif "INFORM" in acts and has_reusable_fact:
             if memory_disposition != "candidate":
@@ -1107,6 +1248,7 @@ class SemanticTurnService:
             memory_scope=scope,
             memory_disposition=memory_disposition,
             memory_reason=str(data.get("memory_reason") or "").strip()[:240],
+            memory_policy=memory_policy,
             memory_retrieval=memory_retrieval,
             evidence_request=evidence_request,
             teaching_session=teaching_session,
@@ -1116,6 +1258,106 @@ class SemanticTurnService:
             address_confidence=_confidence(data.get("address_confidence")),
             canonical_projections=canonical_projections,
         )
+
+    @staticmethod
+    def _trusted_memory_policy(frame: SemanticTurnFrame | dict) -> dict | None:
+        if SemanticTurnService._frame_value(frame, "status") != "interpreted":
+            return None
+        if _confidence(SemanticTurnService._frame_value(frame, "confidence")) < 0.72:
+            return None
+        policy = SemanticTurnService._frame_value(frame, "memory_policy", {})
+        if not isinstance(policy, dict):
+            return None
+        if policy.get("evidence_grounded") is not True:
+            return None
+        if _confidence(policy.get("confidence")) < 0.72:
+            return None
+        action = str(policy.get("action") or "none").lower()
+        scope = str(policy.get("scope") or "turn").lower()
+        if action not in {"suppress", "resume"}:
+            return None
+        if scope not in _ALLOWED_MEMORY_POLICY_SCOPES:
+            return None
+        return dict(policy)
+
+    @classmethod
+    def _apply_contextual_memory_policy(
+        cls,
+        frame: SemanticTurnFrame,
+        recent_history: list[dict],
+        *,
+        now_ts: float | None = None,
+    ) -> None:
+        """Propaga un divieto esplicito fino al confine dell'episodio corrente.
+
+        Ogni frame successivo viene marcato autonomamente: il learner puo' quindi
+        lavorare a finestre o dopo un ack senza dover ritrovare il turno iniziale.
+        Una pausa oltre il normale confine episodico interrompe l'eredita'.
+        """
+        current_policy = cls._trusted_memory_policy(frame)
+        if current_policy and current_policy["action"] == "resume":
+            return
+        if current_policy and current_policy["action"] == "suppress":
+            frame.passive_memory_blocked = True
+            frame.passive_memory_block_scope = current_policy["scope"]
+            frame.passive_memory_block_reason = "explicit_memory_policy"
+            frame.passive_memory_block_source_turn_id = frame.turn_id
+            frame.memory_disposition = "no_store"
+            frame.memory_reason = "direttiva esplicita di non memorizzazione"
+            if frame.primary_intent == "SAVE_MEMORY":
+                frame.primary_intent = "CHAT"
+            frame.speech_acts = [
+                item for item in frame.speech_acts if item != "REQUEST_SAVE"
+            ]
+            return
+
+        gap_limit = float(
+            getattr(config, "TEMPORAL_EPISODE_GAP_SECONDS", 30 * 60)
+        )
+        now_ts = time.time() if now_ts is None else float(now_ts)
+        for message in reversed(recent_history):
+            if str(message.get("role") or "") != "user":
+                continue
+            if normalize_scope(message.get("memory_scope")) != frame.memory_scope:
+                continue
+            observed_at = message.get("observed_at")
+            try:
+                if observed_at is not None and now_ts - float(observed_at) > gap_limit:
+                    return
+            except (TypeError, ValueError):
+                pass
+            previous = message.get("semantic_frame")
+            if not isinstance(previous, dict):
+                continue
+            previous_policy = cls._trusted_memory_policy(previous)
+            if previous_policy and previous_policy["action"] == "resume":
+                return
+            inherited = (
+                previous.get("passive_memory_blocked") is True
+                and str(previous.get("passive_memory_block_scope") or "") == "episode"
+            )
+            explicit_episode = bool(
+                previous_policy
+                and previous_policy["action"] == "suppress"
+                and previous_policy["scope"] == "episode"
+            )
+            if inherited or explicit_episode:
+                frame.passive_memory_blocked = True
+                frame.passive_memory_block_scope = "episode"
+                frame.passive_memory_block_reason = "inherited_memory_policy"
+                frame.passive_memory_block_source_turn_id = str(
+                    previous.get("passive_memory_block_source_turn_id")
+                    or previous.get("turn_id")
+                    or ""
+                )
+                frame.memory_disposition = "no_store"
+                frame.memory_reason = "direttiva no-store attiva nell'episodio"
+                if frame.primary_intent == "SAVE_MEMORY":
+                    frame.primary_intent = "CHAT"
+                frame.speech_acts = [
+                    item for item in frame.speech_acts if item != "REQUEST_SAVE"
+                ]
+            return
 
     @staticmethod
     def _frame_value(frame: SemanticTurnFrame | dict, name: str, default=None):
@@ -1245,8 +1487,29 @@ class SemanticTurnService:
         started = time.perf_counter()
         try:
             with self._model_lock:
-                data = _json_object(self._call_model(prompt))
+                raw_frame = self._call_model(prompt)
+                try:
+                    data = _json_object(raw_frame)
+                except (ValueError, json.JSONDecodeError) as parse_exc:
+                    logger.warning(
+                        "Turno semantico: frame JSON non valido chars={} "
+                        "done={} eval={} ({}) — avvio recupero routing compatto",
+                        len(raw_frame),
+                        self._last_model_meta.get("done_reason", ""),
+                        self._last_model_meta.get("eval_count", 0),
+                        parse_exc,
+                    )
+                    recovery_raw = self._call_routing_recovery_model(raw_text)
+                    data = _json_object(recovery_raw)
+                    data.setdefault("entities", [])
+                    data.setdefault("facts", [])
+                    data.setdefault("web_query", "")
+                    data.setdefault("preservation_mode", "semantic")
             frame = self._validated_frame(data, raw_text, baseline, scope)
+            self._apply_contextual_memory_policy(
+                frame,
+                list(recent_history or []),
+            )
         except Exception as exc:
             logger.warning("Turno semantico: fallback al testo canonico ({})", exc)
             return frame.as_dict()
@@ -1720,6 +1983,8 @@ def frame_blocks_passive_memory(
         return False
     if _confidence(frame.get("confidence")) < minimum_confidence:
         return False
+    if frame.get("passive_memory_blocked") is True:
+        return True
     disposition = str(frame.get("memory_disposition") or "").lower()
     if disposition == "no_store":
         return True
@@ -1736,6 +2001,35 @@ def frame_blocks_passive_memory(
     ):
         return False
     return True
+
+
+def filter_passive_memory_history(
+    history: list[dict],
+    *,
+    minimum_confidence: float = 0.72,
+) -> list[dict]:
+    """Esclude turni protetti e la relativa risposta da qualsiasi learner.
+
+    Il filtro e' condiviso da voce e Silent Chat: un contratto mnemonico non
+    deve cambiare efficacia in base al canale che ha prodotto il turno.
+    """
+    eligible: list[dict] = []
+    suppress_assistant = False
+    for message in history:
+        role = str(message.get("role") or "")
+        if role == "user":
+            suppress_assistant = frame_blocks_passive_memory(
+                message.get("semantic_frame"),
+                minimum_confidence=minimum_confidence,
+            )
+            if not suppress_assistant:
+                eligible.append(message)
+            continue
+        if role == "assistant" and suppress_assistant:
+            suppress_assistant = False
+            continue
+        eligible.append(message)
+    return eligible
 
 
 def frame_bootstraps_owner_session(

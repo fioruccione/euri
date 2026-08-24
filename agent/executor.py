@@ -9,6 +9,7 @@ import re
 import time
 import threading
 import concurrent.futures
+import queue
 import uuid
 from dataclasses import dataclass, field, replace as dataclass_replace
 from pathlib import Path
@@ -686,6 +687,43 @@ class Executor:
                 raw_data={"context_extra": result.artifacts} if result.artifacts else {},
             )
 
+        def _tool_build_computational_tool(params: dict, **kwargs) -> ToolResult:
+            """Costruisce e corregge un programma temporaneo tramite OpenCode."""
+            task = str(params.get("task") or "").strip()
+            if not task:
+                return ToolResult(
+                    success=False,
+                    output="Non ho capito quale ipotesi o calcolo devo verificare.",
+                    error="empty_task",
+                )
+            from agent.coding_job import CodingJob
+
+            job = CodingJob(
+                code_runner=self._code_runner,
+                progress_callback=kwargs.get("progress_callback"),
+            )
+            result = job.run(
+                task,
+                kwargs.get("stop_event", self.stop_event),
+            )
+            context_blocks = []
+            if result.artifacts:
+                context_blocks.append(result.artifacts)
+            context_blocks.append(
+                "[TRACCIA STRUMENTO TEMPORANEO — non e' memoria permanente]\n"
+                f"job_id={result.job_id} model={result.model} "
+                f"tentativi={len(result.attempts)} code_sha256={result.code_sha256}"
+            )
+            return ToolResult(
+                success=result.success,
+                output=result.output,
+                error=result.error,
+                raw_data={
+                    "context_extra": "\n\n".join(context_blocks),
+                    "coding_job": result.trace(),
+                },
+            )
+
         def _tool_read_document(params: dict, **kwargs) -> ToolResult:
             """
             Percorso LETTURA (no code-gen): estrae il testo dai documenti e lo fa
@@ -1115,6 +1153,23 @@ class Executor:
 
         code_tools = [
             ToolSpec(
+                name="build_computational_tool",
+                description=(
+                    "Costruisce con OpenCode uno strumento Python temporaneo, lo "
+                    "esegue nella sandbox sicura di Euri e lo corregge usando gli "
+                    "errori reali. Usalo per verificare un ragionamento con "
+                    "simulazioni, regressioni, ottimizzazioni, bilanci di massa, "
+                    "statistiche, ricerca combinatoria o problemi numerici nuovi. "
+                    "Non richiede necessariamente file e non modifica il codice di Euri. "
+                    "Parametro: task (problema completo, dati, unita' e obiettivo)."
+                ),
+                parameters_schema={"task": {"type": "str", "required": True}},
+                handler=_tool_build_computational_tool,
+                timeout_seconds=config.CODE_AGENT_TOOL_TIMEOUT,
+                effect="local_write",
+                contextual=True,
+            ),
+            ToolSpec(
                 name="run_code",
                 description="Genera ed esegue codice Python per elaborare file (CSV, PDF, Excel, immagini). Parametro: task (str) — cosa fare con i file.",
                 parameters_schema={"task": {"type": "str", "required": True}},
@@ -1227,6 +1282,12 @@ class Executor:
             ),
         ]
 
+        if not getattr(config, "CODE_AGENT_ENABLED", False):
+            code_tools = [
+                spec for spec in code_tools
+                if spec.name != "build_computational_tool"
+            ]
+
         for spec in code_tools:
             self._registry[spec.name] = spec
             logger.debug(f"Executor: tool CodeRunner registrato — {spec.name}")
@@ -1327,6 +1388,7 @@ class Executor:
         previous_euri_turn: str = "",
         controller=None,
         semantic_frame: dict | None = None,
+        progress_callback: Callable[[dict], None] | None = None,
     ) -> dict:
         """Percorso semantico channel-agnostic per un REQUEST_ACTION gia' accertato.
 
@@ -1392,13 +1454,23 @@ class Executor:
             }
 
         tool_name = proposal.capability.removeprefix("executor.")
+        if progress_callback is not None:
+            progress_callback({
+                "phase": "tool_selected",
+                "label": f"Strumento selezionato: {tool_name}",
+                "tool_name": tool_name,
+                "elapsed_s": 0.0,
+            })
         parameters = dict(proposal.args)
         if tool_name == "compose_document":
             parameters["instruction"] = text
             parameters["format"] = self.resolve_document_format(
                 str(parameters.get("format") or ""), text
             )
-        result = self.execute(ToolCall(tool_name=tool_name, parameters=parameters))
+        result = self.execute(
+            ToolCall(tool_name=tool_name, parameters=parameters),
+            progress_callback=progress_callback,
+        )
         if getattr(self, "brain", None) is not None:
             try:
                 self.brain.inject_tool_result(
@@ -1630,7 +1702,12 @@ class Executor:
             logger.error(f"Executor: parse fallito — {e} | risposta: {response[:100]}")
             return None
 
-    def execute(self, call: ToolCall) -> ToolResult:
+    def execute(
+        self,
+        call: ToolCall,
+        *,
+        progress_callback: Callable[[dict], None] | None = None,
+    ) -> ToolResult:
         spec = self._registry.get(call.tool_name)
         if not spec:
             return ToolResult(success=False, output="Tool non trovato.", error="tool_not_found")
@@ -1678,16 +1755,55 @@ class Executor:
             except Exception as exc:
                 logger.warning("Workspace documentale: stato operazione non avviato ({})", exc)
 
-        # Esecuzione in thread con timeout
+        # Esecuzione in thread con timeout. Se la UI ha chiesto telemetria, il
+        # worker pubblica eventi in coda e questo thread li rende visibili: le
+        # API Streamlit non vengono mai chiamate dal thread del tool.
         try:
+            progress_events: queue.Queue = queue.Queue()
+            started = time.monotonic()
+
+            def _publish(event: dict) -> None:
+                if progress_callback is None:
+                    return
+                payload = dict(event or {})
+                payload.setdefault("tool_name", call.tool_name)
+                progress_callback(payload)
+
+            def _drain_progress() -> None:
+                while True:
+                    try:
+                        _publish(progress_events.get_nowait())
+                    except queue.Empty:
+                        return
+
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
                 future = ex.submit(
                     spec.handler, call.parameters,
                     stop_event=self.stop_event,
                     brain=getattr(self, "brain", None),
                     memory=getattr(self, "memory", None),
+                    progress_callback=(
+                        progress_events.put if progress_callback is not None else None
+                    ),
                 )
-                result = future.result(timeout=spec.timeout_seconds)
+                deadline = time.monotonic() + float(spec.timeout_seconds)
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise concurrent.futures.TimeoutError()
+                    try:
+                        result = future.result(timeout=min(0.5, remaining))
+                        _drain_progress()
+                        break
+                    except concurrent.futures.TimeoutError:
+                        if future.done():
+                            raise
+                        _drain_progress()
+                        _publish({
+                            "phase": "heartbeat",
+                            "label": "Elaborazione in corso",
+                            "elapsed_s": round(time.monotonic() - started, 1),
+                        })
             self._capture_session_artifact(call.tool_name, result)
             if document_operation_id and workspace is not None:
                 workspace.finish_operation(

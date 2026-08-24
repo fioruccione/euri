@@ -320,6 +320,7 @@ I TUOI STRUMENTI (tool — disponibili sia a voce sia in Silent Chat, basta chie
 - clipboard_analyze: "Analizza gli appunti" / "Studia dagli appunti" — legge testo o immagine dalla clipboard e lo usa soltanto nella sessione.
 - clipboard_analyze_save: "Analizza e salva gli appunti" / "Memorizza gli appunti" — analizza e salva la sintesi solo su richiesta esplicita.
 - run_code: "Unisci i CSV" / "Elabora i dati" / "Leggi il file Excel" — genera ed esegue codice Python per manipolare file nella cartella dati (Scrivania/dati_per_Euri). I risultati vanno in Scrivania/scambio_dati.
+- build_computational_tool: "Scrivi il codice per verificare questa ipotesi" / "Simula e confronta questi scenari" — delega a OpenCode la costruzione e correzione di uno strumento Python temporaneo; Euri lo esegue nella propria sandbox e interpreta il risultato. Non modifica il repository e non richiede per forza file.
 - read_document: "Leggi il documento" / "Analizza la scheda / il PDF" — legge e COMPRENDE un documento nella cartella dati ed estrae i dati che contiene.
 - compose_document: "Applica queste modifiche e crea un Word/PDF" — usa il documento attivo nel workspace condiviso UI/voce. Se la sorgente è DOCX, revisiona una copia preservandone struttura e layout; altrimenti crea un TXT/DOCX/PDF strutturato in Scrivania/scambio_dati. Conferma soltanto la ricevuta reale dopo riapertura e verifica; il file compare anche nella UI.
 - ingest_documents: "Studia i documenti" / "Memorizza i file / i manuali" — legge i file uno per uno e li archivia in memoria a lungo termine.
@@ -850,6 +851,78 @@ SILENT_CHAT_UPLOAD_MAX_MB = 200
 # (con 3 chiamate Vision Gemma 4) + code-gen Gemma + execution = ~57s.
 # Margine ampio per file pesanti / Dream Engine in concorrenza.
 CODE_RUNNER_TOOL_TIMEOUT = 180     # secondi max per l'intero ciclo CodeRunner
+
+# Coding agent sperimentale — OpenCode costruisce/corregge un programma
+# temporaneo, ma NON lo esegue direttamente: l'esecuzione resta nel CodeRunner
+# confinato. Il default usa Gemma realtime perché espone tool calling in Ollama;
+# il GGUF Qwen3.8 attuale dichiara solo completion+vision e non puo' pilotare
+# write/edit di OpenCode. Un override resta possibile per modelli tool-capable.
+CODE_AGENT_ENABLED = (
+    os.environ.get("EURI_CODE_AGENT_ENABLED", "1").strip().lower()
+    not in {"0", "false", "no", "off"}
+)
+CODE_AGENT_OPENCODE_BIN = os.environ.get("EURI_OPENCODE_BIN", "opencode").strip() or "opencode"
+CODE_AGENT_MODEL = (
+    os.environ.get("EURI_CODE_AGENT_MODEL", OLLAMA_MODEL).strip()
+    or OLLAMA_MODEL
+)
+_code_agent_ollama_host = os.environ.get(
+    "EURI_CODE_AGENT_OLLAMA_HOST", DREAM_OLLAMA_HOST
+).rstrip("/")
+CODE_AGENT_OLLAMA_BASE_URL = (
+    _code_agent_ollama_host
+    if _code_agent_ollama_host.endswith("/v1")
+    else f"{_code_agent_ollama_host}/v1"
+)
+_code_agent_runtime_base = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp")
+CODE_AGENT_WORKSPACE_ROOT = str(
+    _code_agent_runtime_base / f"euri-coding-jobs-{os.getuid()}"
+)
+CODE_AGENT_MAX_ATTEMPTS = max(
+    1, min(3, int(os.environ.get("EURI_CODE_AGENT_MAX_ATTEMPTS", "3")))
+)
+CODE_AGENT_MAX_STEPS = max(
+    2, min(8, int(os.environ.get("EURI_CODE_AGENT_MAX_STEPS", "6")))
+)
+CODE_AGENT_SERVER_START_TIMEOUT = max(
+    5, int(os.environ.get("EURI_CODE_AGENT_SERVER_START_TIMEOUT", "30"))
+)
+CODE_AGENT_PROMPT_TIMEOUT = max(
+    30, int(os.environ.get("EURI_CODE_AGENT_PROMPT_TIMEOUT", "420"))
+)
+CODE_AGENT_NO_ARTIFACT_TIMEOUT = max(
+    30,
+    min(
+        CODE_AGENT_PROMPT_TIMEOUT,
+        int(os.environ.get("EURI_CODE_AGENT_NO_ARTIFACT_TIMEOUT", "150")),
+    ),
+)
+CODE_AGENT_TOOL_TIMEOUT = max(
+    CODE_AGENT_PROMPT_TIMEOUT,
+    int(os.environ.get("EURI_CODE_AGENT_TOOL_TIMEOUT", "900")),
+)
+CODE_AGENT_MAX_CODE_BYTES = max(
+    16_384, int(os.environ.get("EURI_CODE_AGENT_MAX_CODE_BYTES", str(256 * 1024)))
+)
+CODE_AGENT_MAX_ERROR_CHARS = max(
+    2_000, int(os.environ.get("EURI_CODE_AGENT_MAX_ERROR_CHARS", "12000"))
+)
+CODE_AGENT_KEEP_FAILED_WORKSPACE = (
+    os.environ.get("EURI_CODE_AGENT_KEEP_FAILED_WORKSPACE", "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+CODE_AGENT_RESEARCH_LOG_ENABLED = os.environ.get(
+    "EURI_CODE_AGENT_RESEARCH_LOG_ENABLED", "1"
+).strip().lower() not in {"0", "false", "no", "off"}
+CODE_AGENT_RESEARCH_LOG_DIR = Path(
+    os.environ.get(
+        "EURI_CODE_AGENT_RESEARCH_LOG_DIR",
+        str(BASE_DIR / "research_logs" / "coding_agent"),
+    )
+)
+CODE_AGENT_RESEARCH_LOG_RETENTION_DAYS = max(
+    1, int(os.environ.get("EURI_CODE_AGENT_RESEARCH_LOG_RETENTION_DAYS", "7"))
+)
 
 # Tool VectorSet — Layer 2 intent routing semantico via Redis 8.8 VectorSet (V2.18)
 # Sostituisce l'LLM classifier (~800ms) con KNN nativo (~5ms) per query non ambigue.

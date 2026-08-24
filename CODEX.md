@@ -27,6 +27,119 @@ promozione diretta del materiale onirico.
 
 ---
 
+# Handoff Euri - 2026-08-24 - Migrazione workstation P620
+
+## Stato prima dello spegnimento
+
+- Disco di sistema da trasferire: Crucial `CT500P310SSD8`, dispositivo
+  osservato sulla X99 come `/dev/nvme0n1` da 465,8 GiB. Contiene EFI,
+  recovery, root ext4 e swap. Identificare sempre il disco localmente anche
+  tramite seriale, senza pubblicarlo nel repository.
+- Destinazione hardware: Lenovo P620. Il piano corrente e' montare direttamente
+  il disco di sistema esistente, avviare in UEFI con Secure Boot disabilitato e
+  senza inizializzare o formattare alcuna unita'. Un mancato boot va trattato
+  come problema EFI/initramfs, non come richiesta di reinstallazione.
+- Il tentativo di backup sul Samsung `MZVLB1T0HBLR-000L7` da 1 TB, collegato
+  tramite box Ugreen RTL9210, NON e' una copia valida. Il box si e' disconnesso
+  termicamente durante `rsync` alle 12:35:52, dopo circa 41 GB, causando errori
+  I/O e journal ext4 abortito. L'originale non e' stato modificato.
+- Prima di riutilizzare quel Samsung: lasciarlo raffreddare, preferire uno slot
+  M.2 interno o un box/cavo raffreddato e stabile, identificare nuovamente il
+  dispositivo tramite modello/seriale, eseguire `e2fsck` a filesystem smontato
+  e considerare comunque incompleto tutto il contenuto precedente.
+- Un export Redis point-in-time era stato creato sul disco esterno prima della
+  disconnessione, ma va considerato non verificato finche' filesystem, file e
+  checksum non superano il controllo.
+
+---
+
+# Handoff Euri - 2026-08-22 - No-store episodico
+
+## Esito
+
+Una direttiva esplicita come «questi dati di test non devono essere
+memorizzati» non vale piu' soltanto per il turno che la contiene. Il frame
+semantico v8 apre un confine `suppress` grounded che si propaga per l'episodio;
+termina su revoca esplicita o dopo il normale gap temporale episodico. Il caso
+eccezionale limitato a un solo turno richiede anche una prova testuale grounded
+di quella delimitazione.
+
+Voce e Silent Chat applicano lo stesso filtro prima del learner passivo. I
+turni restano nel verbatim locale per continuita' e audit, ma non possono
+diventare memorie cognitive, reflection, schemi o seed dei Dream. Gli otto
+record ipotetici prodotti dall'incidente sono stati rimossi da Redis e dagli
+indici; le note Vault corrispondenti sono state spostate in una directory
+temporanea recuperabile.
+
+## Verifica
+
+- sonda Gemma reale: `suppress`, scope normalizzato a `episode`, disposizione
+  `no_store` e blocco passivo attivo;
+- regressioni dedicate: propagazione, revoca, grounding, scope singolo e falso
+  `SAVE_MEMORY` neutralizzato;
+- suite unitaria completa: 85/85 in 102,3 secondi;
+- `git diff --check`: pulito.
+
+---
+
+# Handoff Euri - 2026-08-20 - D4 conservativo e baseline X99
+
+## Esito
+
+Il veto d'azione del frame semantico arriva ora fino al guard atto-parola di
+CHAT e SEARCH. Se il draft contiene soltanto un commitment morbido e il turno è
+già stato riconosciuto come non operativo, Euri non riapre l'ActionController:
+elimina la sola frase sospetta, conserva l'analisi valida e non aggiunge la coda
+falsa sul background. I claim forti già compiuti restano fail-closed.
+
+## Caso causale e baseline
+
+- Turno live: `CHAT acts=ASK`, veto semantico corretto prima del Brain.
+- RAG 2,959 s; Gemma 11,918 s; output 503 token.
+- Il vecchio guard ha riaperto un controller dopo il Brain, aggiungendo circa
+  14,4 s prima del TTS e una correzione non pertinente.
+- Il log ora registra `category`, `semantic_veto` e la frase esatta intercettata.
+- D5 e i claim evidenziali di recenza/provenienza restano invariati.
+
+## Verifica
+
+- `tests/test_act_word.py`: 54/54.
+- `tests/test_semantic_turn.py`: completo.
+- `tests/test_action_controller.py`: 23 test senza fixture, inclusa la prova che
+  il secondo controller non viene chiamato nel caso riflessivo.
+- Compilazione Python e `git diff --check` puliti.
+
+---
+
+# Handoff Euri - 2026-08-22 - OpenCode coding agent temporaneo
+
+## Esito
+
+`build_computational_tool` permette a Euri di delegare la costruzione di un
+verificatore Python ad OpenCode senza cedergli orchestrazione, memoria o risposta
+finale. OpenCode modifica soltanto `main.py` in un workspace privato sotto
+`XDG_RUNTIME_DIR`; il `CodeRunner` esegue il candidato con scanner e bubblewrap
+obbligatorio e rimanda gli errori al modello per massimo tre tentativi.
+
+Il tool è contestuale e semantico, non regex. Una richiesta esplicita del
+proprietario può eseguirlo; una proposta di Euri richiede conferma. Workspace e
+sessione OpenCode vengono eliminati a fine job e nulla viene promosso a tool
+permanente o memoria cognitiva.
+
+## Modello e prova reale
+
+- `gemma4:26b` è il default perché Ollama dichiara `tools`;
+- il GGUF Qwen3.8 corrente dichiara soltanto `completion` e `vision`, quindi il
+  preflight lo rifiuta per OpenCode e continua a usarlo nei Dream;
+- prova reale del 22/08: il recupero da mancato `main.py` ha funzionato, il
+  secondo tentativo ha prodotto ed eseguito in bubblewrap un bilancio di massa
+  corretto (exit 0, esecuzione 200 ms).
+
+Contratto e limiti completi:
+[`docs/EURI_OPENCODE_CODING_AGENT.md`](docs/EURI_OPENCODE_CODING_AGENT.md).
+
+---
+
 # Handoff Euri - 2026-08-11 - Memoria autobiografica e metacognizione
 
 ## Esito

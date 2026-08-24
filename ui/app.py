@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 import json
 import time
+import subprocess
 
 # Aggiunge la root directory di Euri al sys.path per permettere gli import
 sys.path.append(str(Path(__file__).parent.parent))
@@ -19,6 +20,43 @@ from loguru import logger
 import config
 from core.brain import Brain
 from core.memory_manager import MemoryManager
+
+
+def _gpu_activity_summary() -> str:
+    """Snapshot locale conciso per rendere osservabile un job lungo."""
+    try:
+        completed = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,utilization.gpu,memory.used,memory.total,power.draw",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if completed.returncode != 0:
+        return ""
+    rows = []
+    for raw_line in completed.stdout.splitlines():
+        fields = [item.strip() for item in raw_line.split(",")]
+        if len(fields) < 5:
+            continue
+        index, utilization, used, total, power = fields[:5]
+        try:
+            used_gib = float(used) / 1024.0
+            total_gib = float(total) / 1024.0
+            util_text = f"{float(utilization):.0f}%"
+            power_text = f"{float(power):.0f} W"
+        except (TypeError, ValueError):
+            continue
+        rows.append(
+            f"GPU{index} {util_text}, {used_gib:.1f}/{total_gib:.1f} GiB, {power_text}"
+        )
+    return " · ".join(rows)
 
 # Configurazione della pagina
 st.set_page_config(
@@ -1509,6 +1547,46 @@ with main_col:
                             config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72
                         ),
                     )
+                    _tool_progress_ui = {
+                        "status": None,
+                        "started": time.monotonic(),
+                        "last_label": "Elaborazione in corso",
+                        "last_gpu_at": 0.0,
+                        "gpu": "",
+                    }
+
+                    def _render_tool_progress(event: dict) -> None:
+                        # Gli eventi arrivano sul thread Streamlit tramite la coda
+                        # dell'Executor. Mostriamo soltanto il coding agent: gli
+                        # altri tool sono normalmente troppo rapidi per meritare
+                        # un pannello dedicato.
+                        if str(event.get("tool_name") or "") != "build_computational_tool":
+                            return
+                        now_mono = time.monotonic()
+                        label = str(event.get("label") or "").strip()
+                        if event.get("phase") != "heartbeat" and label:
+                            _tool_progress_ui["last_label"] = label
+                        if now_mono - float(_tool_progress_ui["last_gpu_at"]) >= 2.0:
+                            _tool_progress_ui["gpu"] = _gpu_activity_summary()
+                            _tool_progress_ui["last_gpu_at"] = now_mono
+                        elapsed = max(
+                            float(event.get("elapsed_s") or 0.0),
+                            now_mono - float(_tool_progress_ui["started"]),
+                        )
+                        visible = (
+                            f"{_tool_progress_ui['last_label']} · {elapsed:.0f} s"
+                        )
+                        if _tool_progress_ui["gpu"]:
+                            visible += f" · {_tool_progress_ui['gpu']}"
+                        if _tool_progress_ui["status"] is None:
+                            _tool_progress_ui["status"] = st.status(
+                                visible, expanded=False, state="running"
+                            )
+                        else:
+                            _tool_progress_ui["status"].update(
+                                label=visible, state="running"
+                            )
+
                     if save_res is None and web_res is None and _semantic_action:
                         _previous_euri = next(
                             (
@@ -1523,6 +1601,7 @@ with main_col:
                                 prompt,
                                 previous_euri_turn=_previous_euri,
                                 semantic_frame=semantic_frame,
+                                progress_callback=_render_tool_progress,
                             )
                             if tool_res.get("route_to_chat"):
                                 tool_res = None
@@ -1541,6 +1620,21 @@ with main_col:
                                 "success": False,
                                 "fail_closed": True,
                             }
+
+                    if _tool_progress_ui["status"] is not None:
+                        _tool_progress_ui["status"].update(
+                            label=(
+                                "Strumento completato"
+                                if tool_res is not None and tool_res.get("success")
+                                else "Costruzione dello strumento terminata con un errore"
+                            ),
+                            state=(
+                                "complete"
+                                if tool_res is not None and tool_res.get("success")
+                                else "error"
+                            ),
+                            expanded=False,
+                        )
 
                     # Compatibilita' con i comandi storici semplici: solo se il frame
                     # non ha gia' qualificato un'azione, resta il fast-path regex cheap.
@@ -1718,6 +1812,13 @@ with main_col:
                             for message in brain._conversation_history[-6:]
                             if scope_of(message) == current_scope()
                         ]
+                    from core.semantic_turn import filter_passive_memory_history
+                    recent_msgs = filter_passive_memory_history(
+                        recent_msgs,
+                        minimum_confidence=getattr(
+                            config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72
+                        ),
+                    )
                     if recent_msgs:
                         facts = brain.extract_passive_memories(recent_msgs)
                         saved = 0

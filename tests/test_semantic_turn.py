@@ -9,6 +9,7 @@ from core.intent_router import Intent, classify
 from core.semantic_turn import (
     arbitrate_routable_intent,
     SemanticTurnService,
+    filter_passive_memory_history,
     frame_bootstraps_owner_session,
     frame_blocks_passive_memory,
     frame_document_source,
@@ -218,7 +219,7 @@ def test_semantic_service_normalizes_grounded_teaching_contract():
 
     frame = SemanticTurnService(FakeRedis(), model_call=model).interpret(raw)
 
-    assert frame["schema_version"] == 7
+    assert frame["schema_version"] == 8
     assert frame["teaching_session"]["evidence_grounded"] is True
     assert trusted_teaching_session(frame) is not None
 
@@ -256,7 +257,7 @@ def test_semantic_service_normalizes_explicit_deliberation_contract():
     frame = SemanticTurnService(FakeRedis(), model_call=model).interpret(raw)
 
     contract = trusted_deliberation_request(frame)
-    assert frame["schema_version"] == 7
+    assert frame["schema_version"] == 8
     assert contract is not None
     assert contract["mode"] == "explicit"
     assert contract["evidence_grounded"] is True
@@ -963,6 +964,231 @@ def test_reusable_industrial_facts_override_an_incoherent_ephemeral_label():
     assert not frame_blocks_passive_memory(frame)
 
 
+def test_explicit_no_store_episode_is_grounded_and_overrides_reusable_facts():
+    raw = "Questi sono dati ipotetici di test e non devono essere memorizzati."
+
+    def model(_prompt):
+        return json.dumps({
+            "interpreted_text": raw,
+            "primary_intent": "CHAT",
+            "speech_acts": ["INFORM", "REJECT"],
+            "entities": [],
+            "facts": [{
+                "claim": "I dati sono ipotetici",
+                "modality": "counterfactual",
+                "durability": "session_only",
+            }],
+            "actions": [],
+            "web_query": "",
+            "preservation_mode": "semantic",
+            "requires_clarification": False,
+            "meaning_preserved": True,
+            "confidence": 0.99,
+            "memory_disposition": "ephemeral",
+            "memory_policy": {
+                "action": "suppress",
+                "scope": "episode",
+                "evidence": "non devono essere memorizzati",
+                "confidence": 0.99,
+            },
+        }, ensure_ascii=False)
+
+    frame = SemanticTurnService(FakeRedis(), model_call=model).interpret(raw)
+
+    assert frame["schema_version"] == 8
+    assert frame["memory_policy"]["evidence_grounded"] is True
+    assert frame["passive_memory_blocked"] is True
+    assert frame["passive_memory_block_scope"] == "episode"
+    assert frame["memory_disposition"] == "no_store"
+    assert frame_blocks_passive_memory(frame)
+
+
+def test_no_store_episode_propagates_semantically_and_resume_closes_it():
+    policy_frame = {
+        "status": "interpreted",
+        "turn_id": "policy-turn",
+        "confidence": 0.99,
+        "memory_scope": "personal",
+        "memory_policy": {
+            "action": "suppress",
+            "scope": "episode",
+            "evidence": "non memorizzare questi dati",
+            "evidence_grounded": True,
+            "confidence": 0.99,
+        },
+        "passive_memory_blocked": True,
+        "passive_memory_block_scope": "episode",
+        "passive_memory_block_source_turn_id": "policy-turn",
+    }
+    history = [{
+        "role": "user",
+        "content": "non memorizzare questi dati",
+        "memory_scope": "personal",
+        "semantic_frame": policy_frame,
+    }]
+
+    technical = (
+        "La linea A ha resa 97%, costo 0,24 euro al kg e capacita' 8000 kg."
+    )
+
+    def technical_model(_prompt):
+        return json.dumps({
+            "interpreted_text": technical,
+            # Simula anche il falso SAVE_MEMORY osservato nella sonda reale:
+            # la policy ereditata deve impedirgli di acquistare autorita'.
+            "primary_intent": "SAVE_MEMORY",
+            "speech_acts": ["INFORM", "REQUEST_SAVE"],
+            "entities": [],
+            "facts": [{
+                "claim": technical,
+                "modality": "asserted",
+                "durability": "reusable",
+            }],
+            "actions": [], "web_query": "", "preservation_mode": "semantic",
+            "requires_clarification": False, "meaning_preserved": True,
+            "confidence": 0.99, "memory_disposition": "candidate",
+            "memory_policy": {
+                "action": "none", "scope": "turn", "evidence": "",
+                "confidence": 0.99,
+            },
+        }, ensure_ascii=False)
+
+    inherited = SemanticTurnService(
+        FakeRedis(), model_call=technical_model
+    ).interpret(technical, recent_history=history)
+    assert inherited["passive_memory_blocked"] is True
+    assert inherited["passive_memory_block_reason"] == "inherited_memory_policy"
+    assert inherited["passive_memory_block_source_turn_id"] == "policy-turn"
+    assert inherited["memory_disposition"] == "no_store"
+    assert inherited["primary_intent"] == "CHAT"
+    assert "REQUEST_SAVE" not in inherited["speech_acts"]
+
+    resume_raw = "Da questo momento puoi tornare a memorizzare normalmente."
+
+    def resume_model(_prompt):
+        return json.dumps({
+            "interpreted_text": resume_raw,
+            "primary_intent": "CHAT",
+            "speech_acts": ["INFORM"],
+            "entities": [], "facts": [], "actions": [], "web_query": "",
+            "preservation_mode": "semantic", "requires_clarification": False,
+            "meaning_preserved": True, "confidence": 0.99,
+            "memory_disposition": "no_store",
+            "memory_policy": {
+                "action": "resume", "scope": "episode",
+                "evidence": "puoi tornare a memorizzare normalmente",
+                "confidence": 0.99,
+            },
+        }, ensure_ascii=False)
+
+    resumed = SemanticTurnService(
+        FakeRedis(), model_call=resume_model
+    ).interpret(resume_raw, recent_history=history)
+    assert resumed["memory_policy"]["evidence_grounded"] is True
+    assert resumed["passive_memory_blocked"] is False
+
+
+def test_ungrounded_memory_policy_cannot_suppress_and_shared_filter_honors_block():
+    raw = "Parliamo della linea A."
+
+    def model(_prompt):
+        return json.dumps({
+            "interpreted_text": raw,
+            "primary_intent": "CHAT",
+            "speech_acts": ["INFORM"],
+            "entities": [], "facts": [], "actions": [], "web_query": "",
+            "preservation_mode": "semantic", "requires_clarification": False,
+            "meaning_preserved": True, "confidence": 0.99,
+            "memory_disposition": "candidate",
+            "memory_policy": {
+                "action": "suppress", "scope": "episode",
+                "evidence": "non memorizzare", "confidence": 0.99,
+            },
+        }, ensure_ascii=False)
+
+    frame = SemanticTurnService(FakeRedis(), model_call=model).interpret(raw)
+    assert frame["memory_policy"]["action"] == "none"
+    assert frame["passive_memory_blocked"] is False
+
+    blocked = dict(frame, passive_memory_blocked=True)
+    history = [
+        {"role": "user", "content": "scenario", "semantic_frame": blocked},
+        {"role": "assistant", "content": "risultato"},
+        {"role": "user", "content": "dato reale", "semantic_frame": frame},
+        {"role": "assistant", "content": "ricevuto"},
+    ]
+    assert [item["content"] for item in filter_passive_memory_history(history)] == [
+        "dato reale", "ricevuto",
+    ]
+
+
+def test_turn_only_suppression_requires_grounded_scope_evidence():
+    raw = "Non memorizzare soltanto questo messaggio: il valore e' 42."
+
+    def model(_prompt):
+        return json.dumps({
+            "interpreted_text": raw,
+            "primary_intent": "CHAT",
+            "speech_acts": ["INFORM"],
+            "entities": [], "facts": [], "actions": [], "web_query": "",
+            "preservation_mode": "semantic", "requires_clarification": False,
+            "meaning_preserved": True, "confidence": 0.99,
+            "memory_disposition": "no_store",
+            "memory_policy": {
+                "action": "suppress", "scope": "turn",
+                "evidence": "Non memorizzare",
+                "scope_evidence": "soltanto questo messaggio",
+                "confidence": 0.99,
+            },
+        }, ensure_ascii=False)
+
+    frame = SemanticTurnService(FakeRedis(), model_call=model).interpret(raw)
+    assert frame["memory_policy"]["scope"] == "turn"
+    assert frame["memory_policy"]["scope_evidence_grounded"] is True
+    assert frame["passive_memory_block_scope"] == "turn"
+
+
+def test_malformed_full_frame_recovers_grounded_action_instead_of_chat_fallback():
+    raw = (
+        "Costruisci ed esegui uno strumento temporaneo per ottimizzare "
+        "una miscela di tre materiali."
+    )
+    calls = []
+
+    def model(prompt):
+        calls.append(prompt)
+        if len(calls) == 1:
+            return '{"interpreted_text":"troncato", "primary_intent":"EXECUTE"'
+        return json.dumps({
+            "interpreted_text": raw,
+            "primary_intent": "EXECUTE",
+            "speech_acts": ["REQUEST_ACTION"],
+            "actions": [{
+                "effect": "costruire ed eseguire uno strumento temporaneo",
+                "target": "ottimizzazione della miscela di tre materiali",
+                "capability_class": "calcolo computazionale",
+                "effect_scope": "write",
+                "polarity": "requested",
+            }],
+            "requires_clarification": False,
+            "meaning_preserved": True,
+            "confidence": 0.99,
+            "memory_disposition": "ephemeral",
+            "memory_policy": {
+                "action": "none", "scope": "episode", "evidence": "",
+                "scope_evidence": "", "confidence": 0.99,
+            },
+        }, ensure_ascii=False)
+
+    frame = SemanticTurnService(FakeRedis(), model_call=model).interpret(raw)
+
+    assert len(calls) == 2
+    assert "SOLTANTO il gesto operativo" in calls[1]
+    assert frame["status"] == "interpreted"
+    assert frame["primary_intent"] == "EXECUTE"
+    assert frame_requests_contextual_action(frame)
+
+
 def test_explicit_action_is_never_vetoed_by_contextual_guard():
     frame = {
         "status": "interpreted",
@@ -1279,6 +1505,11 @@ if __name__ == "__main__":
     test_web_regex_does_not_match_cerca_inside_ricerca()
     test_meta_status_is_ephemeral_chat_and_vetoes_fuzzy_action()
     test_reusable_industrial_facts_override_an_incoherent_ephemeral_label()
+    test_explicit_no_store_episode_is_grounded_and_overrides_reusable_facts()
+    test_no_store_episode_propagates_semantically_and_resume_closes_it()
+    test_ungrounded_memory_policy_cannot_suppress_and_shared_filter_honors_block()
+    test_turn_only_suppression_requires_grounded_scope_evidence()
+    test_malformed_full_frame_recovers_grounded_action_instead_of_chat_fallback()
     test_explicit_action_is_never_vetoed_by_contextual_guard()
     test_grounded_request_action_survives_empty_primary_intent()
     test_conversation_document_source_is_semantic_and_scoped()
