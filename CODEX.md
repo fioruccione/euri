@@ -29,6 +29,15 @@ promozione diretta del materiale onirico.
 
 # Handoff Euri - 2026-08-24 - Migrazione workstation P620
 
+## Checkpoint BIOS prima del prossimo riavvio
+
+Il passaggio intermedio e' riuscito: la P620 riporta `S07KT29A` / fwupd `1.41`.
+Il prossimo flash concordato e' il firmware Lenovo `1.110` proposto dal feed
+LVFS per il device della macchina. Stato completo, comando, checksum e verifiche
+post-riavvio sono nel checkpoint dedicato
+[`docs/EURI_P620_BIOS_HANDOFF_2026-08-24.md`](docs/EURI_P620_BIOS_HANDOFF_2026-08-24.md).
+Al rientro leggere quel file prima di rilanciare qualsiasi aggiornamento.
+
 ## Stato prima dello spegnimento
 
 - Disco di sistema da trasferire: Crucial `CT500P310SSD8`, dispositivo
