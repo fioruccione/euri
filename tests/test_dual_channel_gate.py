@@ -140,8 +140,29 @@ def test_missing_embedder_fails_closed_to_append():
     assert gate["fallback_reason"] == "embedder_unavailable"
 
 
+def test_gate_reuses_supplied_query_vector():
+    embedder = FakeEmbedder(
+        {
+            ("passage", "valore corretto"): [1.0, 0.0],
+        }
+    )
+    gate = evaluate_selective_gate(
+        query="domanda non codificata nel fake",
+        base_nodes=[],
+        additions=[
+            {"turn_id": "conv:1", "content": "valore corretto", "from_note_index": 0}
+        ],
+        locator_nodes=[{"id": "passive-1", "position": 1}],
+        embedder=embedder,
+        thresholds=THRESHOLDS,
+        query_vector=np.asarray([1.0, 0.0], dtype=np.float32),
+    )
+    assert gate["promoted_turn_ids"] == ["conv:1"]
+
+
 if __name__ == "__main__":
     test_relevant_incremental_turn_is_promoted_before_protected_base()
     test_semantically_redundant_turn_stays_in_append()
     test_missing_embedder_fails_closed_to_append()
+    test_gate_reuses_supplied_query_vector()
     print("test_dual_channel_gate: OK")

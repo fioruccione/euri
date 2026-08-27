@@ -17,6 +17,26 @@ import config
 from core.memory_scope import current_scope, normalize_scope, scope_clause
 
 
+def _json_get_many(r, keys) -> list:
+    """Idrata un pool RedisJSON in pipeline, preservandone l'ordine."""
+    keys = list(keys)
+    if not keys:
+        return []
+    try:
+        pipe = r.pipeline(transaction=False)
+        for key in keys:
+            pipe.json().get(key, "$")
+        return pipe.execute()
+    except Exception:
+        out = []
+        for key in keys:
+            try:
+                out.append(r.json().get(key, "$"))
+            except Exception:
+                out.append(None)
+        return out
+
+
 def _knn_domains(
     vec_bytes: bytes,
     r,
@@ -243,11 +263,9 @@ def domain_aware_search(
         return []
 
     items = []
-    for doc in res_all.docs:
-        try:
-            raw_doc = r.json().get(doc.id, "$")
-        except Exception:
-            raw_doc = None
+    raw_docs = list(res_all.docs)
+    hydrated = _json_get_many(r, (doc.id for doc in raw_docs))
+    for doc, raw_doc in zip(raw_docs, hydrated):
         if not raw_doc:
             continue
         item = raw_doc[0]

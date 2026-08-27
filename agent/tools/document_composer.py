@@ -150,7 +150,11 @@ Regole inderogabili:
     response = chat.chat(
         model=model or config.OLLAMA_MODEL,
         messages=[{"role": "user", "content": prompt}],
-        options={"temperature": 0.1, "num_predict": 3500, "num_ctx": 32768},
+        options={
+            "temperature": 0.1,
+            "num_predict": 3500,
+            "num_ctx": config.CHAT_OLLAMA_NUM_CTX,
+        },
         think=False,
         format="json",
     )
@@ -415,7 +419,11 @@ produci il documento completo.
     response = chat.chat(
         model=model or config.OLLAMA_MODEL,
         messages=[{"role": "user", "content": prompt}],
-        options={"temperature": 0.15, "num_predict": 5000, "num_ctx": 32768},
+        options={
+            "temperature": 0.15,
+            "num_predict": 5000,
+            "num_ctx": config.CHAT_OLLAMA_NUM_CTX,
+        },
         think=False,
         format="json",
     )

@@ -59,6 +59,12 @@ OLLAMA_HOST = "http://localhost:11434"   # default condiviso (offline-first)
 CHAT_OLLAMA_HOST  = os.environ.get("CHAT_OLLAMA_HOST",  OLLAMA_HOST)
 DREAM_OLLAMA_HOST = os.environ.get("DREAM_OLLAMA_HOST", OLLAMA_HOST)
 OLLAMA_MODEL = "gemma4:26b"   # verifica con `ollama list`
+# Un solo runner Gemma condiviso da tutta la pipeline realtime. Ollama tratta
+# num_ctx diversi come configurazioni di runner diverse e ricarica i 18 GB del
+# modello a ogni cambio; sulla P620 il costo misurato e' ~10 s per transizione.
+CHAT_OLLAMA_NUM_CTX = max(
+    4096, int(os.environ.get("EURI_CHAT_OLLAMA_NUM_CTX", "32768"))
+)
 # Modello dedicato al Dream Engine (cicli offline/idle + insight).
 # Separato da OLLAMA_MODEL per poter usare un modello più capace per il ragionamento astratto.
 _DEFAULT_DREAM_OLLAMA_MODEL = "hf.co/unsloth/Qwen3.8-27B-GGUF:Q4_K_M"

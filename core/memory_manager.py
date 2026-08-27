@@ -93,6 +93,29 @@ class MemoryManager:
         # Tuple (set[str], timestamp). None = mai computato.
         self._active_domains_cache: tuple[set[str], float] | None = None
 
+    def _json_get_many(self, keys) -> list:
+        """Legge piu' documenti RedisJSON con un solo round-trip.
+
+        Il fallback sequenziale mantiene compatibilita' con test double e client
+        Redis privi di pipeline; le query e l'ordine dei risultati non cambiano.
+        """
+        keys = list(keys)
+        if not keys:
+            return []
+        try:
+            pipe = self.r.pipeline(transaction=False)
+            for key in keys:
+                pipe.json().get(key, "$")
+            return pipe.execute()
+        except Exception:
+            out = []
+            for key in keys:
+                try:
+                    out.append(self.r.json().get(key, "$"))
+                except Exception:
+                    out.append(None)
+            return out
+
     # ──────────────────────────────────────────
     # MEMORIES (ricordi a lungo termine)
     # ──────────────────────────────────────────
@@ -635,8 +658,9 @@ class MemoryManager:
 
             # Idrata i documenti usando il client principale
             docs = []
-            for doc_id, score in sorted(id_score.items(), key=lambda x: x[1]):
-                data = self.r.json().get(doc_id, "$")
+            ranked = sorted(id_score.items(), key=lambda x: x[1])
+            hydrated = self._json_get_many(doc_id for doc_id, _score in ranked)
+            for (doc_id, score), data in zip(ranked, hydrated):
                 if data:
                     item = data[0]
                     if item.get("superseded_by"):  # soft-deleted da Loop 2f
@@ -728,8 +752,9 @@ class MemoryManager:
         """Carica i documenti completi da Redis JSON; opzionalmente rinforza i richiami."""
         expected_scope = normalize_scope(memory_scope or current_scope())
         docs = []
-        for doc in raw_docs:
-            data = self.r.json().get(doc.id, "$")
+        raw_docs = list(raw_docs)
+        hydrated = self._json_get_many(doc.id for doc in raw_docs)
+        for doc, data in zip(raw_docs, hydrated):
             if data:
                 item = data[0]
                 if item.get("superseded_by"):  # soft-deleted da Loop 2f — escludi dalla ricerca
@@ -1497,31 +1522,68 @@ class MemoryManager:
 
         cutoff = now_ts - days * 86400
         domains: set[str] = set()
-        for key in self.r.scan_iter("euri:memory:*"):
-            try:
-                data = self.r.json().get(key, "$")
-                if not data:
-                    continue
-                doc = data[0]
-                if normalize_scope(doc.get("memory_scope")) != PERSONAL_SCOPE:
-                    continue
-                if doc.get("source") not in OPERATIONAL:
-                    continue
-                ts = doc.get("created_at", 0)
-                if not ts or ts < cutoff:
-                    continue
-                if doc.get("superseded_by"):
-                    continue
-                dom = doc.get("domain")
-                if dom:
-                    domains.add(dom)
-            except Exception:
-                continue
+        try:
+            # Tutti i predicati salvo ``superseded_by`` sono gia' indicizzati.
+            # RETURN legge solo due campi dal JSON: non scarica i 1024 float
+            # dell'embedding per ogni memoria a ogni scadenza della cache.
+            sources = "|".join(sorted(OPERATIONAL))
+            query = (
+                f"(@memory_scope:{{{PERSONAL_SCOPE}}}) "
+                f"(@source:{{{sources}}}) @created_at:[{cutoff} +inf]"
+            )
+            offset = 0
+            page_size = 512
+            while True:
+                q = Query(query).paging(offset, page_size).dialect(2)
+                q.return_field("$.domain", as_field="domain")
+                q.return_field("$.superseded_by", as_field="superseded_by")
+                page = self.r.ft("idx:memories").search(q).docs
+                for doc in page:
+                    if getattr(doc, "superseded_by", None):
+                        continue
+                    domain = getattr(doc, "domain", None)
+                    if domain:
+                        domains.add(domain)
+                if len(page) < page_size:
+                    break
+                offset += page_size
+        except Exception as e:
+            # Compatibilita' con installazioni legacy/test double senza indice.
+            logger.debug(f"Filtro del Risveglio via indice non disponibile: {e}")
+            keys = list(self.r.scan_iter("euri:memory:*"))
+            for offset in range(0, len(keys), 128):
+                batch = keys[offset:offset + 128]
+                for data in self._json_get_many(batch):
+                    try:
+                        if not data:
+                            continue
+                        doc = data[0]
+                        if normalize_scope(doc.get("memory_scope")) != PERSONAL_SCOPE:
+                            continue
+                        if doc.get("source") not in OPERATIONAL:
+                            continue
+                        ts = doc.get("created_at", 0)
+                        if not ts or ts < cutoff:
+                            continue
+                        if doc.get("superseded_by"):
+                            continue
+                        dom = doc.get("domain")
+                        if dom:
+                            domains.add(dom)
+                    except Exception:
+                        continue
 
         self._active_domains_cache = (domains, now_ts)
         return domains
 
-    def search_insights(self, query: str, limit: int = 2) -> list[dict]:
+    def search_insights(
+        self,
+        query: str,
+        limit: int = 2,
+        *,
+        query_vector=None,
+        touch: bool = True,
+    ) -> list[dict]:
         """
         KNN search su idx:insights filtrato per status=promoted, con Filtro del Risveglio.
         Gli insight i cui due domini non sono apparsi nelle memorie operative degli
@@ -1534,7 +1596,9 @@ class MemoryManager:
             return []
         if not self._embedder or not self._embedder.available:
             return []
-        vec = self._embedder.encode(query, mode="query")
+        vec = query_vector
+        if vec is None:
+            vec = self._embedder.encode(query, mode="query")
         if vec is None:
             return []
         try:
@@ -1560,14 +1624,18 @@ class MemoryManager:
 
             # Carica doc completi + vec_score; nessun side-effect su recalled_count qui
             candidates: list[tuple[float, dict, str]] = []
-            for doc in raw_results.docs:
-                doc_id = doc.id.decode() if isinstance(doc.id, bytes) else doc.id
+            raw_docs = list(raw_results.docs)
+            doc_ids = [
+                doc.id.decode() if isinstance(doc.id, bytes) else doc.id
+                for doc in raw_docs
+            ]
+            hydrated = self._json_get_many(doc_ids)
+            for doc, doc_id, data in zip(raw_docs, doc_ids, hydrated):
                 vs_raw = getattr(doc, "vec_score", b"1.0")
                 try:
                     vec_score = float(vs_raw.decode() if isinstance(vs_raw, bytes) else vs_raw)
                 except (ValueError, AttributeError):
                     vec_score = 1.0
-                data = self.r.json().get(doc_id, "$")
                 if not data:
                     continue
                 candidates.append((vec_score, data[0], doc_id))
@@ -1589,7 +1657,8 @@ class MemoryManager:
             # Incrementa recalled_count solo sui sopravvissuti
             docs = []
             for _vs, item, doc_id in survivors:
-                self.r.json().numincrby(doc_id, "$.recalled_count", 1)
+                if touch:
+                    self.r.json().numincrby(doc_id, "$.recalled_count", 1)
                 docs.append(item)
             return docs
         except Exception as e:

@@ -45,6 +45,7 @@ tests/test_loop2e_attention.py
 tests/test_loop2fh_validation.py
 tests/test_loop2f_structured.py
 tests/test_loop2f_structured_validation.py
+tests/test_measure_euri_performance.py
 tests/test_memory_idempotency.py
 tests/test_memory_benchmark.py
 tests/test_memory_benchmark_heldout.py
@@ -56,12 +57,14 @@ tests/test_memory_scope_query_guard.py
 tests/test_memory_utility_shadow.py
 tests/test_named_save.py
 tests/test_obsidian_sync.py
+tests/test_ollama_context_policy.py
 tests/test_opencode_adapter.py
 tests/test_passive_provenance.py
 tests/test_personality_model.py
 tests/test_prompt_ablation.py
 tests/test_prompt_ablation_v2.py
 tests/test_prompt_research_log.py
+tests/test_rag_latency_plumbing.py
 tests/test_thinking_memory_ab_v1.py
 tests/test_reaction_briefing.py
 tests/test_reaction_scope.py

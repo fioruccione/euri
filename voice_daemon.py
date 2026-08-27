@@ -608,7 +608,10 @@ class VoiceDaemon:
             ollama_chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": "ok"}],
-                options={"num_predict": 1},
+                options={
+                    "num_predict": 1,
+                    "num_ctx": config.CHAT_OLLAMA_NUM_CTX,
+                },
                 keep_alive=-1,
             )
             logger.info("Warm-up modello completato.")

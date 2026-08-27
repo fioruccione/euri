@@ -185,7 +185,11 @@ def plan(utterance: str, *, history_brief: str = "", chat=None, model: str = Non
         resp = chat.chat(
             model=model or config.OLLAMA_MODEL,
             messages=[{"role": "user", "content": _plan_prompt(utterance, history_brief)}],
-            options={"temperature": 0.1, "num_predict": 400, "num_ctx": 4096},
+            options={
+                "temperature": 0.1,
+                "num_predict": 400,
+                "num_ctx": config.CHAT_OLLAMA_NUM_CTX,
+            },
             think=False,
         )
         raw = resp.message.content or ""
@@ -334,7 +338,11 @@ class WorkflowEngine:
             r = chat_client.chat(
                 model=config.OLLAMA_MODEL,
                 messages=msgs,
-                options={"temperature": 0.3, "num_predict": num_predict, "num_ctx": 16384},
+                options={
+                    "temperature": 0.3,
+                    "num_predict": num_predict,
+                    "num_ctx": config.CHAT_OLLAMA_NUM_CTX,
+                },
                 think=False,
             )
             parts.append(r.message.content or "")

@@ -561,9 +561,16 @@ Base e locator eseguono ancora retrieval distinti: non condividono candidati,
 ranking o risultati. Condividono però, soltanto durante il singolo turno, le due
 feature invarianti della medesima query — dominio assegnato ed embedding — così
 il secondo passaggio non richiama inutilmente il classificatore LLM e non
-ricalcola lo stesso vettore CPU. La cache è effimera, non tocca Redis e non
-sopravvive al turno. Il log `[TIMING] RAG dual` rende osservabili separatamente
-base, locator, composizione e gate.
+ricalcola lo stesso vettore CPU. Lo stesso embedding alimenta anche insight e
+gate selettivo. Gli insight vengono cercati soltanto nella base: il locator
+accetta esclusivamente memorie passive, quindi una seconda ricerca insight
+sarebbe scartata e incrementerebbe erroneamente due volte `recalled_count`.
+Con `touch=false` anche il richiamo insight resta osservativo. L'idratazione dei
+pool RedisJSON usa pipeline senza cambiare query, filtri, ordine o cap; il
+Filtro del Risveglio ricava dall'indice soltanto dominio e supersessione invece
+di caricare i documenti completi con embedding. La cache è effimera, non tocca
+Redis e non sopravvive al turno. Il log `[TIMING] RAG dual` rende osservabili
+separatamente base, locator, composizione e gate.
 
 Gli insight trasversali sono limitati a due per turno. Quando vengono resi nel
 contesto, `core/rag_context.py` conserva il marker epistemico e aggiunge i

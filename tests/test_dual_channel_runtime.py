@@ -54,6 +54,7 @@ class FakeMemory:
         self.base = base
         self.passive = passive
         self._embedder = embedder
+        self.insight_calls = []
 
     def get_recent_reflections(self, **_kwargs):
         return []
@@ -65,6 +66,14 @@ class FakeMemory:
         return []
 
     def search_memories(self, _query, **kwargs):
+        cache = kwargs.get("query_feature_cache")
+        if cache is not None and self._embedder is not None:
+            entries = cache.setdefault("entries", {})
+            if _query not in entries:
+                entries[_query] = {
+                    "domain": "chimica polimeri",
+                    "vector": self._embedder.encode(_query, mode="query"),
+                }
         if "passive" in (kwargs.get("source_exclude") or []):
             return [self.base]
         return [self.passive, self.base]
@@ -73,6 +82,7 @@ class FakeMemory:
         return []
 
     def search_insights(self, *_args, **_kwargs):
+        self.insight_calls.append((_args, _kwargs))
         return []
 
 
@@ -523,6 +533,43 @@ def test_query_features_are_reused_without_sharing_search_results():
     assert embedder.calls == 1
 
 
+def test_dual_channel_searches_insights_once_and_reuses_query_vector():
+    redis = FakeRedis()
+    store = ConversationTurnStore(redis)
+    embedder = FakeEmbedder()
+    memory = FakeMemory(
+        redis,
+        {
+            "id": "base-1",
+            "content": "La memoria base resta protetta.",
+            "source": "user",
+            "domain": "chimica polimeri",
+        },
+        {
+            "id": "passive-1",
+            "content": "Nota locator senza fonte disponibile.",
+            "source": "passive",
+            "domain": "chimica polimeri",
+        },
+        embedder=embedder,
+    )
+
+    build_dual_channel_context(
+        "Quali dati ricordi sulla prova IZOD?",
+        memory,
+        store,
+        touch=True,
+    )
+
+    assert len(memory.insight_calls) == 1
+    _args, kwargs = memory.insight_calls[0]
+    assert kwargs["touch"] is True
+    assert np.array_equal(
+        kwargs["query_vector"],
+        np.asarray([1.0, 0.0], dtype=np.float32),
+    )
+
+
 if __name__ == "__main__":
     test_brain_persists_stable_turn_refs_and_metadata_reuses_them()
     test_dual_channel_protects_base_and_injects_only_original_turn()
@@ -536,4 +583,5 @@ if __name__ == "__main__":
     test_dependency_none_does_not_add_contract_or_emit_pulse()
     test_passive_exclusion_is_a_redis_prefilter_not_a_post_cut_filter()
     test_query_features_are_reused_without_sharing_search_results()
+    test_dual_channel_searches_insights_once_and_reuses_query_vector()
     print("test_dual_channel_runtime: OK")

@@ -54,6 +54,7 @@ def evaluate_selective_gate(
     locator_nodes: Sequence[dict],
     embedder,
     thresholds: SelectiveThresholds,
+    query_vector: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Valuta quali aggiunte meritano il primo piano, senza toccare memoria."""
     record: dict[str, Any] = {
@@ -70,7 +71,8 @@ def evaluate_selective_gate(
         record["fallback_reason"] = "embedder_unavailable"
         return record
 
-    query_vector = embedder.encode(query, mode="query")
+    if query_vector is None:
+        query_vector = embedder.encode(query, mode="query")
     if query_vector is None:
         record["fallback_reason"] = "query_embedding_unavailable"
         return record

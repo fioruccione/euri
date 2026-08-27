@@ -1759,7 +1759,11 @@ class Brain:
             response = chat_client.chat(
                 model=config.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                options={"temperature": 0.1, "num_predict": 1000, "num_ctx": 32768},
+                options={
+                    "temperature": 0.1,
+                    "num_predict": 1000,
+                    "num_ctx": config.CHAT_OLLAMA_NUM_CTX,
+                },
                 think=False,
             )
             return self._strip_memory_header(

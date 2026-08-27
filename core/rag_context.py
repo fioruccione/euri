@@ -389,6 +389,7 @@ def build_rag_context(
     temporal_label_version: str = "v2",
     query_feature_cache: dict | None = None,
     semantic_frame: dict | None = None,
+    include_insights: bool = True,
 ) -> RagContext:
     """Costruisce il contesto RAG base e ritorna anche gli ID iniettati.
 
@@ -563,11 +564,21 @@ def build_rag_context(
     insight_lines: list[str] = []
     insight_docs: list[dict] = []
     if (
-        keywords
+        include_insights
+        and keywords
         and not history_resolves_query
         and recent_memory_intent is None
     ):
-        for ins in memory.search_insights(text, limit=2):
+        cached_query = (
+            ((query_feature_cache or {}).get("entries") or {}).get(str(text))
+            or {}
+        )
+        for ins in memory.search_insights(
+            text,
+            limit=2,
+            query_vector=cached_query.get("vector"),
+            touch=touch,
+        ):
             insight_lines.append(format_insight_for_context(ins))
             insight_docs.append(ins)
 
@@ -998,6 +1009,7 @@ def build_dual_channel_context(
         touch=False,
         query_feature_cache=query_feature_cache,
         semantic_frame=semantic_frame,
+        include_insights=False,
     )
     locator_ms = (time.perf_counter() - locator_started) * 1000
     passive_nodes = [
@@ -1108,6 +1120,10 @@ def build_dual_channel_context(
             locator_nodes=passive_nodes,
             embedder=getattr(memory, "_embedder", None),
             thresholds=thresholds,
+            query_vector=(
+                (((query_feature_cache.get("entries") or {}).get(str(text))) or {})
+                .get("vector")
+            ),
         )
         if presentation == "selective":
             final_text, prompt_regions = compose_selective_presentation(

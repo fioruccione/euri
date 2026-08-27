@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-08-26 - RAG realtime senza lavoro duplicato
+
+- Base e locator restano due retrieval indipendenti, con ranking, filtri, cap e
+  dual-channel invariati, ma riusano lo stesso embedding della query anche per
+  insight e gate selettivo.
+- Il locator non interroga piu' gli insight che avrebbe comunque scartato: un
+  insight visibile incrementa `recalled_count` una sola volta; i percorsi
+  `touch=false` non producono side effect.
+- I pool RedisJSON sono idratati in pipeline. Il Filtro del Risveglio legge ora
+  dall'indice soltanto dominio e supersessione, senza scaricare 1.663 JSON con
+  embedding: stessa lista di 20 domini, refresh freddo da 1.622,66 a 0,98 ms
+  nella misura locale sulla P620.
+
+## 2026-08-26 - Un solo contesto Ollama per Gemma realtime
+
+- Misurata causalmente la sostituzione del runner quando lo stesso Gemma4
+  alternava `num_ctx=4096` e `32768`: mediana 10,368 s per cambio contro
+  0,641 s a contesto invariato, circa 19,2 s persi nel round-trip.
+- Tutte le chiamate realtime condividono ora `CHAT_OLLAMA_NUM_CTX=32768`; un
+  guard centrale forza la policy anche per nuovi call site o opzioni divergenti.
+- ActionController, Workflow Planner/Engine, Brain, warm-up e strumenti
+  documentali sono stati uniformati; Dream/Qwen resta indipendente.
+- Regressione dedicata e suite completa: 87/87 test. Uno smoke ActionController
+  reale ha mantenuto lo stesso runner 32k senza nuovi `llama-server`.
+- Protocollo, dati grezzi, origine storica e decisione sono conservati in
+  `docs/EURI_OLLAMA_CONTEXT_RELOAD_2026-08-26.md`.
+
 ## 2026-08-23 - Coding agent: risultato osservabile obbligatorio
 
 - Un exit code `0` non viene piu' confuso con la riuscita del calcolo: il job

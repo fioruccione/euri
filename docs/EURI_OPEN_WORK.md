@@ -1,6 +1,6 @@
 # Euri — registro unico dei lavori aperti
 
-Aggiornato: 04/08/2026
+Aggiornato: 26/08/2026
 
 Base documentale: V2.22
 
@@ -28,6 +28,7 @@ reidratato. Poi COG-01 torna la prossima azione del filone cognitivo di memoria.
 | MEM-01 | P0 | osservazione con sentinella | `gather_grounded_evidence` usa una finestra non ordinata di 800; bacino personale **668/800** al 30/07 | riaprire a **750**; confrontare in shadow document-frequency RediSearch contro calcolo legacy, senza alzare 800 | selezione completa o errore quantificato sull'intero corpus, con rollback |
 | BENCH-01 | P0 | da progettare | tutte le 10 conversazioni LoCoMo sono ormai development set aperto | collegare LongMemEval, privilegiando aggiornamento, temporalità, provenienza e astensione | primo campione indipendente congelato prima di risultati e tuning |
 | OPS-01 | P1 | difetto verificato | `_run_due_idle_cycles` e `_run_dream_cycle` hanno ordine diverso; il forzato chiama due volte entrambi i cleanup | rendere il percorso forzato composizione delle stesse fasi del runtime, prima di altre ablazioni dei loop | stessa sequenza/moltitudine provata da regressione |
+| PERF-01 | P1 | correzione implementata, collaudo voce aperto | unificato `num_ctx=32768` con guard centrale `RealtimeClient`; 87/87 unit; smoke ActionController reale corretto in 3,110 s, stesso runner prima/dopo e zero `starting llama-server`. Il cambio precedente costava in mediana 10,368 s; protocollo e raw data in `EURI_OLLAMA_CONTEXT_RELOAD_2026-08-26.md` | usare Euri normalmente alternando CHAT/RAG/ACTION e osservare journal, fluidita' e stabilita' VRAM | un solo runner 32768 durante uso organico, nessuna regressione dei contratti e scomparsa dei lag da circa 10 s |
 | COG-02 | P1 | bloccato da COG-01 | structured v2: contratto 76/76 e zero false supersessioni, ma recall vero 50%; post-hoc: `mutually_exclusive` 13/20 e due percorsi disgiunti | solo dopo COG-01 e su challenge nuovo: A=`same entity+claim+replacement`; B=`same entity+claim+same known kind+exclusive`; sul banco aperto A+B è 20/20 con una falsa sup., soltanto tetto fittato | batte il legacy sui gate congelati senza riuso del challenge v2 come validazione |
 | COG-03 | P1 | da preregistrare | `used_in_response` prova esposizione sostenuta, non utilità causale | leave-one-out appaiato sui nodi élite, stesso contesto residuo e stesso seed, scoring cieco | effetto causale o risultato negativo attribuibile |
 | MEM-02 | P1 | debito di osservabilità | Loop 2d e cleanup possono cancellare; nessun tombstone. Il cleanup Loop 2a con `days_ahead=0` è un no-op verificato | rimuovere/segnalare il codice morto; prima delle ablazioni lifecycle rendere le eliminazioni ricostruibili | ogni mietitore lascia tombstone/copia audit e il ramo eliminato è riproducibile |
@@ -43,6 +44,14 @@ reidratato. Poi COG-01 torna la prossima azione del filone cognitivo di memoria.
 
 ## Decisioni già prese — non riaprire senza nuova evidenza
 
+- MTP/speculative decoding su Gemma4 e' chiuso per ora: sui prompt reali di
+  Euri non migliora il tempo end-to-end e non vanno sviluppate altre patch MTP
+  senza un cambiamento upstream materialmente nuovo. Analisi e condizioni di
+  riapertura: `EURI_RTX3080_SERVICE_GPU_DECISION_2026-08-26.md`.
+- La RTX 3080 non va aggiunta per il solo offload di Whisper, E5 o TTS: il
+  beneficio complessivo stimato e' inferiore a circa 0,6 s. Riaprire soltanto
+  per un control-plane LLM compatto, isolato e validato su golden set, lasciando
+  Gemma4 esclusivamente sulle due 4060 Ti.
 - Il Loop 2f legacy resta autorità runtime.
 - `loop2f-structured-affirmative-v2` è diagnostico e **NO-GO**, non una feature
   dormiente da riaccendere.

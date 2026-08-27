@@ -396,7 +396,11 @@ class ActionController:
                         utterance, previous_euri_turn, capabilities, state_context, origin
                     ),
                 }],
-                options={"temperature": 0, "num_predict": 500, "num_ctx": 4096},
+                options={
+                    "temperature": 0,
+                    "num_predict": 500,
+                    "num_ctx": config.CHAT_OLLAMA_NUM_CTX,
+                },
                 think=False,
             )
             data = _extract_json(response.message.content or "")
