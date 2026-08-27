@@ -134,6 +134,15 @@ riscrivere la policy.
 dalla memoria a lungo termine. Gli snapshot sensoriali o sociali non diventano
 fatti mnemonici soltanto perché sono presenti in questo stato.
 
+Anche `core/workflow_planner.py::WorkflowState` e' stato operativo effimero,
+ma con un confine ancora piu' stretto: vive soltanto durante una singola
+esecuzione composta, registra passi completati e osservazioni necessarie al
+replanning deterministico, poi viene scartato. Non usa Redis, non entra nel
+Presente cognitivo condiviso, non viene indicizzato, non alimenta RAG, learner
+passivo, Pulse cognitivo, Dream o Vault. L'eventuale artefatto documentale
+prodotto resta governato dai normali contratti del workspace/file; lo stato del
+planner non ne diventa una seconda fonte di verita'.
+
 ### Proiezione identitaria emergente
 
 `core/personality_model.py` legge finestre bounded dell'archivio turni e lascia

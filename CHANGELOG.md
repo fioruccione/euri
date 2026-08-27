@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-08-26 - Workflow composto con goal e stato osservabile
+
+- Il `WorkflowEngine` documentale esegue ora un passo alla volta su un goal
+  chiuso e aggiorna uno stato effimero dopo ogni osservazione. La scelta del
+  passo successivo e' deterministica: nessuna nuova chiamata LLM, capability o
+  autorita' viene aggiunta dopo il piano iniziale.
+- Ogni capability dichiara precondizioni e postcondizioni minime. Riferimenti
+  futuri/ciclici, input mancanti, testo vuoto e artefatti dichiarati ma assenti
+  fermano il workflow invece di contaminare i passi successivi.
+- Il piano e' limitato a otto passi e ogni azione a un tentativo. L'ultima bozza
+  deve sempre essere realmente salvata per revisione, anche se nel piano era
+  presente un salvataggio precedente.
+- Stato e trace restano process-local e fuori da Redis, memoria cognitiva, RAG,
+  Pulse, Dream e Obsidian. Chat, ActionController, DocumentWorkspace,
+  `compose_document`, Executor e routing non sono stati modificati.
+- Estese le regressioni standalone del workflow per goal completato, trace,
+  riferimenti invalidi, output vuoti e ricevuta file inesistente. `pytest` non
+  e' stato introdotto: resta il runner a manifest esplicito.
+
 ## 2026-08-26 - RAG realtime senza lavoro duplicato
 
 - Base e locator restano due retrieval indipendenti, con ranking, filtri, cap e
