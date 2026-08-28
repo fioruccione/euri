@@ -192,6 +192,127 @@ def _source_prefilter(
     return " ".join(clauses) or "*"
 
 
+def _vector_pool_cache_key(
+    limit: int,
+    source_filter: list[str] | None,
+    source_exclude: list[str] | None,
+    memory_scope: str | None,
+) -> tuple:
+    """Chiave effimera per un pool KNN: non viene mai serializzata."""
+    return (
+        int(limit),
+        tuple(source_filter or ()),
+        tuple(source_exclude or ()),
+        normalize_scope(memory_scope or current_scope()),
+    )
+
+
+def _load_vector_pool(
+    vec,
+    r,
+    limit: int,
+    *,
+    source_filter: list[str] | None = None,
+    source_exclude: list[str] | None = None,
+    memory_scope: str | None = None,
+) -> list[dict] | None:
+    """Legge e idrata il pool KNN senza assegnare il dominio o fare touch.
+
+    Questa parte della ricerca dipende soltanto dal vettore e dai filtri. Puo'
+    quindi essere anticipata sulla CPU/Redis mentre il semantic frame usa il
+    modello conversazionale. Il boost di dominio e il ranking restano nel
+    chiamante e mantengono la policy storica.
+    """
+    pool = max(int(limit) * 4, 20)
+    memory_scope = normalize_scope(memory_scope or current_scope())
+    try:
+        prefilter = _source_prefilter(
+            source_filter, source_exclude, memory_scope
+        )
+        q_all = (
+            Query(f"({prefilter})=>[KNN {pool} @embedding $vec AS score]")
+            .sort_by("score")
+            .return_fields(
+                "id", "content", "source", "score", "created_at",
+                "category", "domain",
+            )
+            .dialect(2)
+        )
+        res_all = r.ft("idx:memories").search(
+            q_all,
+            query_params={"vec": vec.astype("float32").tobytes()},
+        )
+    except Exception as e:
+        logger.error(f"Errore search full DB: {e}")
+        return None
+
+    items: list[dict] = []
+    raw_docs = list(res_all.docs)
+    hydrated = _json_get_many(r, (doc.id for doc in raw_docs))
+    for doc, raw_doc in zip(raw_docs, hydrated):
+        if not raw_doc:
+            continue
+        item = raw_doc[0]
+        if item.get("superseded_by"):
+            continue
+        if normalize_scope(item.get("memory_scope")) != memory_scope:
+            continue
+        source = item.get("source")
+        if source_filter is not None and source not in source_filter:
+            continue
+        if source_exclude is not None and source in source_exclude:
+            continue
+        row = dict(item)
+        row["id"] = row.get("id") or doc.id.replace("euri:memory:", "")
+        row["score"] = float(doc.score)
+        row["domain"] = row.get("domain") or getattr(
+            doc, "domain", "generale"
+        )
+        items.append(row)
+    return items
+
+
+def prefetch_domain_search(
+    query: str,
+    embedder,
+    r,
+    pool_specs: list[dict],
+) -> dict:
+    """Prepara vettore e pool read-only, senza chiamare alcun LLM.
+
+    Il risultato usa lo stesso ``query_feature_cache`` consumato dal percorso
+    sincrono. Un errore produce semplicemente una cache vuota: il chiamante
+    eseguira' la ricerca storica.
+    """
+    cache: dict = {"entries": {}, "pools": {}, "prefetched": True}
+    vec = embedder.encode(query, mode="query")
+    if vec is None:
+        return cache
+    cache["entries"][str(query)] = {"vector": vec}
+    for spec in pool_specs:
+        key = _vector_pool_cache_key(
+            spec["limit"],
+            spec.get("source_filter"),
+            spec.get("source_exclude"),
+            spec.get("memory_scope"),
+        )
+        if key in cache["pools"]:
+            continue
+        pool = _load_vector_pool(
+            vec,
+            r,
+            spec["limit"],
+            source_filter=spec.get("source_filter"),
+            source_exclude=spec.get("source_exclude"),
+            memory_scope=spec.get("memory_scope"),
+        )
+        # Un errore transitorio non diventa un risultato vuoto autorevole: il
+        # percorso sincrono deve poter ritentare con la policy storica.
+        if pool is not None:
+            cache["pools"][key] = pool
+    return cache
+
+
 def domain_aware_search(
     query: str,
     embedder,
@@ -222,8 +343,15 @@ def domain_aware_search(
         if query_feature_cache is not None else None
     )
     if cached is not None:
-        query_domain = cached["domain"]
-        vec = cached["vector"]
+        query_domain = cached.get("domain")
+        vec = cached.get("vector")
+        if query_domain is None:
+            query_domain = assign_domain(query)
+            cached["domain"] = query_domain
+        if vec is None:
+            vec = embedder.encode(query, mode="query")
+            if vec is not None:
+                cached["vector"] = vec
         query_feature_cache["hits"] = int(query_feature_cache.get("hits", 0)) + 1
     else:
         query_domain = assign_domain(query)
@@ -235,8 +363,6 @@ def domain_aware_search(
             }
     if vec is None:
         return []
-    vec_bytes = vec.astype("float32").tobytes()
-
     # Gating come BOOST, non come filtro rigido. Si recupera un pool ampio
     # dall'INTERO DB (nessuna esclusione per dominio) e si ri-ordina dando una
     # spinta alle memorie nel dominio della query. Così un fatto molto pertinente
@@ -245,51 +371,39 @@ def domain_aware_search(
     # il dominio resta una preferenza — non più una museruola che causa falsi negativi.
     # L'anti-poisoning è ora coperto a monte dal Memory Guard sull'ingest.
     DOMAIN_BOOST = 0.85  # <1: 'score' è una distanza, quindi in-dominio = avvicinato
-    pool = max(limit * 4, 20)
-    try:
-        memory_scope = normalize_scope(memory_scope or current_scope())
-        prefilter = _source_prefilter(
-            source_filter, source_exclude, memory_scope
+    memory_scope = normalize_scope(memory_scope or current_scope())
+    pool_key = _vector_pool_cache_key(
+        limit, source_filter, source_exclude, memory_scope
+    )
+    cached_pools = (
+        query_feature_cache.setdefault("pools", {})
+        if query_feature_cache is not None else {}
+    )
+    if pool_key in cached_pools:
+        items = [dict(item) for item in cached_pools[pool_key]]
+        query_feature_cache["pool_hits"] = int(
+            query_feature_cache.get("pool_hits", 0)
+        ) + 1
+    else:
+        loaded = _load_vector_pool(
+            vec,
+            r,
+            limit,
+            source_filter=source_filter,
+            source_exclude=source_exclude,
+            memory_scope=memory_scope,
         )
-        q_all = (
-            Query(f"({prefilter})=>[KNN {pool} @embedding $vec AS score]")
-            .sort_by("score")
-            .return_fields("id", "content", "source", "score", "created_at", "category", "domain")
-            .dialect(2)
-        )
-        res_all = r.ft("idx:memories").search(q_all, query_params={"vec": vec_bytes})
-    except Exception as e:
-        logger.error(f"Errore search full DB: {e}")
-        return []
+        if loaded is None:
+            return []
+        items = loaded
+        if query_feature_cache is not None:
+            cached_pools[pool_key] = [dict(item) for item in items]
 
-    items = []
-    raw_docs = list(res_all.docs)
-    hydrated = _json_get_many(r, (doc.id for doc in raw_docs))
-    for doc, raw_doc in zip(raw_docs, hydrated):
-        if not raw_doc:
-            continue
-        item = raw_doc[0]
-        # Idratazione piena: il path domain-boosted deve portarsi dietro anche
-        # requires_verification/provenance_stale/audit_flag/consolidation_risk, altrimenti
-        # il prompt RAG perde proprio i flag epistemici che guidano la cautela.
-        if item.get("superseded_by"):
-            continue
-        if normalize_scope(item.get("memory_scope")) != memory_scope:
-            continue
-        source = item.get("source")
-        if source_filter is not None and source not in source_filter:
-            continue
-        if source_exclude is not None and source in source_exclude:
-            continue
-        dom = item.get("domain") or getattr(doc, "domain", "generale")
-        raw = float(doc.score)
+    for item in items:
+        dom = item.get("domain") or "generale"
+        raw = float(item["score"])
         in_domain = query_domain != "generale" and dom == query_domain
-        item = dict(item)
-        item["id"] = item.get("id") or doc.id.replace("euri:memory:", "")
-        item["score"] = raw
-        item["domain"] = dom
         item["_adj"] = raw * (DOMAIN_BOOST if in_domain else 1.0)
-        items.append(item)
 
     items.sort(key=lambda x: x["_adj"])
     results = rank_memories_epistemically(items, limit=limit)
@@ -298,6 +412,7 @@ def domain_aware_search(
         it.pop("_adj", None)
     logger.debug(
         f"Domain-boosted search: {len(results)} risultati "
-        f"(dominio query '{query_domain}', {n_dom} in-dominio su pool {pool})"
+        f"(dominio query '{query_domain}', {n_dom} in-dominio su pool "
+        f"{max(limit * 4, 20)})"
     )
     return results

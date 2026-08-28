@@ -1089,6 +1089,7 @@ def build_dual_channel_context(
     presentation: str = "append",
     observe_selective: bool = False,
     semantic_frame: dict | None = None,
+    query_feature_cache: dict | None = None,
 ) -> RagContext:
     """Base senza passive + note passive come locator verso turni originali."""
     from core.dual_channel import FROZEN_POLICY, POLICY_ID, compose_dual_channel
@@ -1104,7 +1105,8 @@ def build_dual_channel_context(
         raise ValueError(f"presentazione dual-channel non valida: {presentation}")
 
     dual_started = time.perf_counter()
-    query_feature_cache: dict = {}
+    if query_feature_cache is None:
+        query_feature_cache = {}
     base_started = time.perf_counter()
     base = build_rag_context(
         text,
@@ -1540,6 +1542,7 @@ def build_runtime_rag_context(
     recent_history: list[dict] | None = None,
     dual_mode: str | None = None,
     semantic_frame: dict | None = None,
+    query_feature_cache: dict | None = None,
 ) -> RagContext:
     """Unico dispatcher RAG per voce, mobile e Silent Chat."""
     selected = (
@@ -1560,6 +1563,7 @@ def build_runtime_rag_context(
                 ),
                 observe_selective=selected == "selective",
                 semantic_frame=semantic_frame,
+                query_feature_cache=query_feature_cache,
             )
             return apply_knowledge_gap_contract(rag, memory, semantic_frame)
         except Exception as exc:
@@ -1574,6 +1578,7 @@ def build_runtime_rag_context(
                 recent_history=recent_history,
                 excluded_sources={"passive"},
                 semantic_frame=semantic_frame,
+                query_feature_cache=query_feature_cache,
             )
             return apply_knowledge_gap_contract(rag, memory, semantic_frame)
 
@@ -1583,6 +1588,7 @@ def build_runtime_rag_context(
         mode=mode,
         recent_history=recent_history,
         semantic_frame=semantic_frame,
+        query_feature_cache=query_feature_cache,
     )
     if selected == "shadow":
         try:
@@ -1596,6 +1602,7 @@ def build_runtime_rag_context(
                 presentation="selective",
                 observe_selective=True,
                 semantic_frame=semantic_frame,
+                query_feature_cache=query_feature_cache,
             )
             gate = shadow.diagnostics.get("selective_gate") or {}
             logger.info(
@@ -1611,3 +1618,64 @@ def build_runtime_rag_context(
         except Exception as exc:
             logger.warning(f"RAG dual shadow non disponibile ({exc})")
     return apply_knowledge_gap_contract(rag, memory, semantic_frame)
+
+
+def prefetch_runtime_rag_query(
+    text: str,
+    memory,
+    *,
+    dual_mode: str | None = None,
+    memory_scope: str | None = None,
+) -> dict:
+    """Anticipa soltanto embedding e pool KNN invarianti del turno.
+
+    Non assegna il dominio, non applica ranking, non effettua touch e non
+    costruisce il prompt. Il semantic frame resta quindi libero di cambiare il
+    piano mnemonico; se cambia anche il testo della query la cache viene scartata
+    dal chiamante.
+    """
+    from core.domain_gater import prefetch_domain_search
+    from core.memory_scope import normalize_scope
+
+    selected = (
+        dual_mode
+        if dual_mode is not None
+        else getattr(config, "RAG_DUAL_CHANNEL_MODE", "off")
+    )
+    scope = normalize_scope(memory_scope)
+    source_filter = config.DEMO_CONTEXT_SOURCES if config.DEMO_MODE else None
+    def add_spec(source_exclude: list[str] | None) -> None:
+        spec = {
+            "limit": config.RAG_SEMANTIC_LIMIT,
+            "source_filter": source_filter,
+            "source_exclude": source_exclude,
+            "memory_scope": scope,
+        }
+        identity = (
+            spec["limit"],
+            tuple(spec["source_filter"] or ()),
+            tuple(spec["source_exclude"] or ()),
+            spec["memory_scope"],
+        )
+        if not any(item[0] == identity for item in keyed_specs):
+            keyed_specs.append((identity, spec))
+
+    keyed_specs: list[tuple[tuple, dict]] = []
+    if selected in {"on", "selective"}:
+        add_spec(["passive"])
+        add_spec(None)
+    elif selected == "shadow":
+        add_spec(None)
+        add_spec(["passive"])
+    else:
+        add_spec(None)
+
+    started = time.perf_counter()
+    cache = prefetch_domain_search(
+        text,
+        memory._embedder,
+        memory.r,
+        [spec for _, spec in keyed_specs],
+    )
+    cache["prefetch_ms"] = (time.perf_counter() - started) * 1000
+    return cache

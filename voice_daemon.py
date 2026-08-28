@@ -13,6 +13,7 @@ import signal
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace as dataclass_replace
 import numpy as np
 from loguru import logger
@@ -307,6 +308,11 @@ class VoiceDaemon:
         self._brain_lock = threading.Lock()  # protegge brain tra main loop e mobile worker
         self._first_visual_activation = True  # True finché il VisualGate non vede l'utente per la prima volta
         self._tts_lock   = threading.Lock()  # protegge il modello TTS da accessi concorrenti
+        self._rag_prefetch_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="euri-rag-prefetch",
+        )
+        self._rag_prefetch_local = threading.local()
         # Dal primo frame VAD fino alla fine di STT/dispatch. Initiative non deve
         # confondere "testo non ancora disponibile" con un confine di turno libero.
         self._voice_input_inflight = threading.Event()
@@ -1038,6 +1044,10 @@ class VoiceDaemon:
                 stop()
             except Exception as exc:
                 logger.warning(f"Shutdown {name} fallito: {exc}")
+        try:
+            self._rag_prefetch_executor.shutdown(wait=False, cancel_futures=True)
+        except Exception as exc:
+            logger.debug(f"Shutdown RAG prefetch ignorato ({exc})")
         alive = self._workers.shutdown(timeout=8)
         if alive:
             logger.warning(f"Shutdown: worker non terminati entro deadline: {', '.join(alive)}")
@@ -2631,6 +2641,7 @@ class VoiceDaemon:
         from core.rag_context import build_runtime_rag_context
         with self.brain.history_lock:
             recent_history = list(self.brain._conversation_history)
+        query_feature_cache = self._consume_rag_cpu_prefetch(text)
         rag = build_runtime_rag_context(
             text,
             self.memory,
@@ -2638,6 +2649,7 @@ class VoiceDaemon:
             mode=mode,
             recent_history=recent_history,
             semantic_frame=semantic_frame,
+            query_feature_cache=query_feature_cache,
         )
         # Thread-local: voce e mobile possono costruire contesti in parallelo.
         # La struttura serve soltanto alla lineage shadow e non entra nel prompt.
@@ -2666,6 +2678,63 @@ class VoiceDaemon:
         # esporre trascrizioni ambientali o reinterpretare righe di log slegate.
         context = with_voice_perception_context(context, self.r)
         return context
+
+    def _start_rag_cpu_prefetch(self, text: str) -> None:
+        """Avvia il tratto CPU/Redis del RAG mentre Gemma interpreta il turno."""
+        if not getattr(config, "RAG_CPU_PREFETCH_ENABLED", True):
+            return
+        if not self.embedder.available:
+            return
+        try:
+            rough_intent, _ = classify(text)
+        except Exception:
+            return
+        if rough_intent not in {Intent.CHAT, Intent.SEARCH}:
+            return
+
+        from core.memory_scope import current_scope
+        from core.rag_context import prefetch_runtime_rag_query
+
+        started = time.perf_counter()
+        future = self._rag_prefetch_executor.submit(
+            prefetch_runtime_rag_query,
+            text,
+            self.memory,
+            memory_scope=current_scope(),
+        )
+        self._rag_prefetch_local.pending = {
+            "text": text,
+            "started": started,
+            "future": future,
+        }
+
+    def _consume_rag_cpu_prefetch(self, text: str) -> dict | None:
+        """Unisce il prefetch senza cambiare query o semantica del retrieval."""
+        pending = getattr(self._rag_prefetch_local, "pending", None)
+        self._rag_prefetch_local.pending = None
+        if not pending:
+            return None
+
+        join_started = time.perf_counter()
+        try:
+            cache = pending["future"].result()
+        except Exception as exc:
+            logger.debug(f"RAG CPU prefetch fallito: {exc}")
+            return None
+        join_ms = (time.perf_counter() - join_started) * 1000
+        elapsed_ms = (time.perf_counter() - pending["started"]) * 1000
+        compatible = str(pending["text"]) == str(text)
+        logger.info(
+            "[TIMING] RAG CPU prefetch: {:.0f}ms work, {:.0f}ms elapsed, "
+            "{:.0f}ms join, "
+            "reused={} pools={}",
+            float((cache or {}).get("prefetch_ms") or 0.0),
+            elapsed_ms,
+            join_ms,
+            compatible,
+            len((cache or {}).get("pools") or {}),
+        )
+        return cache if compatible else None
 
     def _augment_context_by_strategy(self, text: str, context: str) -> str:
         """
@@ -3729,6 +3798,7 @@ class VoiceDaemon:
         from core.memory_scope import current_scope as _current_memory_scope
         self.turn_store.sync_into(self.brain, _current_memory_scope())
         if semantic_frame is None:
+            self._start_rag_cpu_prefetch(text)
             semantic_frame = self._interpret_semantic_turn(text)
         else:
             semantic_frame = self.semantic_turns.commit_precomputed(semantic_frame)

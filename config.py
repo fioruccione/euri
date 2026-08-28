@@ -600,6 +600,12 @@ MEMORY_SCHEMA_GENERATION_TTL_DAYS = 3
 RAG_RECENT_MEMORY_WINDOW_DAYS = max(
     1, int(os.environ.get("EURI_RAG_RECENT_MEMORY_WINDOW_DAYS", "14"))
 )
+# Durante il semantic frame la CPU puo' anticipare embedding E5 e pool KNN
+# read-only. Il risultato viene riusato soltanto se la query interpretata resta
+# identica; EURI_RAG_CPU_PREFETCH_ENABLED=0 ripristina il percorso seriale.
+RAG_CPU_PREFETCH_ENABLED = (
+    os.environ.get("EURI_RAG_CPU_PREFETCH_ENABLED", "1") == "1"
+)
 
 # Memoria passiva dual-channel (validazione census 27/07/2026: GO).
 # off       = retrieval storico invariato;

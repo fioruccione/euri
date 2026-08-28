@@ -613,6 +613,17 @@ di caricare i documenti completi con embedding. La cache è effimera, non tocca
 Redis e non sopravvive al turno. Il log `[TIMING] RAG dual` rende osservabili
 separatamente base, locator, composizione e gate.
 
+Nel canale vocale, quando il frame semantico deve ancora essere prodotto, un
+worker dedicato può anticipare l'embedding E5 e i pool KNN Redis della query raw.
+Questa fase è soltanto read-only: non chiama il classificatore LLM del dominio,
+non applica ranking o schema, non effettua touch e non costruisce testo per il
+prompt. Dopo il frame, il runtime riusa il lavoro soltanto se la query
+interpretata coincide esattamente con quella prefetched; una canonicalizzazione
+che cambia il testo, un errore o una cache incompleta ricadono nel percorso
+sincrono. Dominio, filtri, boost, cap e contratto epistemico restano quindi
+invariati. La cache vive nel solo turno e il rollback operativo è
+`EURI_RAG_CPU_PREFETCH_ENABLED=0`.
+
 Gli insight trasversali sono limitati a due per turno. Quando vengono resi nel
 contesto, `core/rag_context.py` conserva il marker epistemico e aggiunge i
 metadati consumabili che esistono nel record: `created_at` in forma ISO

@@ -27,6 +27,43 @@ promozione diretta del materiale onirico.
 
 ---
 
+# Handoff Euri - 2026-08-28 - Prefetch RAG CPU validato live
+
+## Esito
+
+Il canale vocale anticipa embedding E5 e pool KNN Redis su un worker CPU mentre
+Gemma produce il frame semantico. Il prefetch e' read-only: non chiama LLM, non
+effettua touch, non applica ranking e non costruisce il prompt. Dominio, schema,
+filtri, cap e contratto epistemico restano nel percorso storico.
+
+La prova live sulla P620 ha misurato 360-508 ms di lavoro anticipato e 0 ms di
+attesa al join in tutti i turni. Nei due riusi esatti sono stati nascosti 433 e
+360 ms: circa 397 ms per hit e circa 200 ms medi sul campione di quattro turni.
+Due query sono ricadute correttamente nel percorso seriale perche' il semantic
+frame aveva cambiato il testo (`spazi` e `Ironman` -> `Iron Man`). Il frame
+semantico e' rimasto nella fascia storica 6,2-8,1 s e non mostra regressioni.
+
+I primi due tentativi dopo il boot non erano un problema di prefetch: SpeakerAuth
+ha prodotto 0,610 e 0,649 con soglia 0,65. Il primo turno senza wake word e' stato
+ignorato; il secondo, pur contenendo `Euri`, e' entrato correttamente nello scope
+ospite. Il terzo tentativo a 0,802 e' entrato come proprietario.
+
+## Rollback e verifica
+
+- rollback senza modifiche ai dati: `EURI_RAG_CPU_PREFETCH_ENABLED=0`;
+- telemetria: `[TIMING] RAG CPU prefetch` espone work, elapsed, join, reused e
+  pool pronti;
+- equivalenza di ranking e retry dopo errore Redis sono coperti in
+  `tests/test_rag_latency_plumbing.py`;
+- manifest unitario completo: 90/90 in 77,5 s; compilazione e
+  `git diff --check` puliti.
+
+Gemma4 e' stata scaricata esplicitamente con `ollama stop gemma4:26b`; subito
+dopo `ollama ps` risultava vuoto. Il riavvio di Linux puo' quindi avvenire senza
+un modello Ollama residente. L'avvio di Euri resta manuale.
+
+---
+
 # Handoff Euri - 2026-08-28 - Recupero progetto ICMA2
 
 ## Causa e correzione

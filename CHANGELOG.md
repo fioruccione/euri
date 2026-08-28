@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-08-28 - Prefetch RAG CPU durante il frame semantico
+
+- La voce anticipa su un worker CPU l'embedding E5 e i pool KNN Redis mentre
+  Gemma costruisce il semantic frame. Il prefetch non chiama LLM, non effettua
+  touch e non costruisce il contesto finale.
+- Dominio, boost epistemico, schema, ranking, cap e rendering restano nel
+  percorso sincrono storico. La cache viene riusata soltanto se il testo
+  interpretato coincide con la query partita dallo STT; altrimenti viene
+  scartata.
+- Un errore del prefetch non viene memorizzato come pool vuoto: il RAG ritenta
+  normalmente. `EURI_RAG_CPU_PREFETCH_ENABLED=0` ripristina il percorso seriale
+  senza cambiare dati o configurazione mnemonica.
+- Il log `[TIMING] RAG CPU prefetch` separa lavoro effettivo, età del prefetch,
+  attesa residua al join, riuso e numero di pool pronti. Le regressioni pure
+  verificano equivalenza dell'ordine e fallback dopo un errore Redis transitorio;
+  il manifest unitario completo chiude 90/90.
+- Nella prima prova vocale P620 il worker ha completato in 360-508 ms con join
+  sempre a 0 ms. I due hit esatti hanno nascosto 433 e 360 ms; due
+  canonicalizzazioni della query hanno attivato il fallback seriale previsto.
+
 ## 2026-08-28 - Richiamo durevole e autorita' delle memorie
 
 - Una richiesta di continuita' come `parlavamo...` non viene piu' chiusa dalla
