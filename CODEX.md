@@ -27,6 +27,96 @@ promozione diretta del materiale onirico.
 
 ---
 
+# Handoff Euri - 2026-08-28 - Recupero progetto ICMA2
+
+## Causa e correzione
+
+La memoria non era assente. Il salvataggio esplicito del progetto ICMA2
+`bc8f7583-b331-4eff-a606-c6d3afed7bbf` (`source=user`) era stato marcato
+`superseded_by=32acf987-694b-4e22-b018-1f14dc2dbba5`, una reflection successiva
+che nel proprio testo dichiarava invece che non esisteva contraddizione. Inoltre
+la formula «parlavamo...» faceva considerare sufficiente la sola history e
+saltava il recupero durevole.
+
+- `core/rag_context.py` fonde ora history e Redis quando il piano semantico
+  richiede memoria o l'utente domanda esplicitamente memorie/tracce;
+- una fonte diretta su un progetto tecnico nominato, se gia' recuperata, viene
+  riservata davanti al cap senza promuoverne la verita';
+- `core/dream_engine.py` applica l'autorita' della sorgente prima della recency
+  nelle supersessioni Loop 2f.
+
+## Riparazione Redis reversibile
+
+Con Euri fermo sono state create copie integrali:
+
+- `euri:repair_backup:20260828:bc8f7583-b331-4eff-a606-c6d3afed7bbf`;
+- `euri:repair_backup:20260828:32acf987-694b-4e22-b018-1f14dc2dbba5`.
+
+La memoria utente e' nuovamente attiva; la reflection punta ora alla memoria
+utente ed e' esclusa dal retrieval. Un test read-only sul `MemoryManager` reale
+recupera la fonte utente al rango 3/6 anche senza embedding; la composizione RAG
+la porta in testa quando ICMA2/FIMIC e' il progetto nominato.
+
+Il recupero non valida il contenuto. Restano da trattare come dati da verificare
+la sigla filtro `LAS 500` contro `RAS 500`, i benefici qualitativi formulati
+come attesi e i numeri economici/produttivi. Il riavvio di Euri resta manuale.
+La prova organica va eseguita senza cambiare configurazione seguendo
+[`docs/EURI_LIVE_ACCEPTANCE_2026-08-28.md`](docs/EURI_LIVE_ACCEPTANCE_2026-08-28.md).
+
+---
+
+# Handoff Euri - 2026-08-27 - Consapevolezza operativa vocale
+
+## Esito runtime e correzione
+
+Il caso della telefonata ha mostrato una capacita' analitica forte ma una causa
+ricostruita male: il segmento owner `0.887` era stato fermato per wake word
+assente fuori finestra, mentre il successivo `0.402` era un'altra clip senza
+testo. `core/voice_perception.py` rende ora esplicita questa causalita'. Ogni
+segmento VAD riceve un `voice:<uuid>` e il ramo reale di mobile gate, VisualGate,
+SpeakerAuth, STT o addressedness ne chiude l'esito con un reason code.
+
+La prova live ha poi mostrato due difetti distinti. Un judge Qwen del Dream
+consumava tutti i 5.000 token di reasoning per circa 350 secondi e impediva al
+frame semantico realtime di usare Ollama; inoltre Gemma, pur ricevendo la trace
+corretta, ha raccontato `speaker=rejected` dove il codice aveva registrato
+`verified`. Il fix non spegne il Dream e non delega la concorrenza a una regex:
+
+- `DreamEngine._ollama_chat()` ricompone internamente uno stream Ollama nella
+  stessa `ChatResponse` storica; `notify_activity()` chiude lo stream quando
+  arriva foreground e il ciclo interrotto resta dovuto;
+- il primo frame VAD revoca il Dream. Dopo l'accettazione owner, un breve TTS di
+  stato parte soltanto se una chiamata LLM era realmente attiva;
+- le domande sul recente ascolto sono risposte dal reason code sanitizzato, senza
+  una seconda interpretazione LLM e senza esporre la trascrizione ambientale.
+
+## Confini
+
+- Nessun audio, testo trascritto o embedding entra nella trace.
+- Redis conserva massimo otto record con TTL cinque minuti; non sono memoria o
+  archivio turni.
+- Pulse riceve `voice/segment_decision` come sola telemetria e il Cognitive
+  Projector la ignora.
+- Cognitive Present conserva soltanto l'ultimo esito sanitizzato come system fact
+  a TTL. Questa variazione puo' invalidare una decisione Initiative iniziata prima
+  del nuovo segmento, comportamento conservativo coerente con il parlato in corso.
+- Il Brain vede al massimo tre segmenti non inoltrati e solo per spiegare cosa ha
+  percepito o perche' non ha risposto. I turni accettati non vengono duplicati.
+- Le memorie passive e le altre origini derivate restano utilizzabili per
+  inferenza e convinzioni. Un contratto RAG compatto impedisce soltanto che il
+  loro richiamo venga contato come verifica indipendente della stessa tesi.
+- La feature e' disattivabile con
+  `EURI_VOICE_PERCEPTION_AWARENESS_ENABLED=0` senza cambiare i gate vocali.
+
+## Verifica
+
+Le regressioni pure coprono privacy della whitelist, separazione dei segmenti,
+TTL, Pulse telemetry, risposta causale, preemption e chiusura dello stream Dream,
+clock del ciclo rinviato, acknowledgment derivato dallo stato e postura epistemica
+dei ricordi derivati. Il riavvio di Euri resta manuale per scelta di Stefano.
+
+---
+
 # Handoff Euri - 2026-08-24 - Migrazione workstation P620
 
 ## Checkpoint BIOS prima del prossimo riavvio

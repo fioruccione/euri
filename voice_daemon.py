@@ -76,6 +76,11 @@ from core.cognitive_present import (
     InteractionChannel,
     InteractionPhase,
 )
+from core.voice_perception import (
+    VoicePerceptionRecorder,
+    voice_perception_answer,
+    with_voice_perception_context,
+)
 from core.worker_supervisor import WorkerSupervisor
 from core.semantic_turn import (
     SemanticTurnService,
@@ -305,11 +310,13 @@ class VoiceDaemon:
         # Dal primo frame VAD fino alla fine di STT/dispatch. Initiative non deve
         # confondere "testo non ancora disponibile" con un confine di turno libero.
         self._voice_input_inflight = threading.Event()
+        self._dream_busy_at_voice_start = False
         self.present = CognitivePresent(
             conversation_window_s=getattr(config, "CONVERSATION_LEASE_SECONDS", 45),
             focus_window_s=getattr(config, "CONVERSATION_FOCUS_SECONDS", 5 * 60),
             max_focus_turns=getattr(config, "CONVERSATION_FOCUS_MAX_TURNS", 4),
         )
+        self.voice_perception = VoicePerceptionRecorder(self.r, self.present)
         from core.memory_scope import get_active_scope
         self.turn_store.restore_into(self.brain, get_active_scope(self.r))
         self._restore_pending_continuity(get_active_scope(self.r))
@@ -598,6 +605,135 @@ class VoiceDaemon:
                 f"{transition.feature} {transition.previous}->{transition.current} "
                 f"({transition.value:.2f}, conf={transition.confidence:.2f})"
             )
+
+    def _record_voice_segment(
+        self,
+        *,
+        trace_id: str,
+        started_at: float,
+        observed_at: float,
+        duration_s: float,
+        decision: str,
+        speaker_verdict: str = "not_run",
+        speaker_evidence: dict | None = None,
+        actor_id: str = "unknown",
+        stt_state: str = "not_run",
+        transcript_chars: int = 0,
+        detected_language: str = "",
+        has_wake_word: bool = False,
+        addressed: bool = False,
+        delivered_to: str = "none",
+    ) -> None:
+        """Chiude una trace percettiva senza conservare audio o testo."""
+        recorder = getattr(self, "voice_perception", None)
+        if recorder is None:
+            return
+        evidence = speaker_evidence or {}
+        actor_scope = (
+            "owner" if actor_id == _OWNER_ID
+            else "unknown" if actor_id == "unknown" and speaker_verdict == "not_run"
+            else "guest" if actor_id == "unknown"
+            else "interpreter" if actor_id == "interpreter"
+            else "system"
+        )
+        try:
+            recorder.record({
+                "trace_id": trace_id,
+                "started_at": started_at,
+                "observed_at": observed_at,
+                "duration_s": duration_s,
+                "speaker_verdict": speaker_verdict,
+                "speaker_similarity": evidence.get("similarity"),
+                "speaker_threshold": evidence.get("threshold"),
+                "speaker_reason": evidence.get("reason", ""),
+                "actor_scope": actor_scope,
+                "stt_state": stt_state,
+                "transcript_chars": transcript_chars,
+                "detected_language": detected_language,
+                "has_wake_word": has_wake_word,
+                "addressed": addressed,
+                "decision": decision,
+                "delivered_to": delivered_to,
+            })
+            logger.info(
+                "VoiceTrace: {} decision={} speaker={} stt={} delivered={}",
+                trace_id,
+                decision,
+                speaker_verdict,
+                stt_state,
+                delivered_to,
+            )
+        except Exception as exc:
+            # La consapevolezza e' un senso fail-open: non puo' fermare la voce.
+            logger.debug("VoiceTrace non registrata: {}", exc)
+
+    def _mark_voice_input_started(self) -> None:
+        """Apre il confine foreground e revoca un eventuale LLM Dream attivo."""
+        if self._voice_input_inflight.is_set():
+            return
+        self._voice_input_inflight.set()
+        self._dream_busy_at_voice_start = False
+        if self.r.exists("euri:mobile:active"):
+            return
+        try:
+            if not self.visual_gate.is_user_present():
+                return
+        except Exception:
+            return
+        dream = getattr(self, "dream_engine", None)
+        if dream is not None:
+            try:
+                self._dream_busy_at_voice_start = bool(dream.notify_activity())
+            except Exception as exc:
+                logger.debug("Dream foreground notify ignorata: {}", exc)
+
+    def _finish_voice_input(self) -> None:
+        self._voice_input_inflight.clear()
+        self._dream_busy_at_voice_start = False
+
+    def _acknowledge_dream_preemption(self, actor_id: str) -> bool:
+        """Conferma l'ascolto solo quando la voce ha davvero revocato il Dream."""
+        was_busy = bool(getattr(self, "_dream_busy_at_voice_start", False))
+        self._dream_busy_at_voice_start = False
+        if (
+            not was_busy
+            or actor_id != _OWNER_ID
+            or not getattr(config, "DREAM_VOICE_BUSY_ACK_ENABLED", True)
+        ):
+            return False
+        logger.info("Voce foreground: Dream LLM revocato, invio acknowledgment")
+        self._speak_simple(
+            getattr(
+                config,
+                "DREAM_VOICE_BUSY_ACK_TEXT",
+                "Ti ho sentito. Interrompo un'attivita' in background e ti rispondo.",
+            )
+        )
+        return True
+
+    def _handle_voice_perception_question(
+        self,
+        text: str,
+        *,
+        trusted: bool,
+        observed_at: float | None,
+    ) -> bool:
+        """Risponde dal record causale, senza chiedere al modello di reinterpretarlo."""
+        reply = voice_perception_answer(text, self.r)
+        if not reply:
+            return False
+        self.memory.log_conversation(_OWNER_NAME, text)
+        self.memory.log_conversation(_ASSISTANT_NAME, reply)
+        self.brain.record_context_message(
+            "user",
+            text,
+            trusted=trusted,
+            observed_at=observed_at,
+        )
+        self.brain.record_context_message("assistant", reply, trusted=trusted)
+        logger.info("VoiceTrace: spiegazione operativa deterministica")
+        self._speak(reply)
+        return True
 
     _URL_RE = re.compile(r'https?://\S+|www\.\S+', re.IGNORECASE)
 
@@ -2525,6 +2661,10 @@ class VoiceDaemon:
         document_state = state_provider() if callable(state_provider) else ""
         if document_state:
             context = "\n\n".join((context, "[STATO OPERATIVO CONDIVISO]\n" + document_state))
+        # Solo esiti sanitizzati dei recenti segmenti NON inoltrati. Questo
+        # permette al Brain di spiegare perche' non ha ricevuto un audio senza
+        # esporre trascrizioni ambientali o reinterpretare righe di log slegate.
+        context = with_voice_perception_context(context, self.r)
         return context
 
     def _augment_context_by_strategy(self, text: str, context: str) -> str:
@@ -3572,6 +3712,16 @@ class VoiceDaemon:
         # Teach mode: intercetta prima della classificazione normale
         if self._teach_mode:
             self._handle_teach_continue(text)
+            return
+
+        # Domande sul recente ascolto sono introspezione operativa, non CHAT:
+        # la causa viene dal reason code della trace e non puo' essere riscritta
+        # dal modello (caso reale SpeakerAuth verificato raccontato come rifiutato).
+        if self._handle_voice_perception_question(
+            text,
+            trusted=trusted,
+            observed_at=observed_at,
+        ):
             return
 
         # Unica interpretazione operativa post-STT. Le modalita' pending,
@@ -5237,27 +5387,51 @@ class VoiceDaemon:
                 speech_ended, segment = self.vad.process_chunk(chunk)
 
                 if self.vad.is_speaking:
-                    self._voice_input_inflight.set()
+                    self._mark_voice_input_started()
 
                 if not speech_ended:
                     continue
 
                 # Tiene chiuso il confine anche dopo il VAD, mentre identità, STT e
                 # dispatch stanno ancora attribuendo significato al turno.
-                self._voice_input_inflight.set()
+                self._mark_voice_input_started()
+                segment_ended_at = time.time()
+                segment_duration_s = (
+                    len(segment) / config.VAD_SAMPLING_RATE
+                    if segment is not None else 0.0
+                )
+                utterance_started_at = max(
+                    0.0,
+                    segment_ended_at - segment_duration_s,
+                )
+                perception_trace_id = f"voice:{uuid.uuid4()}"
 
                 # Gate mobile: silenzio se la pagina Voce Mobile sta processando
                 if self.r.exists("euri:mobile:active"):
                     logger.debug("Mobile gate: voce ignorata — sessione mobile attiva")
+                    self._record_voice_segment(
+                        trace_id=perception_trace_id,
+                        started_at=utterance_started_at,
+                        observed_at=time.time(),
+                        duration_s=segment_duration_s,
+                        decision="mobile_session_active",
+                    )
                     self.vad.reset()
-                    self._voice_input_inflight.clear()
+                    self._finish_voice_input()
                     continue
 
                 # Gate visivo: ignora voce se nessuno è presente
                 if not self.visual_gate.is_user_present():
                     logger.debug("VisualGate: voce rilevata ma gate INACTIVE — ignorata")
+                    self._record_voice_segment(
+                        trace_id=perception_trace_id,
+                        started_at=utterance_started_at,
+                        observed_at=time.time(),
+                        duration_s=segment_duration_s,
+                        decision="visual_gate_inactive",
+                    )
                     self.vad.reset()
-                    self._voice_input_inflight.clear()
+                    self._finish_voice_input()
                     continue
 
                 # Enrollment mode: raccoglie utterance per il voiceprint
@@ -5274,8 +5448,16 @@ class VoiceDaemon:
                             self._speak("Registrazione completata. Ti riconosco adesso.")
                         else:
                             self._speak("Registrazione fallita. Riprova.")
+                    self._record_voice_segment(
+                        trace_id=perception_trace_id,
+                        started_at=utterance_started_at,
+                        observed_at=time.time(),
+                        duration_s=segment_duration_s,
+                        decision="voice_enrollment",
+                        actor_id=_OWNER_ID,
+                    )
                     self.vad.reset()
-                    self._voice_input_inflight.clear()
+                    self._finish_voice_input()
                     continue
 
                 # La voce produce un verdetto a tre stati. Anche una voce rifiutata
@@ -5287,15 +5469,25 @@ class VoiceDaemon:
                     if self._translate_bidir
                     else self.speaker_auth.classify(segment)
                 )
+                if self._translate_bidir:
+                    speaker_evidence = {
+                        "similarity": None,
+                        "threshold": None,
+                        "reason": "interpreter_mode",
+                    }
+                else:
+                    evidence_reader = getattr(
+                        self.speaker_auth,
+                        "last_classification",
+                        None,
+                    )
+                    speaker_evidence = (
+                        evidence_reader() if callable(evidence_reader) else {}
+                    )
 
                 # Trascrizione. Il consenso conversazionale appartiene all'inizio
                 # fisico del turno, non alla fine di VAD+STT: un intervento lungo
                 # iniziato dentro la lease non deve scadere mentre viene acquisito.
-                segment_ended_at = time.time()
-                segment_duration_s = (
-                    len(segment) / config.VAD_SAMPLING_RATE if segment is not None else 0.0
-                )
-                utterance_started_at = max(0.0, segment_ended_at - segment_duration_s)
                 force_lang = None if self._translate_bidir else "it"
                 _t_stt = time.perf_counter()
                 text, detected_lang = self.stt.transcribe(segment, force_lang=force_lang)
@@ -5312,22 +5504,72 @@ class VoiceDaemon:
                         "SpeakerAuth: interlocutore non verificato — percorso ospite isolato"
                     )
 
+                acceptance_outcome: dict = {}
                 accepted = self._accept_voice_transcript(
                     text,
                     addressed_at=utterance_started_at,
                     authenticated=actor_id == _OWNER_ID,
                     require_wake_word=actor_id == "unknown",
-                    track_present=actor_id == _OWNER_ID,
+                    # L'eventuale acknowledgment del Dream deve precedere lo
+                    # stato PROCESSING. Il turno owner viene registrato subito
+                    # dopo, una sola volta, con lo stesso timestamp fisico.
+                    track_present=False,
                     include_semantic_frame=True,
+                    outcome=acceptance_outcome,
+                )
+                decision = str(acceptance_outcome.get("reason") or "unknown")
+                addressed = bool(acceptance_outcome.get("accepted"))
+                if decision == "stt_garbage":
+                    stt_state = "garbage"
+                else:
+                    stt_state = "text" if text else "empty"
+                delivered_to = "none"
+                if addressed:
+                    delivered_to = (
+                        "guest_dispatch" if actor_id == "unknown"
+                        else "interpreter_dispatch" if actor_id == "interpreter"
+                        else "owner_dispatch"
+                    )
+                self._record_voice_segment(
+                    trace_id=perception_trace_id,
+                    started_at=utterance_started_at,
+                    observed_at=time.time(),
+                    duration_s=segment_duration_s,
+                    decision=decision,
+                    speaker_verdict=getattr(
+                        speaker_verdict,
+                        "value",
+                        str(speaker_verdict),
+                    ),
+                    speaker_evidence=speaker_evidence,
+                    actor_id=actor_id,
+                    stt_state=stt_state,
+                    transcript_chars=len(text or ""),
+                    detected_language=detected_lang or "",
+                    has_wake_word=bool(acceptance_outcome.get("has_wake_word")),
+                    addressed=addressed,
+                    delivered_to=delivered_to,
                 )
                 if accepted is None:
-                    self._voice_input_inflight.clear()
+                    self._finish_voice_input()
                     continue
                 text, has_wake_word, bootstrap_frame = accepted
 
                 self.visual_gate.notify_activity()
                 if hasattr(self, 'dream_engine'):
                     self.dream_engine.notify_activity()
+                self._acknowledge_dream_preemption(actor_id)
+                if actor_id == _OWNER_ID:
+                    try:
+                        self.present.accept_user_turn(
+                            text,
+                            channel=InteractionChannel.VOICE,
+                            at=utterance_started_at,
+                        )
+                    except Exception as e:
+                        logger.debug(
+                            f"Cognitive Present: accept_user_turn ignorato: {e}"
+                        )
 
                 # Dispatch. Se un handler termina senza TTS, chiude comunque la fase
                 # PROCESSING; gli handler che parlano la chiudono via finish_speech.
@@ -5351,7 +5593,7 @@ class VoiceDaemon:
                             self.present.finish_processing(opens_conversation=False)
                     except Exception as e:
                         logger.debug(f"Cognitive Present: finish_processing ignorato: {e}")
-                    self._voice_input_inflight.clear()
+                    self._finish_voice_input()
 
         self._shutdown_components()
         logger.info("Euri spento.")
@@ -5549,6 +5791,7 @@ class VoiceDaemon:
         require_wake_word: bool = False,
         track_present: bool = True,
         include_semantic_frame: bool = False,
+        outcome: dict | None = None,
     ) -> tuple[str, bool] | tuple[str, bool, dict | None] | None:
         """Valida consenso e STT; solo una voce accettata rinnova l'attività.
 
@@ -5556,12 +5799,28 @@ class VoiceDaemon:
         lungo, iniziato dentro la lease, non deve scadere mentre VAD e STT lo
         stanno ancora acquisendo.
         """
+        def record_outcome(
+            accepted: bool,
+            reason: str,
+            *,
+            has_wake_word: bool = False,
+        ) -> None:
+            if outcome is not None:
+                outcome.clear()
+                outcome.update({
+                    "accepted": bool(accepted),
+                    "reason": str(reason),
+                    "has_wake_word": bool(has_wake_word),
+                })
+
         if not text:
+            record_outcome(False, "stt_empty")
             return None
 
         garbage, ratio = self._is_garbage_transcript(text)
         if garbage:
             logger.debug(f"Garbage STT scartato (ratio={ratio:.2f}): '{text[:40]}'")
+            record_outcome(False, "stt_garbage")
             return None
 
         if not self._translate_bidir:
@@ -5590,6 +5849,21 @@ class VoiceDaemon:
             conversation_open = False
             focus_open = False
         addressed = self._utterance_is_addressed(has_wake_word, since_last, conversation_open)
+        if addressed:
+            if has_wake_word:
+                acceptance_reason = "accepted_wake_word"
+            elif self._translate_bidir:
+                acceptance_reason = "accepted_interpreter_mode"
+            elif self._dictation_mode:
+                acceptance_reason = "accepted_dictation_mode"
+            elif conversation_open:
+                acceptance_reason = "accepted_conversation_lease"
+            elif since_last < _CONVERSATION_WINDOW_SEC:
+                acceptance_reason = "accepted_activity_window"
+            else:
+                acceptance_reason = "accepted_other"
+        else:
+            acceptance_reason = ""
         if not addressed:
             addressed = self._adaptive_followup_addressed(
                 text,
@@ -5597,6 +5871,8 @@ class VoiceDaemon:
                 require_wake_word=require_wake_word,
                 focus_open=focus_open,
             )
+            if addressed:
+                acceptance_reason = "accepted_adaptive_followup"
         if not addressed and not has_previous_activity:
             bootstrap_frame = self._semantic_owner_bootstrap(
                 text,
@@ -5604,16 +5880,36 @@ class VoiceDaemon:
                 require_wake_word=require_wake_word,
             )
             addressed = bootstrap_frame is not None
+            if addressed:
+                acceptance_reason = "accepted_semantic_bootstrap"
         if require_wake_word:
             addressed = has_wake_word
+            acceptance_reason = (
+                "accepted_wake_word" if addressed else "guest_wake_word_required"
+            )
         if not addressed:
             elapsed = f"{since_last:.0f}s" if has_previous_activity else "nessun turno precedente"
             logger.debug(
                 "Wake word assente e inizio turno fuori finestra "
                 f"({elapsed}) — ignorato: '{text[:40]}'"
             )
+            rejection_reason = acceptance_reason or (
+                "wake_word_absent_outside_conversation"
+                if has_previous_activity
+                else "wake_word_absent_no_previous_turn"
+            )
+            record_outcome(
+                False,
+                rejection_reason,
+                has_wake_word=has_wake_word,
+            )
             return None
 
+        record_outcome(
+            True,
+            acceptance_reason or "accepted_other",
+            has_wake_word=has_wake_word,
+        )
         self._last_activity_ts = now_ts
         if authenticated and not self._translate_bidir:
             self._last_auth_voice_ts = now_ts

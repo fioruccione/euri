@@ -40,9 +40,21 @@ _RECENT_CONTEXT_RE = re.compile(
 
 _SEARCH_CUE_RE = re.compile(
     r'\b(?:ricordi|ricordati|memoria|memorie|hai\s+in\s+memoria|cosa\s+sai|'
+    r'hai\s+(?:delle?\s+)?tracce|trovi\s+(?:delle?\s+)?tracce|'
     r'che\s+cosa\s+sai|cosa\s+conosci|quali?\s+nomi|quali?\s+ruoli?|'
     r'chi\s+(?:lavora|fa|si\s+occupa|sono|è)|di\s+cosa\s+(?:stavamo\s+)?parlavamo|'
     r'fai\s+(?:degli?\s+)?esempi\s+pratici)\b',
+    re.IGNORECASE,
+)
+
+# Richieste che domandano esplicitamente evidenza durevole. Restano separate da
+# ``_RECENT_CONTEXT_RE``: "di cosa parlavamo prima?" puo' essere risolta dalla
+# sola cronologia immediata, mentre "hai tracce del progetto?" deve fondere
+# cronologia e Redis anche se contiene la parola "parlavamo".
+_DURABLE_RECALL_CUE_RE = re.compile(
+    r'\b(?:memoria|memorie|hai\s+in\s+memoria|'
+    r'hai\s+(?:delle?\s+)?tracce|trovi\s+(?:delle?\s+)?tracce|'
+    r'cerca\w*\s+(?:tra|nelle?|dentro)\s+(?:le\s+)?memorie)\b',
     re.IGNORECASE,
 )
 
@@ -297,7 +309,7 @@ def memory_origin_for_context(memory: dict) -> str:
     elif source == "conversation_verbatim":
         origin = "turno conversazionale originale"
     elif source == "passive":
-        origin = "estrazione da una conversazione"
+        origin = "estrazione da una conversazione, non verifica indipendente"
     elif source == "reflection" or kind == "reflection":
         origin = f"interpretazione autobiografica di {config.ASSISTANT_DISPLAY_NAME}"
     elif source == "reaction" or kind == "reaction_lesson":
@@ -316,6 +328,28 @@ def memory_origin_for_context(memory: dict) -> str:
     return f"[ORIGINE: {origin}]"
 
 
+def derived_memory_epistemic_contract(memories: list[dict]) -> str:
+    """Contratto metacognitivo solo quando il prompt contiene ricordi derivati."""
+    derived_sources = {
+        "passive", "reflection", "reaction", "loop2e", "episode", "conversation",
+    }
+    if not any(
+        str(item.get("source") or "").strip().lower() in derived_sources
+        for item in memories
+    ):
+        return ""
+    return (
+        "Postura epistemica dei ricordi derivati:\n"
+        "- sono parte della continuita' cognitiva e puoi usarli per inferire, "
+        "fare analogie e formarti una convinzione;\n"
+        "- il loro richiamo non costituisce una seconda conferma indipendente "
+        "della stessa tesi;\n"
+        "- se aggiungi un meccanismo tecnico non esplicitamente sostenuto da "
+        "una fonte diretta o documentale, presentalo naturalmente come tua "
+        "inferenza, senza disclaimer automatici o rinunce al ragionamento."
+    )
+
+
 def infer_context_mode(text: str, default: str = "chat") -> str:
     """Inferenza cheap per canali senza intent router, come Silent Chat."""
     from utils.temporal import detect_recent_memory_intent
@@ -332,6 +366,68 @@ def infer_context_mode(text: str, default: str = "chat") -> str:
     ):
         return "search"
     return default
+
+
+def _durable_recall_requested(text: str, semantic_memory_plan: dict | None) -> bool:
+    """Decide se la cronologia immediata non puo' chiudere da sola il retrieval.
+
+    Il piano semantico affidabile e' il segnale principale. Le formule esplicite
+    sulla memoria sono un fail-safe deterministico quando il frame non e'
+    disponibile o non ha compreso la richiesta.
+    """
+    semantic_needed = bool(
+        semantic_memory_plan is not None
+        and semantic_memory_plan.get("needed") is True
+    )
+    return semantic_needed or bool(_DURABLE_RECALL_CUE_RE.search(text or ""))
+
+
+def _prioritize_authoritative_named_project(
+    results: list[dict], text: str
+) -> tuple[list[dict], str | None]:
+    """Riserva la testa a un progetto nominato gia' recuperato semanticamente.
+
+    Non crea memorie e non decide che il contenuto sia vero. Impedisce soltanto
+    che una fonte diretta su un progetto tecnico esplicitamente nominato finisca
+    oltre il cap a causa della recency ambientale o di note derivate.
+    """
+    if not results:
+        return results, None
+
+    query_axes = analyze_memory_axes(text or "")
+    query_entities = {
+        re.sub(r"[^a-z0-9]", "", str(entity).lower())
+        for entity in (query_axes.get("entity_mentions") or [])
+    }
+    query_entities.discard("")
+    if not query_entities:
+        return results, None
+
+    direct_sources = {"user", "teach", "obsidian_vault", "mobile_in"}
+    for position, doc in enumerate(results):
+        if str(doc.get("source") or "").lower() not in direct_sources:
+            continue
+        axes = doc.get("memory_axes") or analyze_memory_axes(
+            str(doc.get("content") or ""),
+            source=str(doc.get("source") or ""),
+            created_at=doc.get("created_at"),
+        )
+        if not {"project", "technical"}.intersection(
+            axes.get("fact_types") or []
+        ):
+            continue
+        doc_entities = {
+            re.sub(r"[^a-z0-9]", "", str(entity).lower())
+            for entity in (axes.get("entity_mentions") or [])
+        }
+        doc_entities.discard("")
+        if not query_entities.intersection(doc_entities):
+            continue
+        if position == 0:
+            return results, str(doc.get("id") or "") or None
+        ordered = [doc] + results[:position] + results[position + 1:]
+        return ordered, str(doc.get("id") or "") or None
+    return results, None
 
 
 def _format_recent_history(
@@ -410,6 +506,9 @@ def build_rag_context(
     semantic_memory_plan = trusted_memory_retrieval_plan(semantic_frame)
     search_mode = mode == "search"
     recent_context_query = bool(_RECENT_CONTEXT_RE.search(text or ""))
+    durable_recall_requested = _durable_recall_requested(
+        text, semantic_memory_plan
+    )
     reference_dt = now()
     reference_at = reference_dt.timestamp()
     recent_memory_intent = (
@@ -425,7 +524,11 @@ def build_rag_context(
         _format_recent_history(recent_history, reference_at=reference_at)
         if recent_context_query else []
     )
-    history_resolves_query = recent_context_query and bool(history_lines)
+    history_resolves_query = (
+        recent_context_query
+        and bool(history_lines)
+        and not durable_recall_requested
+    )
 
     reflection_lines: list[str] = []
     reflection_docs: list[dict] = []
@@ -685,6 +788,11 @@ def build_rag_context(
                 len(schema_added),
                 ", ".join(schema_diagnostics["added_memory_ids"]),
             )
+    project_priority_id = None
+    if durable_recall_requested and recent_memory_intent is None and time_range is None:
+        results, project_priority_id = _prioritize_authoritative_named_project(
+            results, text
+        )
     if reflection_lines:
         sections.append(
             f"Interpretazioni recenti di {config.ASSISTANT_DISPLAY_NAME} "
@@ -698,6 +806,12 @@ def build_rag_context(
         )
     if results:
         mem_lines = []
+        derived_contract = (
+            derived_memory_epistemic_contract(results[:mem_cap])
+            if render_memory_origins else ""
+        )
+        if derived_contract:
+            sections.append(derived_contract)
         provenance_requested = bool(
             semantic_memory_plan is not None
             and semantic_memory_plan.get("needed")
@@ -920,6 +1034,9 @@ def build_rag_context(
             "temporal_query": temporal_diagnostics,
             "schema_expansion": schema_diagnostics,
             "semantic_memory_plan": semantic_memory_plan,
+            "durable_recall_requested": durable_recall_requested,
+            "history_resolved_query": history_resolves_query,
+            "named_project_priority_id": project_priority_id,
         },
     )
 

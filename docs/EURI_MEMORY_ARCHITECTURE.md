@@ -2,9 +2,9 @@
 
 Stato: **mappa canonica del comportamento corrente**
 
-Verificata contro il codice: **22 agosto 2026**
+Verificata contro il codice: **28 agosto 2026**
 
-Versione runtime di riferimento: **V2.25 — stato continuo al 22 agosto 2026**
+Versione runtime di riferimento: **V2.25 — stato continuo al 28 agosto 2026**
 
 ## Contratto di manutenzione
 
@@ -133,6 +133,24 @@ riscrivere la policy.
 `core/cognitive_present.py` mantiene lo stato di secondi e minuti. È separato
 dalla memoria a lungo termine. Gli snapshot sensoriali o sociali non diventano
 fatti mnemonici soltanto perché sono presenti in questo stato.
+
+La pipeline voce pubblica inoltre una consapevolezza operativa causale tramite
+`core/voice_perception.py`. Ogni segmento VAD ha un `trace_id` proprio e termina
+con un reason code deterministico (`stt_empty`, `guest_wake_word_required`,
+`wake_word_absent_outside_conversation`, ecc.). Audio, testo trascritto ed
+embedding biometrici sono esclusi dalla whitelist. L'ultimo esito entra nel
+Presente cognitivo a TTL; una lista Redis bounded di otto record scade dopo cinque
+minuti e la copia Pulse resta telemetria, non evento cognitivo. Il Brain puo'
+vedere soltanto i recenti segmenti non inoltrati per spiegare il proprio
+funzionamento: il ponte non alimenta archivio turni, memoria, RAG, learner,
+Dream o Obsidian.
+
+Le domande esplicite sul recente ascolto non vengono lasciate alla ricostruzione
+del Brain: `voice_perception_answer()` traduce deterministicamente l'ultimo
+reason code non inoltrato, preservando la privacy del contenuto. Il primo frame
+VAD segnala inoltre foreground al Dream Engine; se una chat idle e' attiva, il
+relativo stream HTTP viene chiuso e il ciclo resta dovuto per il prossimo idle.
+L'eventuale acknowledgment vocale deriva da questo stato reale.
 
 Anche `core/workflow_planner.py::WorkflowState` e' stato operativo effimero,
 ma con un confine ancora piu' stretto: vive soltanto durante una singola
@@ -566,6 +584,20 @@ flowchart LR
 - la modalità `selective` può promuovere davanti un verbatim ad alta rilevanza;
   altrimenti resta nell'append protetto.
 
+La continuita' immediata e la memoria durevole non sono alternative assolute.
+Una domanda puramente deittica come «di cosa parlavamo prima?» puo' essere
+risolta dalla sola history recente. Se invece il piano semantico affidabile
+indica `memory_retrieval.needed=true`, oppure l'utente domanda esplicitamente se
+esistono memorie o tracce, `core/rag_context.py` conserva la history per i
+riferimenti ma esegue anche il recupero Redis. Le finestre temporali esplicite
+restano vincoli separati e non vengono allargate silenziosamente.
+
+Per una richiesta durevole che nomina un'entita', un progetto tecnico diretto
+gia' presente nel pool recuperato puo' essere portato in testa prima del cap.
+La riserva non lancia un secondo salvataggio o una seconda ricerca, non assegna
+verita' e non rimuove `requires_verification`: impedisce soltanto che recency
+ambientale o note derivate nascondano la fonte diretta sul soggetto richiesto.
+
 Base e locator eseguono ancora retrieval distinti: non condividono candidati,
 ranking o risultati. Condividono però, soltanto durante il singolo turno, le due
 feature invarianti della medesima query — dominio assegnato ed embedding — così
@@ -607,6 +639,11 @@ breve etichetta in linguaggio naturale, se un nodo proviene da Stefano, da un
 documento, dal Web, da un turno originale oppure da un'elaborazione interna di
 Euri. L'etichetta descrive l'origine: non assegna automaticamente verità,
 falsità o affidabilità e non cambia ranking, cap o selezione del retrieval.
+Quando almeno un nodo iniettato ha origine derivata, un contratto compatto rende
+esplicito che il suo richiamo non costituisce una seconda verifica indipendente.
+Il contratto non filtra il nodo, non impone disclaimer e non vieta convinzioni o
+analogie: chiede soltanto di presentare come inferenza gli ulteriori meccanismi
+tecnici che non sono sostenuti da una fonte diretta o documentale.
 
 Anche lo storico recente resta interamente disponibile. Prima dei messaggi,
 `core/brain.py::Brain.respond` inietta un contratto autobiografico vicino al
@@ -874,6 +911,14 @@ Loop 2e richiede almeno:
 Il nodo `loop2e` non ha TTL automatico. Le foglie conservano la provenienza
 bidirezionale tramite `consolidated_from` e `consolidated_into`.
 
+Loop 2f distingue inoltre recency e autorita' della sorgente. Dopo che il
+classificatore ha riconosciuto una vera contraddizione, `source=user`, `teach`,
+`obsidian_vault` e `mobile_in` prevalgono sui derivati `passive`, `reflection`,
+`reaction`, `loop2e`, `episode` e `conversation`; un derivato piu' recente non
+puo' quindi cancellare una fonte diretta. Soltanto a parita' di autorita' viene
+superseduto il nodo piu' vecchio. Il paraurti basato su `recalled_count` si
+applica poi al perdente selezionato e puo' ancora scegliere di tenere entrambi.
+
 ### Loop 2j: organizzazione schematica e recupero associativo
 
 `core/memory_schema.py` costruisce una vista derivata sopra l'archivio piatto.
@@ -1121,3 +1166,5 @@ Non usare `scripts/audit_memory.py --delete`, `--fix-*`, `--backfill-*` o
 19. Vincere una competizione interna non equivale a diventare vero: gli output
     Loop 2k restano fuori da RAG, memoria e convergenza finché un percorso
     epistemicamente autorizzato non fornisce evidenza o conferma esterna.
+20. Una memoria derivata non acquisisce autorita' su una fonte diretta per la
+    sola recency: puo' interpretarla o organizzarla, non supersederla.

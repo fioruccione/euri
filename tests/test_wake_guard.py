@@ -174,13 +174,42 @@ def test_passive_policy_excludes_the_whole_ephemeral_exchange():
 
 def test_activity_only_after_acceptance():
     d = make(last_activity=100.0)
-    assert d._accept_voice_transcript("", now_ts=1000.0) is None
-    assert d._accept_voice_transcript("rumore rumore rumore rumore rumore rumore", now_ts=1000.0) is None
-    assert d._accept_voice_transcript("questa frase non ti riguarda", now_ts=100.0 + WIN + 1) is None
+    outcome = {}
+    assert d._accept_voice_transcript("", now_ts=1000.0, outcome=outcome) is None
+    assert outcome == {
+        "accepted": False,
+        "reason": "stt_empty",
+        "has_wake_word": False,
+    }
+    assert d._accept_voice_transcript(
+        "rumore rumore rumore rumore rumore rumore",
+        now_ts=1000.0,
+        outcome=outcome,
+    ) is None
+    assert outcome["reason"] == "stt_garbage"
+    assert d._accept_voice_transcript(
+        "questa frase non ti riguarda",
+        now_ts=100.0 + WIN + 1,
+        outcome=outcome,
+    ) is None
+    assert outcome == {
+        "accepted": False,
+        "reason": "wake_word_absent_outside_conversation",
+        "has_wake_word": False,
+    }
     assert d._last_activity_ts == 100.0 and d._last_auth_voice_ts == 50.0
 
-    accepted = d._accept_voice_transcript("Euri, ascoltami", now_ts=1000.0)
+    accepted = d._accept_voice_transcript(
+        "Euri, ascoltami",
+        now_ts=1000.0,
+        outcome=outcome,
+    )
     assert accepted == ("Euri, ascoltami", True)
+    assert outcome == {
+        "accepted": True,
+        "reason": "accepted_wake_word",
+        "has_wake_word": True,
+    }
     assert d._last_activity_ts == 1000.0 and d._last_auth_voice_ts == 1000.0
     print("OK  vuoto, garbage e fuori-finestra non rinnovano activity")
 
@@ -532,6 +561,47 @@ def test_initiative_token_is_cancelled_by_voice_inflight():
     print("OK  voce VAD in volo invalida l'efferenza Initiative")
 
 
+def test_voice_preempts_dream_once_and_acknowledges_only_real_contention():
+    d = make()
+    calls = {"notify": 0, "spoken": []}
+
+    class Redis:
+        @staticmethod
+        def exists(_key):
+            return False
+
+    class Visual:
+        @staticmethod
+        def is_user_present():
+            return True
+
+    class Dream:
+        @staticmethod
+        def notify_activity():
+            calls["notify"] += 1
+            return True
+
+    d.r = Redis()
+    d.visual_gate = Visual()
+    d.dream_engine = Dream()
+    d._dream_busy_at_voice_start = False
+    d._speak_simple = lambda text: calls["spoken"].append(text)
+
+    d._mark_voice_input_started()
+    d._mark_voice_input_started()
+    assert d._voice_input_inflight.is_set()
+    assert d._dream_busy_at_voice_start is True
+    assert calls["notify"] == 1
+
+    assert d._acknowledge_dream_preemption(vd._OWNER_ID) is True
+    assert len(calls["spoken"]) == 1
+    assert d._acknowledge_dream_preemption(vd._OWNER_ID) is False
+    assert len(calls["spoken"]) == 1
+    d._finish_voice_input()
+    assert not d._voice_input_inflight.is_set()
+    print("OK  voce foreground: preemption e acknowledgment derivano dallo stato Dream")
+
+
 def test_implicit_read_log_requires_sentence_level_commitment():
     assert vd._IMPLICIT_READ_LOG_RE.search("Controllo il log e ti dico.")
     assert vd._IMPLICIT_READ_LOG_RE.search("Ora leggo il log.")
@@ -625,6 +695,7 @@ if __name__ == "__main__":
     test_offtopic_reaction_returns_turn_to_dispatch()
     test_reaction_ack_does_not_prejudge_async_verdict()
     test_initiative_token_is_cancelled_by_voice_inflight()
+    test_voice_preempts_dream_once_and_acknowledges_only_real_contention()
     test_implicit_read_log_requires_sentence_level_commitment()
     test_teach_snapshot_requires_a_semantic_authorization_contract()
     test_teach_confirmation_cannot_save_without_authorized_origin()

@@ -56,11 +56,13 @@ def test_due_idle_cycles_are_split_by_interval():
     engine = FakeDreamEngine()
     now_ts = time.time()
     old = _patch_config(
+        DREAM_ENGINE_IDLE_SECONDS=1,
         DREAM_LIGHT_CYCLE_INTERVAL_S=10,
         DREAM_CREATIVE_CYCLE_INTERVAL_S=100,
         DREAM_MAINTENANCE_CYCLE_INTERVAL_S=1000,
     )
     try:
+        engine._last_activity = now_ts - 2
         engine._light_last_run = now_ts - 11
         engine._creative_last_run = now_ts - 50
         engine._maintenance_last_run = now_ts - 500
@@ -73,16 +75,46 @@ def test_due_idle_cycles_are_split_by_interval():
 def test_all_due_cycles_keep_order():
     engine = FakeDreamEngine()
     old = _patch_config(
+        DREAM_ENGINE_IDLE_SECONDS=1,
         DREAM_LIGHT_CYCLE_INTERVAL_S=1,
         DREAM_CREATIVE_CYCLE_INTERVAL_S=1,
         DREAM_MAINTENANCE_CYCLE_INTERVAL_S=1,
     )
     try:
+        engine._last_activity = time.time() - 2
         engine._light_last_run = 0
         engine._creative_last_run = 0
         engine._maintenance_last_run = 0
         engine._run_due_idle_cycles()
         assert engine.calls == ["creative", "light", "maintenance"]
+    finally:
+        _restore_config(old)
+
+
+def test_foreground_activity_keeps_interrupted_phase_due():
+    engine = FakeDreamEngine()
+    old = _patch_config(
+        DREAM_ENGINE_IDLE_SECONDS=1,
+        DREAM_LIGHT_CYCLE_INTERVAL_S=1,
+        DREAM_CREATIVE_CYCLE_INTERVAL_S=10_000,
+        DREAM_MAINTENANCE_CYCLE_INTERVAL_S=10_000,
+    )
+    try:
+        engine._last_activity = time.time() - 2
+        previous_light_run = time.time() - 10
+        engine._light_last_run = previous_light_run
+        engine._creative_last_run = time.time()
+        engine._maintenance_last_run = time.time()
+
+        def interrupted_light():
+            engine.calls.append("light")
+            engine.notify_activity()
+
+        engine._light_cycle = interrupted_light
+        engine._run_due_idle_cycles()
+
+        assert engine.calls == ["light"]
+        assert engine._light_last_run == previous_light_run
     finally:
         _restore_config(old)
 
@@ -124,5 +156,6 @@ if __name__ == "__main__":
     test_idle_threshold_uses_short_seconds_when_present()
     test_due_idle_cycles_are_split_by_interval()
     test_all_due_cycles_keep_order()
+    test_foreground_activity_keeps_interrupted_phase_due()
     test_stop_interrupts_poll_and_joins_thread()
     print("test_dream_schedule: OK")

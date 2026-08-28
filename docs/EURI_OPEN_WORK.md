@@ -1,8 +1,8 @@
 # Euri — registro unico dei lavori aperti
 
-Aggiornato: 26/08/2026
+Aggiornato: 28/08/2026
 
-Base documentale: V2.22
+Base documentale: V2.25
 
 Regola: una voce si chiude soltanto con evidenza; se cambia direzione, resta
 nello storico con il motivo. Questo file è l'indice operativo. I report
@@ -10,20 +10,20 @@ specialistici conservano i dettagli, ma la prossima azione deve comparire qui.
 
 ## Prossima azione unica
 
-**PRESENT-01 — completare il collaudo live attraverso un riavvio.**
+**PRESENT-01 — eseguire il protocollo live congelato del 28 agosto.**
 
-Il primo pass live ha popolato la capsule e ha verificato il learner, ma ha
-esposto focus spostato da `no_store`, pending Initiative solo RAM e perdita di
-modalità nel passivo: tutti corretti. Ora riavviare con una domanda ancora
-aperta e rispondere senza rispiegare il soggetto. Verificare restore del pending,
-focus sostanziale, identità canonica, zero duplicati e zero memoria dal contesto
-reidratato. Poi COG-01 torna la prossima azione del filone cognitivo di memoria.
+Il checkpoint corrente ha 90/90 unit verdi e include continuita', autorita'
+delle fonti, preemption Dream e causalita' vocale. La prova organica resta
+manuale e segue
+[`EURI_LIVE_ACCEPTANCE_2026-08-28.md`](EURI_LIVE_ACCEPTANCE_2026-08-28.md):
+sette casi congelati su ICMA2, temporalita', azioni, Dream e restart. Poi COG-01
+torna la prossima azione del filone cognitivo di memoria.
 
 ## Registro
 
 | ID | Priorità | Stato | Evidenza attuale | Trigger / prossimo passo | Criterio di chiusura |
 |---|---|---|---|---|---|
-| PRESENT-01 | P0 | primo pass live riuscito, restart finale da validare | capsule v1 popolata; focus frame-based; turni diretti Initiative context-only; pending TTL; passivo usa identità/modalità del frame; bonifica Gio Style append-only; regressioni workspace 8/8 e unit 70/70 | domanda Initiative o assistant ancora aperta → stop/restart → risposta ellittica; ispezionare restore e nuove memorie | pending/focus ripresi al primo turno, fonti visibili, 0 duplicati e 0 apprendimento dal restore; scadenza e scope fail-closed |
+| PRESENT-01 | P0 | protocollo congelato, prova live da eseguire | 90/90 unit; memoria ICMA2 diretta ripristinata con backup; history+Redis fusi sulle richieste durevoli; source authority Loop 2f; preemption Dream e reason code voce | eseguire in ordine i sette casi di `EURI_LIVE_ACCEPTANCE_2026-08-28.md` dopo un avvio manuale | 7/7 osservati con fonti corrette; pending/focus ripresi una volta; 0 duplicati, 0 falsa esecuzione e nessuna reflection usata come autorità diretta |
 | COG-01 | P0 | correzione implementata, validazione aperta | il vecchio 2h usava una label senza prova e dava `UNKNOWN` 0/6; il nuovo contratto richiede claim subject, base esplicita ed estratti verificabili, con backoff degli irrisolti. Diagnostica sul banco aperto: 0/12 vere supersessioni riaperte, 12/12 soggetti distinti riconosciuti, 6/6 ambigui senza mutazione | preregistrare challenge opportunity-first nuovo; non riusare 42 casi come validazione | effetto incrementale misurato su false e vere supersessioni; zero danno oltre il gate congelato |
 | MEM-01 | P0 | osservazione con sentinella | `gather_grounded_evidence` usa una finestra non ordinata di 800; bacino personale **668/800** al 30/07 | riaprire a **750**; confrontare in shadow document-frequency RediSearch contro calcolo legacy, senza alzare 800 | selezione completa o errore quantificato sull'intero corpus, con rollback |
 | BENCH-01 | P0 | da progettare | tutte le 10 conversazioni LoCoMo sono ormai development set aperto | collegare LongMemEval, privilegiando aggiornamento, temporalità, provenienza e astensione | primo campione indipendente congelato prima di risultati e tuning |
@@ -52,7 +52,8 @@ reidratato. Poi COG-01 torna la prossima azione del filone cognitivo di memoria.
   beneficio complessivo stimato e' inferiore a circa 0,6 s. Riaprire soltanto
   per un control-plane LLM compatto, isolato e validato su golden set, lasciando
   Gemma4 esclusivamente sulle due 4060 Ti.
-- Il Loop 2f legacy resta autorità runtime.
+- Il classificatore Loop 2f legacy resta autorità runtime; la scelta del
+  perdente applica `source-authority-v1` prima della recency.
 - `loop2f-structured-affirmative-v2` è diagnostico e **NO-GO**, non una feature
   dormiente da riaccendere.
 - Loop 2h usa `loop2h-evidenced-identity-v1`, ma resta una rete di sicurezza

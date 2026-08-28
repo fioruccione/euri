@@ -71,16 +71,28 @@ def test_speaker_verdict_does_not_authenticate_missing_evidence():
     auth = SpeakerAuth()
     audio = np.ones(32000, dtype=np.float32)
     assert auth.classify(audio) == SpeakerVerdict.INDETERMINATE
+    evidence = auth.last_classification()
+    assert evidence["reason"] == "speaker_auth_unavailable"
+    assert evidence["similarity"] is None
 
     auth._enabled = True
     auth._encoder = object()
     auth._voiceprint = np.array([1.0, 0.0], dtype=np.float32)
     assert auth.classify(np.ones(8000, dtype=np.float32)) == SpeakerVerdict.INDETERMINATE
+    assert auth.last_classification()["reason"] == "clip_too_short"
 
     auth._embed = lambda *_args: np.array([1.0, 0.0], dtype=np.float32)
     assert auth.classify(audio) == SpeakerVerdict.VERIFIED
+    assert auth.last_classification() == {
+        "verdict": "verified",
+        "similarity": 1.0,
+        "threshold": 0.65,
+        "reason": "threshold_comparison",
+    }
     auth._embed = lambda *_args: np.array([0.0, 1.0], dtype=np.float32)
     assert auth.classify(audio) == SpeakerVerdict.REJECTED
+    assert auth.last_classification()["verdict"] == "rejected"
+    assert auth.last_classification()["similarity"] == 0.0
 
 
 def test_guest_claim_stays_outside_memory_until_settled():

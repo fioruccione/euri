@@ -85,6 +85,7 @@ tests/test_tts_segmentation.py
 tests/test_utterance_pragmatics.py
 tests/test_verbatim_lifecycle.py
 tests/test_visual_presence_bridge.py
+tests/test_voice_perception.py
 tests/test_wake_guard.py
 tests/test_worker_supervisor.py
 tests/test_workflow_planner.py

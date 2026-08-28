@@ -40,6 +40,34 @@ class SpeakerAuth:
         self._encoder = None
         self._voiceprint: np.ndarray | None = None
         self._enabled = False
+        # Solo metadati dell'ultima classificazione: mai embedding o audio.
+        # Il daemon li usa per collegare il verdetto al segmento percettivo
+        # corretto senza dover reinterpretare il log testuale.
+        self._last_classification: dict = {
+            "verdict": SpeakerVerdict.INDETERMINATE.value,
+            "similarity": None,
+            "threshold": SIMILARITY_THRESHOLD,
+            "reason": "not_run",
+        }
+
+    def last_classification(self) -> dict:
+        """Copia sanitizzata dell'ultima evidenza, priva di dati biometrici."""
+        return dict(self._last_classification)
+
+    def _remember_classification(
+        self,
+        verdict: SpeakerVerdict,
+        *,
+        similarity: float | None = None,
+        reason: str,
+    ) -> SpeakerVerdict:
+        self._last_classification = {
+            "verdict": verdict.value,
+            "similarity": None if similarity is None else round(float(similarity), 6),
+            "threshold": SIMILARITY_THRESHOLD,
+            "reason": str(reason),
+        }
+        return verdict
 
     def load(self):
         """Carica il modello GE2E. Fail-open se non disponibile."""
@@ -74,17 +102,26 @@ class SpeakerAuth:
         audio: float32 array normalizzato in [-1, 1]
         """
         if config.DEMO_MODE:
-            return SpeakerVerdict.INDETERMINATE
+            return self._remember_classification(
+                SpeakerVerdict.INDETERMINATE,
+                reason="demo_mode",
+            )
 
         if not self.is_enabled():
-            return SpeakerVerdict.INDETERMINATE
+            return self._remember_classification(
+                SpeakerVerdict.INDETERMINATE,
+                reason="speaker_auth_unavailable",
+            )
 
         # Sotto ~1.3s il GE2E non ha abbastanza voce per un d-vector stabile: le conferme brevi
         # ("ok"/"sì"/"va bene") producevano similarity ballerine (0.48–0.66) e venivano RIFIUTATE,
         # bloccando l'utente vero. Sotto la soglia di affidabilità del modello non si finge di
         # verificare: il daemon fonde l'esito con volto o autenticazione vocale recente.
         if len(audio) < sample_rate * 1.3:
-            return SpeakerVerdict.INDETERMINATE
+            return self._remember_classification(
+                SpeakerVerdict.INDETERMINATE,
+                reason="clip_too_short",
+            )
 
         try:
             embedding = self._embed(audio, sample_rate)
@@ -92,14 +129,19 @@ class SpeakerAuth:
                                (np.linalg.norm(embedding) * np.linalg.norm(self._voiceprint)))
             verdict = "OK" if similarity >= SIMILARITY_THRESHOLD else "RIFIUTATO"
             logger.info(f"SpeakerAuth: similarity={similarity:.3f} soglia={SIMILARITY_THRESHOLD} → {verdict}")
-            return (
+            return self._remember_classification(
                 SpeakerVerdict.VERIFIED
                 if similarity >= SIMILARITY_THRESHOLD
-                else SpeakerVerdict.REJECTED
+                else SpeakerVerdict.REJECTED,
+                similarity=similarity,
+                reason="threshold_comparison",
             )
         except Exception as e:
             logger.warning(f"SpeakerAuth verify error: {e} — esito indeterminato")
-            return SpeakerVerdict.INDETERMINATE
+            return self._remember_classification(
+                SpeakerVerdict.INDETERMINATE,
+                reason="classification_error",
+            )
 
     def verify(self, audio: np.ndarray, sample_rate: int = 16000) -> bool:
         """Compatibilita' per i chiamanti storici.

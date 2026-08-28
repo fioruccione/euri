@@ -135,6 +135,38 @@ def test_runtime_authority_remains_legacy_after_structured_no_go():
     assert "format" not in engine.calls[0]
 
 
+def test_direct_user_memory_cannot_be_superseded_by_newer_reflection():
+    direct = {
+        "id": "direct",
+        "source": "user",
+        "memory_kind": "semantic_fact",
+        "created_at": 10.0,
+    }
+    derived = {
+        "id": "derived",
+        "source": "reflection",
+        "memory_kind": "reflection",
+        "created_at": 20.0,
+    }
+
+    loser, winner, policy = DreamEngine._loop2f_select_loser(direct, derived)
+
+    assert loser["id"] == "derived"
+    assert winner["id"] == "direct"
+    assert policy == "source-authority-v1"
+
+
+def test_recency_still_resolves_conflicts_within_same_authority_tier():
+    older = {"id": "old", "source": "user", "created_at": 10.0}
+    newer = {"id": "new", "source": "teach", "created_at": 20.0}
+
+    loser, winner, policy = DreamEngine._loop2f_select_loser(older, newer)
+
+    assert loser["id"] == "old"
+    assert winner["id"] == "new"
+    assert policy == "recency-within-authority-v1"
+
+
 if __name__ == "__main__":
     test_affirmative_evidence_is_required_for_supersession()
     test_different_assertion_kinds_cannot_supersede()
@@ -144,4 +176,6 @@ if __name__ == "__main__":
     test_structured_classifier_uses_json_and_fails_closed()
     test_legacy_parser_remains_available_for_paired_baseline()
     test_runtime_authority_remains_legacy_after_structured_no_go()
-    print("test_loop2f_structured: 8/8 OK")
+    test_direct_user_memory_cannot_be_superseded_by_newer_reflection()
+    test_recency_still_resolves_conflicts_within_same_authority_tier()
+    print("test_loop2f_structured: 10/10 OK")

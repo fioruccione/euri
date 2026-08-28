@@ -1,5 +1,56 @@
 # Changelog
 
+## 2026-08-28 - Richiamo durevole e autorita' delle memorie
+
+- Una richiesta di continuita' come `parlavamo...` non viene piu' chiusa dalla
+  sola history quando il piano semantico richiede memoria durevole o l'utente
+  domanda esplicitamente se esistono memorie/tracce: history e Redis vengono
+  fusi nello stesso contesto.
+- Fra i risultati gia' recuperati, una fonte diretta relativa a un progetto
+  tecnico esplicitamente nominato riceve uno slot prioritario. La regola non
+  crea nuove memorie, non aumenta la verita' del contenuto e conserva i flag di
+  verifica.
+- Loop 2f applica ora l'autorita' della sorgente prima della recency: una
+  reflection, un episodio o un altro derivato non puo' supersedere una memoria
+  diretta soltanto perche' e' piu' recente. La data continua a decidere fra
+  fonti dello stesso livello.
+- Riparato in modo reversibile l'arco ICMA2: la memoria utente
+  `bc8f7583-b331-4eff-a606-c6d3afed7bbf` e' nuovamente attiva e la reflection
+  `32acf987-694b-4e22-b018-1f14dc2dbba5` e' esclusa. Le copie integrali vivono
+  sotto `euri:repair_backup:20260828:*`.
+- Otto regressioni sul retrieval recente/durevole e dieci sul contratto Loop 2f
+  passano con i runner standalone; il manifest unitario completo chiude 90/90.
+  `pytest` resta intenzionalmente non richiesto. Il collaudo organico successivo
+  e' congelato in `docs/EURI_LIVE_ACCEPTANCE_2026-08-28.md`.
+
+## 2026-08-27 - Consapevolezza causale della pipeline vocale
+
+- Ogni segmento VAD riceve ora un `voice:<uuid>` conservato attraverso gate
+  mobile/visivo, SpeakerAuth, STT e consenso conversazionale.
+- Il ramo che accetta o ferma il segmento produce un reason code deterministico:
+  Euri non deve piu' ricostruire la causa associando righe di log vicine.
+- Lo stato condiviso contiene soltanto metadati sanitizzati con TTL 5 minuti;
+  audio, trascrizione ed embedding non vengono conservati. Pulse riceve un evento
+  `telemetry`, mentre Cognitive Present conserva soltanto l'ultimo esito.
+- Il Brain vede al massimo tre recenti segmenti non inoltrati, con il divieto di
+  dedurne contenuto o identita'. I turni accettati non sono duplicati nel prompt.
+- La regressione riproduce il caso reale: telefonata owner `0.887` fermata per
+  wake word assente fuori finestra e successivo segmento `0.402` con STT vuoto
+  restano due trace e due cause indipendenti.
+- La prova live ha isolato una priority inversion: un judge Dream da 5.000 token
+  tratteneva Ollama fino a 350 secondi mentre il turno vocale restava accodato.
+  Le chat Dream sono ora stream trasparenti e revocabili: il primo frame vocale
+  chiude il trasporto attivo, non avanza il clock del ciclo interrotto e rinvia il
+  lavoro al successivo periodo idle.
+- Se una chiamata Dream era realmente attiva, Euri conferma subito l'ascolto prima
+  del dispatch. L'avviso dipende dallo stato del runtime, non da una regex sul testo.
+- Le domande sul recente ascolto (`mi hai sentito?`, `perche' non hai risposto?`)
+  usano direttamente il reason code sanitizzato: il Brain non puo' piu' invertire
+  un verdetto SpeakerAuth o inventare un gate diverso.
+- Le memorie derivate restano pienamente disponibili al ragionamento, ma il RAG
+  ricorda che il loro richiamo non e' una conferma indipendente. Euri puo' formare
+  convinzioni e analogie senza presentare come documentato un meccanismo inferito.
+
 ## 2026-08-26 - Workflow composto con goal e stato osservabile
 
 - Il `WorkflowEngine` documentale esegue ora un passo alla volta su un goal

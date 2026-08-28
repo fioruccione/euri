@@ -6,7 +6,11 @@ from datetime import datetime
 from unittest.mock import patch
 
 import config
-from core.rag_context import build_rag_context, infer_context_mode
+from core.rag_context import (
+    _prioritize_authoritative_named_project,
+    build_rag_context,
+    infer_context_mode,
+)
 from core.retrieval_strategy import choose_strategy
 from utils.temporal import detect_recent_memory_intent, extract_temporal_range
 
@@ -184,6 +188,128 @@ def test_normal_topic_search_remains_semantic_and_unbounded_by_recent_window():
     assert memory.semantic_calls == 1
     assert old["content"] in rag.text
     assert rag.diagnostics["temporal_query"] is None
+
+
+def test_named_trace_request_merges_immediate_history_and_durable_memory():
+    project = _memory(
+        "icma2",
+        "Progetto ICMA2: prova della pompa FIMIC FPP20.",
+        _local_dt(2026, 7, 20, 9),
+    )
+    memory = FakeMemory([], semantic=[project])
+    history = [{
+        "role": "assistant",
+        "content": "Stavamo discutendo un impianto.",
+        "observed_at": NOW.timestamp() - 30,
+    }]
+
+    with patch("core.rag_context.now", return_value=NOW):
+        rag = build_rag_context(
+            "Parlavamo della pompa sull'ICMA2. Hai tracce di questo discorso?",
+            memory,
+            mode="search",
+            recent_history=history,
+        )
+
+    assert memory.semantic_calls == 1
+    assert "Conversazione recente immediata" in rag.text
+    assert project["content"] in rag.text
+    assert rag.diagnostics["durable_recall_requested"] is True
+    assert rag.diagnostics["history_resolved_query"] is False
+
+
+def test_pure_immediate_reference_still_avoids_durable_search():
+    old = _memory(
+        "old",
+        "Una memoria durevole non richiesta.",
+        _local_dt(2026, 7, 20, 9),
+    )
+    memory = FakeMemory([], semantic=[old])
+    history = [{
+        "role": "user",
+        "content": "Il punto precedente era la latenza.",
+        "observed_at": NOW.timestamp() - 30,
+    }]
+
+    with patch("core.rag_context.now", return_value=NOW):
+        rag = build_rag_context(
+            "Di cosa parlavamo prima?",
+            memory,
+            mode="search",
+            recent_history=history,
+        )
+
+    assert memory.semantic_calls == 0
+    assert old["content"] not in rag.text
+    assert rag.diagnostics["durable_recall_requested"] is False
+    assert rag.diagnostics["history_resolved_query"] is True
+
+
+def test_trusted_semantic_plan_can_merge_history_without_lexical_memory_cue():
+    project = _memory(
+        "icma2-semantic",
+        "Il progetto ICMA2 riguarda la pompa FPP20.",
+        _local_dt(2026, 7, 20, 9),
+    )
+    memory = FakeMemory([], semantic=[project])
+    semantic_frame = {
+        "status": "interpreted",
+        "confidence": 0.96,
+        "memory_retrieval": {
+            "needed": True,
+            "focus": [{"entity": "ICMA2", "relevance": 1.0}],
+            "relation": "continuita' del progetto",
+            "evidence_goal": "continuity",
+            "confidence": 0.96,
+        },
+    }
+
+    with patch("core.rag_context.now", return_value=NOW):
+        rag = build_rag_context(
+            "Riprendiamo quello che dicevamo del progetto ICMA2.",
+            memory,
+            mode="search",
+            recent_history=[{
+                "role": "assistant",
+                "content": "Avevamo aperto il tema.",
+                "observed_at": NOW.timestamp() - 20,
+            }],
+            semantic_frame=semantic_frame,
+        )
+
+    assert memory.semantic_calls == 1
+    assert project["content"] in rag.text
+    assert rag.diagnostics["durable_recall_requested"] is True
+
+
+def test_named_project_priority_reserves_direct_source_without_claiming_truth():
+    ambient = _memory(
+        "ambient",
+        "Oggi abbiamo parlato di un argomento generico.",
+        _local_dt(2026, 7, 29, 9),
+        source="reflection",
+    )
+    derived = _memory(
+        "derived",
+        "Una riflessione sulla pompa FIMIC.",
+        _local_dt(2026, 7, 29, 9),
+        source="reflection",
+    )
+    project = _memory(
+        "project",
+        "Progetto ICMA2: prova tecnica della pompa FIMIC FPP20.",
+        _local_dt(2026, 7, 20, 9),
+        requires_verification=True,
+    )
+
+    ordered, priority_id = _prioritize_authoritative_named_project(
+        [ambient, derived, project],
+        "Hai tracce del progetto ICMA2 con FIMIC?",
+    )
+
+    assert [item["id"] for item in ordered] == ["project", "ambient", "derived"]
+    assert priority_id == "project"
+    assert ordered[0]["requires_verification"] is True
 
 
 if __name__ == "__main__":

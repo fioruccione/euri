@@ -18,14 +18,15 @@ Nessun modello di linguaggio, da solo, fa questo. Euri lo fa perché sotto non c
 
 *Quello che segue è* come *Euri fa tutto questo. Non è il contorno — è la prova.*
 
-## Architettura Cognitiva (V2.22)
+## Architettura Cognitiva (stato corrente)
 
 > **Principio di separazione:** Euri può collegare due esperienze senza
 > confonderle. La somiglianza crea una relazione; solo l'identità autorizza
 > aggiornamento, consolidamento o supersessione.
 >
-> **Fotografia della release:** [Euri V2.22 — Memoria osservabile e confinata](docs/EURI_V2.22_STATE_2026-07-30.md)
-> **Lavori aperti:** [registro unico](docs/EURI_OPEN_WORK.md)
+> **Fotografia storica della release V2.22:** [Memoria osservabile e confinata](docs/EURI_V2.22_STATE_2026-07-30.md)
+> **Stato operativo corrente:** [registro unico](docs/EURI_OPEN_WORK.md)
+> **Prossimo collaudo live:** [checkpoint 28 agosto 2026](docs/EURI_LIVE_ACCEPTANCE_2026-08-28.md)
 
 > **Mappa canonica della memoria:** [Architettura mnemonica di Euri](docs/EURI_MEMORY_ARCHITECTURE.md). È il punto di partenza per capire o modificare turni verbatim, continuità, memoria passiva, RAG, lifecycle, Dream Engine e Obsidian; non ricostruire questi flussi leggendo ogni volta i moduli separatamente.
 

@@ -383,6 +383,15 @@ DREAM_ENGINE_POLL_SECONDS = 300
 DREAM_LIGHT_CYCLE_INTERVAL_S = 20 * 60       # insight eval, correzioni, ipotesi 2i, provenienza
 DREAM_CREATIVE_CYCLE_INTERVAL_S = 90 * 60    # nuovo sogno cross-domain + promozione
 DREAM_MAINTENANCE_CYCLE_INTERVAL_S = 24 * 3600  # 2f/2h/cleanup/pruning/2e
+# Una richiesta vocale accettata revoca lo stream Ollama del Dream. Se il runner
+# era davvero occupato, il daemon conferma subito l'ascolto prima del dispatch.
+DREAM_FOREGROUND_PREEMPT_ENABLED = (
+    os.environ.get("EURI_DREAM_FOREGROUND_PREEMPT_ENABLED", "1") == "1"
+)
+DREAM_VOICE_BUSY_ACK_ENABLED = (
+    os.environ.get("EURI_DREAM_VOICE_BUSY_ACK_ENABLED", "1") == "1"
+)
+DREAM_VOICE_BUSY_ACK_TEXT = "Ti ho sentito. Interrompo un'attivita' in background e ti rispondo."
 
 # Modello identitario emergente. Il Dream propone pattern da turni owner verificati;
 # il codice convalida citazioni e supporti prima di renderli stabili. Il contenuto
@@ -804,6 +813,20 @@ SOCIAL_PERCEPTION_CONTEXT_ENABLED = (
 SOCIAL_PERCEPTION_PRESENT_ENABLED = False
 # Futuro interprete occasionale Gemma4 Vision in idle. Non implementato in Fase 0.
 SOCIAL_PERCEPTION_MULTIMODAL_ENABLED = False
+
+# Consapevolezza operativa vocale: conserva soltanto metadati sanitizzati sui
+# gate attraversati da ogni segmento. Nessun audio, trascrizione o embedding.
+# Lo stato condiviso ha TTL; Pulse riceve sola telemetria bounded e il Brain vede
+# esclusivamente i recenti segmenti non inoltrati.
+VOICE_PERCEPTION_AWARENESS_ENABLED = (
+    os.environ.get("EURI_VOICE_PERCEPTION_AWARENESS_ENABLED", "1") == "1"
+)
+VOICE_PERCEPTION_STATE_KEY = "euri:voice:perception:recent"
+VOICE_PERCEPTION_TTL_S = int(
+    os.environ.get("EURI_VOICE_PERCEPTION_TTL_S", "300")
+)
+VOICE_PERCEPTION_MAX_EVENTS = 8
+VOICE_PERCEPTION_CONTEXT_MAX_EVENTS = 3
 
 # Dopo il wake word, una conversazione mantiene un focus più lungo della lease
 # diretta. Fuori dai 45 secondi una frase senza wake viene accettata soltanto se

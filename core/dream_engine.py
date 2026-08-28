@@ -87,6 +87,10 @@ _CAUSAL_EPISODE_RE = re.compile(
 
 _DERIVED_CROSS_EPISODE_TAGS = {"lesson", "from_correction"}
 
+
+class DreamActivityInterrupted(Exception):
+    """Una richiesta foreground ha revocato il lavoro LLM idle corrente."""
+
 # Il Dream creativo deve partire da materiale vissuto o deliberatamente acquisito,
 # non da interpretazioni che Euri ha prodotto su se stessa. I flag del singolo JSON
 # vengono rivalidati dopo la shortlist RediSearch: l'indice accelera, non decide.
@@ -222,6 +226,11 @@ class DreamEngine:
         self._running = False
         self._thread = None
         self._stop_event = threading.Event()
+        # Il lavoro idle e' revocabile: una nuova attivita' foreground chiude lo
+        # stream HTTP Dream, liberando davvero il runner invece di abbandonare un
+        # thread che continuerebbe a consumare GPU in background.
+        self._activity_event = threading.Event()
+        self._active_llm = threading.Event()
         self._lock = threading.Lock()
         # Loop 2h — Self-Observation: istanziato solo se memory è disponibile
         # (in test isolati può essere None).
@@ -392,10 +401,24 @@ class DreamEngine:
             if thread.is_alive():
                 logger.warning("Dream Engine: thread non terminato entro la deadline")
             
-    def notify_activity(self):
-        """Chiamato da voice_daemon ad ogni STT/TTS per resettare l'idle timer."""
+    def notify_activity(self) -> bool:
+        """Revoca il Dream corrente e ritorna se una chiamata LLM era attiva."""
         with self._lock:
             self._last_activity = time.time()
+            was_active = self._active_llm.is_set()
+            if getattr(config, "DREAM_FOREGROUND_PREEMPT_ENABLED", True):
+                self._activity_event.set()
+            else:
+                was_active = False
+        return was_active
+
+    def is_llm_active(self) -> bool:
+        """Stato osservabile usato dal canale voce, senza inferenze dai log."""
+        return self._active_llm.is_set()
+
+    def _raise_if_foreground_active(self) -> None:
+        if self._activity_event.is_set() or self._stop_event.is_set():
+            raise DreamActivityInterrupted("foreground_activity")
 
     def _run_self_observation(self):
         """Esegue Loop 2h soltanto finché lo snapshot idle resta valido."""
@@ -421,7 +444,13 @@ class DreamEngine:
         return elapsed >= idle_seconds
 
     def _ollama_chat(self, **kwargs) -> ollama.ChatResponse:
-        """Wrapper con timeout (default 200s) attorno a ollama.chat — evita hang dei cicli idle.
+        """Chat Dream con timeout e cancellazione reale su attivita' foreground.
+
+        Il trasporto usa sempre lo stream: i chunk vengono ricomposti nella stessa
+        ``ChatResponse`` attesa dai chiamanti. Quando arriva voce, chiudere il
+        generatore chiude la risposta HTTP e segnala a Ollama di interrompere la
+        generazione, anziche' lasciare un worker orfano sulla GPU.
+
         Antepone il contesto operativo (EURI_CONTEXT.md) come messaggio system a tutte le
         chiamate offline/idle (sogno, sintesi, contraddizioni, plausibilità). Fail-open: se il
         file manca, op_ctx è "" e i messaggi restano invariati."""
@@ -431,8 +460,34 @@ class DreamEngine:
         op_ctx = load_operational_context()
         if op_ctx and kwargs.get("messages"):
             kwargs["messages"] = [{"role": "system", "content": op_ctx}, *kwargs["messages"]]
+        self._raise_if_foreground_active()
+        self._active_llm.set()
+        stream = None
         try:
-            response = get_dream_client(timeout).chat(**kwargs)
+            # Copre la corsa notify_activity() tra il controllo precedente e il
+            # momento in cui _active_llm diventa visibile al daemon vocale.
+            self._raise_if_foreground_active()
+            kwargs["stream"] = True
+            stream = get_dream_client(timeout).chat(**kwargs)
+            if isinstance(stream, ollama.ChatResponse):
+                response = stream
+            else:
+                response = None
+                content_parts: list[str] = []
+                thinking_parts: list[str] = []
+                for chunk in stream:
+                    self._raise_if_foreground_active()
+                    response = chunk
+                    message = getattr(chunk, "message", None)
+                    if message is not None:
+                        if getattr(message, "content", None):
+                            content_parts.append(message.content)
+                        if getattr(message, "thinking", None):
+                            thinking_parts.append(message.thinking)
+                if response is None:
+                    raise RuntimeError("Dream Engine: stream Ollama vuoto")
+                response.message.content = "".join(content_parts)
+                response.message.thinking = "".join(thinking_parts)
             if call_label:
                 message = getattr(response, "message", None)
                 thinking = getattr(message, "thinking", "") or ""
@@ -445,12 +500,26 @@ class DreamEngine:
                     f"thinking_chars={len(thinking)} content_chars={len(content)}"
                 )
             return response
+        except DreamActivityInterrupted:
+            target = f" [{call_label}]" if call_label else ""
+            logger.info(
+                f"Dream Engine: LLM{target} interrotto da attivita' foreground "
+                f"dopo {time.monotonic() - started:.1f}s"
+            )
+            if stream is not None and hasattr(stream, "close"):
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+            raise
         except (httpx.TimeoutException, TimeoutError):
             target = f" [{call_label}]" if call_label else ""
             logger.warning(
                 f"Dream Engine: timeout LLM{target} dopo {timeout}s — chiamata interrotta"
             )
             raise
+        finally:
+            self._active_llm.clear()
 
     def _loop(self):
         """Loop principale: controlla l'idle e lancia i sotto-cicli dovuti."""
@@ -464,6 +533,17 @@ class DreamEngine:
 
     def _run_due_idle_cycles(self):
         """Esegue solo i sotto-cicli scaduti mentre Euri è idle."""
+        # Riconvalida sotto lo stesso lock usato da notify_activity: una voce
+        # arrivata fra _is_idle() e questo metodo non puo' essere cancellata da
+        # clear(). Il segnale resta poi armato per tutta la durata del ciclo.
+        with self._lock:
+            idle_seconds = float(
+                getattr(config, "DREAM_ENGINE_IDLE_SECONDS", 0)
+                or getattr(config, "DREAM_ENGINE_IDLE_HOURS", 2) * 3600
+            )
+            if time.time() - self._last_activity < idle_seconds:
+                return
+            self._activity_event.clear()
         ts = time.time()
         light_due = ts - self._light_last_run >= float(getattr(config, "DREAM_LIGHT_CYCLE_INTERVAL_S", 20 * 60))
         creative_due = ts - self._creative_last_run >= float(getattr(config, "DREAM_CREATIVE_CYCLE_INTERVAL_S", 90 * 60))
@@ -507,7 +587,11 @@ class DreamEngine:
             phase_started = time.monotonic()
             try:
                 self._creative_cycle()
+                self._raise_if_foreground_active()
                 self._creative_last_run = time.time()
+            except DreamActivityInterrupted:
+                logger.info("Dream Engine: ciclo idle rinviato per attivita' foreground")
+                return
             except Exception as e:
                 logger.error(f"Errore ciclo creativo Dream Engine: {e}")
             finally:
@@ -528,6 +612,7 @@ class DreamEngine:
                     precommit_guard=_activity_unchanged,
                     reference_at=ts,
                 )
+                self._raise_if_foreground_active()
                 logger.info(
                     "Modello identitario: status={} proposte={} accettate={} "
                     "stabili={} revisione={}",
@@ -537,6 +622,9 @@ class DreamEngine:
                     result.stable,
                     result.revision,
                 )
+            except DreamActivityInterrupted:
+                logger.info("Dream Engine: ciclo idle rinviato per attivita' foreground")
+                return
             except Exception as e:
                 logger.error(f"Errore consolidamento identitario: {e}")
             finally:
@@ -545,7 +633,11 @@ class DreamEngine:
             phase_started = time.monotonic()
             try:
                 self._light_cycle()
+                self._raise_if_foreground_active()
                 self._light_last_run = time.time()
+            except DreamActivityInterrupted:
+                logger.info("Dream Engine: ciclo idle rinviato per attivita' foreground")
+                return
             except Exception as e:
                 logger.error(f"Errore ciclo leggero Dream Engine: {e}")
             finally:
@@ -554,8 +646,12 @@ class DreamEngine:
             phase_started = time.monotonic()
             try:
                 self._maintenance_cycle()
+                self._raise_if_foreground_active()
                 self._maintenance_last_run = time.time()
                 self._persist_maintenance_clock(self._maintenance_last_run)
+            except DreamActivityInterrupted:
+                logger.info("Dream Engine: ciclo idle rinviato per attivita' foreground")
+                return
             except Exception as e:
                 logger.error(f"Errore ciclo manutentivo Dream Engine: {e}")
             finally:
@@ -3592,6 +3688,50 @@ Rispondi esclusivamente con JSON:
             return False
         return True
 
+    @staticmethod
+    def _loop2f_authority_tier(doc: dict) -> int:
+        """Autorita' della provenienza per una vera sostituzione fattuale.
+
+        Una rielaborazione interna puo' organizzare o interpretare un fatto, ma
+        non diventa una fonte piu' autorevole soltanto perche' e' stata creata
+        dopo. Il tempo continua a decidere tra memorie dello stesso livello.
+        """
+        source = str((doc or {}).get("source") or "").strip().lower()
+        kind = str((doc or {}).get("memory_kind") or "").strip().lower()
+        if source in {"user", "teach", "obsidian_vault", "mobile_in"}:
+            return 2
+        if source in {
+            "passive", "reflection", "reaction", "loop2e", "episode",
+            "conversation",
+        } or kind in {
+            "reflection", "reaction_lesson", "derived_consolidation",
+            "conversation_anchor", "conversation_episode",
+        }:
+            return 0
+        return 1
+
+    @classmethod
+    def _loop2f_select_loser(
+        cls, seed: dict, neighbor: dict
+    ) -> tuple[dict, dict, str]:
+        """Ritorna ``(loser, winner, policy)`` senza modificare lo stato.
+
+        Prima preserva la fonte piu' autorevole; a parita' mantiene la policy
+        storica che considera corrente il documento piu' recente.
+        """
+        seed_tier = cls._loop2f_authority_tier(seed)
+        neighbor_tier = cls._loop2f_authority_tier(neighbor)
+        if seed_tier != neighbor_tier:
+            if seed_tier < neighbor_tier:
+                return seed, neighbor, "source-authority-v1"
+            return neighbor, seed, "source-authority-v1"
+
+        seed_ts = float(seed.get("created_at") or 0)
+        neighbor_ts = float(neighbor.get("created_at") or 0)
+        if seed_ts < neighbor_ts:
+            return seed, neighbor, "recency-within-authority-v1"
+        return neighbor, seed, "recency-within-authority-v1"
+
     def _make_comparison_memory(
         self,
         content_a: str,
@@ -3829,14 +3969,15 @@ Rispondi solo col confronto."""
                     if rel != "contradiction":
                         continue
 
-                    # 5. Contraddizione vera: soft-delete il più vecchio (created_at minore)
-                    seed_ts = float(seed.get("created_at") or 0)
-                    n_ts = float(n_doc.get("created_at") or 0)
-                    seed_is_older = seed_ts < n_ts
-                    if seed_is_older:
-                        loser_doc, loser_id, winner_id = seed, seed_id, n_id
-                    else:
-                        loser_doc, loser_id, winner_id = n_doc, n_id, seed_id
+                    # 5. Contraddizione vera: una memoria derivata non puo'
+                    # sostituire una fonte diretta solo perche' e' piu' recente.
+                    # A parita' di autorita' resta valida la recency legacy.
+                    loser_doc, winner_doc, resolution_policy = self._loop2f_select_loser(
+                        seed, n_doc
+                    )
+                    loser_id = str(loser_doc.get("id") or "")
+                    winner_id = str(winner_doc.get("id") or "")
+                    seed_was_superseded = loser_id == seed_id
 
                     # PARAURTI di richiamo (N3): un atomo fattuale MOLTO RICHIAMATO non viene
                     # auto-cancellato via contraddizione — tieni entrambi. Deterministico:
@@ -3868,9 +4009,9 @@ Rispondi solo col confronto."""
                         continue
                     logger.info(
                         f"Loop 2f: {loser_id[:8]}… superseded by {winner_id[:8]}… "
-                        "(conflitto risolto, policy=legacy-deployed)"
+                        f"(conflitto risolto, policy={resolution_policy})"
                     )
-                    if seed_is_older:
+                    if seed_was_superseded:
                         break  # seed è stato superseded, inutile continuare con i suoi vicini
                     resolved += 1
 

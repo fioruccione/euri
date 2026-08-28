@@ -13,6 +13,7 @@ from core.rag_context import (
     apply_knowledge_gap_contract,
     build_dual_channel_context,
     build_runtime_rag_context,
+    derived_memory_epistemic_contract,
     memory_origin_for_context,
     selective_thinking_decision,
 )
@@ -112,6 +113,8 @@ def test_memory_origin_exposes_kind_without_assigning_truth():
     )
     derived = memory_origin_for_context({"source": "loop2e"})
     assert "consolidamento interno di Euri" in derived
+    passive = memory_origin_for_context({"source": "passive"})
+    assert "non verifica indipendente" in passive
     assert all(
         word not in " ".join(
             [
@@ -122,6 +125,17 @@ def test_memory_origin_exposes_kind_without_assigning_truth():
         ).lower()
         for word in ("vero", "falso", "affidabile")
     )
+
+
+def test_derived_memory_contract_preserves_reasoning_without_self_confirmation():
+    assert derived_memory_epistemic_contract([{"source": "user"}]) == ""
+    contract = derived_memory_epistemic_contract([
+        {"source": "user"},
+        {"source": "passive"},
+    ])
+    assert "puoi usarli per inferire" in contract
+    assert "non costituisce una seconda conferma indipendente" in contract
+    assert "senza disclaimer automatici" in contract
 
 
 def test_brain_persists_stable_turn_refs_and_metadata_reuses_them():
@@ -571,6 +585,8 @@ def test_dual_channel_searches_insights_once_and_reuses_query_vector():
 
 
 if __name__ == "__main__":
+    test_memory_origin_exposes_kind_without_assigning_truth()
+    test_derived_memory_contract_preserves_reasoning_without_self_confirmation()
     test_brain_persists_stable_turn_refs_and_metadata_reuses_them()
     test_dual_channel_protects_base_and_injects_only_original_turn()
     test_unhydrated_historical_passive_note_is_not_used_as_evidence()
