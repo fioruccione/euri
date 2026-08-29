@@ -11,6 +11,7 @@ from core.rag_context import (
     build_rag_context,
     infer_context_mode,
 )
+from core.retrieval_context import resolve_retrieval_context
 from core.retrieval_strategy import choose_strategy
 from utils.temporal import detect_recent_memory_intent, extract_temporal_range
 
@@ -310,6 +311,189 @@ def test_named_project_priority_reserves_direct_source_without_claiming_truth():
     assert [item["id"] for item in ordered] == ["project", "ambient", "derived"]
     assert priority_id == "project"
     assert ordered[0]["requires_verification"] is True
+
+
+def _memory_search_frame(*, needed=True, focus=None, confidence=0.97):
+    return {
+        "status": "interpreted",
+        "confidence": confidence,
+        "memory_scope": "personal",
+        "speech_acts": ["ASK", "REQUEST_MEMORY_SEARCH"],
+        "memory_retrieval": {
+            "needed": needed,
+            "focus": list(focus or []),
+            "relation": "continuita'",
+            "evidence_goal": "continuity",
+            "confidence": confidence,
+        },
+    }
+
+
+def _owner_entity_turn(name, *, seq=7, segment_id=3, scope="personal",
+                       canonical=None, status="mentioned"):
+    canonical = canonical or name
+    return {
+        "role": "user",
+        "content": f"Stiamo parlando di {name}.",
+        "raw_content": f"Stiamo parlando di {name}.",
+        "trusted": True,
+        "turn_ref": f"conv:{seq}",
+        "segment_id": segment_id,
+        "memory_scope": scope,
+        "semantic_frame": {
+            "status": "interpreted",
+            "confidence": 0.97,
+            "accepted_owner_turn": True,
+            "entities": [{
+                "observed_form": name,
+                "canonical_name": canonical,
+                "entity_type": "project",
+                "status": status,
+                "confidence": 0.96,
+            }],
+        },
+        "observed_at": NOW.timestamp() - 30,
+    }
+
+
+def test_systemic_followup_inherits_last_grounded_owner_subject_without_mutation():
+    frame = _memory_search_frame(needed=True)
+    history = [_owner_entity_turn("ICMA2")]
+    original_frame = {**frame, "memory_retrieval": dict(frame["memory_retrieval"])}
+
+    resolution = resolve_retrieval_context(
+        "Nelle tue memorie dovresti avere tutti i dettagli.", frame, history
+    )
+
+    assert resolution.effective_query.endswith("Entita' attive del filo: ICMA2")
+    assert resolution.semantic_plan["focus"][0]["entity"] == "ICMA2"
+    assert resolution.contextual_focus[0]["source_turn_ref"] == "conv:7"
+    assert resolution.reason == "inherited_recent_owner_focus"
+    assert frame == original_frame
+
+
+def test_systemic_followup_uses_effective_query_for_identifier_first_recall():
+    project = _memory(
+        "icma2-systemic",
+        "Progetto ICMA2: la pompa FIMIC FPP20 alimenta il filtro RAS500.",
+        _local_dt(2026, 7, 20, 9),
+    )
+    memory = FakeMemory([], semantic=[project])
+    queries = []
+    original = memory.search_memories
+
+    def capture(query, **kwargs):
+        queries.append(query)
+        return original(query, **kwargs)
+
+    memory.search_memories = capture
+    rag = build_rag_context(
+        "Nelle tue memorie dovresti avere tutti i dettagli.",
+        memory,
+        mode="search",
+        recent_history=[_owner_entity_turn("ICMA2")],
+        semantic_frame=_memory_search_frame(needed=True),
+    )
+
+    assert queries and "ICMA2" in queries[0]
+    assert project["id"] in rag.ids
+    assert rag.diagnostics["retrieval_resolution"]["query_changed"] is True
+
+
+def test_systemic_resolution_preserves_no_retrieval_and_scope_segment_boundaries():
+    no_retrieval = resolve_retrieval_context(
+        "Era solo una menzione.",
+        _memory_search_frame(needed=False),
+        [_owner_entity_turn("ICMA2")],
+    )
+    assert no_retrieval.effective_query == no_retrieval.raw_query
+    assert no_retrieval.contextual_focus == ()
+
+    other_scope = resolve_retrieval_context(
+        "Che cosa ricordi?",
+        _memory_search_frame(needed=True),
+        [_owner_entity_turn("ICMA2", scope="experiment_demo")],
+    )
+    assert other_scope.reason == "no_grounded_context_focus"
+
+    history = [
+        _owner_entity_turn("ICMA2", seq=1, segment_id=2),
+        {
+            "role": "user", "content": "Nuovo argomento senza nomi.",
+            "trusted": True, "turn_ref": "conv:2", "segment_id": 3,
+            "memory_scope": "personal", "semantic_frame": {
+                "status": "interpreted", "confidence": 0.97,
+                "accepted_owner_turn": True, "entities": [],
+            },
+        },
+    ]
+    new_segment = resolve_retrieval_context(
+        "Che cosa ricordi?", _memory_search_frame(needed=True), history
+    )
+    assert new_segment.reason == "no_grounded_context_focus"
+
+
+def test_systemic_resolution_never_promotes_pronominal_coreference():
+    pronoun = _owner_entity_turn(
+        "loro", canonical="Gio Style", status="resolved"
+    )
+    resolution = resolve_retrieval_context(
+        "Che cosa ricordi?", _memory_search_frame(needed=True), [pronoun]
+    )
+    assert resolution.effective_query == resolution.raw_query
+    assert resolution.contextual_focus == ()
+
+
+def test_systemic_resolution_uses_latest_named_topic_in_same_segment():
+    history = [
+        _owner_entity_turn("ICMA2", seq=1, segment_id=3),
+        _owner_entity_turn("Eurostampi", seq=2, segment_id=3),
+    ]
+
+    resolution = resolve_retrieval_context(
+        "Che cosa ricordi?", _memory_search_frame(needed=True), history
+    )
+
+    assert resolution.effective_query.endswith("Entita' attive del filo: Eurostampi")
+    assert "ICMA2" not in resolution.effective_query
+    assert resolution.contextual_focus[0]["source_turn_ref"] == "conv:2"
+
+
+def test_systemic_resolution_preserves_explicit_focus_and_query():
+    frame = _memory_search_frame(
+        needed=True,
+        focus=[{"entity": "ICMA2", "role": "focus", "relevance": 0.98}],
+    )
+
+    resolution = resolve_retrieval_context(
+        "Che cosa ricordi di ICMA2?",
+        frame,
+        [_owner_entity_turn("Eurostampi")],
+    )
+
+    assert resolution.effective_query == resolution.raw_query
+    assert resolution.reason == "current_query_grounded"
+    assert resolution.contextual_focus == ()
+
+
+def test_systemic_resolution_fails_closed_on_low_confidence_and_flag_off():
+    low_confidence = resolve_retrieval_context(
+        "Che cosa ricordi?",
+        _memory_search_frame(needed=True),
+        [_owner_entity_turn("ICMA2")],
+        minimum_confidence=0.99,
+    )
+    assert low_confidence.reason == "no_grounded_context_focus"
+
+    with patch.object(config, "SYSTEMIC_RETRIEVAL_ENABLED", False):
+        disabled = resolve_retrieval_context(
+            "Che cosa ricordi?",
+            _memory_search_frame(needed=True),
+            [_owner_entity_turn("ICMA2")],
+        )
+    assert disabled.effective_query == disabled.raw_query
+    assert disabled.reason == "disabled"
+    assert disabled.diagnostics()["enabled"] is False
 
 
 if __name__ == "__main__":

@@ -1467,6 +1467,7 @@ with main_col:
                     _response_recorded_by_brain = False
                     from core.semantic_turn import (
                         arbitrate_routable_intent,
+                        gate_web_route,
                         frame_requests_linguistic_response,
                         frame_requests_contextual_action,
                         frame_vetoes_contextual_action,
@@ -1495,6 +1496,20 @@ with main_col:
                             "Silent Chat: intent condiviso dal frame semantico: {}",
                             _intent.value,
                         )
+                    _gated_web = gate_web_route(
+                        semantic_frame,
+                        _intent,
+                        minimum_confidence=getattr(
+                            config, "SEMANTIC_WEB_MIN_CONFIDENCE", 0.82
+                        ),
+                    )
+                    if _gated_web != _intent.value:
+                        logger.info(
+                            "Silent Chat: WEB_SEARCH fail-closed {} → {}",
+                            _intent.value,
+                            _gated_web,
+                        )
+                        _intent = Intent(_gated_web)
 
                     # SAVE esplicito prima di QUALSIASI tool: una correzione di
                     # memoria non puo' essere rubata da ingest/compose solo perche'

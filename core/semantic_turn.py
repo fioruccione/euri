@@ -25,7 +25,7 @@ from core.ollama_client import chat_client
 from core.pulse import cognitive_emit
 
 
-SEMANTIC_FRAME_VERSION = 8
+SEMANTIC_FRAME_VERSION = 9
 ENTITY_SCHEMA_VERSION = 1
 _ALIAS_KEY_PREFIX = "euri:semantic:entity_aliases:"
 _ENTITY_KEY_PREFIX = "euri:semantic:entity:"
@@ -165,6 +165,7 @@ class SemanticTurnFrame:
     facts: list[dict] = field(default_factory=list)
     actions: list[dict] = field(default_factory=list)
     web_query: str = ""
+    web_search_request: dict = field(default_factory=dict)
     preservation_mode: str = "semantic"
     requires_clarification: bool = False
     confidence: float = 0.0
@@ -200,6 +201,7 @@ class SemanticTurnFrame:
             "facts": list(self.facts),
             "actions": list(self.actions),
             "web_query": self.web_query,
+            "web_search_request": dict(self.web_search_request),
             "preservation_mode": self.preservation_mode,
             "requires_clarification": self.requires_clarification,
             "confidence": self.confidence,
@@ -503,6 +505,13 @@ Regole:
             "le singole lettere: la sillabazione e' evidenza, non il nome canonico.\n"
             "Distingui identita' (CORRECT_ENTITY) da correzioni fattuali (CORRECT_FACT). "
             "Se chiede una ricerca Internet, compila web_query con termini canonici. "
+            "Produci anche web_search_request: explicit=true e source=web soltanto "
+            "quando il turno CORRENTE autorizza chiaramente una fonte Internet/Web "
+            "esterna. Cita in evidence le parole letterali che forniscono tale "
+            "autorizzazione. Una ricerca allargata, associativa, approfondita o fra "
+            "memorie/progetti resta REQUEST_MEMORY_SEARCH: il verbo cercare non "
+            "autorizza da solo l'esterno. Un riferimento ellittico come 'controlla "
+            "nel web' e' esplicito perche' nomina comunque la fonte esterna. "
             "Se detta/traduce/cita testo da preservare, usa preservation_mode=verbatim.\n"
             "Distingui rigorosamente una RISPOSTA da un'ESECUZIONE. Chiedere cosa sai, "
             "ricordi, ricostruisci o puoi riferire dal contesto/memoria e' SEARCH con ASK "
@@ -661,7 +670,9 @@ Regole:
             "\"polarity\":\"requested|negated|hypothetical\","
             "\"source_kind\":\"active_document|recent_conversation|instruction_only|unspecified\","
             "\"source_scope\":\"last_exchange|current_thread|recent_turns|unspecified\"}],"
-            "\"web_query\":\"\",\"preservation_mode\":\"semantic|verbatim\","
+            "\"web_query\":\"\",\"web_search_request\":{"
+            "\"explicit\":false,\"source\":\"web|unspecified\",\"evidence\":\"\","
+            "\"confidence\":0.0},\"preservation_mode\":\"semantic|verbatim\","
             "\"requires_clarification\":false,\"meaning_preserved\":true,"
             "\"confidence\":0.0,\"memory_disposition\":\"candidate|ephemeral|no_store\","
             "\"memory_reason\":\"\",\"memory_policy\":{"
@@ -1030,6 +1041,34 @@ Regole:
         }
 
     @staticmethod
+    def _normalized_web_search_request(data: dict, raw_text: str) -> dict:
+        """Valida l'autorizzazione esterna citata dal frame nel turno corrente."""
+        raw = data.get("web_search_request")
+        if not isinstance(raw, dict):
+            return {
+                "explicit": False,
+                "source": "unspecified",
+                "evidence": "",
+                "evidence_grounded": False,
+                "confidence": 0.0,
+            }
+        source = str(raw.get("source") or "unspecified").strip().lower()
+        if source not in {"web", "unspecified"}:
+            source = "unspecified"
+        evidence = str(raw.get("evidence") or "").strip()[:320]
+        evidence_key = _alias_token(evidence)
+        raw_key = _alias_token(raw_text)
+        grounded = bool(evidence_key and evidence_key in raw_key)
+        explicit = raw.get("explicit") is True and source == "web" and grounded
+        return {
+            "explicit": explicit,
+            "source": "web" if explicit else "unspecified",
+            "evidence": evidence if grounded else "",
+            "evidence_grounded": grounded,
+            "confidence": _confidence(raw.get("confidence")),
+        }
+
+    @staticmethod
     def _normalized_memory_policy(data: dict, raw_text: str) -> dict:
         """Valida una direttiva mnemonica senza riconoscerla con regole lessicali.
 
@@ -1146,6 +1185,7 @@ Regole:
         entities = [item for item in (data.get("entities") or []) if isinstance(item, dict)][:16]
         memory_retrieval = cls._normalized_memory_retrieval(data, entities)
         evidence_request = cls._normalized_evidence_request(data, entities)
+        web_search_request = cls._normalized_web_search_request(data, raw_text)
         teaching_session = cls._normalized_teaching_session(data, raw_text)
         deliberation_request = cls._normalized_deliberation_request(data, raw_text)
         memory_policy = cls._normalized_memory_policy(data, raw_text)
@@ -1240,6 +1280,7 @@ Regole:
             facts=facts,
             actions=cls._normalized_actions(data),
             web_query=web_query,
+            web_search_request=web_search_request,
             preservation_mode=preservation,
             requires_clarification=bool(data.get("requires_clarification")),
             confidence=confidence,
@@ -1613,6 +1654,66 @@ def trusted_evidence_request(
     }
 
 
+def trusted_web_search_request(
+    frame: dict | None,
+    *,
+    minimum_confidence: float | None = None,
+) -> dict | None:
+    """Espone l'accesso Web solo da autorizzazione semantica grounded."""
+    if not isinstance(frame, dict) or frame.get("status") != "interpreted":
+        return None
+    floor = float(
+        minimum_confidence
+        if minimum_confidence is not None
+        else getattr(config, "SEMANTIC_WEB_MIN_CONFIDENCE", 0.82)
+    )
+    if frame.get("requires_clarification") or _confidence(frame.get("confidence")) < floor:
+        return None
+    if str(frame.get("primary_intent") or "").upper() != "WEB_SEARCH":
+        return None
+    acts = {str(item or "").upper() for item in frame.get("speech_acts") or []}
+    if "REQUEST_WEB_SEARCH" not in acts:
+        return None
+    request = frame.get("web_search_request")
+    if not isinstance(request, dict):
+        return None
+    if (
+        request.get("explicit") is not True
+        or request.get("source") != "web"
+        or request.get("evidence_grounded") is not True
+        or _confidence(request.get("confidence")) < floor
+    ):
+        return None
+    return dict(request)
+
+
+def gate_web_route(
+    frame: dict | None,
+    current_intent,
+    *,
+    minimum_confidence: float | None = None,
+) -> str:
+    """Chiude sempre un WEB_SEARCH privo di autorizzazione grounded."""
+    current = str(getattr(current_intent, "value", current_intent) or "").upper()
+    if current != "WEB_SEARCH":
+        return current
+    floor = float(
+        minimum_confidence
+        if minimum_confidence is not None
+        else getattr(config, "SEMANTIC_WEB_MIN_CONFIDENCE", 0.82)
+    )
+    if trusted_web_search_request(frame, minimum_confidence=floor) is not None:
+        return current
+    acts = {
+        str(item or "").upper()
+        for item in (frame or {}).get("speech_acts") or []
+    } if isinstance(frame, dict) else set()
+    plan = trusted_memory_retrieval_plan(frame)
+    if "REQUEST_MEMORY_SEARCH" in acts or (plan and plan.get("needed")):
+        return "SEARCH"
+    return "CHAT"
+
+
 def _frame_has_concrete_action(frame: dict | None) -> bool:
     if not isinstance(frame, dict):
         return False
@@ -1837,6 +1938,14 @@ def semantic_intent(frame: dict | None, *, minimum_confidence: float = 0.72) -> 
         "TEACH": {"INITIATE_TEACHING"},
     }.get(value)
     if required is not None and not (acts & required):
+        return ""
+    if value == "WEB_SEARCH" and trusted_web_search_request(
+        frame,
+        minimum_confidence=max(
+            float(minimum_confidence),
+            float(getattr(config, "SEMANTIC_WEB_MIN_CONFIDENCE", 0.82)),
+        ),
+    ) is None:
         return ""
     if value == "TEACH" and trusted_teaching_session(
         frame,

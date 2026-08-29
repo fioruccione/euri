@@ -20,6 +20,7 @@ from core.memory_axes import analyze_memory_axes
 from core.memory_risk import is_document_summary, memory_verification_suffix
 from core.memory_schema import expand_memories_via_schema, schema_memory_rejection_reason
 from core.pulse import pulse_emit
+from core.retrieval_context import resolve_retrieval_context
 from core.temporal_context import (
     memory_time_label,
     memory_time_label_legacy_v1,
@@ -503,7 +504,29 @@ def build_rag_context(
 
     source_filter = config.DEMO_CONTEXT_SOURCES if config.DEMO_MODE else None
     source_exclude = sorted(excluded_sources or ())
-    semantic_memory_plan = trusted_memory_retrieval_plan(semantic_frame)
+    legacy_semantic_plan = trusted_memory_retrieval_plan(semantic_frame)
+    retrieval_resolution = resolve_retrieval_context(
+        text,
+        semantic_frame,
+        recent_history,
+    )
+    if retrieval_resolution.effective_query != retrieval_resolution.raw_query:
+        logger.info(
+            "RAG focus contestuale: reason={} focus={} source_turn_refs={}",
+            retrieval_resolution.reason,
+            [
+                item.get("entity")
+                for item in retrieval_resolution.contextual_focus
+                if item.get("entity")
+            ],
+            retrieval_resolution.diagnostics().get("source_turn_refs", []),
+        )
+    semantic_memory_plan = (
+        retrieval_resolution.semantic_plan
+        if getattr(config, "SYSTEMIC_RETRIEVAL_ENABLED", True)
+        else legacy_semantic_plan
+    )
+    retrieval_text = retrieval_resolution.effective_query
     search_mode = mode == "search"
     recent_context_query = bool(_RECENT_CONTEXT_RE.search(text or ""))
     durable_recall_requested = _durable_recall_requested(
@@ -598,7 +621,7 @@ def build_rag_context(
 
     words = re.findall(
         r'\b[a-zA-ZàáâãäåèéêëìíîïòóôõöùúûüÀÁÂÃÄÅÈÉÊËÌÍÎÏÒÓÔÕÖÙÚÛÜ]{4,}\b',
-        text or "",
+        retrieval_text or "",
     )
     keywords = list(dict.fromkeys(w for w in words if w.lower() not in _STOP_WORDS))
     if (
@@ -615,7 +638,7 @@ def build_rag_context(
             search_kwargs["source_exclude"] = source_exclude
         if query_feature_cache is not None:
             search_kwargs["query_feature_cache"] = query_feature_cache
-        extra_memories = memory.search_memories(text, **search_kwargs)
+        extra_memories = memory.search_memories(retrieval_text, **search_kwargs)
         # Solo i risultati semantici della query attivano lo schema. Le memorie
         # ambientali recenti non devono trascinare la conversazione fuori tema.
         schema_seed_docs = list(extra_memories)
@@ -673,11 +696,11 @@ def build_rag_context(
         and recent_memory_intent is None
     ):
         cached_query = (
-            ((query_feature_cache or {}).get("entries") or {}).get(str(text))
+            ((query_feature_cache or {}).get("entries") or {}).get(str(retrieval_text))
             or {}
         )
         for ins in memory.search_insights(
-            text,
+            retrieval_text,
             limit=2,
             query_vector=cached_query.get("vector"),
             touch=touch,
@@ -740,7 +763,7 @@ def build_rag_context(
         schema_added, schema_diagnostics = expand_memories_via_schema(
             memory,
             schema_seed_docs,
-            text,
+            retrieval_text,
             limit=min(
                 int(getattr(config, "MEMORY_SCHEMA_RETRIEVAL_MAX", 2)),
                 max(0, mem_cap // 3),
@@ -791,7 +814,7 @@ def build_rag_context(
     project_priority_id = None
     if durable_recall_requested and recent_memory_intent is None and time_range is None:
         results, project_priority_id = _prioritize_authoritative_named_project(
-            results, text
+            results, retrieval_text
         )
     if reflection_lines:
         sections.append(
@@ -1034,6 +1057,7 @@ def build_rag_context(
             "temporal_query": temporal_diagnostics,
             "schema_expansion": schema_diagnostics,
             "semantic_memory_plan": semantic_memory_plan,
+            "retrieval_resolution": retrieval_resolution.diagnostics(),
             "durable_recall_requested": durable_recall_requested,
             "history_resolved_query": history_resolves_query,
             "named_project_priority_id": project_priority_id,

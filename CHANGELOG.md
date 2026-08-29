@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-08-29 - Recupero sistemico del soggetto e confine Web
+
+- Un resolver puro collega un follow-up mnemonico privo di focus all'ultima
+  entità nominale di un turno owner affidabile nello stesso scope e segmento.
+  La vista vale soltanto per il RAG corrente: frame, history, turni e Redis non
+  vengono mutati.
+- La query effettiva alimenta identifier-first, ricerca semantica, insight,
+  Loop 2j e priorità delle fonti dirette. Ogni focus ereditato conserva il
+  `source_turn_ref`; una coreferenza pronominale isolata, un `needed=false` o un
+  cambio di segmento/scope chiudono il resolver.
+- Il frame semantico v9 separa l'autorizzazione Web dalla ricerca mnemonica.
+  Senza richiesta esterna esplicita e grounded, `WEB_SEARCH` chiude su SEARCH o
+  CHAT; il semplice verbo “cercare” non autorizza Internet.
+- Una risposta Web viene persistita soltanto se i risultati sostengono almeno
+  un'entità nominale discriminante della query. Il gate non certifica la verità
+  della pagina e non impedisce di mostrare la sintesi, ma evita che un risultato
+  manifestamente fuori soggetto diventi memoria cognitiva.
+- Rollback senza migrazione: `EURI_SYSTEMIC_RETRIEVAL_ENABLED=0`. Le regressioni
+  preregistrate R1-R7 e W1-W4 sono verdi; manifest unitario 90/90 in 76,6 s. Il collaudo
+  organico resta separato e richiede un riavvio manuale del runtime.
+
 ## 2026-08-28 - Prefetch RAG CPU durante il frame semantico
 
 - La voce anticipa su un worker CPU l'embedding E5 e i pool KNN Redis mentre

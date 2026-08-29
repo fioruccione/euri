@@ -2,9 +2,9 @@
 
 Stato: **mappa canonica del comportamento corrente**
 
-Verificata contro il codice: **28 agosto 2026**
+Verificata contro il codice: **29 agosto 2026**
 
-Versione runtime di riferimento: **V2.25 — stato continuo al 28 agosto 2026**
+Versione runtime di riferimento: **V2.26 — recupero sistemico al 29 agosto 2026**
 
 ## Contratto di manutenzione
 
@@ -31,7 +31,7 @@ muore**. Gli esperimenti e le misure restano nei documenti dedicati.
 flowchart TB
     U[Voce, Mobile o Silent Chat] --> W[Whisper o testo raw]
     W --> S[Frame semantico condiviso]
-    S --> KN[Bisogno evidenziale, TEACH, deliberazione<br/>e policy mnemonica — frame v8]
+    S --> KN[Bisogno evidenziale, TEACH, deliberazione,<br/>Web e policy mnemonica — frame v9]
     W --> T[(Archivio turni verbatim<br/>euri:turn:*)]
     S -->|solo CORRECT_ENTITY esplicito| AR[(Registro identità scoped)]
     AR --> S
@@ -40,6 +40,8 @@ flowchart TB
     SV --> M
     T --> C[Capsule di continuità<br/>12 turni, TTL 6 ore]
     C --> H
+    S --> RC[Resolver effimero del focus<br/>stesso scope e segmento]
+    H --> RC
     T --> PM[Proiezione identitaria<br/>owner-scoped, ricostruibile]
 
     H --> P{Policy del turno}
@@ -56,6 +58,7 @@ flowchart TB
     O --> OB[Vault Obsidian]
 
     J --> R[Base RAG protetta<br/>senza passive nel dual-channel]
+    RC --> R
     J --> SJ[Loop 2j<br/>proiezione schematica ricostruibile]
     SJ --> R
     N --> R
@@ -413,11 +416,23 @@ Quella autorizzazione esplicita, non il Pulse precedente, abilita il percorso
 Web già esistente. Con `memory_only=true` Euri dichiara invece l'assenza delle
 informazioni senza offrire fonti esterne.
 
+Dal frame semantico versione 9 l'accesso esterno ha inoltre un contratto
+`web_search_request` separato dal bisogno evidenziale e dalla ricerca mnemonica.
+Il percorso Web si apre soltanto con `explicit=true`, `source=web`, atto
+`REQUEST_WEB_SEARCH`, confidenza sufficiente ed evidenza letterale grounded nel
+turno corrente. Un `WEB_SEARCH` interpretato senza quel contratto chiude su
+`SEARCH` se esiste una richiesta mnemonica, altrimenti su `CHAT`. Anche un frame
+assente, legacy, incompleto o a bassa confidenza non autorizza l'accesso esterno.
+
 Voce e Silent Chat condividono la query del frame. La voce conserva il proprio
 handler TTS; Silent Chat usa `core/web_search.py::answer_explicit_web_search` e
-restituisce lo stesso tipo di sintesi senza TTS. In entrambi i casi una sintesi
-riuscita viene salvata con `source=web`, TTL e `requires_verification` già
-previsti per quella sorgente.
+restituisce lo stesso tipo di sintesi senza TTS. La risposta Web e la sua
+persistenza sono due esiti distinti: prima del salvataggio, almeno un'entità
+nominale discriminante della query deve ricomparire nei risultati. Una sintesi
+fuori soggetto può
+essere mostrata ma non diventa memoria; soltanto una sintesi che supera questo
+gate viene salvata con `source=web`, TTL e `requires_verification` già previsti
+per quella sorgente.
 
 ### Registro delle identità
 
@@ -592,6 +607,19 @@ esistono memorie o tracce, `core/rag_context.py` conserva la history per i
 riferimenti ma esegue anche il recupero Redis. Le finestre temporali esplicite
 restano vincoli separati e non vengono allargate silenziosamente.
 
+Se una richiesta mnemonica affidabile è anaforica e il frame corrente non ha un
+focus, `core/retrieval_context.py` costruisce una risoluzione **effimera e
+read-only**. Può ereditare soltanto le entità nominali dell'ultimo turno owner
+affidabile nello stesso scope e nello stesso segmento: l'entità deve essere
+visibile nella superficie di quel turno, avere confidenza sufficiente e non
+essere una semplice proiezione pronominale. La query effettiva e il piano
+effettivo valgono esclusivamente per il RAG corrente; frame, history, archivio
+turni e Redis non vengono mutati. Il riferimento `context_source_turn_ref`
+rende osservabile l'origine dell'ancora, che resta un indizio di ricerca e mai
+evidenza sul contenuto recuperato. Un `memory_retrieval.needed=false` affidabile,
+un cambio di scope/segmento o l'assenza di un nome grounded chiudono il resolver.
+Il rollback è `EURI_SYSTEMIC_RETRIEVAL_ENABLED=0`.
+
 Per una richiesta durevole che nomina un'entita', un progetto tecnico diretto
 gia' presente nel pool recuperato puo' essere portato in testa prima del cap.
 La riserva non lancia un secondo salvataggio o una seconda ricerca, non assegna
@@ -619,9 +647,11 @@ Questa fase è soltanto read-only: non chiama il classificatore LLM del dominio,
 non applica ranking o schema, non effettua touch e non costruisce testo per il
 prompt. Dopo il frame, il runtime riusa il lavoro soltanto se la query
 interpretata coincide esattamente con quella prefetched; una canonicalizzazione
-che cambia il testo, un errore o una cache incompleta ricadono nel percorso
-sincrono. Dominio, filtri, boost, cap e contratto epistemico restano quindi
-invariati. La cache vive nel solo turno e il rollback operativo è
+che cambia il testo, l'aggiunta contestuale del resolver, un errore o una cache
+incompleta ricadono nel percorso sincrono. Questa scelta rende visibile il costo
+invece di riusare un embedding costruito su un soggetto diverso. Dominio,
+filtri, boost, cap e contratto epistemico restano quindi invariati. La cache vive
+nel solo turno e il rollback operativo è
 `EURI_RAG_CPU_PREFETCH_ENABLED=0`.
 
 Gli insight trasversali sono limitati a due per turno. Quando vengono resi nel
@@ -957,6 +987,11 @@ accetta soltanto focus già ancorati nelle `entities` del medesimo frame e appli
 una soglia di confidenza. Un piano affidabile con `needed=false` chiude quindi il
 2j anche se il ranking base ha incontrato una memoria appartenente allo schema.
 Se il piano manca o non è affidabile resta disponibile il comportamento legacy.
+Dal frame versione 9, quando un piano affidabile richiede memoria ma non contiene
+focus, il resolver sistemico può fornire il focus nominale dell'ultimo turno
+owner accettato nello stesso scope/segmento. Il 2j riceve la provenienza
+`context_source_turn_ref`; non considera quell'ancora una memoria, non la
+persiste e continua a restituire soltanto documenti canonici con i loro flag.
 
 Una relazione composta non equivale sempre alla stessa operazione. Per un
 vincolo soggetto-proprietà, ogni fonte deve rispettare l'intersezione completa:
@@ -1121,6 +1156,7 @@ Non usare `scripts/audit_memory.py --delete`, `--fix-*`, `--backfill-*` o
 | frame semantico, policy e arbitraggio sicuro | `core/semantic_turn.py` |
 | autorizzazione, sessione e commit TEACH | `core/semantic_turn.py`, `voice_daemon.py` |
 | risoluzione e commit del salvataggio esplicito | `core/save_service.py` |
+| risoluzione effimera del focus di retrieval | `core/retrieval_context.py` |
 | history e risposta | `core/brain.py` |
 | archivio verbatim | `core/conversation_turns.py::ConversationTurnStore` |
 | continuità fra processi | `core/conversation_continuity.py` |
@@ -1128,6 +1164,7 @@ Non usare `scripts/audit_memory.py --delete`, `--fix-*`, `--backfill-*` o
 | documento memoria, ricerca e touch | `core/memory_manager.py::MemoryManager` |
 | commit degli effetti derivati | `core/memory_outbox.py` |
 | composizione RAG | `core/rag_context.py` |
+| esecuzione Web e gate di persistenza per entità | `core/web_search.py` |
 | audit separato del payload finale Ollama | `core/prompt_research_log.py` |
 | guard atto-parola e scrub append-only | `core/act_word_check.py` |
 | policy dual-channel | `core/dual_channel.py`, `core/dual_channel_gate.py` |
@@ -1154,7 +1191,8 @@ Non usare `scripts/audit_memory.py --delete`, `--fix-*`, `--backfill-*` o
 8. Scope personale e sperimentale non si mescolano.
 9. Outbox, indici, Pulse e Vault non diventano fonti canoniche concorrenti.
 10. Una richiesta “non memorizzare” non va interpretata oltre l'autorità
-    realmente implementata: oggi la policy è per turno.
+    realmente implementata: vale per il turno o per l'episodio solo quando lo
+    scope grounded è esplicito; non è una modalità off-record globale.
 11. L'esaurimento del budget Loop 2d può rinviare un giudizio, non autorizzare
     una cancellazione; la coda deve sopravvivere ai restart insieme al TTL.
 12. Comprensione, esecuzione e risposta di un'azione esplicita devono chiudersi
@@ -1179,3 +1217,9 @@ Non usare `scripts/audit_memory.py --delete`, `--fix-*`, `--backfill-*` o
     epistemicamente autorizzato non fornisce evidenza o conferma esterna.
 20. Una memoria derivata non acquisisce autorita' su una fonte diretta per la
     sola recency: puo' interpretarla o organizzarla, non supersederla.
+21. Un focus ereditato dalla continuità è un indizio effimero di retrieval: non
+    modifica frame/history, non diventa una memoria e non certifica il contenuto
+    dei nodi recuperati.
+22. Una risposta Web fuori soggetto non può essere persistita: autorizzazione
+    esterna, pertinenza nominale e verità della fonte restano tre controlli
+    distinti.

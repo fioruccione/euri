@@ -7,6 +7,45 @@ import socket
 import requests
 from loguru import logger
 
+from core.memory_axes import analyze_memory_axes
+
+
+def _normalise_anchor(value: str) -> str:
+    return " ".join(re.findall(r"\w+", str(value or "").casefold(), re.UNICODE))
+
+
+def web_results_support_query_entities(
+    query: str,
+    results: list[dict],
+) -> tuple[bool, list[str], list[str]]:
+    """Gate di persistenza: almeno un'entita' nominale deve ricomparire.
+
+    Non giudica la verita' delle pagine e non blocca la risposta Web. Impedisce
+    soltanto che un risultato manifestamente su un altro soggetto diventi una
+    memoria cognitiva associata ai nomi della query.
+    """
+    anchors = [
+        str(item).strip()
+        for item in (analyze_memory_axes(query).get("entity_mentions") or [])
+        if str(item).strip()
+    ]
+    if not anchors:
+        return True, [], []
+    corpus = _normalise_anchor(" ".join(
+        str(result.get(field) or "")
+        for result in (results or [])
+        for field in ("title", "url", "body")
+    ))
+    supported = [
+        anchor for anchor in anchors
+        if _normalise_anchor(anchor) in corpus
+    ]
+    missing = [
+        anchor for anchor in anchors
+        if _normalise_anchor(anchor) not in corpus
+    ]
+    return bool(supported), anchors, missing
+
 
 def is_online(host: str = "8.8.8.8", port: int = 53, timeout: float = 1.5) -> bool:
     """Verifica connettività in <2s. Usa DNS Google come probe."""
@@ -171,20 +210,31 @@ def answer_explicit_web_search(
         }
 
     summary = brain.summarize_web_results(results, query)
-    memory_id = memory.save_memory(
-        content=f"Ricerca web '{query}':\n{summary}",
-        category="web",
-        tags=["web_search"],
-        source="web",
-        final_fields={"requires_verification": True},
+    persistence_allowed, anchors, missing = web_results_support_query_entities(
+        query, results
     )
+    memory_id = None
+    if persistence_allowed:
+        memory_id = memory.save_memory(
+            content=f"Ricerca web '{query}':\n{summary}",
+            category="web",
+            tags=["web_search"],
+            source="web",
+            final_fields={"requires_verification": True},
+        )
+    else:
+        logger.warning(
+            "Web search non persistita: risultati senza entita' query anchors={} missing={}",
+            anchors,
+            missing,
+        )
     if memory_id:
         logger.info(
             "Web search salvata in memoria: {}… (query: '{}')",
             str(memory_id)[:8],
             query[:50],
         )
-    else:
+    elif persistence_allowed:
         logger.warning(
             "Web search NON salvata: contenuto sospetto bloccato dal MemoryGuard "
             "(query '{}')",
@@ -195,4 +245,8 @@ def answer_explicit_web_search(
         "reply": summary,
         "query": query,
         "memory_id": memory_id,
+        "persistence": "saved" if memory_id else (
+            "skipped_entity_mismatch" if not persistence_allowed else "save_rejected"
+        ),
+        "persistence_missing_entities": missing,
     }

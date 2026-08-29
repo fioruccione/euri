@@ -1,8 +1,8 @@
 # Euri — registro unico dei lavori aperti
 
-Aggiornato: 28/08/2026
+Aggiornato: 29/08/2026
 
-Base documentale: V2.25
+Base documentale: V2.26
 
 Regola: una voce si chiude soltanto con evidenza; se cambia direzione, resta
 nello storico con il motivo. Questo file è l'indice operativo. I report
@@ -10,19 +10,23 @@ specialistici conservano i dettagli, ma la prossima azione deve comparire qui.
 
 ## Prossima azione unica
 
-**PRESENT-01 — eseguire il protocollo live congelato del 28 agosto.**
+**RETR-01 — collaudo live della continuita' sistemica.**
 
-Il checkpoint corrente ha 90/90 unit verdi e include continuita', autorita'
-delle fonti, preemption Dream e causalita' vocale. La prova organica resta
-manuale e segue
-[`EURI_LIVE_ACCEPTANCE_2026-08-28.md`](EURI_LIVE_ACCEPTANCE_2026-08-28.md):
-sette casi congelati su ICMA2, temporalita', azioni, Dream e restart. Poi COG-01
-torna la prossima azione del filone cognitivo di memoria.
+Il pass live ICMA2 ha mostrato che frame, capsule e Loop 2j possono possedere
+separatamente il soggetto senza consegnarlo al medesimo retrieval, e che una
+ricerca associativa interna puo' essere instradata e salvata come Web. Protocollo
+congelato in
+[`EURI_SYSTEMIC_RETRIEVAL_PREREGISTRATION_2026-08-29.md`](EURI_SYSTEMIC_RETRIEVAL_PREREGISTRATION_2026-08-29.md).
+Resolver e confine Web sono implementati; R1-R7, W1-W4 e manifest 90/90 sono
+verdi. Al prossimo riavvio manuale, ripetere il follow-up anaforico e una ricerca
+associativa interna osservando `retrieval_resolution` e il route Web; nessuna
+migrazione Redis.
 
 ## Registro
 
 | ID | Priorità | Stato | Evidenza attuale | Trigger / prossimo passo | Criterio di chiusura |
 |---|---|---|---|---|---|
+| RETR-01 | P0 | implementato, regressioni verdi, live aperto | resolver puro con provenienza del focus; route Web fail-closed; persistenza Web entity-gated; R1-R7 e W1-W4 verdi; manifest 90/90 in 76,6 s | dopo riavvio manuale, ripetere follow-up ICMA2 e ricerca associativa interna; misurare anche il fallback sincrono quando la query effettiva invalida il prefetch raw | stessi soggetti recuperati nei follow-up senza contaminazione fra scope/segmenti; zero Web non autorizzato o fuori soggetto persistito; costo osservato e rollback verificabile |
 | PRESENT-01 | P0 | protocollo congelato, prova live da eseguire | 90/90 unit; memoria ICMA2 diretta ripristinata con backup; history+Redis fusi sulle richieste durevoli; source authority Loop 2f; preemption Dream e reason code voce | eseguire in ordine i sette casi di `EURI_LIVE_ACCEPTANCE_2026-08-28.md` dopo un avvio manuale | 7/7 osservati con fonti corrette; pending/focus ripresi una volta; 0 duplicati, 0 falsa esecuzione e nessuna reflection usata come autorità diretta |
 | COG-01 | P0 | correzione implementata, validazione aperta | il vecchio 2h usava una label senza prova e dava `UNKNOWN` 0/6; il nuovo contratto richiede claim subject, base esplicita ed estratti verificabili, con backoff degli irrisolti. Diagnostica sul banco aperto: 0/12 vere supersessioni riaperte, 12/12 soggetti distinti riconosciuti, 6/6 ambigui senza mutazione | preregistrare challenge opportunity-first nuovo; non riusare 42 casi come validazione | effetto incrementale misurato su false e vere supersessioni; zero danno oltre il gate congelato |
 | MEM-01 | P0 | osservazione con sentinella | `gather_grounded_evidence` usa una finestra non ordinata di 800; bacino personale **668/800** al 30/07 | riaprire a **750**; confrontare in shadow document-frequency RediSearch contro calcolo legacy, senza alzare 800 | selezione completa o errore quantificato sull'intero corpus, con rollback |

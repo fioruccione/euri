@@ -92,6 +92,7 @@ from core.semantic_turn import (
     frame_requests_contextual_action,
     frame_vetoes_contextual_action,
     gate_teaching_route,
+    gate_web_route,
     semantic_intent,
     trusted_deliberation_request,
     trusted_teaching_session,
@@ -2844,7 +2845,11 @@ class VoiceDaemon:
 
     def _handle_web_search(self, text: str, *, semantic_frame: dict | None = None):
         """Cerca sul web, risponde vocalmente, propone di salvare."""
-        from core.web_search import is_online, search
+        from core.web_search import (
+            is_online,
+            search,
+            web_results_support_query_entities,
+        )
         self.memory.log_conversation(_OWNER_NAME, text)
 
         if not is_online():
@@ -2880,18 +2885,28 @@ class VoiceDaemon:
         self.memory.log_conversation(_ASSISTANT_NAME, summary)
         self._speak(summary)
 
-        # Salva automaticamente in Redis — la conoscenza web diventa permanente (TTL 60gg)
-        # requires_verification forzato: fonte esterna, non va citata come fatto certo
+        # Salva in Redis solo se i risultati sostengono almeno un'entita' nominale
+        # della query. requires_verification resta forzato: fonte esterna fragile.
         mem_content = f"Ricerca web '{query}':\n{summary}"
+        persistence_allowed, anchors, missing = web_results_support_query_entities(
+            query, results
+        )
         mid = self.memory.save_memory(
             content=mem_content,
             category="web",
             tags=["web_search"],
             source="web",
             final_fields={"requires_verification": True},
-        )
+        ) if persistence_allowed else None
         if mid:
             logger.info(f"Web search salvata in memoria: {mid[:8]}… (query: '{query[:50]}')")
+        elif not persistence_allowed:
+            logger.warning(
+                "Web search non persistita: risultati senza entita' query "
+                "anchors={} missing={}",
+                anchors,
+                missing,
+            )
         else:
             logger.warning(f"Web search NON salvata: contenuto sospetto bloccato dal MemoryGuard (query '{query[:50]}')")
 
@@ -3944,6 +3959,21 @@ class VoiceDaemon:
                 semantic_label or "unknown",
             )
             intent = Intent(gated_teach)
+
+        gated_web = gate_web_route(
+            semantic_frame,
+            intent,
+            minimum_confidence=getattr(
+                config, "SEMANTIC_WEB_MIN_CONFIDENCE", 0.82
+            ),
+        )
+        if gated_web != intent.value:
+            logger.info(
+                "WEB_SEARCH fail-closed: {} → {} (autorizzazione esterna non grounded)",
+                intent.value,
+                gated_web,
+            )
+            intent = Intent(gated_web)
 
         action_checked = False
         action_veto = False

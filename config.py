@@ -147,8 +147,16 @@ SEMANTIC_TURN_ENABLED = os.environ.get(
 SEMANTIC_TURN_MIN_CONFIDENCE = float(
     os.environ.get("EURI_SEMANTIC_TURN_MIN_CONFIDENCE", "0.72")
 )
+# Vista effimera che collega i follow-up mnemonici all'ultimo soggetto owner
+# nominalmente grounded. Non muta frame, history o Redis; rollback immediato.
+SYSTEMIC_RETRIEVAL_ENABLED = os.environ.get(
+    "EURI_SYSTEMIC_RETRIEVAL_ENABLED", "1"
+).strip().lower() not in {"0", "false", "no", "off"}
 SEMANTIC_TEACH_MIN_CONFIDENCE = float(
     os.environ.get("EURI_SEMANTIC_TEACH_MIN_CONFIDENCE", "0.82")
+)
+SEMANTIC_WEB_MIN_CONFIDENCE = float(
+    os.environ.get("EURI_SEMANTIC_WEB_MIN_CONFIDENCE", "0.82")
 )
 SEMANTIC_IDEATION_EXPLICIT_MIN_CONFIDENCE = float(
     os.environ.get("EURI_SEMANTIC_IDEATION_EXPLICIT_MIN_CONFIDENCE", "0.82")

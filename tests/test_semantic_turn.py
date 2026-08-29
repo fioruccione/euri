@@ -17,13 +17,15 @@ from core.semantic_turn import (
     frame_requests_linguistic_response,
     frame_vetoes_contextual_action,
     gate_teaching_route,
+    gate_web_route,
     semantic_intent,
     trusted_teaching_session,
     trusted_deliberation_request,
     trusted_evidence_request,
     trusted_memory_retrieval_plan,
+    trusted_web_search_request,
 )
-from core.web_search import answer_explicit_web_search
+from core.web_search import answer_explicit_web_search, web_results_support_query_entities
 
 
 class FakeJSON:
@@ -84,6 +86,12 @@ def _correction_response(_prompt):
         "facts": [],
         "actions": [{"type": "web_search"}],
         "web_query": "Gio Style azienda",
+        "web_search_request": {
+            "explicit": True,
+            "source": "web",
+            "evidence": "web",
+            "confidence": 0.97,
+        },
         "preservation_mode": "semantic",
         "requires_clarification": False,
         "meaning_preserved": True,
@@ -219,7 +227,7 @@ def test_semantic_service_normalizes_grounded_teaching_contract():
 
     frame = SemanticTurnService(FakeRedis(), model_call=model).interpret(raw)
 
-    assert frame["schema_version"] == 8
+    assert frame["schema_version"] == 9
     assert frame["teaching_session"]["evidence_grounded"] is True
     assert trusted_teaching_session(frame) is not None
 
@@ -257,7 +265,7 @@ def test_semantic_service_normalizes_explicit_deliberation_contract():
     frame = SemanticTurnService(FakeRedis(), model_call=model).interpret(raw)
 
     contract = trusted_deliberation_request(frame)
-    assert frame["schema_version"] == 8
+    assert frame["schema_version"] == 9
     assert contract is not None
     assert contract["mode"] == "explicit"
     assert contract["evidence_grounded"] is True
@@ -561,6 +569,12 @@ def test_elliptical_web_authorization_is_resolved_from_recent_dialogue():
             }],
             "facts": [], "actions": [],
             "web_query": "Eurostampi processi indicatori produttivita'",
+            "web_search_request": {
+                "explicit": True,
+                "source": "web",
+                "evidence": "controlla nel web",
+                "confidence": 0.96,
+            },
             "preservation_mode": "semantic",
             "requires_clarification": False,
             "meaning_preserved": True,
@@ -593,6 +607,7 @@ def test_elliptical_web_authorization_is_resolved_from_recent_dialogue():
 
     assert frame["primary_intent"] == "WEB_SEARCH"
     assert frame["web_query"] == "Eurostampi processi indicatori produttivita'"
+    assert trusted_web_search_request(frame) is not None
     assert "Eurostampi" in captured["prompt"]
     assert "dialogo recente" in captured["prompt"]
 
@@ -627,6 +642,13 @@ def test_explicit_web_service_uses_semantic_query_and_persists_external_source()
         "primary_intent": "WEB_SEARCH",
         "speech_acts": ["REQUEST_WEB_SEARCH"],
         "web_query": "Eurostampi processi indicatori produttivita'",
+        "web_search_request": {
+            "explicit": True,
+            "source": "web",
+            "evidence": "controlla nel web",
+            "evidence_grounded": True,
+            "confidence": 0.97,
+        },
     }
     brain = FakeBrain()
     memory = FakeMemory()
@@ -648,6 +670,115 @@ def test_explicit_web_service_uses_semantic_query_and_persists_external_source()
     assert brain.frame_seen is frame
     assert memory.saved["source"] == "web"
     assert memory.saved["final_fields"] == {"requires_verification": True}
+    assert result["persistence"] == "saved"
+
+
+def test_web_route_is_fail_closed_without_grounded_external_authorization():
+    frame = {
+        "status": "interpreted",
+        "confidence": 0.97,
+        "primary_intent": "WEB_SEARCH",
+        "speech_acts": ["REQUEST_WEB_SEARCH", "REQUEST_MEMORY_SEARCH"],
+        "memory_retrieval": {
+            "needed": True,
+            "focus": [],
+            "relation": "ricerca associativa interna",
+            "evidence_goal": "overview",
+            "confidence": 0.96,
+        },
+        "web_search_request": {
+            "explicit": False,
+            "source": "unspecified",
+            "evidence": "",
+            "evidence_grounded": False,
+            "confidence": 0.96,
+        },
+    }
+
+    assert semantic_intent(frame) == ""
+    assert gate_web_route(frame, Intent.WEB_SEARCH) == "SEARCH"
+
+
+def test_web_route_preserves_grounded_explicit_external_authorization():
+    frame = {
+        "status": "interpreted",
+        "confidence": 0.97,
+        "primary_intent": "WEB_SEARCH",
+        "speech_acts": ["REQUEST_WEB_SEARCH"],
+        "web_search_request": {
+            "explicit": True,
+            "source": "web",
+            "evidence": "cerca sul web",
+            "evidence_grounded": True,
+            "confidence": 0.96,
+        },
+    }
+
+    assert trusted_web_search_request(frame) is not None
+    assert gate_web_route(frame, Intent.WEB_SEARCH) == Intent.WEB_SEARCH
+
+
+def test_web_route_is_fail_closed_when_semantic_frame_is_unavailable():
+    assert gate_web_route(None, Intent.WEB_SEARCH) == "CHAT"
+    assert gate_web_route({"status": "fallback"}, Intent.WEB_SEARCH) == "CHAT"
+
+
+def test_irrelevant_web_results_never_become_cognitive_memory():
+    class FakeBrain:
+        def extract_search_query(self, _text, semantic_frame=None):
+            return semantic_frame["web_query"]
+
+        def extract_query_fallback(self, query):
+            return query
+
+        def summarize_web_results(self, _results, _query):
+            return "Le pagine parlano di pompe di calore domestiche."
+
+    class FakeMemory:
+        def __init__(self):
+            self.saved = None
+
+        def save_memory(self, **kwargs):
+            self.saved = kwargs
+            return "should-not-exist"
+
+    frame = {
+        "web_query": "ICMA2 FIMIC RAS500 configurazione impianto",
+    }
+    memory = FakeMemory()
+    result = answer_explicit_web_search(
+        "cerca sul Web",
+        FakeBrain(),
+        memory,
+        semantic_frame=frame,
+        online_check=lambda: True,
+        search_fn=lambda _query: [{
+            "title": "Pompe di calore per abitazioni",
+            "url": "https://example.test/pompe-calore",
+            "body": "Impianti HVAC e climatizzazione domestica.",
+        }],
+    )
+
+    assert result["status"] == "ok"
+    assert result["memory_id"] is None
+    assert result["persistence"] == "skipped_entity_mismatch"
+    assert set(result["persistence_missing_entities"]) >= {"ICMA2", "FIMIC", "RAS500"}
+    assert memory.saved is None
+
+
+def test_web_persistence_gate_follows_preregistered_any_named_entity_rule():
+    allowed, anchors, missing = web_results_support_query_entities(
+        "ICMA2 FIMIC RAS500 configurazione impianto",
+        [{
+            "title": "Documentazione tecnica ICMA2",
+            "url": "https://example.test/icma2",
+            "body": "Configurazione aggiornata dell'impianto.",
+        }],
+    )
+
+    assert allowed is True
+    assert set(anchors) >= {"ICMA2", "FIMIC", "RAS500"}
+    assert set(missing) >= {"FIMIC", "RAS500"}
 
 
 def test_resolved_entity_is_projected_only_into_the_current_turn():
@@ -830,6 +961,13 @@ def test_web_query_uses_shared_frame_without_second_llm_interpretation():
         "primary_intent": "WEB_SEARCH",
         "speech_acts": ["REQUEST_WEB_SEARCH"],
         "web_query": "Gio Style stampaggio plastica",
+        "web_search_request": {
+            "explicit": True,
+            "source": "web",
+            "evidence": "fai la ricerca",
+            "evidence_grounded": True,
+            "confidence": 0.98,
+        },
     }
     with patch("core.brain.chat_client.chat", side_effect=AssertionError("no second LLM")):
         assert brain.extract_search_query(
@@ -995,7 +1133,7 @@ def test_explicit_no_store_episode_is_grounded_and_overrides_reusable_facts():
 
     frame = SemanticTurnService(FakeRedis(), model_call=model).interpret(raw)
 
-    assert frame["schema_version"] == 8
+    assert frame["schema_version"] == 9
     assert frame["memory_policy"]["evidence_grounded"] is True
     assert frame["passive_memory_blocked"] is True
     assert frame["passive_memory_block_scope"] == "episode"
@@ -1495,6 +1633,11 @@ if __name__ == "__main__":
     test_premise_sufficient_analogy_does_not_create_a_knowledge_gap()
     test_elliptical_web_authorization_is_resolved_from_recent_dialogue()
     test_explicit_web_service_uses_semantic_query_and_persists_external_source()
+    test_web_route_is_fail_closed_without_grounded_external_authorization()
+    test_web_route_preserves_grounded_explicit_external_authorization()
+    test_web_route_is_fail_closed_when_semantic_frame_is_unavailable()
+    test_irrelevant_web_results_never_become_cognitive_memory()
+    test_web_persistence_gate_follows_preregistered_any_named_entity_rule()
     test_resolved_entity_is_projected_only_into_the_current_turn()
     test_anaphora_is_not_projected_as_a_canonical_name()
     test_verbatim_mode_keeps_raw_text_even_if_model_rewrites_it()

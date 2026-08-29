@@ -27,6 +27,35 @@ promozione diretta del materiale onirico.
 
 ---
 
+# Handoff Euri - 2026-08-29 - Recupero sistemico preregistrato
+
+## Esito
+
+Il follow-up mnemonico non dipende più dal fatto che il turno anaforico ripeta il
+nome del progetto. `core/retrieval_context.py` costruisce una vista read-only e
+limitata al turno: se il frame richiede memoria ma non ha focus, eredita soltanto
+l'ultima entità nominale di un turno owner affidabile nello stesso scope e
+segmento. Query e piano effettivi alimentano il RAG e Loop 2j, ma non mutano
+frame, history, archivio turni o Redis. La provenienza resta visibile tramite
+`context_source_turn_ref`.
+
+Il frame semantico è v9. `web_search_request` separa l'autorizzazione esterna da
+una ricerca associativa interna: senza evidenza letterale grounded nel turno
+corrente, WEB_SEARCH chiude su SEARCH o CHAT. Le sintesi Web manifestamente fuori
+soggetto non vengono persistite; il gate richiede almeno un'entità nominale
+discriminante nei risultati e non pretende di certificare la verità della fonte.
+
+## Verifica e confini
+
+- protocollo: `docs/EURI_SYSTEMIC_RETRIEVAL_PREREGISTRATION_2026-08-29.md`;
+- R1-R7 e W1-W4 verdi; manifest unitario 90/90 in 76,6 s;
+- rollback: `EURI_SYSTEMIC_RETRIEVAL_ENABLED=0`, nessuna migrazione Redis;
+- il processo Euri già attivo non è stato riavviato e non ha ancora caricato il
+  trattamento; il collaudo live resta RETR-01 in `docs/EURI_OPEN_WORK.md`;
+- la frammentazione del learner passivo non è stata modificata: resta MEM-05.
+
+---
+
 # Handoff Euri - 2026-08-28 - Prefetch RAG CPU validato live
 
 ## Esito
