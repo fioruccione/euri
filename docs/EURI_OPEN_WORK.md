@@ -1,6 +1,6 @@
 # Euri — registro unico dei lavori aperti
 
-Aggiornato: 29/08/2026
+Aggiornato: 30/08/2026
 
 Base documentale: V2.26
 
@@ -37,6 +37,7 @@ migrazione Redis.
 | COG-03 | P1 | da preregistrare | `used_in_response` prova esposizione sostenuta, non utilità causale | leave-one-out appaiato sui nodi élite, stesso contesto residuo e stesso seed, scoring cieco | effetto causale o risultato negativo attribuibile |
 | MEM-02 | P1 | debito di osservabilità | Loop 2d e cleanup possono cancellare; nessun tombstone. Il cleanup Loop 2a con `days_ahead=0` è un no-op verificato | rimuovere/segnalare il codice morto; prima delle ablazioni lifecycle rendere le eliminazioni ricostruibili | ogni mietitore lascia tombstone/copia audit e il ramo eliminato è riproducibile |
 | PULSE-01 | P1 | specificato, non iniziato | Fasi 0–2 attive; Fase 3 è descritta in `PULSE_COGNITIVE_ROADMAP.md` | consumer osservazionale per ricorrenza interna, evidenza esterna, cache e tempi lifecycle; nessuna mutazione | metriche durevoli + Control Room, zero policy automatica |
+| IDENT-01 | P1 | traiettoria architetturale fissata, nessuna implementazione autorizzata | il paper del 2025 colloca identità e continuità nello strato persistente; ICMA2 mostra utilità reale ma anche retrieval rumoroso; l'attribuzione causale della personalità resta sospesa | dopo RETR-01 e PRESENT-01, preregistrare il challenge correzione/evoluzione/contesto/contraddizione descritto in `EURI_IDENTITY_CONTINUITY_TRAJECTORY_2026-08-30.md`; primo trattamento solo offline/shadow | distingue correzione, cambiamento e conflitto irrisolto senza riscrivere il raw, promuovere derivati ad autorità o perdere gli invarianti attraverso un cambio di modello |
 | MEM-03 | P2 | raccolta automatica | utility shadow: 102 risposte, 963 nodi richiamati, 122 usi sostenuti; età osservazione 0,36 giorni, `review_due=false` | attendere ≥14 giorni e ≥100 risposte, oppure 30 giorni; reminder durevole già presente | revisione umana registrata; nessun auto-tuning implicito |
 | MEM-04 | P2 | audit pulito | 2.171 turni verbatim, 6 referenziati, 2.165 recenti non referenziati, 0 orfani, 0 riferimenti mancanti | attendere il grace period di 180 giorni; reminder durevole già presente | decisione esplicita cold/pinned/orphan, reversibile; niente cancellazione automatica |
 | ARCH-01 | P2 | guardrail presente | test AST: 14 query runtime scopate, una Control Room esente; lo scope dipende ancora dai call site | progettare un handle di ricerca che richieda lo scope e non esponga l'indice grezzo | query runtime non scopata impossibile per costruzione |
@@ -71,6 +72,10 @@ migrazione Redis.
 - Non costruire un consumer universale `Pulse → comportamento`.
 - Non fondere Euri e PlastVision prima del trigger di `PV-01`; la sospensione è
   deliberata e documentata, non un'attività dimenticata.
+- Non importare Letta, Mem0 o un graph database come nuovo proprietario dello
+  stato di Euri. Le tecniche esterne restano candidate da preregistrare e
+  adattare ai contratti locali; una contraddizione umana non equivale
+  automaticamente a un record da sostituire.
 
 ## Governance
 

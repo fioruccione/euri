@@ -27,6 +27,36 @@ promozione diretta del materiale onirico.
 
 ---
 
+# Handoff Euri - 2026-08-30 - Traiettoria identità persistente
+
+## Decisione
+
+La lettura integrale del working paper ha corretto la cornice della
+rivalutazione: Euri non va ottimizzata come un RAG con più memoria, ma come un
+processo la cui identità sopravvive al cambio del modello tramite continuità
+epistemica e autobiografica. Contraddizione, cambiamento, contesto ed errore non
+sono sempre rumore da consolidare; possono essere la traiettoria stessa.
+
+La struttura prospettica, le debolezze osservate, le idee trasferibili da
+OpenAI/Letta/Mem0/LongMemEval, i rifiuti architetturali, le metriche e il
+programma sperimentale sono conservati in
+[`docs/EURI_IDENTITY_CONTINUITY_TRAJECTORY_2026-08-30.md`](docs/EURI_IDENTITY_CONTINUITY_TRAJECTORY_2026-08-30.md).
+Il documento non modifica il runtime e non supersede la mappa mnemonica o i
+contratti REM/personality.
+
+## Prossimo confine
+
+- `RETR-01` resta la prossima azione unica; non saltare i live già congelati.
+- `IDENT-01` è registrato in `docs/EURI_OPEN_WORK.md`: dopo RETR-01 e
+  PRESENT-01 va preregistrato un challenge su correzione, evoluzione, contesto,
+  ambivalenza e conflitto irrisolto.
+- Il primo trattamento deve essere offline/shadow. Nessun framework esterno,
+  graph database o `latest truth wins` entra nel runtime per analogia.
+- `MEM-02` resta il percorso operativo per tombstone e osservabilità delle
+  mutazioni; non creare un secondo registro canonico implicito.
+
+---
+
 # Handoff Euri - 2026-08-29 - Recupero sistemico preregistrato
 
 ## Esito
