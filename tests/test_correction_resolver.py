@@ -10,7 +10,7 @@ from core.correction_resolver import (
     select_correction_target,
 )
 from core.memory_manager import MemoryManager
-from core.save_service import _save_or_merge
+from core.save_service import _resolve_content, _save_or_merge, resolve_pending_correction
 from core.semantic_turn import filter_passive_memory_history
 
 
@@ -83,6 +83,49 @@ def test_c3_unrelated_candidates_do_not_get_superseded():
     ]
 
     result = select_correction_target(NEW_FACT, CORRECTION, candidates)
+
+    assert result.target is None
+    assert result.reason == "no_supported_target"
+
+
+def test_direct_correction_save_does_not_synthesize_from_recent_history():
+    class _Brain:
+        def resolve_save_intent(self, *_args):
+            raise AssertionError("un comando diretto non deve usare la history per il payload")
+
+    content, kind = _resolve_content(
+        "Sì, registra la correzione per il banco Orione 31. "
+        "Il contenitore è BX19 al posto di BX17. Mantieni BX17 come storia precedente.",
+        _Brain(),
+        "", "", True,
+        recent_history=[{
+            "role": "assistant",
+            "content": "La modifica riguarda la pompa FIMIC sull'ICMA 2.",
+        }],
+    )
+
+    assert kind == "correction"
+    assert "Orione 31" in content
+    assert "BX19" in content
+    assert "ICMA" not in content
+    assert "Mantieni" not in content
+
+
+def test_cross_domain_candidate_must_overlap_correction_evidence():
+    contaminated = (
+        "Stefano ha precisato la funzione tecnica delle pompe ICMA 2 e FIMIC. "
+        "Per il banco Orione 31, il contenitore è BX19."
+    )
+    result = select_correction_target(
+        contaminated,
+        "Sì, registra la correzione per il banco Orione 31: BX19 al posto di BX17.",
+        [_candidate(
+            "icma-passive",
+            "Stefano ha precisato la funzione tecnica delle pompe ICMA 2 e FIMIC.",
+            0.99,
+            source="passive",
+        )],
+    )
 
     assert result.target is None
     assert result.reason == "no_supported_target"
@@ -192,6 +235,45 @@ def test_c5_save_links_the_resolved_antecedent_before_claiming_completion():
     assert kwargs["final_fields"]["correction_of"] == OLD_ID
     assert kwargs["final_fields"]["correction_pending"] is True
     assert kwargs["idempotent"] is False
+
+
+def test_unresolved_correction_abstains_and_requests_user_clarification():
+    class _Memory:
+        def find_correction_target(self, *_args):
+            return None
+
+        def save_memory(self, *_args, **_kwargs):
+            raise AssertionError("la correzione ambigua non deve essere pubblicata")
+
+    result = _save_or_merge(
+        NEW_FACT,
+        _Memory(),
+        _SaveBrain(),
+        operation="correct",
+        correction_text=CORRECTION,
+    )
+
+    assert result["saved"] is False
+    assert result["needs_clarification"] is True
+    assert "collegato" in result["reply"]
+
+
+def test_pending_correction_can_be_saved_as_separate_memory():
+    class _Memory:
+        def save_memory(self, content, **kwargs):
+            assert content == NEW_FACT
+            assert kwargs["idempotent"] is False
+            return "separate-new"
+
+    result = resolve_pending_correction(
+        {"pending_content": NEW_FACT, "pending_correction_text": CORRECTION},
+        "È un argomento separato, non c'entra con quello.",
+        _Memory(),
+        _SaveBrain(),
+    )
+
+    assert result["saved"] is True
+    assert result["separate"] is True
 
 
 class _LegacySaveMemory:

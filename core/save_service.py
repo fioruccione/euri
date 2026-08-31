@@ -61,6 +61,32 @@ _CORRECTION_CUE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# Una correzione completa pronunciata nello stesso comando non deve passare dal
+# risolutore ``recent_topic``: la cronologia contiene anche le risposte di Euri e
+# puo' quindi trascinare nel payload un argomento precedente (il caso ICMA2/BX17).
+# Questo prefisso riconosce soltanto il gesto esplicito di registrazione della
+# correzione; il corpo resta quello pronunciato da Stefano.
+_EXPLICIT_CORRECTION_SAVE_RE = re.compile(
+    r"^(?:euri\s*[,;:]\s*)?(?:s[iì]\s*[,;:]\s*)?"
+    r"(?:registra|salva|memorizza|annota|tieni\s+a\s+mente)\s+"
+    r"(?:la\s+)?correzione\b(?P<body>.*)$",
+    re.IGNORECASE | re.DOTALL,
+)
+_CORRECTION_HISTORY_TAIL_RE = re.compile(
+    r"\s*(?:mantieni|conserva)\b.*\bstoria\b.*$",
+    re.IGNORECASE | re.DOTALL,
+)
+_SEPARATE_CORRECTION_ANSWER_RE = re.compile(
+    r"\b(?:separat\w*|nuovo\s+argomento|non\s+c['’e]\s+collegamento|"
+    r"non\s+c'entra|indipendent\w*)\b",
+    re.IGNORECASE,
+)
+_CONNECTED_CORRECTION_ANSWER_RE = re.compile(
+    r"\b(?:collegat\w*|stesso\s+(?:progetto|impianto|argomento)|"
+    r"c'entra|fa\s+parte|relazionat\w*)\b",
+    re.IGNORECASE,
+)
+
 # Comando nominato: il nome è metadato, il contenuto va risolto dalla conversazione.
 # Include "questi informazioni" perché è la forma realmente arrivata da STT/chat.
 _NAMED_SAVE_RE = re.compile(
@@ -120,6 +146,21 @@ def extract_named_save(text: str) -> tuple[str, str] | None:
     if len(title) < 2:
         return None
     return match.group("prefix"), title
+
+
+def _extract_explicit_correction_payload(text: str) -> str | None:
+    """Estrae il fatto gia' completo da ``registra la correzione ...``.
+
+    Il comando e' una sorgente diretta: non va riscritto dal modello usando la
+    cronologia. Le istruzioni finali di conservazione della storia governano il
+    lifecycle e non fanno parte del nuovo fatto.
+    """
+    match = _EXPLICIT_CORRECTION_SAVE_RE.match((text or "").strip())
+    if not match:
+        return None
+    body = (match.group("body") or "").strip(" ,.-")
+    body = _CORRECTION_HISTORY_TAIL_RE.sub("", body).strip(" ,.-")
+    return body if len(body) >= _MIN_FACT_LEN else None
 
 
 def _content_before_trigger(text: str, triggers: list[str]) -> str:
@@ -183,6 +224,12 @@ def _resolve_content(text: str, brain, prev_user_text: str, prev_assistant_text:
     Buttafuori: una correzione non deve perdere negazioni durante una riscrittura.
     Prima prova il risolutore semantico (Gradino 1); se cede (None) si usa la regex.
     """
+    # Un fatto completo preceduto da un comando esplicito di correzione e' gia'
+    # semanticamente risolto. Evitiamo che la history, che comprende anche le
+    # vecchie risposte di Euri, venga fusa nel payload prima del gate epistemico.
+    direct_correction = _extract_explicit_correction_payload(text)
+    if direct_correction:
+        return direct_correction, "correction"
     sem = _resolve_content_semantic(text, brain, recent_history)
     if sem is not None:
         return sem
@@ -233,6 +280,22 @@ def _save_or_merge(content: str, memory, brain, *, memory_title: str = "",
     fields = {"memory_title": memory_title} if memory_title else None
 
     if operation in {"correct", "replace"}:
+        if operation == "correct" and use_correction_resolver and match is None:
+            return {
+                "saved": False,
+                "merged": False,
+                "corrected": False,
+                "needs_clarification": True,
+                "pending_content": content,
+                "pending_correction_text": correction_text or content,
+                "reply": (
+                    "Ho capito la correzione, ma non posso stabilire se il fatto "
+                    "nuovo sia collegato a una memoria precedente o se sia un "
+                    "argomento separato. È collegato al contesto recuperato, "
+                    "oppure devo registrarlo come memoria indipendente?"
+                ),
+                "content": content,
+            }
         if match is None or match.get("similarity", 0.0) < _SIM_MERGE_FLOOR:
             new_id = memory.save_memory(
                 content, source="user", idempotent=True, final_fields=fields
@@ -376,6 +439,73 @@ def _save_or_merge(content: str, memory, brain, *, memory_title: str = "",
         # l'info aggiornata, quindi 'saved' resta True.
         logger.warning(f"Merge parziale: supersede di {match['id']} fallito → doppione transitorio")
     return {"saved": True, "merged": True, "reply": f"Ho aggiornato la memoria: {merged}", "content": merged}
+
+
+def resolve_pending_correction(
+    pending: dict,
+    answer: str,
+    memory,
+    brain,
+) -> dict:
+    """Chiude una richiesta di chiarimento senza introdurre una terza inferenza.
+
+    ``separato`` forza un nuovo nodo indipendente; ``collegato`` riapre soltanto
+    il resolver bounded con la conferma esplicita dell'utente come evidenza
+    aggiuntiva. Una risposta non classificabile lascia il pending intatto.
+    """
+    answer = str(answer or "").strip()
+    content = str(pending.get("pending_content") or pending.get("content") or "").strip()
+    correction_text = str(
+        pending.get("pending_correction_text") or pending.get("correction_text") or content
+    ).strip()
+    if not content:
+        return {
+            "saved": False,
+            "needs_clarification": True,
+            "reply": "Non ho più il contenuto da chiarire. Ripetimi la correzione completa.",
+            "content": None,
+        }
+    if _SEPARATE_CORRECTION_ANSWER_RE.search(answer):
+        new_id = memory.save_memory(
+            content,
+            source="user",
+            idempotent=False,
+        )
+        if not new_id:
+            return {
+                "saved": False,
+                "needs_clarification": True,
+                "reply": "Non sono riuscito a registrarla separatamente. Riproviamo?",
+                "content": content,
+            }
+        return {
+            "saved": True,
+            "merged": False,
+            "corrected": False,
+            "separate": True,
+            "reply": f"Ricevuto: ho registrato la memoria separatamente. {content}",
+            "content": content,
+            "new_id": new_id,
+        }
+    if _CONNECTED_CORRECTION_ANSWER_RE.search(answer):
+        return _save_or_merge(
+            content,
+            memory,
+            brain,
+            operation="correct",
+            correction_text=f"{correction_text}\nConferma esplicita: {answer}",
+        )
+    return {
+        "saved": False,
+        "needs_clarification": True,
+        "pending_content": content,
+        "pending_correction_text": correction_text,
+        "reply": (
+            "Mi serve una risposta netta: è collegato allo stesso progetto "
+            "oppure è un argomento separato?"
+        ),
+        "content": content,
+    }
 
 
 def save_memory_command(

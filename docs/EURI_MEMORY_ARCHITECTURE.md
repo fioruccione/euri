@@ -2,9 +2,9 @@
 
 Stato: **mappa canonica del comportamento corrente**
 
-Verificata contro il codice: **29 agosto 2026**
+Verificata contro il codice: **31 agosto 2026**
 
-Versione runtime di riferimento: **V2.26 — recupero sistemico al 29 agosto 2026**
+Versione runtime di riferimento: **V2.27 — contesto semantico e chiarimento mnemonico**
 
 ## Contratto di manutenzione
 
@@ -68,7 +68,9 @@ flowchart TB
     R --> KG[Verifica post-RAG<br/>copertura per entità]
     D --> KG
     KN --> KG
-    KG --> Q[Prompt della risposta]
+    KG --> CL{Referente sufficiente?}
+    CL -->|si'| Q[Prompt della risposta]
+    CL -->|ambiguo| CQ[Una domanda breve: intendi A o B?]
     KG -->|gap osservato| PU
     PM --> Q
     Q --> RL[Response lineage shadow]
@@ -128,6 +130,7 @@ riscrivere la policy.
 | Proiezione identitaria | durevole e revisionata; pattern inferiti non espliciti diventano invisibili dopo 180 giorni senza rinforzo | `euri:turn:*`, referenziato da `euri:personality:projection:<actor_id>` | distilla sé, interlocutore e relazione senza riscrivere la memoria | sì, solo stable e actor verificato |
 | Dream e insight | REM grezzo 7 giorni; insight con lifecycle proprio | `euri:dream:*`, `euri:insight:*` | esplorazione divergente separata da ipotesi e connessioni interne | il REM mai; solo gli insight ammessi dal loro stato |
 | Proiezione schematica | generazioni TTL 3 giorni, ricostruita al boot e in maintenance | `euri:memory:*`, puntatore `euri:loop2j:current_generation` | collega memorie dirette per entità esplicite senza sintetizzare fatti | mai come nodo; può guidare il recupero delle fonti originali |
+| Contesto semantico e chiarimento del prompt | effimero, per singola richiesta | frame + risultati RAG + piano semantico del turno | ordina stato/provenienza e impedisce di scegliere un referente non grounded | sì, come mappa di orientamento o contratto per una sola domanda; le memorie narrative restano evidenza |
 | Vault Obsidian | durevole su filesystem | replica umana bidirezionale | consultazione e modifica manuale | rientra via watcher come `obsidian_vault` |
 | Indici e telemetria | ricostruibile o osservativa | JSON canonici ed eventi | ranking, replay, audit e misure | no, salvo il loro effetto sul ranking |
 
@@ -569,6 +572,14 @@ Eccezione importante: una reflection Loop 2a nasce con `expires_at` a 7 giorni,
 ma un vero richiamo cognitivo usa la policy della sorgente `reflection` e le
 assegna una nuova finestra di 90 giorni.
 
+Loop 2a non può usare una correzione ambigua come ponte tra argomenti distinti:
+le memorie `correction_pending` e i salvataggi in attesa di chiarimento sono
+fuori dalla sessione consolidabile. Il selettore di sessione deve inoltre
+richiedere un legame di conversazione/segmento coerente; se il gruppo contiene
+entità o domini incompatibili senza una relazione confermata dall'utente, la
+reflection viene omessa. Le connessioni restano quindi una proposta di Euri e
+non una nuova memoria implicita.
+
 I `memory_kind` più importanti sono:
 
 - `semantic_fact`: fatto riutilizzabile;
@@ -885,6 +896,21 @@ save esplicito collega davvero vecchia e nuova memoria, il signal associato
 passa atomicamente da `pending` a `resolved`, così Loop 2g non può giudicare e
 flaggare in seguito la nuova verità come se la correzione fosse ancora aperta.
 
+Se il comando contiene già un fatto completo (per esempio «registra la
+correzione per il banco Orione 31...»), `core/save_service.py` non usa la history
+per riscriverne il payload: le risposte precedenti di Euri non sono una fonte
+del nuovo fatto. Il resolver richiede inoltre un'intersezione lessicale minima
+con il testo della correzione corrente; un candidato recuperato solo perché
+semanticamente vicino a una sintesi contaminata viene scartato.
+
+Quando nessun antecedente è sostenuto in modo sufficiente, il save resta senza
+effetti e apre un pending temporaneo. Euri chiede se il fatto è collegato allo
+stesso progetto oppure è un argomento separato. «Separato» crea un nodo user
+indipendente; «collegato» riapre il resolver con la conferma dell'utente. Una
+risposta non classificabile mantiene il pending. Questo stato vale sia per la
+voce sia per Silent Chat e non entra nel learner passivo, nel RAG o nei loop
+derivati finché non è chiuso.
+
 ## 9. Operatori che trasformano la memoria
 
 | Operatore | Trigger | Legge | Scrive o modifica | Natura |
@@ -1040,6 +1066,50 @@ semantici già pertinenti oppure da un focus esplicito del piano Gemma. L'espans
 memorie ambientali recenti, nelle sessioni sperimentali, nel demo o quando la
 query impone una finestra temporale. Nel prompt entrano esclusivamente i documenti
 `euri:memory:*` originali, con gli stessi flag epistemici e la stessa provenienza.
+
+### Compilatore del contesto semantico
+
+Quando `EURI_SEMANTIC_CONTEXT_ENABLED=1`, `core/semantic_context.py` costruisce
+prima del blocco narrativo una mappa bounded dei risultati realmente entrati nel
+prompt. La mappa annota soltanto marcatori già presenti: stato (`attuale`,
+`proposta/ipotesi`, `storica/derivata` o non specificato), fonte, verifica,
+entità annotate e identificativo della memoria. Una memoria che contiene sia
+configurazione attuale sia proposta resta un'unica affermazione mista: il
+compilatore non la riscrive né inventa relazioni.
+
+Il testo originale continua a essere conservato e mostrato come evidenza
+narrativa. La mappa non è una nuova fonte di verità, non entra in Redis e non
+altera Loop 2j, il learner passivo o Dream. Il limite predefinito è tre ricordi
+con una porzione massima di 760 caratteri per ricordo; entrambi sono configurabili
+con `EURI_SEMANTIC_CONTEXT_MAX_MEMORIES` e
+`EURI_SEMANTIC_CONTEXT_CLAIM_CHARS`. Il default di libreria resta spento per
+mantenere byte-identici i replay storici; `start_euri.sh` lo abilita per il
+runtime personale. L'attivazione è reversibile al riavvio del processo.
+
+Il contratto del prompt ordina di non fondere stati diversi sulla sola vicinanza
+lessicale e di chiedere chiarimento quando mancano modello, posizione o stato di
+un componente. Questa è una prima proiezione di orientamento, non ancora un
+estrattore completo di grafi causali: i test devono verificare separatamente la
+qualità dell'eventuale estrazione futura dalle conversazioni.
+
+Quando `EURI_MEMORY_CLARIFICATION_ENABLED=1`, il frame puo' dichiarare
+`requires_clarification=true` se referente, stato o configurazione non sono
+risolvibili dal turno e dalla conversazione recente. Il gate post-RAG non sceglie
+un candidato: converte le memorie gia' recuperate in alternative da mostrare al
+Brain e impone una sola domanda naturale, con al massimo due opzioni realmente
+sostenute dal contesto. Non contiene nomi di impianti o regole di dominio e non
+chiama un secondo modello.
+
+Una confidenza globale bassa non basta ad aprire il gate. E' ammessa soltanto la
+concordanza strutturale `requires_clarification=true` + retrieval necessario
+senza focus inventato + dipendenza required con un fatto discriminante mancante;
+altrimenti il percorso resta invariato. La vista del frame archiviata dal Brain
+porta `memory_clarification_required=true`: domanda e risposta restano nel
+verbatim e nella continuita', ma sono escluse dal learner passivo. Nessuna chiave
+pending, memoria o evento cognitivo viene creato. Il follow-up viene interpretato
+nel normale storico conversazionale e, quando risolve il riferimento, torna al
+percorso di risposta diretto.
+
 Per `provenance` il rendering espone anche `source` e `memory_id` e impone di non
 inventare un processo deduttivo: `source=user` è una comunicazione del
 proprietario, mentre `source=reflection` è una rielaborazione interna e non prova
@@ -1191,6 +1261,7 @@ Non usare `scripts/audit_memory.py --delete`, `--fix-*`, `--backfill-*` o
 | documento memoria, ricerca e touch | `core/memory_manager.py::MemoryManager` |
 | commit degli effetti derivati | `core/memory_outbox.py` |
 | composizione RAG | `core/rag_context.py` |
+| proiezione semantica e gate di chiarimento | `core/semantic_context.py`, `core/rag_context.py` |
 | esecuzione Web e gate di persistenza per entità | `core/web_search.py` |
 | audit separato del payload finale Ollama | `core/prompt_research_log.py` |
 | guard atto-parola e scrub append-only | `core/act_word_check.py` |
@@ -1250,3 +1321,6 @@ Non usare `scripts/audit_memory.py --delete`, `--fix-*`, `--backfill-*` o
 22. Una risposta Web fuori soggetto non può essere persistita: autorizzazione
     esterna, pertinenza nominale e verità della fonte restano tre controlli
     distinti.
+23. Una memoria recuperata non rende grounded il referente della domanda: davanti
+    ad alternative incompatibili Euri chiede quale, e lo scambio irrisolto non
+    diventa memoria passiva.

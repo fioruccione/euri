@@ -131,6 +131,7 @@ def select_correction_target(
     """Seleziona l'antecedente senza confondere la nuova versione con il vecchio fatto."""
     new_norm = _normalise(new_content)
     evidence_tokens = _tokens(f"{new_content}\n{correction_text}")
+    correction_tokens = _tokens(correction_text)
     new_specific = _specific_tokens(new_content)
     rejected_specific = _specific_tokens(correction_text) - new_specific
     excluded_exact: list[str] = []
@@ -152,6 +153,13 @@ def select_correction_target(
         if similarity < similarity_floor:
             continue
         candidate_tokens = _tokens(content)
+        # Il candidato deve essere sostenuto anche dalle parole della
+        # correzione corrente, non soltanto dal payload gia' riscritto dal
+        # modello. Questo e' il confine che impedisce a una sintesi contaminata
+        # dalla cronologia di trascinare un'altra memoria (ICMA2/BX17).
+        direct_overlap = len(correction_tokens & candidate_tokens)
+        if correction_tokens and direct_overlap < 2:
+            continue
         overlap = len(evidence_tokens & candidate_tokens)
         if overlap < 2:
             continue
@@ -163,6 +171,7 @@ def select_correction_target(
         score = (
             1 if marker_hits else 0,
             marker_hits,
+            direct_overlap,
             authority,
             overlap,
             similarity,

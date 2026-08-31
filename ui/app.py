@@ -1088,6 +1088,7 @@ with main_col:
                     )
                     bind_memory_scope(_new_scope["scope"])
                     st.session_state.pop("sc_awaiting", None)
+                    st.session_state.pop("sc_pending_memory_correction", None)
                     st.session_state.messages = []
                     _scope_reply = (
                         f"Sessione sperimentale **{_new_scope['label']}** attiva. "
@@ -1097,6 +1098,7 @@ with main_col:
                     _old_scope = stop_experiment(r)
                     bind_memory_scope("personal")
                     st.session_state.pop("sc_awaiting", None)
+                    st.session_state.pop("sc_pending_memory_correction", None)
                     st.session_state.messages = []
                     _scope_reply = (
                         f"Sessione sperimentale **{_old_scope.get('label')}** chiusa. "
@@ -1137,6 +1139,46 @@ with main_col:
             import core.reaction as _rx
             from core.memory_scope import current_scope, is_experimental, scope_of
             _experimental_chat = is_experimental(current_scope())
+
+            # Correzione mnemonica ambigua: il primo comando non ha mutato Redis.
+            # Il follow-up viene classificato soltanto come collegato/separato,
+            # senza riaprire il normale RAG della chat.
+            _pending_memory_correction = (
+                None if _experimental_chat
+                else st.session_state.get("sc_pending_memory_correction")
+            )
+            if _pending_memory_correction is not None:
+                from core.save_service import resolve_pending_correction
+                st.session_state.messages.append({
+                    "role": "user", "content": prompt, "observed_at": time.time()
+                })
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+                with st.chat_message("assistant"):
+                    with st.spinner("Euri chiarisce il collegamento…"):
+                        _pending_result = resolve_pending_correction(
+                            _pending_memory_correction,
+                            prompt,
+                            memory_manager,
+                            brain,
+                        )
+                    st.markdown(_pending_result["reply"])
+                if _pending_result.get("needs_clarification"):
+                    st.session_state.sc_pending_memory_correction.update({
+                        "pending_content": _pending_result.get("pending_content")
+                        or _pending_memory_correction.get("pending_content"),
+                        "pending_correction_text": _pending_result.get("pending_correction_text")
+                        or _pending_memory_correction.get("pending_correction_text"),
+                    })
+                else:
+                    st.session_state.pop("sc_pending_memory_correction", None)
+                st.session_state.messages.append({
+                    "role": "assistant", "content": _pending_result["reply"],
+                    "observed_at": time.time(),
+                })
+                memory_manager.log_conversation("Stefano", prompt)
+                memory_manager.log_conversation("Euri", _pending_result["reply"])
+                st.stop()
 
             _pending = (
                 None
@@ -1285,6 +1327,14 @@ with main_col:
                 )
                 ctx_ids_now = list(_rag.ids)
                 memory_manager.set_last_rag_ctx(ctx_ids_now)
+                from core.semantic_context import with_memory_clarification_frame
+                semantic_frame = with_memory_clarification_frame(
+                    semantic_frame,
+                    _rag.diagnostics,
+                )
+                # La UI aveva gia' mostrato il turno, ma il journal del Brain e
+                # il learner inline devono vedere lo stesso veto mnemonico.
+                st.session_state.messages[-1]["semantic_frame"] = semantic_frame
                 if _correction_signal_id:
                     memory_manager.extend_correction_signal_context(
                         _correction_signal_id, ctx_ids_now
@@ -1546,6 +1596,14 @@ with main_col:
                             recent_history=recent_history,
                             active_artifact=executor.get_session_artifact(),
                         )
+                        if save_res.get("needs_clarification"):
+                            st.session_state.sc_pending_memory_correction = {
+                                "pending_content": save_res.get("pending_content")
+                                or save_res.get("content"),
+                                "pending_correction_text": save_res.get("pending_correction_text")
+                                or save_res.get("correction_text")
+                                or prompt,
+                            }
                     elif _intent == Intent.WEB_SEARCH:
                         # Il frame condiviso ha gia' stabilito che questo turno,
                         # non un Pulse precedente, autorizza l'accesso esterno.

@@ -86,9 +86,22 @@ def test_invalid_and_superseded_sources_are_not_parents():
     ) == ["active", "active-2", "related"]
 
 
+def test_unscoped_temporal_tail_stops_at_explicit_domain_boundary():
+    memories = [
+        _memory("icma", 210, domain="estrusione plastica"),
+        _memory("orione", 220, domain="produzione industriale"),
+        _memory("orione-2", 230, domain="produzione industriale"),
+    ]
+    selected = select_reflection_session(
+        memories, checkpoint=200, snapshot_at=300
+    )
+    assert [memory["id"] for memory in selected] == ["orione", "orione-2"]
+
+
 if __name__ == "__main__":
     test_restart_checkpoint_excludes_old_reactions_from_new_dialogue()
     test_only_latest_conversation_segment_becomes_session()
     test_activity_snapshot_does_not_include_later_memory()
     test_invalid_and_superseded_sources_are_not_parents()
+    test_unscoped_temporal_tail_stops_at_explicit_domain_boundary()
     print("test_loop2a_reflection: 4/4 OK")

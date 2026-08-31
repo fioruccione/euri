@@ -76,6 +76,7 @@ tests/test_save_service_merge_guard.py
 tests/test_self_model_provenance.py
 tests/test_self_observation.py
 tests/test_semantic_turn.py
+tests/test_semantic_context.py
 tests/test_silent_save.py
 tests/test_social_perception.py
 tests/test_start_euri_lifecycle.py

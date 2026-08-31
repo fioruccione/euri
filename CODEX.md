@@ -1,5 +1,66 @@
 # Regola di lavoro — mappa mnemonica canonica
 
+# Handoff Euri - 2026-08-31 - Chiarimento mnemonico conversazionale
+
+Il banco ICMA2 ha isolato un difetto diverso dal semplice recall: con la domanda
+«la pompa è prima o dopo il filtro?» il RAG recuperava sia la configurazione
+attuale sia la modifica proposta, ma il Brain sceglieva implicitamente un
+referente. Il recupero, anche quando è ricco, non costituisce prova di quale
+configurazione l'utente intenda nel turno corrente.
+
+Il frame semantico segnala ora i referenti, stati o configurazioni irrisolti. Un
+gate post-RAG usa soltanto i candidati già recuperati e aggiunge al prompt il
+contratto di fare una sola domanda naturale, con al massimo due alternative
+sostenute dalle memorie: non introduce un secondo LLM, non cambia ranking o
+touch e non salva alcuna associazione. La copia del frame consegnata al Brain è
+marcata `memory_clarification_required=true`, così domanda e risposta restano
+nel verbatim e nella continuità ma lo scambio irrisolto non entra nel learner
+passivo. Dream, Pulse, pending mnemonici e memoria durevole restano invariati.
+
+Protocollo congelato:
+[`docs/EURI_MEMORY_CLARIFICATION_PREREGISTRATION_2026-08-31.md`](docs/EURI_MEMORY_CLARIFICATION_PREREGISTRATION_2026-08-31.md).
+La prova read-only reale ha ottenuto: domanda generica -> chiarimento
+attuale/FPP20; configurazione attuale nominata -> risposta diretta con pompa a
+ingranaggi dopo RAS500; proposta nominata -> risposta diretta con FPP20 prima di
+RAS500; follow-up breve -> risoluzione senza una seconda domanda. Manifest
+unitario: 92/92 in 78,7 s.
+
+I default di libreria sono spenti per preservare replay e test firmati;
+`start_euri.sh` abilita al riavvio manuale
+`EURI_SEMANTIC_CONTEXT_ENABLED=1` e
+`EURI_MEMORY_CLARIFICATION_ENABLED=1`. Il processo Euri già attivo il
+31/08/2026 non è stato riavviato e usa ancora il codice precedente. Prossimo
+passo unico: `RETR-02` in `docs/EURI_OPEN_WORK.md`, con un turno vocale ambiguo,
+il follow-up «quella attuale» e verifica dell'assenza di pubblicazione passiva.
+
+---
+
+# Handoff Euri - 2026-08-31 - Gate di chiarimento cross-contesto
+
+Il test live Orione 31/BX17 ha mostrato che un `SAVE_MEMORY` classificato anche
+come `CORRECT_FACT` poteva chiedere a Gemma di riscrivere un fatto diretto usando
+la history recente. La sintesi contaminata ha fatto scegliere al resolver una
+memoria ICMA2 estranea; Loop 2a ha poi propagato il nesso in una reflection.
+
+Il runtime ora estrae deterministicamente i comandi completi
+«registra/salva la correzione…» senza usare le vecchie risposte come payload e
+richiede overlap con l'evidenza correttiva corrente. Se l'antecedente non è
+sostenuto, nessuna memoria viene pubblicata o superseduta: voce e Silent Chat
+aprono un pending temporaneo e chiedono se il fatto è collegato o separato.
+«Separato» salva un nodo user indipendente; «collegato» riapre il resolver con
+la conferma dell'utente. Il learner passivo non vede il pending.
+
+Loop 2a interrompe inoltre la coda temporale quando incontra un dominio esplicito
+diverso e filtra le memorie correlate fuori dominio. Il fix è coperto da nuove
+regressioni pure in `tests/test_correction_resolver.py` e
+`tests/test_loop2a_reflection.py`.
+
+La riparazione dati è registrata in
+`scripts/repair_20260831_orione_cross_context.py`: baseline Orione/BX17
+preservata, nodo misto e reflection ritirati via soft-supersede, signal chiuso
+come `aborted_cross_context_target`, backup integrali sotto
+`euri:repair_backup:20260831:orione-cross-context:*`.
+
 Prima di diagnosticare o modificare memoria, archivio turni, continuità, RAG,
 Dream Engine, correzioni o Obsidian, leggere
 [`docs/EURI_MEMORY_ARCHITECTURE.md`](docs/EURI_MEMORY_ARCHITECTURE.md). Il

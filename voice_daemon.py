@@ -282,6 +282,7 @@ class VoiceDaemon:
         self._pending_todo: _PendingState | None = None   # todo in attesa di conferma (timeout 60s)
         self._pending_reschedule: _PendingState | None = None  # impegno da spostare, manca la data (timeout 120s)
         self._pending_action: _PendingState | None = None  # proposta ad alto impatto in attesa owner
+        self._pending_memory_correction: _PendingState | None = None  # correzione ambigua, attesa conferma soggetto
         self._pending_readback: _PendingState | None = None   # memoria riletta, attesa correzione/aggiunta (180s)
         self._pending_write: _PendingState | None = None  # richiesta scrittura file in attesa (timeout 120s)
         self._awaiting_reaction: _PendingState | None = None  # insight su cui Euri ha chiesto conferma, in attesa della reazione di Stefano (timeout 300s)
@@ -1091,6 +1092,48 @@ class VoiceDaemon:
         if result["saved"]:
             self.memory.log_conversation(_OWNER_NAME, text)
             self.memory.log_conversation(_ASSISTANT_NAME, result["reply"])
+        if result.get("needs_clarification"):
+            question_id = f"memory-correction:{uuid.uuid4()}"
+            self._pending_memory_correction = _PendingState(
+                {
+                    "pending_content": result.get("pending_content") or result.get("content"),
+                    "pending_correction_text": result.get("pending_correction_text")
+                    or result.get("correction_text")
+                    or text,
+                    "question_id": question_id,
+                },
+                timeout=180,
+            )
+            self.present.set_pending_question(question_id, result["reply"])
+        self._speak(result["reply"])
+
+    def _handle_pending_memory_correction(self, text: str) -> None:
+        from core.save_service import resolve_pending_correction
+
+        pending = self._pending_memory_correction
+        if pending is None:
+            return
+        result = resolve_pending_correction(
+            pending.data,
+            text,
+            self.memory,
+            self.brain,
+        )
+        if result.get("needs_clarification"):
+            pending.data.update({
+                "pending_content": result.get("pending_content")
+                or pending.data.get("pending_content"),
+                "pending_correction_text": result.get("pending_correction_text")
+                or pending.data.get("pending_correction_text"),
+            })
+            self.memory.log_conversation(_OWNER_NAME, text)
+            self.memory.log_conversation(_ASSISTANT_NAME, result["reply"])
+            self._speak(result["reply"])
+            return
+        self._pending_memory_correction = None
+        self.present.clear_pending_question(pending.data.get("question_id"))
+        self.memory.log_conversation(_OWNER_NAME, text)
+        self.memory.log_conversation(_ASSISTANT_NAME, result["reply"])
         self._speak(result["reply"])
 
     def _handle_save_todo(self, text: str):
@@ -1479,6 +1522,7 @@ class VoiceDaemon:
                 )
             except Exception as exc:
                 logger.debug(f"Correction resolver context (SEARCH) fallito: {exc}")
+        semantic_frame = self._memory_clarification_frame(semantic_frame)
         search_hint = (
             "[Modalità ricerca: rispondi alla domanda dell'utente usando "
             "SOLO le informazioni presenti nel contesto sopra. Se le memorie "
@@ -2800,6 +2844,17 @@ class VoiceDaemon:
             "thinking_reason": decision["reason"],
         }
 
+    def _memory_clarification_frame(self, semantic_frame: dict | None) -> dict | None:
+        """Annota soltanto la vista del frame archiviata dal Brain nel turno."""
+        from core.semantic_context import with_memory_clarification_frame
+
+        local = getattr(self, "_response_rag_local", None)
+        rag = getattr(local, "rag", None) if local is not None else None
+        return with_memory_clarification_frame(
+            semantic_frame,
+            getattr(rag, "diagnostics", None),
+        )
+
     def _start_response_lineage(self, text: str, *, channel: str, mode: str):
         """Apre la trace shadow del turno senza influire sul percorso conversazionale."""
         try:
@@ -3083,6 +3138,7 @@ class VoiceDaemon:
                 )
             except Exception as exc:
                 logger.debug(f"Correction resolver context (CHAT) fallito: {exc}")
+        semantic_frame = self._memory_clarification_frame(semantic_frame)
         # Il VisualGate era gia' afferente sul pulse e disponibile alla Silent Chat,
         # ma la voce non riceveva il suo stato corrente: il modello poteva quindi
         # negare un sensore che il daemon stava usando nello stesso momento.
@@ -3553,6 +3609,14 @@ class VoiceDaemon:
                 return True
             if self._awaiting_reaction or self._awaiting_memory_verification:
                 self._clear_pending_continuity()
+            # Una correzione ambigua appartiene allo scope in cui è stata
+            # pronunciata: non può essere confermata dopo un cambio di
+            # sessione, altrimenti il fatto finirebbe nello scope sbagliato.
+            if self._pending_memory_correction:
+                self.present.clear_pending_question(
+                    self._pending_memory_correction.data.get("question_id")
+                )
+                self._pending_memory_correction = None
             state = start_experiment(
                 self.r,
                 command.label,
@@ -3585,6 +3649,11 @@ class VoiceDaemon:
             )
             return True
         if command.action == "stop":
+            if self._pending_memory_correction:
+                self.present.clear_pending_question(
+                    self._pending_memory_correction.data.get("question_id")
+                )
+                self._pending_memory_correction = None
             previous = stop_experiment(self.r)
             self.turn_store.restore_into(self.brain, "personal")
             if previous.get("active"):
@@ -3718,6 +3787,20 @@ class VoiceDaemon:
                 logger.debug("Action confirmation pending scaduta")
             else:
                 self._handle_pending_action(text)
+                return
+
+        # Correzione mnemonica ambigua: nessuna nuova memoria o supersessione
+        # finche' Stefano non dichiara se il fatto appartiene allo stesso
+        # argomento o a un nuovo soggetto.
+        if self._pending_memory_correction:
+            if self._pending_memory_correction.expired():
+                self.present.clear_pending_question(
+                    self._pending_memory_correction.data.get("question_id")
+                )
+                self._pending_memory_correction = None
+                logger.debug("Correzione memoria pending scaduta")
+            else:
+                self._handle_pending_memory_correction(text)
                 return
 
         # TEACH recovery: attende sì/no dopo domanda di ripristino sessione
@@ -4395,9 +4478,23 @@ class VoiceDaemon:
                     (m.get("content") or "")[:120] for m in session_mems
                 )
                 session_ids = {m.get("id") for m in session_mems}
+                session_domains = {
+                    str(m.get("domain") or "").strip().casefold()
+                    for m in session_mems
+                    if str(m.get("domain") or "").strip()
+                }
                 related = [
                     m for m in self.memory.search_memories(session_text, limit=7)
-                    if m.get("id") not in session_ids and m.get("source") != "web"
+                    if (
+                        m.get("id") not in session_ids
+                        and m.get("source") != "web"
+                        and (
+                            not session_domains
+                            or not str(m.get("domain") or "").strip()
+                            or str(m.get("domain") or "").strip().casefold()
+                            in session_domains
+                        )
+                    )
                 ][:5]
 
                 # Non accodare un altro lavoro Ollama quando il dialogo sta usando

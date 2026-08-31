@@ -607,6 +607,19 @@ Regole:
             "birra bionda) non crea un vuoto informativo. In un confronto aziendale, una "
             "premessa dell'utente puo' essere usata come premessa, ma non autorizza a "
             "inventare processi, valori o caratteristiche dell'altra azienda.\n"
+            "Usa requires_clarification=true quando il referente, lo stato o la "
+            "configurazione necessari non sono risolvibili ne' dal turno corrente ne' "
+            "dal dialogo recente e scegliere una delle interpretazioni cambierebbe "
+            "materialmente la risposta. Esempi generali sono un componente presente in "
+            "piu' sistemi o una relazione diversa fra stato attuale e proposta. Non "
+            "attivarlo per una semplice mancanza di dettagli opzionali, se puoi rispondere "
+            "correttamente in forma condizionale, o quando il filo recente identifica gia' "
+            "il soggetto. Quando il chiarimento puo' beneficiare delle alternative in "
+            "memoria, usa memory_retrieval.needed=true anche se non esiste ancora un focus "
+            "discriminante: lascia focus vuoto invece di inventare il soggetto e descrivi "
+            "in relation quale riferimento manca. La confidence dei sottocontratti misura "
+            "la certezza della classificazione, non la certezza della risposta fattuale: "
+            "non lasciarla a zero quando il bisogno di chiarire e' chiaro.\n"
             "Se il turno corrente autorizza esplicitamente una ricerca web con un "
             "riferimento ellittico come 'controlla nel web', risolvi dal dialogo recente "
             "l'entita' e i missing_facts appena discussi, usa WEB_SEARCH e "
@@ -2088,6 +2101,11 @@ def frame_blocks_passive_memory(
     """Applica il blocco solo a frame affidabili; in dubbio lascia il learner invariato."""
     if not isinstance(frame, dict) or frame.get("status") != "interpreted":
         return False
+    # Questo marker viene applicato soltanto dal gate post-RAG a una copia del
+    # frame. La domanda e la risposta di chiarimento restano verbatim, ma non
+    # devono diventare un fatto passivo prima che il referente sia risolto.
+    if frame.get("memory_clarification_required") is True:
+        return True
     if frame.get("requires_clarification"):
         return False
     if _confidence(frame.get("confidence")) < minimum_confidence:

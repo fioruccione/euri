@@ -607,6 +607,27 @@ MEMORY_SCHEMA_MIN_MEMBERS = 3
 MEMORY_SCHEMA_MAX_MEMBERS = 200
 MEMORY_SCHEMA_RETRIEVAL_MAX = 2
 MEMORY_SCHEMA_GENERATION_TTL_DAYS = 3
+# Proiezione semantica bounded nel prompt: mantiene le memorie narrative come
+# evidenza e aggiunge stato/provenienza/entita' prima del Brain. Opt-in durante
+# la calibrazione; si abilita al prossimo avvio con
+# EURI_SEMANTIC_CONTEXT_ENABLED=1 e si disabilita senza migrazione dati o
+# riavvio del Dream con EURI_SEMANTIC_CONTEXT_ENABLED=0.
+SEMANTIC_CONTEXT_ENABLED = os.environ.get(
+    "EURI_SEMANTIC_CONTEXT_ENABLED", "0"
+).strip().lower() not in {"0", "false", "no", "off"}
+SEMANTIC_CONTEXT_MAX_MEMORIES = max(
+    1, int(os.environ.get("EURI_SEMANTIC_CONTEXT_MAX_MEMORIES", "3"))
+)
+SEMANTIC_CONTEXT_CLAIM_CHARS = max(
+    160, int(os.environ.get("EURI_SEMANTIC_CONTEXT_CLAIM_CHARS", "760"))
+)
+# Gate conversazionale post-RAG: quando il frame dichiara un riferimento
+# irrisolto, le memorie recuperate diventano alternative da chiarire e non una
+# licenza a scegliere il soggetto piu' disponibile. Separato dal compilatore per
+# poter misurare e ritirare i due trattamenti indipendentemente.
+MEMORY_CLARIFICATION_ENABLED = os.environ.get(
+    "EURI_MEMORY_CLARIFICATION_ENABLED", "0"
+).strip().lower() not in {"0", "false", "no", "off"}
 # "Di recente" non equivale alla recency ambientale: è un vincolo richiesto
 # dall'utente. La finestra è locale, esplicita e configurabile; se è vuota il
 # RAG non ripiega silenziosamente su ricordi più vecchi.

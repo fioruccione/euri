@@ -42,6 +42,10 @@ def _conversation_scope(memory: dict) -> tuple[str, str] | None:
     return conversation_id, "" if segment_id is None else str(segment_id)
 
 
+def _domain(memory: dict) -> str:
+    return str(memory.get("domain") or "").strip().casefold()
+
+
 def select_reflection_session(
     memories: list[dict],
     *,
@@ -75,10 +79,18 @@ def select_reflection_session(
     # Fonti senza provenienza conversazionale: soltanto la coda temporale
     # contigua, mai tutti i record di una finestra arbitraria.
     selected = [latest]
+    latest_domain = _domain(latest)
     next_created = _created_at(latest)
     for memory in reversed(eligible[:-1]):
         created = _created_at(memory)
         if next_created - created > max_gap_s:
+            break
+        # In assenza di conversation_id il tempo da solo non prova che due
+        # fatti appartengano allo stesso filo. Un dominio esplicito diverso
+        # chiude la coda: evita che una reflection trasformi una coincidenza
+        # temporale in una relazione tra impianti/progetti distinti.
+        memory_domain = _domain(memory)
+        if latest_domain and memory_domain and memory_domain != latest_domain:
             break
         selected.append(memory)
         next_created = created

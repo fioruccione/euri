@@ -11,6 +11,11 @@ export LD_LIBRARY_PATH="$PWD/venv/lib/python3.12/site-packages/nvidia/cublas/lib
 # chiamante può sempre tornare a `on`, `shadow` o `off` esportando esplicitamente
 # la variabile prima dell'avvio.
 export EURI_RAG_DUAL_CHANNEL_MODE="${EURI_RAG_DUAL_CHANNEL_MODE:-selective}"
+# Il runtime personale usa la proiezione semantica e il gate di chiarimento
+# validati insieme. I processi di replay/test che non passano dal launcher
+# conservano i default spenti; ogni braccio resta ritirabile separatamente.
+export EURI_SEMANTIC_CONTEXT_ENABLED="${EURI_SEMANTIC_CONTEXT_ENABLED:-1}"
+export EURI_MEMORY_CLARIFICATION_ENABLED="${EURI_MEMORY_CLARIFICATION_ENABLED:-1}"
 
 UI_PID=""
 cleanup() {

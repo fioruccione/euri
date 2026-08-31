@@ -21,6 +21,10 @@ from core.memory_risk import is_document_summary, memory_verification_suffix
 from core.memory_schema import expand_memories_via_schema, schema_memory_rejection_reason
 from core.pulse import pulse_emit
 from core.retrieval_context import resolve_retrieval_context
+from core.semantic_context import (
+    build_memory_clarification_contract,
+    build_semantic_context,
+)
 from core.temporal_context import (
     memory_time_label,
     memory_time_label_legacy_v1,
@@ -557,6 +561,8 @@ def build_rag_context(
     reflection_docs: list[dict] = []
     schema_seed_docs: list[dict] = []
     schema_diagnostics: dict = {"enabled": False, "added_memory_ids": []}
+    semantic_context_text = ""
+    semantic_context_diagnostics: dict = {"enabled": False, "memory_count": 0}
     if not history_resolves_query and not config.DEMO_MODE and (not search_mode or recent_context_query):
         for r in memory.get_recent_reflections(limit=2, touch=False):
             reflection_lines.append(format_reflection_for_context(r))
@@ -816,6 +822,21 @@ def build_rag_context(
         results, project_priority_id = _prioritize_authoritative_named_project(
             results, retrieval_text
         )
+    if (
+        getattr(config, "SEMANTIC_CONTEXT_ENABLED", False)
+        and results
+        and not history_resolves_query
+    ):
+        semantic_packet = build_semantic_context(
+            results[:mem_cap],
+            semantic_plan=semantic_memory_plan,
+            limit=getattr(config, "SEMANTIC_CONTEXT_MAX_MEMORIES", 3),
+            claim_chars=getattr(config, "SEMANTIC_CONTEXT_CLAIM_CHARS", 760),
+        )
+        semantic_context_text = semantic_packet.text
+        semantic_context_diagnostics = semantic_packet.diagnostics
+        if semantic_context_text:
+            sections.append(semantic_context_text)
     if reflection_lines:
         sections.append(
             f"Interpretazioni recenti di {config.ASSISTANT_DISPLAY_NAME} "
@@ -1056,6 +1077,7 @@ def build_rag_context(
             "mode": "base",
             "temporal_query": temporal_diagnostics,
             "schema_expansion": schema_diagnostics,
+            "semantic_context": semantic_context_diagnostics,
             "semantic_memory_plan": semantic_memory_plan,
             "retrieval_resolution": retrieval_resolution.diagnostics(),
             "durable_recall_requested": durable_recall_requested,
@@ -1300,6 +1322,9 @@ def build_dual_channel_context(
         {
             "mode": "dual_channel",
             "temporal_query": base.diagnostics.get("temporal_query"),
+            "semantic_context": base.diagnostics.get("semantic_context"),
+            "semantic_memory_plan": base.diagnostics.get("semantic_memory_plan"),
+            "retrieval_resolution": base.diagnostics.get("retrieval_resolution"),
             "verbatim_render_version": TURN_RENDER_VERSION,
             "presentation_requested": presentation,
             "presentation_applied": (
@@ -1368,6 +1393,56 @@ def build_dual_channel_context(
         turn_ids=list(composition.final_turn_ids),
         diagnostics=diagnostics,
     )
+
+
+def apply_memory_clarification_contract(
+    rag: RagContext,
+    semantic_frame: dict | None,
+) -> RagContext:
+    """Impedisce al Brain di scegliere un referente non grounded dal turno.
+
+    Non cambia retrieval, ID, ranking o touch. Il gate aggiunge soltanto una
+    policy di risposta quando il frame affidabile ha gia' dichiarato necessaria
+    una disambiguazione conversazionale.
+    """
+    diagnostics = dict(rag.diagnostics or {})
+    if not getattr(config, "MEMORY_CLARIFICATION_ENABLED", False):
+        diagnostics["memory_clarification"] = {
+            "required": False,
+            "reason": "disabled",
+            "candidate_node_ids": [],
+            "missing_facts": [],
+        }
+        rag.diagnostics = diagnostics
+        return rag
+
+    contract = build_memory_clarification_contract(
+        semantic_frame,
+        list(rag.nodes or []),
+        minimum_confidence=getattr(
+            config, "SEMANTIC_TURN_MIN_CONFIDENCE", 0.72
+        ),
+    )
+    diagnostics["memory_clarification"] = contract.diagnostics
+    if contract.text:
+        rag.text = "\n\n".join(part for part in (rag.text, contract.text) if part)
+        logger.info(
+            "RAG chiarimento mnemonico: reason={} candidati={} missing_facts={}",
+            contract.diagnostics.get("reason"),
+            len(contract.diagnostics.get("candidate_node_ids") or []),
+            len(contract.diagnostics.get("missing_facts") or []),
+        )
+    rag.diagnostics = diagnostics
+    return rag
+
+
+def _apply_runtime_rag_contracts(
+    rag: RagContext,
+    memory,
+    semantic_frame: dict | None,
+) -> RagContext:
+    rag = apply_knowledge_gap_contract(rag, memory, semantic_frame)
+    return apply_memory_clarification_contract(rag, semantic_frame)
 
 
 _NON_AUTHORITATIVE_EPISTEMIC_STATES = frozenset({
@@ -1589,7 +1664,7 @@ def build_runtime_rag_context(
                 semantic_frame=semantic_frame,
                 query_feature_cache=query_feature_cache,
             )
-            return apply_knowledge_gap_contract(rag, memory, semantic_frame)
+            return _apply_runtime_rag_contracts(rag, memory, semantic_frame)
         except Exception as exc:
             logger.error(
                 "RAG dual-channel fallito: fallback alla sola base protetta ({})",
@@ -1604,7 +1679,7 @@ def build_runtime_rag_context(
                 semantic_frame=semantic_frame,
                 query_feature_cache=query_feature_cache,
             )
-            return apply_knowledge_gap_contract(rag, memory, semantic_frame)
+            return _apply_runtime_rag_contracts(rag, memory, semantic_frame)
 
     rag = build_rag_context(
         text,
@@ -1641,7 +1716,7 @@ def build_runtime_rag_context(
             )
         except Exception as exc:
             logger.warning(f"RAG dual shadow non disponibile ({exc})")
-    return apply_knowledge_gap_contract(rag, memory, semantic_frame)
+    return _apply_runtime_rag_contracts(rag, memory, semantic_frame)
 
 
 def prefetch_runtime_rag_query(

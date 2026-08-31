@@ -2,7 +2,7 @@
 
 Aggiornato: 31/08/2026
 
-Base documentale: V2.26
+Base documentale: V2.27
 
 Regola: una voce si chiude soltanto con evidenza; se cambia direzione, resta
 nello storico con il motivo. Questo file è l'indice operativo. I report
@@ -10,20 +10,22 @@ specialistici conservano i dettagli, ma la prossima azione deve comparire qui.
 
 ## Prossima azione unica
 
-**CORR-01 — collaudo live del Correction Resolver.**
+**RETR-02 — collaudo live del chiarimento mnemonico.**
 
-Il trattamento è implementato e il manifest chiude 91/91. Lo stato organico
-ICMA2 è stato riparato append-only con backup integrali. Al prossimo avvio
-manuale eseguire una nuova correzione fattuale controllata in scope sperimentale
-e osservare: nessun nodo passivo, selezione/astensione dell'antecedente, relazione
-atomica, signal `resolved` e risposta coerente con la ricevuta. Solo dopo tornare
-al live `RETR-01`, che resta aperto per il focus contaminato da `Hikma 2`.
+Il trattamento post-RAG e' implementato, il manifest chiude 92/92 e la prova
+read-only reale ha distinto i tre casi: domanda generica -> «intendi attuale o
+FPP20?», ICMA2 attuale -> risposta diretta dopo RAS500, proposta FPP20 -> risposta
+diretta prima del RAS500. `start_euri.sh` abilita i due flag al prossimo riavvio
+manuale. Osservare un turno vocale naturale e il relativo follow-up, quindi
+verificare nei turni che `memory_clarification_required=true` e che il learner
+passivo non abbia pubblicato lo scambio. CORR-01 resta il successivo live aperto.
 
 ## Registro
 
 | ID | Priorità | Stato | Evidenza attuale | Trigger / prossimo passo | Criterio di chiusura |
 |---|---|---|---|---|---|
 | RETR-01 | P0 | implementato, regressioni verdi, live aperto | resolver puro con provenienza del focus; route Web fail-closed; persistenza Web entity-gated; R1-R7 e W1-W4 verdi; manifest 90/90 in 76,6 s | dopo riavvio manuale, ripetere follow-up ICMA2 e ricerca associativa interna; misurare anche il fallback sincrono quando la query effettiva invalida il prefetch raw | stessi soggetti recuperati nei follow-up senza contaminazione fra scope/segmenti; zero Web non autorizzato o fuori soggetto persistito; costo osservato e rollback verificabile |
+| RETR-02 | P0 | implementato, prova read-only reale verde, live runtime aperto | protocollo C1-C8; gate post-RAG senza seconda LLM; domanda generica ICMA2 chiarita, attuale/proposta risposte direttamente, follow-up breve risolto; 92/92 unit in 78,7 s | al prossimo riavvio manuale usare la voce senza nominare il progetto, rispondere poi con una delle alternative e ispezionare frame/verbatim/assenza passiva | domanda solo sull'ambiguo, risposta diretta sul grounded, follow-up non sequestrato e zero memoria passiva dello scambio irrisolto; rollback dei due flag verificabile |
 | PRESENT-01 | P0 | protocollo congelato, prova live da eseguire | 90/90 unit; memoria ICMA2 diretta ripristinata con backup; history+Redis fusi sulle richieste durevoli; source authority Loop 2f; preemption Dream e reason code voce | eseguire in ordine i sette casi di `EURI_LIVE_ACCEPTANCE_2026-08-28.md` dopo un avvio manuale | 7/7 osservati con fonti corrette; pending/focus ripresi una volta; 0 duplicati, 0 falsa esecuzione e nessuna reflection usata come autorità diretta |
 | COG-01 | P0 | correzione implementata, validazione aperta | il vecchio 2h usava una label senza prova e dava `UNKNOWN` 0/6; il nuovo contratto richiede claim subject, base esplicita ed estratti verificabili, con backoff degli irrisolti. Diagnostica sul banco aperto: 0/12 vere supersessioni riaperte, 12/12 soggetti distinti riconosciuti, 6/6 ambigui senza mutazione | preregistrare challenge opportunity-first nuovo; non riusare 42 casi come validazione | effetto incrementale misurato su false e vere supersessioni; zero danno oltre il gate congelato |
 | MEM-01 | P0 | osservazione con sentinella | `gather_grounded_evidence` usa una finestra non ordinata di 800; bacino personale **668/800** al 30/07 | riaprire a **750**; confrontare in shadow document-frequency RediSearch contro calcolo legacy, senza alzare 800 | selezione completa o errore quantificato sull'intero corpus, con rollback |

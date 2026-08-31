@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-08-31 - Contesto semantico e chiarimento mnemonico
+
+- Il RAG conserva le memorie narrative e aggiunge una proiezione bounded di
+  stato, provenienza, verifica ed entita'. Sul caso ICMA2, a parita' di memorie
+  recuperate, il Brain distingue correttamente la linea attuale
+  `bivite -> RAS500 -> pompa a ingranaggi -> taglio` dalla proposta con FPP20
+  prima del filtro.
+- Il frame semantico dichiara ora l'ambiguita' referenziale quando soggetto,
+  stato o configurazione non sono risolvibili dal turno e dalla conversazione.
+  Un gate post-RAG vieta di scegliere silenziosamente il candidato piu'
+  disponibile e chiede una sola volta «intendi A o B?» usando le alternative
+  realmente presenti nel contesto, senza una seconda chiamata LLM.
+- Domanda e risposta di chiarimento restano nel verbatim e nella continuita', ma
+  sono escluse dal learner passivo tramite una vista copiata del frame; nessuna
+  memoria, chiave pending o evento Dream/Pulse viene creato.
+- Il default di libreria resta spento per i replay firmati. `start_euri.sh`
+  abilita `EURI_SEMANTIC_CONTEXT_ENABLED=1` e
+  `EURI_MEMORY_CLARIFICATION_ENABLED=1`; entrambi hanno rollback indipendente.
+- Prova read-only reale: domanda generica -> chiarimento attuale/FPP20;
+  configurazione attuale nominata -> pompa dopo RAS500; proposta nominata ->
+  FPP20 prima del RAS500; follow-up breve risolto senza una seconda domanda.
+  Manifest unitario completo: 92/92 in 78,7 s.
+
 ## 2026-08-31 - Correzioni fattuali collegate e reversibili
 
 - Il caso organico ICMA2/FIMIC è stato preregistrato prima del trattamento. Il
@@ -2655,3 +2678,18 @@ Arco nato da un **audit logico read-only dell'intero codice** (occhio esterno): 
 - TTS con sherpa-onnx + Piper.
 - RAG base su Redis.
 - Gate visivo con OpenCV.
+## 2026-08-31 — Correzioni ambigue fail-closed
+
+- I comandi completi «registra la correzione…» non vengono più riscritti usando
+  la cronologia recente: le risposte di Euri non possono contaminare il nuovo
+  fatto.
+- Il Correction Resolver richiede sovrapposizione con il testo della correzione
+  corrente; se non trova un antecedente sostenuto, il salvataggio si sospende e
+  chiede all'utente se il fatto è collegato o separato.
+- Voce e Silent Chat gestiscono il pending: «separato» crea un nodo indipendente,
+  «collegato» riapre il resolver con la conferma esplicita.
+- Loop 2a non attraversa più i confini di dominio nelle code temporali prive di
+  provenienza conversazionale e filtra le correlate fuori dominio.
+- Riparato l'incidente live Orione/BX17: il nodo misto e la reflection contaminata
+  sono ritirati con backup Redis; la memoria ICMA2 originale e il test BX17 sono
+  preservati.
