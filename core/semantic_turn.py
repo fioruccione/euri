@@ -2094,6 +2094,15 @@ def frame_blocks_passive_memory(
         return False
     if frame.get("passive_memory_blocked") is True:
         return True
+    acts = {str(item or "").upper() for item in (frame.get("speech_acts") or [])}
+    if (
+        getattr(config, "CORRECTION_RESOLVER_ENABLED", True)
+        and acts & {"CORRECT_ENTITY", "CORRECT_FACT"}
+    ):
+        # La correzione possiede un lifecycle dedicato. Pubblicarla anche dal
+        # learner passivo crea una nuova versione prima che sia stato trovato
+        # l'antecedente e puo' nasconderlo al save esplicito.
+        return True
     disposition = str(frame.get("memory_disposition") or "").lower()
     if disposition == "no_store":
         return True
@@ -2102,7 +2111,6 @@ def frame_blocks_passive_memory(
     # Difesa anche per frame deserializzati o prodotti da versioni intermedie:
     # un fatto riutilizzabile esplicitamente INFORMato non deve sparire per una
     # classificazione globale incoerente.
-    acts = {str(item or "").upper() for item in (frame.get("speech_acts") or [])}
     facts = [item for item in (frame.get("facts") or []) if isinstance(item, dict)]
     if "INFORM" in acts and any(
         str(item.get("durability") or "").lower() == "reusable"

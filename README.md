@@ -28,6 +28,7 @@ Nessun modello di linguaggio, da solo, fa questo. Euri lo fa perché sotto non c
 > **Stato operativo corrente:** [registro unico](docs/EURI_OPEN_WORK.md)
 > **Prossimo collaudo live:** [checkpoint 28 agosto 2026](docs/EURI_LIVE_ACCEPTANCE_2026-08-28.md)
 > **Direzione prospettica:** [Identità persistente attraverso il cambiamento](docs/EURI_IDENTITY_CONTINUITY_TRAJECTORY_2026-08-30.md)
+> **Correzioni fattuali:** [protocollo Correction Resolver](docs/EURI_CORRECTION_RESOLVER_PREREGISTRATION_2026-08-31.md)
 
 > **Mappa canonica della memoria:** [Architettura mnemonica di Euri](docs/EURI_MEMORY_ARCHITECTURE.md). È il punto di partenza per capire o modificare turni verbatim, continuità, memoria passiva, RAG, lifecycle, Dream Engine e Obsidian; non ricostruire questi flussi leggendo ogni volta i moduli separatamente.
 

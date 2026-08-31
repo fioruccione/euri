@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-08-31 - Correzioni fattuali collegate e reversibili
+
+- Il caso organico ICMA2/FIMIC è stato preregistrato prima del trattamento. Il
+  learner passivo non trasforma più un frame affidabile `CORRECT_FACT` o
+  `CORRECT_ENTITY` in una memoria anticipata che può nascondere l'antecedente.
+- `core/correction_resolver.py` valuta un pool KNN bounded di sole fonti dirette,
+  esclude la nuova formulazione identica, usa anche gli identificatori rifiutati
+  e si astiene sulle parità. Le memorie in quarantena restano invisibili al RAG,
+  ma sono leggibili soltanto da questo resolver correttivo.
+- Il nuovo nodo nasce pending. Una transazione Redis verifica la relazione e
+  aggiorna insieme `old.superseded_by`, `new.correction_of` e l'eventuale
+  correction signal associato; su errore il nodo nuovo resta non richiamabile e
+  la risposta non dichiara un commit inesistente.
+- Il signal conserva separati il RAG della risposta contestata e i candidati
+  recuperati nel turno correttivo. Voce e Silent Chat usano lo stesso percorso.
+  Rollback runtime: `EURI_CORRECTION_RESOLVER_ENABLED=0`.
+- Regressioni C1-C6, rollback e collisioni quarantine/save verdi; manifest
+  unitario completo 91/91 in 77,3 s.
+- Lo stato Redis del test organico è stato riparato append-only: la nuova memoria
+  completa `8696bc28-ec1c-4f68-b99c-24db1052b5d5` corregge LAS500 in RAS500,
+  conserva i dati numerici come da verificare e collega la precedente
+  `bc8f7583-b331-4eff-a606-c6d3afed7bbf`. Il duplicato corto è ritirato, il
+  signal è `resolved`, quattro copie integrali vivono sotto
+  `euri:repair_backup:20260831:*` e i tre Markdown storici sono in quarantena.
+
 ## 2026-08-29 - Recupero sistemico del soggetto e confine Web
 
 - Un resolver puro collega un follow-up mnemonico privo di focus all'ultima

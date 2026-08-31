@@ -1450,9 +1450,10 @@ class VoiceDaemon:
         # Prima della V2.16 questo check era solo in _handle_chat: correzioni
         # classificate dal router come SEARCH (es. "qui ti correggo, X non è
         # come ho detto") venivano perse silenziosamente.
+        correction_signal_id = ""
         if self.memory.detect_correction(text) or frame_is_correction(semantic_frame):
             try:
-                self.memory.save_correction_signal(
+                correction_signal_id = self.memory.save_correction_signal(
                     prompt_originale=self._last_user_text or "",
                     risposta_euri=self.memory.get_last_euri_turn(),
                     correzione_user=text,
@@ -1470,6 +1471,14 @@ class VoiceDaemon:
         # quando la pre-gate cheap sospetta una domanda non-specifica. NON tocca il retrieval
         # principale: lo affianca. Fail-safe a specific_search.
         context = self._augment_context_by_strategy(text, context)
+        if correction_signal_id:
+            try:
+                self.memory.extend_correction_signal_context(
+                    correction_signal_id,
+                    self.memory.get_last_rag_ctx(),
+                )
+            except Exception as exc:
+                logger.debug(f"Correction resolver context (SEARCH) fallito: {exc}")
         search_hint = (
             "[Modalità ricerca: rispondi alla domanda dell'utente usando "
             "SOLO le informazioni presenti nel contesto sopra. Se le memorie "
@@ -3041,9 +3050,10 @@ class VoiceDaemon:
     ):
         # Audit di Coerenza: capture correction signal PRIMA di loggare/rispondere,
         # così last_rag_ctx contiene ancora il ctx del turno precedente (corretto).
+        correction_signal_id = ""
         if self.memory.detect_correction(text) or frame_is_correction(semantic_frame):
             try:
-                self.memory.save_correction_signal(
+                correction_signal_id = self.memory.save_correction_signal(
                     prompt_originale=self._last_user_text or "",
                     risposta_euri=self.memory.get_last_euri_turn(),
                     correzione_user=text,
@@ -3065,6 +3075,14 @@ class VoiceDaemon:
         # Gradino 2 — strategia di retrieval (wide/subject) sul modello caldo, solo quando la
         # pre-gate cheap scatta; specific_search → context invariato.
         context = self._augment_context_by_strategy(text, context)
+        if correction_signal_id:
+            try:
+                self.memory.extend_correction_signal_context(
+                    correction_signal_id,
+                    self.memory.get_last_rag_ctx(),
+                )
+            except Exception as exc:
+                logger.debug(f"Correction resolver context (CHAT) fallito: {exc}")
         # Il VisualGate era gia' afferente sul pulse e disponibile alla Silent Chat,
         # ma la voce non riceveva il suo stato corrente: il modello poteva quindi
         # negare un sensore che il daemon stava usando nello stesso momento.

@@ -1,6 +1,6 @@
 # Euri — registro unico dei lavori aperti
 
-Aggiornato: 30/08/2026
+Aggiornato: 31/08/2026
 
 Base documentale: V2.26
 
@@ -10,17 +10,14 @@ specialistici conservano i dettagli, ma la prossima azione deve comparire qui.
 
 ## Prossima azione unica
 
-**RETR-01 — collaudo live della continuita' sistemica.**
+**CORR-01 — collaudo live del Correction Resolver.**
 
-Il pass live ICMA2 ha mostrato che frame, capsule e Loop 2j possono possedere
-separatamente il soggetto senza consegnarlo al medesimo retrieval, e che una
-ricerca associativa interna puo' essere instradata e salvata come Web. Protocollo
-congelato in
-[`EURI_SYSTEMIC_RETRIEVAL_PREREGISTRATION_2026-08-29.md`](EURI_SYSTEMIC_RETRIEVAL_PREREGISTRATION_2026-08-29.md).
-Resolver e confine Web sono implementati; R1-R7, W1-W4 e manifest 90/90 sono
-verdi. Al prossimo riavvio manuale, ripetere il follow-up anaforico e una ricerca
-associativa interna osservando `retrieval_resolution` e il route Web; nessuna
-migrazione Redis.
+Il trattamento è implementato e il manifest chiude 91/91. Lo stato organico
+ICMA2 è stato riparato append-only con backup integrali. Al prossimo avvio
+manuale eseguire una nuova correzione fattuale controllata in scope sperimentale
+e osservare: nessun nodo passivo, selezione/astensione dell'antecedente, relazione
+atomica, signal `resolved` e risposta coerente con la ricevuta. Solo dopo tornare
+al live `RETR-01`, che resta aperto per il focus contaminato da `Hikma 2`.
 
 ## Registro
 
@@ -38,6 +35,7 @@ migrazione Redis.
 | MEM-02 | P1 | debito di osservabilità | Loop 2d e cleanup possono cancellare; nessun tombstone. Il cleanup Loop 2a con `days_ahead=0` è un no-op verificato | rimuovere/segnalare il codice morto; prima delle ablazioni lifecycle rendere le eliminazioni ricostruibili | ogni mietitore lascia tombstone/copia audit e il ramo eliminato è riproducibile |
 | PULSE-01 | P1 | specificato, non iniziato | Fasi 0–2 attive; Fase 3 è descritta in `PULSE_COGNITIVE_ROADMAP.md` | consumer osservazionale per ricorrenza interna, evidenza esterna, cache e tempi lifecycle; nessuna mutazione | metriche durevoli + Control Room, zero policy automatica |
 | IDENT-01 | P1 | traiettoria architetturale fissata, nessuna implementazione autorizzata | il paper del 2025 colloca identità e continuità nello strato persistente; ICMA2 mostra utilità reale ma anche retrieval rumoroso; l'attribuzione causale della personalità resta sospesa | dopo RETR-01 e PRESENT-01, preregistrare il challenge correzione/evoluzione/contesto/contraddizione descritto in `EURI_IDENTITY_CONTINUITY_TRAJECTORY_2026-08-30.md`; primo trattamento solo offline/shadow | distingue correzione, cambiamento e conflitto irrisolto senza riscrivere il raw, promuovere derivati ad autorità o perdere gli invarianti attraverso un cambio di modello |
+| CORR-01 | P0 | implementato, 91/91 unit, riparazione organica applicata, nuovo live aperto | resolver bounded esclude duplicati, legge in isolamento antecedenti quarantinati e si astiene sull'ambiguo; link atomico chiude vecchio/nuovo/signal; memoria completa RAS500 `8696bc28…`, quattro backup Redis e quarantena Markdown verificati | al prossimo avvio ripetere una correzione+save nuova in scope controllato; nessuna generalizzazione a cambi di opinione | relazione `correction_of`/`superseded_by` e signal `resolved` osservati nel normale runtime; nessun duplicato passivo, falsa dichiarazione di commit o supersede estraneo |
 | MEM-03 | P2 | raccolta automatica | utility shadow: 102 risposte, 963 nodi richiamati, 122 usi sostenuti; età osservazione 0,36 giorni, `review_due=false` | attendere ≥14 giorni e ≥100 risposte, oppure 30 giorni; reminder durevole già presente | revisione umana registrata; nessun auto-tuning implicito |
 | MEM-04 | P2 | audit pulito | 2.171 turni verbatim, 6 referenziati, 2.165 recenti non referenziati, 0 orfani, 0 riferimenti mancanti | attendere il grace period di 180 giorni; reminder durevole già presente | decisione esplicita cold/pinned/orphan, reversibile; niente cancellazione automatica |
 | ARCH-01 | P2 | guardrail presente | test AST: 14 query runtime scopate, una Control Room esente; lo scope dipende ancora dai call site | progettare un handle di ricerca che richieda lo scope e non esponga l'indice grezzo | query runtime non scopata impossibile per costruzione |

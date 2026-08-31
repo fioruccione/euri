@@ -1232,6 +1232,7 @@ with main_col:
             # ── Audit di Coerenza: capture correction signal ─────────────
             # Se il prompt è una correzione, salva il signal PRIMA del retrieval
             # del turno corrente (last_rag_ctx contiene ancora il ctx del turno corretto).
+            _correction_signal_id = ""
             if memory_manager.detect_correction(prompt) or frame_is_correction(
                 semantic_frame
             ):
@@ -1241,7 +1242,7 @@ with main_col:
                         prev_user_turn = m["content"]
                         break
                 prev_euri_turn = memory_manager.get_last_euri_turn()
-                memory_manager.save_correction_signal(
+                _correction_signal_id = memory_manager.save_correction_signal(
                     prompt_originale=prev_user_turn,
                     risposta_euri=prev_euri_turn,
                     correzione_user=prompt,
@@ -1254,6 +1255,7 @@ with main_col:
                 "role": "user", "content": prompt,
                 "display_content": raw_prompt,
                 "observed_at": _user_observed_at,
+                "semantic_frame": semantic_frame,
             })
             with st.chat_message("user"):
                 st.markdown(raw_prompt)
@@ -1283,6 +1285,10 @@ with main_col:
                 )
                 ctx_ids_now = list(_rag.ids)
                 memory_manager.set_last_rag_ctx(ctx_ids_now)
+                if _correction_signal_id:
+                    memory_manager.extend_correction_signal_context(
+                        _correction_signal_id, ctx_ids_now
+                    )
 
             # Loop 2k usa il medesimo frame della chat, senza un classificatore
             # UI parallelo. La richiesta esplicita accoda il lavoro al daemon;
@@ -1528,6 +1534,7 @@ with main_col:
                                 "role": _m["role"],
                                 "content": _m["content"],
                                 "observed_at": _m.get("observed_at"),
+                                "semantic_frame": _m.get("semantic_frame"),
                             }
                             for _m in st.session_state.messages[:-1]
                         ]

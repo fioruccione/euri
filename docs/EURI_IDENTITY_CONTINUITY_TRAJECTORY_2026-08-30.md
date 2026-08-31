@@ -480,3 +480,17 @@ programma sperimentale.
    conservazione dell'identità.
 7. La struttura A–H e il programma nelle fasi 0–5 conservano questa decisione
    per una futura ripresa o correzione di rotta.
+
+## 13. Prima attuazione circoscritta — 31 agosto 2026
+
+`CORR-01` implementa soltanto il caso 1 del challenge: correzione fattuale
+esplicita con richiesta di salvataggio. Conserva il raw, crea una nuova versione
+e collega atomicamente l'antecedente; in assenza di un bersaglio univoco si
+astiene. Il caso organico ICMA2/FIMIC ha fornito la baseline e la riparazione
+append-only verificata.
+
+Questa attuazione non promuove ancora il Piano C generale. Cambi di opinione,
+contesti differenti, ambivalenze, intenzioni in tensione con le azioni e
+contraddizioni irrisolte restano fuori dal resolver e richiedono il challenge
+`IDENT-01`. La distinzione è intenzionale: dimostra che una traiettoria può
+iniziare da una relazione esplicita senza trasformarsi in `latest truth wins`.

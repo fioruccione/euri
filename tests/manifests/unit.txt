@@ -7,6 +7,7 @@ tests/test_coding_job.py
 tests/test_coding_research_log.py
 tests/test_clipboard_persistence.py
 tests/test_correction_quarantine.py
+tests/test_correction_resolver.py
 tests/test_cognitive_audit.py
 tests/test_cognitive_pulse.py
 tests/test_cognitive_present.py

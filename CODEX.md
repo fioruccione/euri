@@ -27,6 +27,49 @@ promozione diretta del materiale onirico.
 
 ---
 
+# Handoff Euri - 2026-08-31 - Correction Resolver e riparazione ICMA2
+
+## Esito runtime
+
+Il caso live ICMA2/FIMIC ha isolato quattro difetti concatenati: focus STT
+errato nel follow-up, correction signal ancorato al RAG precedente già
+sbagliato, pubblicazione passiva della nuova frase prima del save e nearest
+neighbour singolo che sceglieva quel duplicato invece dell'antecedente completo.
+
+`core/correction_resolver.py` tratta soltanto correzioni fattuali esplicite. Il
+learner passivo salta il relativo scambio, il save considera un pool diretto
+bounded e si astiene sull'ambiguo. Il nodo nuovo nasce `correction_pending`; una
+transazione Redis collega vecchio, nuovo e signal prima che la risposta possa
+dichiarare l'esecuzione. Un nodo quarantinato resta escluso dal RAG ma è
+ispezionabile dal solo resolver: questa collisione è emersa durante le
+regressioni ed è ora coperta. Voce e Silent Chat arricchiscono il signal con
+`resolution_rag_ctx_ids` senza sovrascrivere il contesto storico contestato.
+
+Protocollo e confini:
+[`docs/EURI_CORRECTION_RESOLVER_PREREGISTRATION_2026-08-31.md`](docs/EURI_CORRECTION_RESOLVER_PREREGISTRATION_2026-08-31.md).
+Rollback: `EURI_CORRECTION_RESOLVER_ENABLED=0`. Regressioni complete: 91/91 in
+77,3 s.
+
+## Riparazione dati organici
+
+Con Euri ferma, `scripts/repair_20260831_icma2_correction.py` ha creato quattro
+backup integrali `euri:repair_backup:20260831:*` e pubblicato la memoria completa
+corretta `8696bc28-ec1c-4f68-b99c-24db1052b5d5`. La precedente memoria LAS500
+punta alla nuova RAS500, il duplicato user corto è ritirato e il correction
+signal `7eace62c-30cc-4c3a-bed6-7c71dc08c6d8` è `resolved`. I dati numerici
+restano `requires_verification=true`. I tre Markdown storici sono recuperabili
+in `.euri-quarantine/2026-08-31-icma2-correction`; il raw conversazionale non è
+stato modificato.
+
+## Confine ancora aperto
+
+Questo non risolve `RETR-01`: l'eredità del focus `Hikma 2` resta un difetto di
+recupero sistemico da collaudare. Inoltre CORR-01 non va esteso a opinioni,
+ambivalenze, cambiamenti o tensioni comportamentali; quei casi appartengono al
+challenge `IDENT-01` e non autorizzano `latest truth wins`.
+
+---
+
 # Handoff Euri - 2026-08-30 - Traiettoria identità persistente
 
 ## Decisione

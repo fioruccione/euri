@@ -29,6 +29,7 @@ from core.memory_scope import (
     PERSONAL_SCOPE,
     current_scope,
     normalize_scope,
+    scope_of,
     scope_clause,
 )
 
@@ -82,6 +83,52 @@ redis.call(
 )
 redis.call('ZADD', KEYS[3], ARGV[3], KEYS[2])
 return ARGV[1]
+"""
+
+_CORRECTION_LINK_LUA = """
+if redis.call('EXISTS', KEYS[1]) == 0 then
+    return {'0', 'missing_old'}
+end
+if redis.call('EXISTS', KEYS[2]) == 0 then
+    return {'0', 'missing_new'}
+end
+local current = redis.call('JSON.GET', KEYS[1], '$.superseded_by')
+if current and current ~= 'null' and current ~= '[null]' and current ~= '[]' then
+    return {'0', 'old_already_superseded'}
+end
+local pending_raw = redis.call('JSON.GET', KEYS[2], '$.correction_pending')
+local declared_raw = redis.call('JSON.GET', KEYS[2], '$.correction_of')
+local pending = pending_raw and cjson.decode(pending_raw)[1]
+local declared = declared_raw and cjson.decode(declared_raw)[1]
+if pending ~= true then
+    return {'0', 'new_not_pending'}
+end
+if declared ~= cjson.decode(ARGV[2]) then
+    return {'0', 'new_antecedent_mismatch'}
+end
+local signal_raw = redis.call('JSON.GET', KEYS[1], '$.correction_signal_id')
+local signal_id = signal_raw and cjson.decode(signal_raw)[1]
+redis.call('JSON.SET', KEYS[1], '$.superseded_by', ARGV[1])
+redis.call('JSON.SET', KEYS[1], '$.correction_pending', 'false')
+redis.call('JSON.SET', KEYS[2], '$.correction_of', ARGV[2])
+redis.call('JSON.SET', KEYS[2], '$.correction_relation', '"explicit_fact_correction"')
+redis.call('JSON.SET', KEYS[2], '$.correction_pending', 'false')
+redis.call('JSON.SET', KEYS[2], '$.correction_resolved_at', ARGV[3])
+if signal_id and signal_id ~= cjson.null then
+    local signal_key = ARGV[4] .. signal_id
+    if redis.call('EXISTS', signal_key) == 1 then
+        local status_raw = redis.call('JSON.GET', signal_key, '$.status')
+        local status = status_raw and cjson.decode(status_raw)[1]
+        if status == 'pending' then
+            redis.call('JSON.SET', signal_key, '$.status', '"resolved"')
+            redis.call('JSON.SET', signal_key, '$.verdict', '"explicit_fact_correction"')
+            redis.call('JSON.SET', signal_key, '$.resolved_old_memory_id', ARGV[2])
+            redis.call('JSON.SET', signal_key, '$.resolved_new_memory_id', ARGV[1])
+            redis.call('JSON.SET', signal_key, '$.resolved_at', ARGV[3])
+        end
+    end
+end
+return {'1', 'linked'}
 """
 
 
@@ -621,8 +668,15 @@ class MemoryManager:
         source_filter: list[str] | None = None,
         source_exclude: list[str] | None = None,
         memory_scope: str | None = None,
+        *,
+        include_correction_pending: bool = False,
     ) -> list[dict]:
-        """KNN search tramite embedding — restituisce docs ordinati per distanza coseno."""
+        """KNN search tramite embedding — restituisce docs ordinati per distanza coseno.
+
+        ``include_correction_pending`` e' riservato al resolver correttivo: il
+        nodo resta invisibile al RAG, ma puo' essere ispezionato come possibile
+        antecedente dopo una quarantena immediata.
+        """
         vec = self._embedder.encode(query, mode="query")
         if vec is None:
             return []
@@ -672,6 +726,11 @@ class MemoryManager:
                     item["_created_at"] = from_timestamp(item.get("created_at"))
                     item["_vec_score"] = score
                     docs.append(item)
+            if include_correction_pending:
+                # L'ordine KNN e' gia' in ``ranked``. Il resolver applica poi
+                # autorita', overlap e astensione; qui non riapriamo il nodo a
+                # nessun normale consumatore cognitivo.
+                return docs[:limit]
             return self._rank_epistemically(docs, limit=limit)
         except Exception as e:
             logger.error(f"Errore ricerca semantica: {e}")
@@ -1283,6 +1342,50 @@ class MemoryManager:
             "audit_flag": cand.get("audit_flag"),
         }
 
+    def find_correction_target(
+        self,
+        content: str,
+        correction_text: str,
+        *,
+        limit: int = 8,
+        memory_scope: str | None = None,
+    ) -> dict | None:
+        """Trova un antecedente bounded per una correzione esplicita.
+
+        A differenza di ``find_similar_memory`` non prende ciecamente il primo
+        KNN: esclude la nuova formulazione identica, confronta un pool piccolo e
+        si astiene sulle parita' sostanziali. La funzione pura nel resolver non
+        ha autorita' di scrittura.
+        """
+        if not (self._embedder and self._embedder.available):
+            return None
+        from core.correction_resolver import select_correction_target
+
+        query = "\n".join(
+            part for part in (str(content or "").strip(), str(correction_text or "").strip())
+            if part
+        )
+        candidates = self._search_semantic(
+            query,
+            limit=max(2, int(limit)),
+            memory_scope=memory_scope,
+            include_correction_pending=True,
+        )
+        resolution = select_correction_target(
+            content,
+            correction_text,
+            candidates,
+        )
+        logger.info(
+            "Correction resolver: reason={} target={} candidates={} exact_excluded={} ambiguous={}",
+            resolution.reason,
+            (resolution.target or {}).get("id", "-"),
+            len(candidates),
+            len(resolution.excluded_exact_ids),
+            ",".join(resolution.ambiguous_ids) or "-",
+        )
+        return dict(resolution.target) if resolution.target is not None else None
+
     def _record_integrity_failure(self, kind: str, key: str, err) -> None:
         """Path di SCRITTURA della memoria: un fallimento NON deve sparire in DEBUG. Lo rende
         RUMOROSO (WARNING) e TRACCIATO (stream euri:integrity:failures, cap 1000) — così
@@ -1322,6 +1425,51 @@ class MemoryManager:
                 if attempt == 2:
                     self._record_integrity_failure("supersede", key, e)
         return False
+
+    def link_correction(self, old_id: str, new_id: str) -> bool:
+        """Collega le due facce della correzione in una transazione Redis.
+
+        Il nodo nuovo deve essere stato pubblicato con ``correction_pending``:
+        finche' questa operazione non riesce resta escluso dal retrieval. La
+        transazione imposta insieme ``old.superseded_by`` e
+        ``new.correction_of``; un conflitto non viene sovrascritto.
+        """
+        old_id = str(old_id or "").replace("euri:memory:", "")
+        new_id = str(new_id or "").replace("euri:memory:", "")
+        old_key = f"euri:memory:{old_id}"
+        new_key = f"euri:memory:{new_id}"
+        if not old_id or not new_id or old_id == new_id:
+            self._record_integrity_failure(
+                "correction_link", old_key, "invalid_or_identical_ids"
+            )
+            return False
+        try:
+            result = self.r.eval(
+                _CORRECTION_LINK_LUA,
+                2,
+                old_key,
+                new_key,
+                json.dumps(new_id),
+                json.dumps(old_id),
+                f"{to_timestamp(now()):.6f}",
+                "euri:correction:",
+            )
+            ok, reason = result
+            if isinstance(ok, bytes):
+                ok = ok.decode("utf-8", errors="replace")
+            if isinstance(reason, bytes):
+                reason = reason.decode("utf-8", errors="replace")
+            if str(ok) != "1":
+                self._record_integrity_failure(
+                    "correction_link", old_key, str(reason)
+                )
+                return False
+            remove_loop2e_candidate(self.r, old_id)
+            remove_loop2e_candidate(self.r, new_id)
+            return True
+        except Exception as exc:
+            self._record_integrity_failure("correction_link", old_key, exc)
+            return False
 
     def supersede_duplicate_reflections(
         self,
@@ -2179,3 +2327,57 @@ class MemoryManager:
                    payload={"id": sid, "correction": correzione_user[:200]},
                    salience=0.6)
         return sid
+
+    def extend_correction_signal_context(
+        self,
+        signal_id: str,
+        rag_ctx_ids: list[str],
+    ) -> list[str]:
+        """Aggiunge i candidati del turno correttivo senza riscrivere il RAG storico.
+
+        ``rag_ctx_ids`` nel signal continua a descrivere la risposta contestata;
+        ``resolution_rag_ctx_ids`` documenta invece la ricerca avviata dalle
+        parole della correzione. Solo signal pending e nello scope corrente sono
+        estendibili.
+        """
+        if not getattr(config, "CORRECTION_RESOLVER_ENABLED", True):
+            return []
+        sid = str(signal_id or "").replace("euri:correction:", "")
+        if not sid:
+            return []
+        key = f"euri:correction:{sid}"
+        try:
+            raw = self.r.json().get(key, "$")
+            doc = raw[0] if raw else {}
+        except Exception:
+            return []
+        if doc.get("status") != "pending" or scope_of(doc) != current_scope():
+            return []
+        candidate_ids = list(dict.fromkeys(
+            str(mid or "").replace("euri:memory:", "")
+            for mid in (rag_ctx_ids or [])
+            if mid
+        ))
+        if not candidate_ids:
+            return []
+        previous_resolution = list(doc.get("resolution_rag_ctx_ids") or [])
+        resolution_ids = list(dict.fromkeys([*previous_resolution, *candidate_ids]))
+        self.r.json().set(key, "$.resolution_rag_ctx_ids", resolution_ids)
+        quarantined = self._quarantine_correction_targets(
+            sid,
+            doc.get("correzione_user", "") or "",
+            candidate_ids,
+            created_at=float(doc.get("created_at") or to_timestamp(now())),
+            memory_scope=doc.get("memory_scope"),
+        )
+        if quarantined:
+            all_quarantined = list(dict.fromkeys([
+                *(doc.get("quarantined_memory_ids") or []),
+                *quarantined,
+            ]))
+            self.r.json().set(key, "$.quarantined_memory_ids", all_quarantined)
+            logger.info(
+                "Correction resolver context: {} candidato/i quarantinati ({})",
+                len(quarantined), sid[:8],
+            )
+        return quarantined

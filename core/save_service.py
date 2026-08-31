@@ -18,6 +18,7 @@ import re
 
 from loguru import logger
 
+import config
 from core.validator import validate_payload
 from core.intent_router import extract_content_after_trigger, SAVE_MEMORY_TRIGGERS
 
@@ -207,14 +208,28 @@ def _resolve_content(text: str, brain, prev_user_text: str, prev_assistant_text:
 
 
 def _save_or_merge(content: str, memory, brain, *, memory_title: str = "",
-                   operation: str = "add") -> dict:
+                   operation: str = "add", correction_text: str = "") -> dict:
     """Salva, arricchisce o corregge la memoria più simile.
 
     ``add`` usa l'unione costruttiva storica. ``correct`` non deve mai attraversare
     quel prompt, perché l'unione conserva per contratto tutti i dettagli precedenti.
     ``replace`` usa invece il nuovo testo come versione completa.
     """
-    match = memory.find_similar_memory(content)
+    correction_resolver_enabled = bool(
+        getattr(config, "CORRECTION_RESOLVER_ENABLED", True)
+    )
+    use_correction_resolver = (
+        operation == "correct"
+        and correction_resolver_enabled
+        and hasattr(memory, "find_correction_target")
+    )
+    if use_correction_resolver:
+        match = memory.find_correction_target(
+            content,
+            correction_text or content,
+        )
+    else:
+        match = memory.find_similar_memory(content)
     fields = {"memory_title": memory_title} if memory_title else None
 
     if operation in {"correct", "replace"}:
@@ -224,11 +239,18 @@ def _save_or_merge(content: str, memory, brain, *, memory_title: str = "",
             )
             if not new_id:
                 return {"saved": False, "merged": False, "reply": "Non sono riuscito a salvare.", "content": None}
+            resolver_abstained = operation == "correct" and use_correction_resolver
             return {
                 "saved": True,
                 "merged": False,
-                "corrected": operation == "correct",
-                "reply": brain.confirm_save("memory", content),
+                "corrected": operation == "correct" and not resolver_abstained,
+                "correction_of": None,
+                "reply": (
+                    "Ho registrato la nuova informazione, ma non ho collegato "
+                    "con sufficiente certezza la memoria precedente."
+                    if resolver_abstained
+                    else brain.confirm_save("memory", content)
+                ),
                 "content": content,
             }
 
@@ -237,17 +259,54 @@ def _save_or_merge(content: str, memory, brain, *, memory_title: str = "",
                 brain.apply_correction_to_memory(match["content"], content) or ""
             ).strip()
             # Fail-safe: mai perdere la parola dell'utente. Se il correttore fallisce,
-            # il nodo nuovo contiene la correzione stessa e ritira comunque la versione
-            # contraddetta; è preferibile una memoria meno completa a una falsa.
+            # il nodo nuovo contiene la correzione stessa. La versione precedente
+            # viene ritirata soltanto dalla relazione atomica qui sotto.
             new_content = rewritten or content
         else:
             new_content = content
+        link_supported = (
+            operation == "correct"
+            and correction_resolver_enabled
+            and hasattr(memory, "link_correction")
+        )
+        final_fields = dict(fields or {})
+        if link_supported:
+            final_fields.update({
+                "correction_of": match["id"],
+                "correction_relation": "explicit_fact_correction",
+                # Il retrieval esclude gia' correction_pending: il nodo non
+                # diventa autorevole prima della relazione atomica.
+                "correction_pending": True,
+            })
         new_id = memory.save_memory(
-            new_content, source="user", idempotent=True, final_fields=fields
+            new_content,
+            source="user",
+            # Una correzione deve nascere davvero pending. Riutilizzare un nodo
+            # idempotente creato prima del resolver aggirerebbe tale precondizione.
+            idempotent=not link_supported,
+            final_fields=final_fields or None,
         )
         if not new_id:
             return {"saved": False, "merged": False, "reply": "Non sono riuscito a salvare.", "content": None}
-        if not memory.supersede_memory(match["id"], new_id):
+        if link_supported:
+            linked = memory.link_correction(match["id"], new_id)
+            if not linked:
+                logger.warning(
+                    f"Correzione salvata pending, collegamento a {match['id']} fallito"
+                )
+                return {
+                    "saved": True,
+                    "merged": False,
+                    "corrected": False,
+                    "pending": True,
+                    "correction_of": match["id"],
+                    "reply": (
+                        "Ho conservato la correzione, ma non ho modificato la "
+                        "memoria precedente perché il collegamento non è riuscito."
+                    ),
+                    "content": new_content,
+                }
+        elif not memory.supersede_memory(match["id"], new_id):
             logger.warning(
                 f"{operation} salvata, ma supersede di {match['id']} fallito"
             )
@@ -259,6 +318,7 @@ def _save_or_merge(content: str, memory, brain, *, memory_title: str = "",
             "saved": True,
             "merged": False,
             "corrected": operation == "correct",
+            "correction_of": match["id"] if operation == "correct" else None,
             "reply": f"{action_reply}: {new_content}",
             "content": new_content,
         }
@@ -424,8 +484,17 @@ def save_memory_command(
         "correction": "correct",
         "replacement": "replace",
     }.get(kind, "add")
+    correction_text = ""
+    if operation == "correct":
+        from core.correction_resolver import build_correction_evidence
+        correction_text = build_correction_evidence(resolve_text, recent_history)
     result = _save_or_merge(
-        content, memory, brain, memory_title=memory_title, operation=operation
+        content,
+        memory,
+        brain,
+        memory_title=memory_title,
+        operation=operation,
+        correction_text=correction_text,
     )
     if memory_title:
         result["memory_title"] = memory_title

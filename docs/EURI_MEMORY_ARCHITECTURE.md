@@ -340,8 +340,26 @@ Un salvataggio esplicito nasce con `source=user` ed è permanente. Se lo stesso
 testo esiste già soltanto come nodo passivo o epistemicamente debole, il save
 esplicito crea la versione autorevole e soft-supersede la precedente; l'uguaglianza
 testuale non deve impedire la promozione di autorità. Il learner passivo può
-continuare a osservare il turno, ma la deduplica vedrà il fatto già fissato e
-non diventa il surrogato ritardato di un'azione richiesta dall'utente.
+continuare a osservare un normale `REQUEST_SAVE`, ma un frame affidabile
+`CORRECT_FACT`/`CORRECT_ENTITY` e la risposta associata restano fuori dal
+passivo: la correzione possiede un lifecycle dedicato e non deve pubblicare un
+duplicato prima di avere identificato l'antecedente.
+
+Per una correzione fattuale esplicita, `core/correction_resolver.py` ordina un
+pool KNN bounded senza autorità di scrittura. Considera soltanto fonti dirette,
+esclude la nuova formulazione identica, usa soggetto e identificatori rifiutati
+come evidenza e si astiene sulle parità sostanziali. Un antecedente in
+`correction_pending` resta invisibile al RAG ordinario ma è ispezionabile da
+questo solo resolver: la quarantena non può nascondere il nodo che il successivo
+save deve correggere.
+
+Il nuovo nodo nasce `correction_pending=true` e quindi non è ancora richiamabile.
+Una singola transazione Redis verifica la relazione dichiarata e aggiorna
+insieme `old.superseded_by`, `new.correction_of`, lo stato del nodo nuovo e
+l'eventuale correction signal che aveva aperto la quarantena. Solo dopo quella
+ricevuta la risposta può dire «ho corretto». Se la selezione è ambigua non viene
+ritirato alcun antecedente; se il link fallisce la nuova versione resta pending.
+Rollback runtime: `EURI_CORRECTION_RESOLVER_ENABLED=0`.
 
 **Limite corrente:** la policy episodica non è una modalità off-record globale.
 Non elimina il verbatim locale e non oltrepassa il confine temporale
@@ -485,7 +503,7 @@ secondari passano da `core/memory_outbox.py` e sono replayabili.
 | Utilità osservata | `supported_use_count`, `supported_use_observed_recalled_count`, `last_supported_use_at` | riuso ed esposizione shadow per il solo ordine Loop 2e |
 | Provenienza | `temporal_context.source_turn_refs`, `source_memory_ids`, `consolidated_from` | fonti verbatim o nodi genitori |
 | Epistemica | `requires_verification`, `epistemic_status`, `passive_support`, `memory_axes` | solidità, modalità e rischi |
-| Revisione | `superseded_by`, `consolidated_into`, `correction_pending`, `audit_flag`, `provenance_stale` | stato nel lifecycle e nei gate |
+| Revisione | `superseded_by`, `correction_of`, `correction_relation`, `consolidated_into`, `correction_pending`, `audit_flag`, `provenance_stale` | stato e relazioni esplicite nel lifecycle e nei gate |
 | Coda pruning | `pruning_review_pending`, `pruning_review_after`, `pruning_original_expires_at`, `pruning_defer_count`, `pruning_last_verdict` | lease, priorità e audit del giudizio Loop 2d |
 
 ### I tre tempi e le date ellittiche
@@ -859,11 +877,20 @@ bersaglio `correction_pending`; Loop 2g distingue poi:
 
 I segnali `proposal_only` non hanno autorità per mutare da soli una memoria.
 
+Il signal conserva due viste non intercambiabili: `rag_ctx_ids` documenta il
+contesto della risposta contestata, mentre `resolution_rag_ctx_ids` conserva i
+candidati recuperati dalle parole della correzione. La seconda vista può
+applicare la stessa quarantena conservativa senza riscrivere la prima. Quando un
+save esplicito collega davvero vecchia e nuova memoria, il signal associato
+passa atomicamente da `pending` a `resolved`, così Loop 2g non può giudicare e
+flaggare in seguito la nuova verità come se la correzione fosse ancora aperta.
+
 ## 9. Operatori che trasformano la memoria
 
 | Operatore | Trigger | Legge | Scrive o modifica | Natura |
 |---|---|---|---|---|
 | Passive learner | ~45 s idle | nuovi turni eleggibili | `source=passive` | acquisizione |
+| Correction Resolver | `CORRECT_FACT`/`CORRECT_ENTITY` + save esplicito | nuova formulazione, evidenza correttiva recente e pool diretto bounded | relazione atomica `correction_of`/`superseded_by`; chiusura signal | revisione fattuale esplicita |
 | Loop 2a | idle, checkpoint di sessione | memorie di sessione + correlate | `source=reflection`, inizialmente 7 giorni | interpretazione interna |
 | Loop 2b-REM | creative ~90 min | due semi diretti e puliti cross-domain + contesto verbatim bounded | dream grezzo TTL 7 giorni, senza embedding | divergenza non cognitiva |
 | Loop 2b-Wake | subito dopo REM | stessi semi + dream grezzo marcato non fattuale | dream interpretato e, se esiste, insight candidate | distillazione lucida |

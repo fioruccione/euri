@@ -152,6 +152,11 @@ SEMANTIC_TURN_MIN_CONFIDENCE = float(
 SYSTEMIC_RETRIEVAL_ENABLED = os.environ.get(
     "EURI_SYSTEMIC_RETRIEVAL_ENABLED", "1"
 ).strip().lower() not in {"0", "false", "no", "off"}
+# Correzioni fattuali esplicite: resolver bounded dell'antecedente, blocco del
+# learner passivo sul turno correttivo e relazione atomica correction_of.
+CORRECTION_RESOLVER_ENABLED = os.environ.get(
+    "EURI_CORRECTION_RESOLVER_ENABLED", "1"
+).strip().lower() not in {"0", "false", "no", "off"}
 SEMANTIC_TEACH_MIN_CONFIDENCE = float(
     os.environ.get("EURI_SEMANTIC_TEACH_MIN_CONFIDENCE", "0.82")
 )
