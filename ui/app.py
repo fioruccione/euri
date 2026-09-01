@@ -276,7 +276,10 @@ def render_document_workspace_panel():
         st.subheader("📄 Tavolo documenti")
         if operation:
             _op_status = str(operation.get("status") or "")
-            _op_file = str(operation.get("filename") or "documento")
+            _op_files = list(operation.get("filenames") or [])
+            _op_file = ", ".join(_op_files) or str(
+                operation.get("filename") or "documento"
+            )
             _op_channel = str(operation.get("source_channel") or "")
             if _op_status == "running":
                 st.info(f"Operazione in corso su {_op_file} ({_op_channel}).")
@@ -310,6 +313,7 @@ def render_document_workspace_panel():
                     st.rerun(scope="fragment")
         if receipts:
             receipt = receipts[0]
+            receipt_kind = str(receipt.get("receipt_kind") or "")
             output_path = Path(str(receipt.get("filepath") or ""))
             output_root = Path(config.CODE_RUNNER_OUTPUT_DIR).resolve()
             try:
@@ -319,7 +323,20 @@ def render_document_workspace_panel():
                 )
             except Exception:
                 safe_output = False
-            st.markdown(f"**Ultimo risultato:** `{receipt.get('filename', 'file')}`")
+            if receipt_kind == "document_read":
+                read_names = list(receipt.get("read_filenames") or [])
+                requested_names = list(receipt.get("filenames") or [])
+                st.markdown(
+                    "**Ultima lettura verificata:** "
+                    f"{len(read_names)}/{len(requested_names)} documenti"
+                )
+                if read_names:
+                    st.caption("File letti: " + ", ".join(read_names))
+                failed_names = list(receipt.get("failed_filenames") or [])
+                if failed_names:
+                    st.error("File non letti: " + ", ".join(failed_names))
+            else:
+                st.markdown(f"**Ultimo risultato:** `{receipt.get('filename', 'file')}`")
             source_kind = str(receipt.get("source_kind") or "")
             source_scope = str(receipt.get("source_scope") or "")
             source_refs = list(receipt.get("source_turn_refs") or [])
@@ -1034,6 +1051,7 @@ with main_col:
                     "document_analysis",
                     source_channel="silent_chat",
                     filename=saved_uploads[-1]["name"],
+                    filenames=[item["name"] for item in saved_uploads],
                 )
                 upload_operation_id = str(upload_operation.get("id") or "")
                 if not _chat_input_supports_files:
@@ -1059,6 +1077,7 @@ with main_col:
                         "document_analysis",
                         source_channel="silent_chat",
                         filename=staged_paths[-1]["name"],
+                        filenames=[item["name"] for item in staged_paths],
                     )
                     upload_operation_id = str(staged_operation.get("id") or "")
 

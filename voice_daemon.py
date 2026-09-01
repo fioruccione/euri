@@ -1730,12 +1730,21 @@ class VoiceDaemon:
                 parameters["format"] = self.executor.resolve_document_format(
                     str(parameters.get("format") or ""), text
                 )
+            elif tool_name == "read_document":
+                # Anche dalla voce, nomi dei file e obiettivo restano quelli
+                # pronunciati dall'utente, non la parafrasi del controller.
+                parameters["question"] = text
             call = ToolCall(tool_name=tool_name, parameters=parameters)
             self.executor.stop_event.clear()
             result = self.executor.execute(call)
             ok = bool(result.success)
             reply = result.output
             raw_data = result.raw_data
+            if not ok:
+                # Un errore strutturato (per esempio lettura 1/2) va pronunciato
+                # direttamente. Non passarlo a un secondo modello come “esito
+                # verificato”, perché potrebbe trasformarlo in un successo narrato.
+                integrate_response = False
             try:
                 self.memory.set_last_rag_ctx([])
             except Exception as exc:

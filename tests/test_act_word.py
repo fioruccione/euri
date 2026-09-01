@@ -29,6 +29,10 @@ CASES = [
     ("claim creato senza azione", "Ho creato il documento e te l'ho messo nella cartella.", set(), True),
     ("claim generato reale 05/08", "Ho generato il documento Word con l'intestazione aziendale.", set(), True),
     ("claim prodotto senza azione", "Ho prodotto ed esportato il nuovo PDF.", set(), True),
+    ("claim lettura documento senza azione",
+     "Ho letto entrambi i documenti e li ho confrontati.", set(), True),
+    ("claim analisi clipboard senza azione reale",
+     "Ho analizzato il testo che hai copiato negli appunti.", set(), True),
     ("promessa preparando reale 05/08", "Sto preparando il documento nella cartella scambio dati.", set(), True),
     ("promessa riscrittura dopo tool mai partito 23/08",
      "Riprovo subito: sto riscrivendo lo script in modo più semplice.", set(), True),
@@ -41,6 +45,8 @@ CASES = [
     ("17:43 reale: ho aggiornato ma ha creato (azione c'è)", "Ho aggiornato la memoria: Lezione sul settore plastiche.", {"save"}, False),
     ("claim save con save", "Ho salvato il fatto in memoria.", {"save"}, False),
     ("claim todo con todo", "Segnato: 'chiamare Mario'. Vuoi una scadenza?", {"save_todo"}, False),
+    ("claim lettura con tool reale",
+     "Ho letto entrambi i documenti.", {"read_document"}, False),
 
     # --- NON deve scattare: nessun claim d'azione ---
     ("saluto", "Buongiorno Stefano, di cosa parliamo adesso?", set(), False),
@@ -116,6 +122,9 @@ SCRUB_CASES = [
      "Ho generato il documento Word. Lo trovi in scambio_dati.", set(),
      lambda out: "ho generato" not in out.lower() and "scambio_dati" not in out
      and out == _TAIL),
+    ("claim analisi clipboard falsa → coda onesta",
+     "Ho analizzato il testo che hai copiato negli appunti.", set(),
+     lambda out: "ho analizzato" not in out.lower() and out == _TAIL),
     ("sto preparando → niente background finto",
      "Sto preparando il documento.", set(),
      lambda out: out == _COMMITMENT_TAIL),

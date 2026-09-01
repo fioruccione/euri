@@ -2349,10 +2349,17 @@ class Brain:
         norma ISO al posto del valore). Generico: nessuna assunzione di layout.
         """
         blocks = []
+        readable_count = sum(
+            1 for text in documents.values() if text and text.strip()
+        )
+        per_file_cap = max(1000, min(8000, 24000 // max(1, readable_count)))
         for fname, text in documents.items():
             if text and text.strip():
-                # cap per file: non saturare il contesto su documenti lunghi
-                snippet = text[:8000] + (" ...[troncato]" if len(text) > 8000 else "")
+                # Budget totale bounded: anche una lettura multipla non può
+                # moltiplicare 8k per ogni file fino a saturare il contesto.
+                snippet = text[:per_file_cap] + (
+                    " ...[troncato]" if len(text) > per_file_cap else ""
+                )
                 blocks.append(f"=== {fname} ===\n{snippet}")
         if not blocks:
             return "Non sono riuscito a leggere testo dai documenti nella cartella dati."
@@ -2377,6 +2384,10 @@ class Brain:
             "(es. 'IZOD: 6,5 kJ/m²', 'Totale: 1.240 €', 'Scadenza: 30/06').\n"
             "- Riporta SOLO ciò che è scritto nel testo. Se un dato non c'è, "
             "NON inventarlo: dì che non è riportato, oppure omettilo.\n"
+            "- Se i documenti sono più di uno, trattali come FONTI DISTINTE: "
+            "attribuisci ogni dato al nome del file, descrivi prima ciascuna fonte "
+            "e confrontale soltanto dopo. Non trasferire mai un valore, un nome o "
+            "una conclusione da un documento all'altro.\n"
             "- Distingui i valori reali dai codici e riferimenti (numeri di "
             "norma o metodo, sigle, ID): il numero di un riferimento NON è un "
             "valore misurato.\n"

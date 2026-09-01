@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-09-01 - Lettura multipla documentale verificabile
+
+- La Silent Chat conserva nell'operazione l'intero insieme dei file caricati e
+  l'Executor passa al lettore la richiesta originale: una parafrasi generica del
+  controller non può più far ricadere l'analisi sul vecchio documento attivo.
+- `read_document` mantiene i documenti come fonti separate, bilancia il contesto
+  grezzo fra i file e chiede a Gemma di attribuire dati e conclusioni al nome della
+  fonte prima di confrontarli.
+- Il confronto fallisce chiuso se anche un solo file richiesto non viene letto o se
+  due nomi hanno lo stesso SHA-256. Una ricevuta temporanea espone in UI file
+  richiesti/letti/falliti e rapporto `N/M`; non entra nella memoria cognitiva.
+- Il guardiano atto-parola copre ora anche dichiarazioni di lettura e analisi:
+  frasi come “ho analizzato la clipboard” vengono corrette se nel turno non è
+  realmente partito alcun tool.
+- Regressioni aggiunte per lettura 2/2, errore parziale, duplicati, fallimento del
+  modello, read-set fra processi e conservazione della richiesta verbatim; manifest
+  unitario completo: 92/92 in 78,7 s.
+
 ## 2026-09-01 - Le misure numeriche non diventano date
 
 - Il resolver temporale distingue ora le date numeriche dagli intervalli tecnici:

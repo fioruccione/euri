@@ -22,7 +22,8 @@ import re
 # Verbi-azione che Euri può affermare di aver compiuto (participio passato).
 _VERBS = (
     r"(?:salvat|aggiornat|modificat|memorizzat|segnat|annotat|registrat|"
-    r"creat|generat|prodot|esportat|preparat|scritt|elimina|cancellat|rimoss|complet)\w*"
+    r"creat|generat|prodot|esportat|preparat|scritt|elimina|cancellat|rimoss|complet|"
+    r"analizzat|esaminat|consultat|lett)\w*"
 )
 
 # Claim = prima persona passata: "ho salvato", "l'ho aggiornato", "li ho memorizzati".

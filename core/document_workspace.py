@@ -236,6 +236,7 @@ class DocumentWorkspace:
         *,
         source_channel: str,
         filename: str = "",
+        filenames: list[str] | None = None,
         tool_name: str = "",
         memory_scope: str | None = None,
     ) -> dict:
@@ -247,6 +248,9 @@ class DocumentWorkspace:
             "status": "running",
             "source_channel": str(source_channel or "unknown"),
             "filename": str(filename or ""),
+            "filenames": [
+                str(item) for item in (filenames or []) if str(item).strip()
+            ],
             "tool_name": str(tool_name or ""),
             "message": "",
             "started_at": now,
@@ -353,7 +357,9 @@ class DocumentWorkspace:
         return True
 
     def record_receipt(self, receipt: dict, memory_scope: str | None = None) -> None:
-        if not isinstance(receipt, dict) or not receipt.get("filepath"):
+        if not isinstance(receipt, dict) or not (
+            receipt.get("filepath") or receipt.get("receipt_kind")
+        ):
             return
         payload = _json_copy({**receipt, "recorded_at": self._clock()})
         key = self._receipt_key(memory_scope)

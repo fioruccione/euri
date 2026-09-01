@@ -160,12 +160,6 @@ class Executor:
         raw = result.raw_data or {}
         receipt = raw.get("artifact_receipt")
         workspace = getattr(self, "document_workspace", None)
-        if isinstance(receipt, dict) and workspace is not None:
-            try:
-                workspace.record_receipt(receipt)
-            except Exception as exc:
-                logger.warning("Workspace documentale: ricevuta non condivisa ({})", exc)
-
         documents = raw.get("artifact_documents")
         if isinstance(documents, list) and documents:
             active_filename = str(raw.get("artifact_active_filename") or "")
@@ -184,6 +178,16 @@ class Executor:
                     )
                 except Exception as exc:
                     logger.warning("Workspace documentale: pubblicazione fallita ({})", exc)
+            # publish_documents apre un nuovo lavoro e rimuove la ricevuta
+            # precedente: la ricevuta della lettura corrente va quindi registrata
+            # soltanto dopo la pubblicazione degli artefatti.
+            if isinstance(receipt, dict) and workspace is not None:
+                try:
+                    workspace.record_receipt(receipt)
+                except Exception as exc:
+                    logger.warning(
+                        "Workspace documentale: ricevuta non condivisa ({})", exc
+                    )
             active = next(
                 (
                     item for item in documents
@@ -206,6 +210,12 @@ class Executor:
                 len(documents), active_filename or "ambiguo",
             )
             return
+
+        if isinstance(receipt, dict) and workspace is not None:
+            try:
+                workspace.record_receipt(receipt)
+            except Exception as exc:
+                logger.warning("Workspace documentale: ricevuta non condivisa ({})", exc)
 
         content = raw.get("artifact_content")
         if not isinstance(content, str) or not content.strip():
@@ -737,7 +747,7 @@ class Executor:
             if not input_dir.exists() or not any(input_dir.iterdir()):
                 return ToolResult(success=False, output="Non ci sono file nella cartella dati.")
 
-            question = params.get("question", "") or ""
+            question = str(params.get("question", "") or "").strip()
             upload_queue = self._streamlit_upload_paths(input_dir)
             q_fold = question.casefold()
             named_uploads = [
@@ -750,12 +760,27 @@ class Executor:
             ]
             shared_active_name = ""
             workspace = getattr(self, "document_workspace", None)
+            operation_names = []
             if workspace is not None:
                 try:
                     active = workspace.get_active()
                     shared_active_name = str((active or {}).get("filename") or "")
+                    operation = workspace.get_operation(max_age_seconds=300) or {}
+                    if (
+                        operation.get("status") == "running"
+                        and operation.get("kind") == "document_analysis"
+                    ):
+                        operation_names = list(operation.get("filenames") or [])
+                        if not operation_names and operation.get("filename"):
+                            operation_names = [str(operation["filename"])]
                 except Exception:
                     shared_active_name = ""
+                    operation_names = []
+            operation_folds = {name.casefold() for name in operation_names}
+            operation_uploads = [
+                path for path in upload_queue
+                if path.name.casefold() in operation_folds
+            ]
             active_upload = next(
                 (
                     path for path in upload_queue
@@ -763,10 +788,11 @@ class Executor:
                 ),
                 None,
             )
-            # Se il turno arriva dalla UI, il prompt contiene i nomi appena
-            # caricati. Nei follow-up vocali senza nome resta attivo il piu'
-            # recente della coda Streamlit. Nessun altro file della cartella entra.
-            selected_paths = named_uploads or (
+            # I nomi espliciti del turno hanno precedenza. Come difesa ulteriore,
+            # l'operazione UI conserva l'intero read-set: se il controller perde
+            # i nomi, non si ricade sul vecchio documento attivo. Nei follow-up
+            # senza read-set resta attivo il più recente. Nessun altro upload entra.
+            selected_paths = named_uploads or operation_uploads or (
                 [active_upload]
                 if active_upload is not None
                 else (upload_queue[-1:] if upload_queue else [])
@@ -788,62 +814,147 @@ class Executor:
                         documents[p.name] = p.read_text(encoding="utf-8", errors="replace")
                     except Exception:
                         pass
-            if not any((t or "").strip() for t in documents.values()):
-                return ToolResult(success=False, output="Non sono riuscito a leggere testo dai documenti.")
-
-            # Ogni file resta un artefatto distinto. La domanda puo' nominare
-            # esplicitamente un file; se non lo fa, un solo file e' selezionabile
-            # automaticamente, mentre N file restano deliberatamente ambigui.
-            selected_names = []
-            for filename in documents:
-                name_fold = filename.casefold()
-                stem_fold = Path(filename).stem.casefold()
-                if name_fold in q_fold or (len(stem_fold) >= 5 and stem_fold in q_fold):
-                    selected_names.append(filename)
-            if not selected_names and len(documents) == 1:
-                selected_names = list(documents)
-            active_filename = selected_names[-1] if selected_names else ""
-            comprehension_docs = (
-                {active_filename: documents[active_filename]}
-                if active_filename else documents
-            )
-            comprehension = brain.read_and_extract(comprehension_docs, question)
+            # Ricostruiamo il read-set nell'ordine richiesto, senza fondere le
+            # fonti. Un file vuoto/mancante rende incompleta l'intera operazione:
+            # Gemma non riceve il sottoinsieme e non può presentarlo come confronto.
+            requested_names = [path.name for path in scan_paths]
+            comprehension_docs = {
+                filename: str(documents.get(filename) or "")
+                for filename in requested_names
+                if str(documents.get(filename) or "").strip()
+            }
+            failed_names = [
+                filename for filename in requested_names
+                if filename not in comprehension_docs
+            ]
+            active_filename = ""
+            if selected_paths and comprehension_docs:
+                active_filename = next(
+                    (
+                        path.name for path in reversed(selected_paths)
+                        if path.name in comprehension_docs
+                    ),
+                    "",
+                )
+            elif len(comprehension_docs) == 1:
+                active_filename = next(iter(comprehension_docs))
 
             # context_extra = testo GREZZO dei documenti, iniettato nel contesto
             # (non nel parlato) per il richiamo fedele dei valori esatti nei turn
             # successivi — stesso disaccoppiamento parla/ricorda del fix run_code.
+            per_document_cap = max(
+                1000, min(6000, 12000 // max(1, len(comprehension_docs)))
+            )
             raw_blob = "\n\n".join(
-                f"=== {f} ===\n{t.strip()}"
-                for f, t in comprehension_docs.items() if t and t.strip()
+                f"=== {filename} ===\n{text.strip()[:per_document_cap]}"
+                for filename, text in comprehension_docs.items()
             )
             from core.document_workspace import DocumentWorkspace
             artifact_documents = []
-            for filename, text in documents.items():
-                if not text or not text.strip():
-                    continue
+            for filename, text in comprehension_docs.items():
                 path = input_dir / filename
                 artifact_documents.append(DocumentWorkspace.file_document(path, text))
-            ambiguity_note = ""
-            if len(artifact_documents) > 1 and not active_filename:
-                ambiguity_note = (
-                    " Ho registrato i file separatamente, ma prima di modificarne uno "
-                    "devi indicarmi quale documento vuoi usare."
+
+            read_items = [
+                {
+                    "filename": item["filename"],
+                    "sha256": item["sha256"],
+                    "bytes": item["bytes"],
+                }
+                for item in artifact_documents
+            ]
+            distinct_hashes = {item["sha256"] for item in read_items}
+            read_manifest = {
+                "kind": "document_read",
+                "requested_filenames": requested_names,
+                "read": read_items,
+                "failed_filenames": failed_names,
+                "complete": not failed_names and len(read_items) == len(requested_names),
+                "distinct_sha256_count": len(distinct_hashes),
+            }
+            receipt = {
+                "receipt_kind": "document_read",
+                "filename": f"Lettura documenti ({len(read_items)}/{len(requested_names)})",
+                "filenames": requested_names,
+                "read_filenames": [item["filename"] for item in read_items],
+                "failed_filenames": failed_names,
+                "source_kind": "uploaded_documents" if upload_queue else "data_directory",
+                "sha256": hashlib.sha256(
+                    "|".join(item["sha256"] for item in read_items).encode("utf-8")
+                ).hexdigest(),
+                "warnings": [],
+            }
+            common_raw = {
+                "context_extra": raw_blob,
+                "artifact_documents": artifact_documents,
+                "artifact_active_filename": active_filename,
+                "artifact_source_channel": (
+                    "silent_chat" if upload_queue else "read_document"
+                ),
+                "artifact_preserve_existing": bool(upload_queue),
+                "artifact_allowed_source_paths": [
+                    str(path.resolve()) for path in upload_queue
+                ],
+                "artifact_receipt": receipt,
+                "document_read_manifest": read_manifest,
+            }
+            if failed_names:
+                receipt["warnings"].append(
+                    "Lettura incompleta: il confronto non è stato eseguito."
                 )
+                read_ok = ", ".join(item["filename"] for item in read_items) or "nessuno"
+                failed = ", ".join(failed_names)
+                return ToolResult(
+                    success=False,
+                    output=(
+                        f"Lettura incompleta: ho letto {read_ok}, ma non sono riuscito "
+                        f"a leggere {failed}. Non considero completo il confronto."
+                    ),
+                    error="partial_document_read",
+                    raw_data=common_raw,
+                )
+            if len(requested_names) > 1 and len(distinct_hashes) < len(requested_names):
+                receipt["warnings"].append(
+                    "Almeno due nomi indicano lo stesso contenuto; nessun confronto indipendente."
+                )
+                return ToolResult(
+                    success=False,
+                    output=(
+                        "I documenti richiesti non sono fonti distinte: almeno due file "
+                        "hanno lo stesso contenuto. Non li confronto come offerte indipendenti."
+                    ),
+                    error="duplicate_document_content",
+                    raw_data=common_raw,
+                )
+
+            comprehension = brain.read_and_extract(comprehension_docs, question)
+            if not comprehension.strip() or comprehension.strip() == (
+                "Non sono riuscito a leggere il documento."
+            ):
+                receipt["warnings"].append(
+                    "I file sono stati estratti, ma la comprensione del modello è fallita."
+                )
+                return ToolResult(
+                    success=False,
+                    output=(
+                        "Ho estratto i documenti richiesti, ma non sono riuscito a "
+                        "completarne l'analisi. Non considero eseguito il confronto."
+                    ),
+                    error="document_comprehension_failed",
+                    raw_data=common_raw,
+                )
+            receipt["preview_text"] = comprehension[:4000]
+            if len(requested_names) > 1:
+                output = (
+                    f"Lettura verificata: {len(requested_names)} documenti distinti — "
+                    f"{', '.join(requested_names)}.\n\n{comprehension}"
+                )
+            else:
+                output = comprehension
             return ToolResult(
                 success=True,
-                output=comprehension + ambiguity_note,
-                raw_data={
-                    "context_extra": raw_blob[:6000],
-                    "artifact_documents": artifact_documents,
-                    "artifact_active_filename": active_filename,
-                    "artifact_source_channel": (
-                        "silent_chat" if upload_queue else "read_document"
-                    ),
-                    "artifact_preserve_existing": bool(upload_queue),
-                    "artifact_allowed_source_paths": [
-                        str(path.resolve()) for path in upload_queue
-                    ],
-                } if raw_blob else {},
+                output=output,
+                raw_data=common_raw,
             )
 
         def _tool_ingest_documents(params: dict, **kwargs) -> ToolResult:
@@ -1181,7 +1292,7 @@ class Executor:
             ),
             ToolSpec(
                 name="read_document",
-                description="Legge e COMPRENDE il documento attivo caricato dalla UI (PDF, DOCX, scheda tecnica, CSV, testo) ed estrae i dati che contiene, senza generare codice. Se non esiste una coda UI usa il percorso legacy della cartella dati. Parametro opzionale: question (str) — cosa cercare nel documento.",
+                description="Legge e COMPRENDE uno o più documenti nominati e caricati dalla UI (PDF, DOCX, schede tecniche, CSV, testo), mantenendo separate le fonti. Un confronto è valido solo se tutti i file richiesti risultano letti e distinti. Senza nomi usa il documento attivo; senza coda UI usa il percorso legacy della cartella dati. Parametro opzionale: question (str) — richiesta completa e file interessati.",
                 parameters_schema={"question": {"type": "str", "required": False}},
                 handler=_tool_read_document,
                 # pre-extract (pypdf, eventuale Vision) + 1 chiamata di comprensione.
@@ -1331,7 +1442,10 @@ class Executor:
         if operation:
             status = str(operation.get("status") or "")
             channel = str(operation.get("source_channel") or "sconosciuto")
-            filename = str(operation.get("filename") or "documento")
+            operation_filenames = list(operation.get("filenames") or [])
+            filename = ", ".join(operation_filenames) or str(
+                operation.get("filename") or "documento"
+            )
             tool_name = str(operation.get("tool_name") or "")
             if status == "running":
                 state_lines.append(
@@ -1467,6 +1581,11 @@ class Executor:
             parameters["format"] = self.resolve_document_format(
                 str(parameters.get("format") or ""), text
             )
+        elif tool_name == "read_document":
+            # La richiesta originale contiene i nomi dei file e l'obiettivo del
+            # confronto. Una parafrasi generica del controller non è una sorgente
+            # sufficiente per scegliere il read-set.
+            parameters["question"] = text
         result = self.execute(
             ToolCall(tool_name=tool_name, parameters=parameters),
             progress_callback=progress_callback,

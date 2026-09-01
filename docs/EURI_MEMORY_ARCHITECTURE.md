@@ -193,6 +193,13 @@ cognitivo.
 - `context_extra` resta un estratto limitato destinato alla history del modello;
 - ogni file letto è un artefatto distinto: più documenti non vengono concatenati
   come sorgente di una revisione;
+- una richiesta di analisi può invece nominare più documenti: l'operazione conserva
+  l'intero read-set, il lettore passa a Gemma blocchi separati e bilanciati per file
+  e il prompt obbliga ad attribuire ogni dato alla fonte prima del confronto;
+- la lettura multipla è fail-closed: se un file richiesto non produce testo oppure
+  due nomi hanno lo stesso SHA-256, il confronto non viene eseguito. Una ricevuta
+  effimera registra file richiesti, file letti, fallimenti, byte e hash e la UI mostra
+  il rapporto verificato (`N/M`) invece di dedurlo dalla risposta del modello;
 - nel flusso Streamlit il registro `.silent_chat_uploads.json` è soltanto il control
   plane dell'uploader e non diventa mai un documento. Solo i path registrati dalla
   UI entrano nel workspace: gli altri file presenti nella cartella dati sono esclusi;
@@ -203,7 +210,7 @@ cognitivo.
 - voce e Silent Chat vedono lo stesso artefatto attivo tramite
   `euri:document_workspace:v1:<scope>`;
 - `euri:document_workspace:v1:<scope>:operation` descrive soltanto il presente
-  operativo (`running/completed/failed`, canale, file, tool ed esito). Nasce già
+  operativo (`running/completed/failed`, canale, read-set, file attivo, tool ed esito). Nasce già
   all'upload, viene preso in carico dall'Executor e consente alla voce di osservare
   un lavoro UI concorrente senza fingere di averlo avviato o completato;
 - `compose_document` usa la sorgente e la conversazione recente per risolvere

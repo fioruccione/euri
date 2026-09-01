@@ -8,6 +8,9 @@ import threading
 from pathlib import Path
 
 from agent.executor import Executor, ToolCall, ToolResult, ToolSpec
+from core.action_controller import (
+    ActionAuthority, ActionDecision, ActionDisposition, ActionProposal,
+)
 from core.brain import Brain
 from core.document_workspace import DocumentWorkspace
 
@@ -59,6 +62,31 @@ class _Redis:
 
     def pipeline(self, transaction=True):
         return _Pipeline(self)
+
+
+class _DirectController:
+    def __init__(self, proposal):
+        self.proposal = proposal
+
+    def propose(self, *_args, **_kwargs):
+        return self.proposal
+
+    def decide(self, proposal, _capabilities):
+        return ActionDecision(ActionDisposition.EXECUTE, proposal, "test")
+
+
+def _install_shared_brain(fake):
+    had_shared = hasattr(Brain, "_shared_instance")
+    old_shared = getattr(Brain, "_shared_instance", None)
+    Brain._shared_instance = fake
+    return had_shared, old_shared
+
+
+def _restore_shared_brain(had_shared, old_shared):
+    if had_shared:
+        Brain._shared_instance = old_shared
+    else:
+        delattr(Brain, "_shared_instance")
 
 
 def test_two_processes_share_selection_and_receipt():
@@ -130,6 +158,19 @@ def test_two_processes_share_document_operation_lifecycle():
     )
     assert finished["status"] == "completed"
     assert voice.snapshot()["operation"]["message"] == "Documento letto."
+
+
+def test_document_operation_preserves_complete_read_set():
+    workspace = DocumentWorkspace(_Redis())
+    operation = workspace.start_operation(
+        "document_analysis",
+        source_channel="silent_chat",
+        filename="cen.pdf",
+        filenames=["izumi.pdf", "cen.pdf"],
+    )
+    assert operation["filename"] == "cen.pdf"
+    assert operation["filenames"] == ["izumi.pdf", "cen.pdf"]
+    assert workspace.get_operation()["filenames"] == ["izumi.pdf", "cen.pdf"]
 
 
 def test_executor_claims_ui_operation_and_publishes_real_outcome():
@@ -331,6 +372,210 @@ def test_read_document_uses_current_ui_upload_not_directory_contents():
         ]
 
 
+def test_contextual_multi_document_read_keeps_both_sources_and_original_request():
+    class _ReadBrain:
+        def __init__(self):
+            self.seen = []
+            self.injected = []
+
+        def read_and_extract(self, documents, question):
+            self.seen.append((dict(documents), question))
+            return "Yizumi: 295000 euro. CEN: 292000 euro."
+
+        def inject_tool_result(self, *args):
+            self.injected.append(args)
+
+    with tempfile.TemporaryDirectory() as raw_dir:
+        data_dir = Path(raw_dir)
+        izumi = data_dir / "izumi.pdf"
+        cen = data_dir / "cen.pdf"
+        izumi.write_text("Yizumi UN1100, prezzo 295000 euro", encoding="utf-8")
+        cen.write_text("Chen Hsong SM1050, prezzo 292000 euro", encoding="utf-8")
+        (data_dir / ".silent_chat_uploads.json").write_text(json.dumps([
+            {"path": str(izumi), "uploaded_at": 10},
+            {"path": str(cen), "uploaded_at": 20},
+        ]), encoding="utf-8")
+
+        redis = _Redis()
+        workspace = DocumentWorkspace(redis)
+        workspace.publish_documents([DocumentWorkspace.file_document(
+            izumi, "vecchia lettura Yizumi"
+        )], active_filename="izumi.pdf", source_channel="silent_chat")
+        workspace.start_operation(
+            "document_analysis",
+            source_channel="silent_chat",
+            filename="cen.pdf",
+            filenames=["izumi.pdf", "cen.pdf"],
+        )
+        executor = Executor()
+        executor.document_workspace = workspace
+        executor.operation_channel = "silent_chat"
+        executor._code_runner._input_dir = data_dir
+        executor._code_runner._preextract_files = lambda _brain, paths=None: {
+            path.name: path.read_text(encoding="utf-8") for path in (paths or [])
+        }
+        brain = _ReadBrain()
+        executor.brain = brain
+        had_shared, old_shared = _install_shared_brain(brain)
+        user_text = (
+            "Confronta i file appena caricati izumi.pdf e cen.pdf, "
+            "attribuendo ogni prezzo alla sua offerta."
+        )
+        proposal = ActionProposal(
+            capability="executor.read_document",
+            args={"question": "Analizza il documento caricato."},
+            target_id=None,
+            authority=ActionAuthority.USER_EXPLICIT,
+            confidence=0.99,
+        )
+        try:
+            result = executor.dispatch_contextual_action(
+                user_text, controller=_DirectController(proposal)
+            )
+        finally:
+            _restore_shared_brain(had_shared, old_shared)
+
+        assert result["success"] is True
+        assert "2 documenti distinti" in result["output"]
+        documents, received_question = brain.seen[0]
+        assert list(documents) == ["izumi.pdf", "cen.pdf"]
+        assert received_question == user_text
+        manifest = result["raw_data"]["document_read_manifest"]
+        assert manifest["complete"] is True
+        assert manifest["distinct_sha256_count"] == 2
+        assert [item["filename"] for item in manifest["read"]] == [
+            "izumi.pdf", "cen.pdf",
+        ]
+        assert "=== izumi.pdf ===" in result["raw_data"]["context_extra"]
+        assert "=== cen.pdf ===" in result["raw_data"]["context_extra"]
+        snapshot = workspace.snapshot()
+        assert workspace.get_active()["filename"] == "cen.pdf"
+        assert snapshot["receipts"][0]["read_filenames"] == [
+            "izumi.pdf", "cen.pdf",
+        ]
+
+
+def test_multi_document_read_fails_closed_when_one_source_is_unreadable():
+    class _NoComparisonBrain:
+        def read_and_extract(self, _documents, _question):
+            raise AssertionError("Gemma non deve confrontare un read-set parziale")
+
+    with tempfile.TemporaryDirectory() as raw_dir:
+        data_dir = Path(raw_dir)
+        izumi = data_dir / "izumi.pdf"
+        cen = data_dir / "cen.pdf"
+        izumi.write_text("Yizumi leggibile", encoding="utf-8")
+        cen.write_text("CEN illeggibile nel test", encoding="utf-8")
+        (data_dir / ".silent_chat_uploads.json").write_text(json.dumps([
+            {"path": str(izumi), "uploaded_at": 10},
+            {"path": str(cen), "uploaded_at": 20},
+        ]), encoding="utf-8")
+        workspace = DocumentWorkspace(_Redis())
+        workspace.start_operation(
+            "document_analysis",
+            source_channel="silent_chat",
+            filename="cen.pdf",
+            filenames=["izumi.pdf", "cen.pdf"],
+        )
+        executor = Executor()
+        executor.document_workspace = workspace
+        executor._code_runner._input_dir = data_dir
+        executor._code_runner._preextract_files = lambda _brain, paths=None: {
+            "izumi.pdf": "Yizumi leggibile"
+        }
+        had_shared, old_shared = _install_shared_brain(_NoComparisonBrain())
+        try:
+            result = executor.execute(ToolCall(
+                "read_document", {"question": "Confronta i documenti."}
+            ))
+        finally:
+            _restore_shared_brain(had_shared, old_shared)
+
+        assert result.success is False
+        assert result.error == "partial_document_read"
+        assert "cen.pdf" in result.output
+        assert "Non considero completo il confronto" in result.output
+        manifest = result.raw_data["document_read_manifest"]
+        assert manifest["complete"] is False
+        assert manifest["failed_filenames"] == ["cen.pdf"]
+        receipt = workspace.snapshot()["receipts"][0]
+        assert receipt["read_filenames"] == ["izumi.pdf"]
+        assert receipt["failed_filenames"] == ["cen.pdf"]
+        assert workspace.get_operation()["status"] == "failed"
+
+
+def test_multi_document_read_rejects_duplicate_content_as_two_sources():
+    class _NoComparisonBrain:
+        def read_and_extract(self, _documents, _question):
+            raise AssertionError("Due copie identiche non sono due fonti")
+
+    with tempfile.TemporaryDirectory() as raw_dir:
+        data_dir = Path(raw_dir)
+        first = data_dir / "cen.pdf"
+        second = data_dir / "cen_copia.pdf"
+        first.write_text("stessa offerta", encoding="utf-8")
+        second.write_text("stessa offerta", encoding="utf-8")
+        (data_dir / ".silent_chat_uploads.json").write_text(json.dumps([
+            {"path": str(first), "uploaded_at": 10},
+            {"path": str(second), "uploaded_at": 20},
+        ]), encoding="utf-8")
+        workspace = DocumentWorkspace(_Redis())
+        workspace.start_operation(
+            "document_analysis",
+            source_channel="silent_chat",
+            filename="cen_copia.pdf",
+            filenames=["cen.pdf", "cen_copia.pdf"],
+        )
+        executor = Executor()
+        executor.document_workspace = workspace
+        executor._code_runner._input_dir = data_dir
+        executor._code_runner._preextract_files = lambda _brain, paths=None: {
+            path.name: path.read_text(encoding="utf-8") for path in (paths or [])
+        }
+        had_shared, old_shared = _install_shared_brain(_NoComparisonBrain())
+        try:
+            result = executor.execute(ToolCall(
+                "read_document", {"question": "Confronta i due file."}
+            ))
+        finally:
+            _restore_shared_brain(had_shared, old_shared)
+        assert result.success is False
+        assert result.error == "duplicate_document_content"
+        assert result.raw_data["document_read_manifest"]["distinct_sha256_count"] == 1
+
+
+def test_document_read_does_not_mark_model_failure_as_completed():
+    class _FailedBrain:
+        def read_and_extract(self, _documents, _question):
+            return "Non sono riuscito a leggere il documento."
+
+    with tempfile.TemporaryDirectory() as raw_dir:
+        data_dir = Path(raw_dir)
+        document = data_dir / "offerta.pdf"
+        document.write_text("testo estratto correttamente", encoding="utf-8")
+        (data_dir / ".silent_chat_uploads.json").write_text(json.dumps([
+            {"path": str(document), "uploaded_at": 10},
+        ]), encoding="utf-8")
+        workspace = DocumentWorkspace(_Redis())
+        executor = Executor()
+        executor.document_workspace = workspace
+        executor._code_runner._input_dir = data_dir
+        executor._code_runner._preextract_files = lambda _brain, paths=None: {
+            path.name: path.read_text(encoding="utf-8") for path in (paths or [])
+        }
+        had_shared, old_shared = _install_shared_brain(_FailedBrain())
+        try:
+            result = executor.execute(ToolCall(
+                "read_document", {"question": "Analizza offerta.pdf"}
+            ))
+        finally:
+            _restore_shared_brain(had_shared, old_shared)
+        assert result.success is False
+        assert result.error == "document_comprehension_failed"
+        assert "Non considero eseguito il confronto" in result.output
+        assert workspace.get_operation()["status"] == "failed"
+
+
 def test_live_continuity_merge_is_idempotent_and_not_passive():
     brain = Brain()
     docs = [
@@ -366,11 +611,16 @@ if __name__ == "__main__":
     test_two_processes_share_selection_and_receipt()
     test_conversation_receipt_is_visible_without_source_manifest()
     test_two_processes_share_document_operation_lifecycle()
+    test_document_operation_preserves_complete_read_set()
     test_executor_claims_ui_operation_and_publishes_real_outcome()
     test_executor_artifact_crosses_process_boundary()
     test_streamlit_upload_queue_keeps_latest_active()
     test_new_ui_registry_drops_legacy_workspace_noise()
     test_only_registered_streamlit_uploads_enter_precedence_queue()
     test_read_document_uses_current_ui_upload_not_directory_contents()
+    test_contextual_multi_document_read_keeps_both_sources_and_original_request()
+    test_multi_document_read_fails_closed_when_one_source_is_unreadable()
+    test_multi_document_read_rejects_duplicate_content_as_two_sources()
+    test_document_read_does_not_mark_model_failure_as_completed()
     test_live_continuity_merge_is_idempotent_and_not_passive()
     print("test_document_workspace: OK")
