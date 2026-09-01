@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-09-01 - Recupero entity-first e confine fattuale degli insight
+
+- RETR-03 e' chiuso offline: i tre bracci della Fase 4 sono 2/2. Il runtime
+  esplicita per il Brain un referente locale soltanto quando l'ultima risposta
+  e il turno owner sorgente sono nello stesso scope/segmento e quest'ultimo
+  nomina uno stato attuale, proposto o precedente. Il raw resta conservato.
+- Le panoramiche e cronologie possono riservare quattro dei sei slot alle fonti
+  originali dello schema entity-first. Un composto con suffisso acronimico
+  esplicito, come `RegradoPP`, apre l'intersezione `Regrado` + `PP` senza fuzzy
+  matching e senza autorizzare l'acronimo nudo.
+- Gli insight promossi ma non confermati esternamente restano fuori da
+  `overview`, `fact`, `timeline` e `provenance`; Dream e lifecycle non cambiano.
+  Il touch avviene dopo il gate. Rollback indipendente tramite
+  `EURI_RAG_FACTUAL_TENTATIVE_INSIGHTS_ENABLED=1`.
+- Il correction signal conserva ora anche una manifestazione tipizzata dei
+  nodi esposti (`memory`, `insight`, `turn`) e separa gli insight candidati dai
+  memory ID legacy, senza attribuire uso né applicare mutazioni automatiche.
+- Regressioni pure nuove su stato locale, astensione ambigua, composto nominale,
+  bundle largo, insight fattuale e manifest tipizzato; manifest completo 92/92
+  in 81,9 s.
+
 ## 2026-09-01 - Replay della precedenza conversazionale locale
 
 - Il live ICMA2 ha mostrato che una domanda quasi identica gia' presente nello
@@ -8,9 +29,9 @@
 - Un replay byte-faithful del prompt capture non accede a Redis: history sola,
   history+RAG e contratto generale falliscono 0/3; restringendo alla coppia
   locale Gemma risponde correttamente 2/2, mentre il RAG la rende instabile 1/2.
-- Prompt e metadati aggiuntivi non risolvono il prompt lungo. La sonda sulla
-  riscrittura naturale è rimasta sospesa senza report ed è esclusa dagli esiti;
-  nessuna modifica runtime è stata applicata.
+- Prompt e metadati aggiuntivi non risolvono il prompt lungo. La successiva
+  Fase 4 con timeout e report ha poi autorizzato la riscrittura naturale; il suo
+  esito e l'implementazione sono registrati nella voce successiva qui sopra.
 
 ## 2026-08-31 - Contesto semantico e chiarimento mnemonico
 

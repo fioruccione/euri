@@ -162,8 +162,70 @@ def test_query_echo_is_recall_only_not_usage_evidence():
     ] == ["started", "recalled", "responded"]
 
 
+def test_factual_overview_excludes_tentative_insight_but_keeps_confirmed_one():
+    class Memory(FakeMemory):
+        def get_recent_reflections(self, **_kwargs):
+            return []
+
+        def get_recent_memories(self, **_kwargs):
+            return []
+
+        def search_insights(self, *_args, **_kwargs):
+            return [
+                {
+                    "id": "tentative",
+                    "content": "Una GPU potrebbe controllare il processo produttivo.",
+                    "domain_a": "progetto",
+                    "domain_b": "hardware",
+                    "status": "promoted",
+                    "requires_verification": True,
+                    "verification_status": "internally_convergent",
+                },
+                {
+                    "id": "confirmed",
+                    "content": "Il campione confermato usa dieci chilogrammi.",
+                    "domain_a": "progetto",
+                    "domain_b": "test",
+                    "status": "promoted",
+                    "requires_verification": False,
+                    "verification_status": "externally_confirmed",
+                    "external_reaction": {"verdict": "CONFERMA"},
+                },
+            ]
+
+    frame = {
+        "status": "interpreted",
+        "confidence": 0.98,
+        "speech_acts": ["ASK", "REQUEST_MEMORY_SEARCH"],
+        "memory_retrieval": {
+            "needed": True,
+            "focus": [{"entity": "Progetto Alfa", "relevance": 0.99}],
+            "relation": "panoramica",
+            "evidence_goal": "overview",
+            "confidence": 0.98,
+        },
+    }
+    rag = build_rag_context(
+        "Fammi una panoramica del Progetto Alfa.",
+        Memory(),
+        mode="search",
+        semantic_frame=frame,
+    )
+
+    assert "Una GPU potrebbe controllare" not in rag.text
+    assert "Il campione confermato" in rag.text
+    assert not [node for node in rag.nodes if node["id"] == "tentative"]
+    assert [node["id"] for node in rag.nodes if node["kind"] == "insight"] == [
+        "confirmed"
+    ]
+    assert rag.diagnostics["insight_retrieval"]["excluded_tentative_ids"] == [
+        "tentative"
+    ]
+
+
 if __name__ == "__main__":
     test_rag_reports_only_nodes_actually_injected_without_changing_legacy_ids()
     test_turn_separates_recall_from_supported_use_and_keeps_text_private()
     test_query_echo_is_recall_only_not_usage_evidence()
+    test_factual_overview_excludes_tentative_insight_but_keeps_confirmed_one()
     print("test_response_lineage: OK")

@@ -1501,6 +1501,10 @@ class VoiceDaemon:
                     risposta_euri=self.memory.get_last_euri_turn(),
                     correzione_user=text,
                     rag_ctx_ids=self.memory.get_last_rag_ctx(),
+                    rag_ctx_nodes=(
+                        self.memory.get_last_rag_nodes()
+                        if hasattr(self.memory, "get_last_rag_nodes") else []
+                    ),
                 )
             except Exception as e:
                 logger.debug(f"Audit capture (SEARCH) fallito: {e}")
@@ -1530,13 +1534,14 @@ class VoiceDaemon:
             "inventare. Se invece il soggetto è presente, riassumi quello che sai.]"
         )
         context = (context + "\n\n" if context else "") + search_hint
+        brain_query = self._brain_query_for_context(text)
         lineage = self._start_response_lineage(
-            text, channel="voice_search", mode="search"
+            brain_query, channel="voice_search", mode="search"
         )
         try:
             with self._brain_lock:
                 reply = self.brain.respond(
-                    text,
+                    brain_query,
                     context=context,
                     trusted=trusted,
                     actor_id=_OWNER_ID if trusted else None,
@@ -2715,8 +2720,10 @@ class VoiceDaemon:
         local.augment_ids = []
         try:
             self.memory.set_last_rag_ctx(rag.ids)
+            if hasattr(self.memory, "set_last_rag_nodes"):
+                self.memory.set_last_rag_nodes(rag.nodes)
         except Exception as e:
-            logger.debug(f"set_last_rag_ctx fallito: {e}")
+            logger.debug(f"set_last_rag_ctx/manifest fallito: {e}")
         from core.memory_scope import current_scope
         context = self.semantic_turns.registry.canonicalize(
             rag.text, current_scope()
@@ -2732,6 +2739,30 @@ class VoiceDaemon:
         # esporre trascrizioni ambientali o reinterpretare righe di log slegate.
         context = with_voice_perception_context(context, self.r)
         return context
+
+    def _brain_query_for_context(self, text: str) -> str:
+        """Passa al Brain la riscrittura naturale di un referente locale risolto.
+
+        Il raw resta in ``raw_user_text`` e nei log. Tutte le altre riscritture
+        del retrieval (per esempio l'aggiunta di entita' per il KNN) rimangono
+        invece interne al RAG e non cambiano il turno conversazionale.
+        """
+        local = getattr(self, "_response_rag_local", None)
+        rag = getattr(local, "rag", None) if local is not None else None
+        resolution = (getattr(rag, "diagnostics", None) or {}).get(
+            "retrieval_resolution"
+        ) or {}
+        if resolution.get("reason") != "local_reference_natural_rewrite":
+            return text
+        effective = str(resolution.get("brain_query") or "").strip()
+        if not effective:
+            return text
+        logger.info(
+            "Referente locale esplicitato per il Brain: state={} turn_ref={}",
+            resolution.get("local_reference_state") or "-",
+            resolution.get("local_reference_turn_ref") or "-",
+        )
+        return effective
 
     def _start_rag_cpu_prefetch(self, text: str) -> None:
         """Avvia il tratto CPU/Redis del RAG mentre Gemma interpreta il turno."""
@@ -2817,6 +2848,20 @@ class VoiceDaemon:
             if augment_ids:
                 base_ids = self.memory.get_last_rag_ctx()
                 self.memory.set_last_rag_ctx(list(dict.fromkeys([*base_ids, *augment_ids])))
+                from core.response_lineage import load_augmented_memory_nodes
+                if hasattr(self.memory, "set_last_rag_nodes"):
+                    base_nodes = (
+                        self.memory.get_last_rag_nodes()
+                        if hasattr(self.memory, "get_last_rag_nodes") else []
+                    )
+                    self.memory.set_last_rag_nodes([
+                        *base_nodes,
+                        *load_augmented_memory_nodes(
+                            self.memory,
+                            augment_ids,
+                            start_position=len(base_nodes) + 1,
+                        ),
+                    ])
             if note:
                 logger.info(f"Retrieval strategy: {note}")
         except Exception as e:
@@ -3113,6 +3158,10 @@ class VoiceDaemon:
                     risposta_euri=self.memory.get_last_euri_turn(),
                     correzione_user=text,
                     rag_ctx_ids=self.memory.get_last_rag_ctx(),
+                    rag_ctx_nodes=(
+                        self.memory.get_last_rag_nodes()
+                        if hasattr(self.memory, "get_last_rag_nodes") else []
+                    ),
                 )
             except Exception as e:
                 logger.debug(f"Audit capture fallito: {e}")
@@ -3147,13 +3196,14 @@ class VoiceDaemon:
         from core.visual_presence import with_visual_context
         context = with_visual_context(context, self.r)
         context = (context + "\n\n" if context else "") + "[Modalità conversazione: sii presente e naturale, non rigido.]"
+        brain_query = self._brain_query_for_context(text)
         lineage = self._start_response_lineage(
-            text, channel="voice_chat", mode="chat"
+            brain_query, channel="voice_chat", mode="chat"
         )
         try:
             with self._brain_lock:
                 reply = self.brain.respond(
-                    text,
+                    brain_query,
                     context=context,
                     trusted=trusted,
                     actor_id=_OWNER_ID if trusted else None,
@@ -6220,13 +6270,14 @@ class VoiceDaemon:
                             "Rispondi in modo conciso e TTS-friendly, niente markdown.]"
 
                         # Brain — lock condiviso con _handle_chat()
+                        brain_query = self._brain_query_for_context(text)
                         lineage = self._start_response_lineage(
-                            text, channel="mobile", mode="chat"
+                            brain_query, channel="mobile", mode="chat"
                         )
                         try:
                             with self._brain_lock:
                                 response = self.brain.respond(
-                                    text,
+                                    brain_query,
                                     context=context,
                                     actor_id=_OWNER_ID,
                                     raw_user_text=raw_mobile_text,

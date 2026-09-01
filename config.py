@@ -555,6 +555,12 @@ INSIGHT_DEMOTE_DAYS = 14  # PROMOTED non richiamato entro X giorni → torna CAN
 INSIGHT_ACTIVE_DAYS = 30          # finestra del "presente operativo"
 INSIGHT_ARCHIVE_PENALTY = 1.5     # ×1.5 sulla cosine distance per insight archivio
 INSIGHT_OVERSAMPLE_FACTOR = 3     # chiedi 3× a Redis per avere margine al re-rank
+# In panoramiche, cronologie e richieste fattuali un insight promosso ma ancora
+# privo di conferma esterna non entra nello stesso prompt delle fonti fattuali.
+# Il Dream continua a produrlo e conservarlo: il vincolo opera solo al recall.
+RAG_FACTUAL_TENTATIVE_INSIGHTS_ENABLED = os.environ.get(
+    "EURI_RAG_FACTUAL_TENTATIVE_INSIGHTS_ENABLED", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
 # Sorgenti che definiscono cosa Stefano sta davvero curando — passive/conversation
 # escluse perché spugne ambient: ogni nome di passaggio fa entrare un dominio negli
 # attivi, neutralizzando il filtro (vedi dry-run: 30gg + tutti i source → 0% archivio).
@@ -606,6 +612,9 @@ MEMORY_SCHEMA_ENABLED = True
 MEMORY_SCHEMA_MIN_MEMBERS = 3
 MEMORY_SCHEMA_MAX_MEMBERS = 200
 MEMORY_SCHEMA_RETRIEVAL_MAX = 2
+MEMORY_SCHEMA_OVERVIEW_RETRIEVAL_MAX = int(os.environ.get(
+    "EURI_MEMORY_SCHEMA_OVERVIEW_RETRIEVAL_MAX", "4"
+))
 MEMORY_SCHEMA_GENERATION_TTL_DAYS = 3
 # Proiezione semantica bounded nel prompt: mantiene le memorie narrative come
 # evidenza e aggiunge stato/provenienza/entita' prima del Brain. Opt-in durante

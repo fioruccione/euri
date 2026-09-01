@@ -63,6 +63,30 @@ def _normalise_label(value: str) -> str:
     return " ".join(text.casefold().split())
 
 
+def _compound_focus_components(value: str) -> list[str]:
+    """Scompone solo un suffisso acronimico esplicito di un nome composto.
+
+    Esempio reale: il frame usa ``RegradoPP`` mentre l'annotatore leggero ha
+    prodotto gli schemi ``Regrado`` e ``PP``. Non si applica fuzzy matching e
+    non si fonde ``ICMA`` con ``ICMA2``: servono due componenti nominali
+    osservabili e il secondo deve essere un acronimo maiuscolo.
+    """
+    raw = " ".join(str(value or "").split()).strip()
+    if not raw:
+        return []
+    match = re.fullmatch(
+        r"(?P<head>.+?)(?:\s+)?(?P<suffix>[A-Z]{2,5})",
+        raw,
+    )
+    if not match or not any(char.islower() for char in match.group("head")):
+        return []
+    parts = [
+        _normalise_label(match.group("head")),
+        _normalise_label(match.group("suffix")),
+    ]
+    return [part for part in parts if part]
+
+
 def _ambient_entities() -> set[str]:
     return {
         value
@@ -449,15 +473,25 @@ def expand_memories_via_schema(
             # `context` e' una menzione compresa ma non un soggetto da aprire.
             if role == "context" or relevance < 0.55:
                 continue
-            entity_label = _normalise_label(str(item.get("entity") or ""))
-            for sid, schema in schemas.items():
-                if str(schema.get("normalised_label") or "") != entity_label:
-                    continue
-                activated.add(str(sid))
-                focused_schema_relevance[str(sid)] = max(
-                    relevance, focused_schema_relevance.get(str(sid), 0.0)
+            raw_entity = str(item.get("entity") or "")
+            entity_label = _normalise_label(raw_entity)
+            exact_ids = [
+                str(sid) for sid, schema in schemas.items()
+                if str(schema.get("normalised_label") or "") == entity_label
+            ]
+            matched_ids = exact_ids
+            if not matched_ids:
+                components = set(_compound_focus_components(raw_entity))
+                matched_ids = [
+                    str(sid) for sid, schema in schemas.items()
+                    if str(schema.get("normalised_label") or "") in components
+                ]
+            for sid in matched_ids:
+                activated.add(sid)
+                focused_schema_relevance[sid] = max(
+                    relevance, focused_schema_relevance.get(sid, 0.0)
                 )
-                focused_schema_roles[str(sid)].add(role)
+                focused_schema_roles[sid].add(role)
     if not activated:
         return [], diagnostics
     diagnostics["activated_schema_ids"] = sorted(activated)
@@ -582,7 +616,8 @@ def expand_memories_via_schema(
             {"user": 0, "teach": 1, "conversation": 2, "passive": 3}.get(
                 str(doc.get("source") or "").lower(), 4
             )
-            if evidence_goal == "provenance" else 0
+            if evidence_goal in {"overview", "fact", "timeline", "provenance"}
+            else 0
         ),
         -float(doc.get("_schema_semantic_similarity") or -1.0),
         -int(doc.get("_schema_query_overlap") or 0),

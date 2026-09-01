@@ -496,6 +496,82 @@ def test_systemic_resolution_fails_closed_on_low_confidence_and_flag_off():
     assert disabled.diagnostics()["enabled"] is False
 
 
+def test_local_reference_is_rewritten_from_the_immediately_grounded_state():
+    owner = _owner_entity_turn("Linea Alfa", seq=10, segment_id=4)
+    owner["content"] = "Descrivimi la configurazione attuale della Linea Alfa."
+    owner["raw_content"] = owner["content"]
+    assistant = {
+        "role": "assistant",
+        "content": "La linea attuale usa il filtro e poi la pompa.",
+        "turn_ref": "conv:11",
+        "segment_id": 4,
+        "memory_scope": "personal",
+    }
+
+    resolution = resolve_retrieval_context(
+        "Restiamo sulla configurazione che hai appena descritto: dov'e' la pompa?",
+        _memory_search_frame(
+            needed=True,
+            focus=[{"entity": "Linea Alfa", "role": "focus", "relevance": 0.98}],
+        ),
+        [owner, assistant],
+    )
+
+    assert resolution.reason == "local_reference_natural_rewrite"
+    assert "stato attuale" in resolution.effective_query
+    assert "risposta immediatamente precedente" in resolution.effective_query
+    assert "Linea Alfa" in resolution.effective_query
+    assert "Entita' attive del filo" in resolution.effective_query
+    assert "Entita' attive del filo" not in resolution.brain_query
+    assert "stato attuale" in resolution.brain_query
+    assert resolution.local_reference_turn_ref == "conv:11"
+    assert resolution.raw_query.startswith("Restiamo sulla configurazione")
+
+
+def test_local_reference_rewrite_is_generic_and_fails_closed_without_state():
+    proposed = _owner_entity_turn("Sistema Beta", seq=20, segment_id=8)
+    proposed["content"] = "Parliamo della versione proposta del Sistema Beta."
+    proposed["raw_content"] = proposed["content"]
+    assistant = {
+        "role": "assistant",
+        "content": "La versione proposta sposta il sensore a valle.",
+        "turn_ref": "conv:21",
+        "segment_id": 8,
+        "memory_scope": "personal",
+    }
+    rewritten = resolve_retrieval_context(
+        "In quella versione, il sensore dove va?",
+        _memory_search_frame(needed=False),
+        [proposed, assistant],
+    )
+    assert rewritten.reason == "local_reference_natural_rewrite"
+    assert "stato proposto" in rewritten.effective_query
+
+    ungrounded = dict(proposed)
+    ungrounded["content"] = "Parliamo del Sistema Beta."
+    ungrounded["raw_content"] = ungrounded["content"]
+    abstained = resolve_retrieval_context(
+        "In quella versione, il sensore dove va?",
+        _memory_search_frame(needed=False),
+        [ungrounded, assistant],
+    )
+    assert abstained.reason == "semantic_no_retrieval"
+    assert abstained.effective_query == abstained.raw_query
+
+    ambiguous = dict(proposed)
+    ambiguous["content"] = (
+        "Confrontiamo la versione attuale e la versione proposta del Sistema Beta."
+    )
+    ambiguous["raw_content"] = ambiguous["content"]
+    unresolved = resolve_retrieval_context(
+        "In quella versione, il sensore dove va?",
+        _memory_search_frame(needed=False),
+        [ambiguous, assistant],
+    )
+    assert unresolved.reason == "semantic_no_retrieval"
+    assert unresolved.effective_query == unresolved.raw_query
+
+
 if __name__ == "__main__":
     tests = [globals()[name] for name in sorted(globals()) if name.startswith("test_")]
     for test in tests:

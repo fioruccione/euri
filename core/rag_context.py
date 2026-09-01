@@ -290,6 +290,25 @@ def format_insight_for_context(insight: dict) -> str:
     return line
 
 
+def _insight_is_allowed_for_evidence_goal(
+    insight: dict,
+    semantic_plan: dict | None,
+) -> bool:
+    """Separa le ipotesi interne dalle ricostruzioni che chiedono fatti.
+
+    Non cambia status, ranking o ciclo di vita dell'insight. Per goal fattuali
+    lascia entrare sempre le connessioni confermate esternamente; quelle ancora
+    tentativi restano disponibili nei turni esplorativi/comparativi e tramite
+    rollback esplicito di configurazione.
+    """
+    goal = str((semantic_plan or {}).get("evidence_goal") or "").strip().lower()
+    if goal not in {"overview", "fact", "timeline", "provenance"}:
+        return True
+    if getattr(config, "RAG_FACTUAL_TENTATIVE_INSIGHTS_ENABLED", False):
+        return True
+    return not insight_requires_external_validation(insight)
+
+
 def memory_origin_for_context(memory: dict) -> str:
     """Rende leggibile l'origine senza trasformarla in un voto di verita'.
 
@@ -695,12 +714,26 @@ def build_rag_context(
 
     insight_lines: list[str] = []
     insight_docs: list[dict] = []
+    insight_diagnostics = {
+        "evidence_goal": str(
+            (semantic_memory_plan or {}).get("evidence_goal") or ""
+        ).lower(),
+        "included_ids": [],
+        "excluded_tentative_ids": [],
+    }
     if (
         include_insights
         and keywords
         and not history_resolves_query
         and recent_memory_intent is None
     ):
+        factual_insight_gate = (
+            insight_diagnostics["evidence_goal"]
+            in {"overview", "fact", "timeline", "provenance"}
+            and not getattr(
+                config, "RAG_FACTUAL_TENTATIVE_INSIGHTS_ENABLED", False
+            )
+        )
         cached_query = (
             ((query_feature_cache or {}).get("entries") or {}).get(str(retrieval_text))
             or {}
@@ -709,10 +742,28 @@ def build_rag_context(
             retrieval_text,
             limit=2,
             query_vector=cached_query.get("vector"),
-            touch=touch,
+            # Nel percorso fattuale il filtro locale deve precedere il touch:
+            # un insight escluso non e' stato realmente richiamato nel prompt.
+            touch=touch and not factual_insight_gate,
         ):
+            insight_id = str(ins.get("id") or "").removeprefix("euri:insight:")
+            if not _insight_is_allowed_for_evidence_goal(
+                ins, semantic_memory_plan
+            ):
+                if insight_id:
+                    insight_diagnostics["excluded_tentative_ids"].append(insight_id)
+                continue
             insight_lines.append(format_insight_for_context(ins))
             insight_docs.append(ins)
+            if insight_id:
+                insight_diagnostics["included_ids"].append(insight_id)
+        if (
+            factual_insight_gate
+            and touch
+            and insight_docs
+            and hasattr(memory, "_touch_insights")
+        ):
+            memory._touch_insights(insight_docs)
 
     sections: list[str] = []
     if recent_memory_intent is not None:
@@ -746,6 +797,10 @@ def build_rag_context(
             )
 
     mem_cap = config.RAG_MEM_CAP_TEMPORAL if time_range else config.RAG_MEM_CAP
+    schema_evidence_goal = str(
+        (semantic_memory_plan or {}).get("evidence_goal") or ""
+    ).strip().lower()
+    schema_wide_recall = schema_evidence_goal in {"overview", "timeline"}
     if (
         getattr(config, "MEMORY_SCHEMA_ENABLED", True)
         and not config.DEMO_MODE
@@ -771,8 +826,16 @@ def build_rag_context(
             schema_seed_docs,
             retrieval_text,
             limit=min(
-                int(getattr(config, "MEMORY_SCHEMA_RETRIEVAL_MAX", 2)),
-                max(0, mem_cap // 3),
+                int(getattr(
+                    config,
+                    (
+                        "MEMORY_SCHEMA_OVERVIEW_RETRIEVAL_MAX"
+                        if schema_wide_recall
+                        else "MEMORY_SCHEMA_RETRIEVAL_MAX"
+                    ),
+                    4 if schema_wide_recall else 2,
+                )),
+                max(0, (mem_cap * 2) // 3 if schema_wide_recall else mem_cap // 3),
             ),
             source_exclude=set(source_exclude),
             query_feature_cache=query_feature_cache,
@@ -787,9 +850,14 @@ def build_rag_context(
             if str(doc.get("id") or "").removeprefix("euri:memory:") not in existing_ids
         ]
         if schema_added:
-            # Riserva al massimo un terzo del contesto. Le sorgenti ottenute dallo
-            # schema sostituiscono soltanto la coda del ranking base, mai i primi hit.
-            reserve = min(len(schema_added), max(1, mem_cap // 3))
+            # Una domanda puntuale riserva un terzo. Panoramiche e cronologie
+            # richiedono invece un bundle entity-first più largo, ma lasciano
+            # comunque almeno un terzo agli hit semantici della domanda.
+            reserve_cap = (
+                max(1, (mem_cap * 2) // 3)
+                if schema_wide_recall else max(1, mem_cap // 3)
+            )
+            reserve = min(len(schema_added), reserve_cap)
             schema_added = schema_added[:reserve]
             base_head = results[: max(0, mem_cap - reserve)]
             kept_ids = {
@@ -1080,6 +1148,7 @@ def build_rag_context(
             "semantic_context": semantic_context_diagnostics,
             "semantic_memory_plan": semantic_memory_plan,
             "retrieval_resolution": retrieval_resolution.diagnostics(),
+            "insight_retrieval": insight_diagnostics,
             "durable_recall_requested": durable_recall_requested,
             "history_resolved_query": history_resolves_query,
             "named_project_priority_id": project_priority_id,

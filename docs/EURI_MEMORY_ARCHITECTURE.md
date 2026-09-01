@@ -649,6 +649,17 @@ evidenza sul contenuto recuperato. Un `memory_retrieval.needed=false` affidabile
 un cambio di scope/segmento o l'assenza di un nome grounded chiudono il resolver.
 Il rollback è `EURI_SYSTEMIC_RETRIEVAL_ENABLED=0`.
 
+Un secondo caso bounded riguarda i riferimenti allo **stato appena descritto**.
+Se l'ultima battuta nello stesso scope/segmento e' una risposta di Euri e il
+turno owner immediatamente sorgente nominava esplicitamente lo stato
+`attuale`, `proposto` o `precedente`, il resolver produce una domanda naturale
+esplicitata e conserva `local_reference_turn_ref`. Questa sola riscrittura viene
+passata anche al Brain; il raw resta in `raw_user_text`, nel frame e nei log.
+Se manca lo stato, l'ultima risposta o il confine di segmento, il resolver si
+astiene. Le normali aggiunte di entita' alla query KNN restano invece invisibili
+al Brain. La distinzione deriva dal replay RETR-03: metadati e contratti nel
+prompt lungo fallivano 0/2, la query naturale era corretta 2/2 con e senza RAG.
+
 Per una richiesta durevole che nomina un'entita', un progetto tecnico diretto
 gia' presente nel pool recuperato puo' essere portato in testa prima del cap.
 La riserva non lancia un secondo salvataggio o una seconda ricerca, non assegna
@@ -690,6 +701,13 @@ assoluta, `verification_status`, tipo di artefatto e produttore. L'assenza del
 produttore nei record legacy è dichiarata come `non_registrato_legacy`; non
 viene inferito retroattivamente un Loop. Questi campi descrivono il record e la
 sua provenienza, non certificano il contenuto dell'insight.
+Per `overview`, `fact`, `timeline` e `provenance`, un insight ancora privo di
+conferma esterna non entra nello stesso prompt delle fonti fattuali. Resta
+persistito, disponibile ai turni esplorativi e libero di evolvere nei loop:
+il vincolo opera soltanto al recall e non modifica il Dream. Un insight
+confermato esternamente resta ammesso. Il contatore `recalled_count` viene
+incrementato dopo questo gate, quindi un escluso non risulta falsamente
+richiamato. Rollback: `EURI_RAG_FACTUAL_TENTATIVE_INSIGHTS_ENABLED=1`.
 
 Le reflection ambientali hanno un limite esplicito di due per turno; altre
 reflection possono entrare come risultati semantici, entro il cap generale del
@@ -889,8 +907,12 @@ bersaglio `correction_pending`; Loop 2g distingue poi:
 I segnali `proposal_only` non hanno autorità per mutare da soli una memoria.
 
 Il signal conserva due viste non intercambiabili: `rag_ctx_ids` documenta il
-contesto della risposta contestata, mentre `resolution_rag_ctx_ids` conserva i
-candidati recuperati dalle parole della correzione. La seconda vista può
+contesto memory-only legacy della risposta contestata, mentre `rag_ctx_nodes`
+ne conserva per un'ora la manifestazione tipizzata `memory|insight|turn` e la
+trasferisce nel signal senza duplicare i contenuti. Gli insight esposti sono
+registrati come `candidate_derived_ids`: sono candidati di provenienza, non una
+prova d'uso o di colpa. `resolution_rag_ctx_ids` conserva invece i candidati
+recuperati dalle parole della correzione. Questa seconda vista può
 applicare la stessa quarantena conservativa senza riscrivere la prima. Quando un
 save esplicito collega davvero vecchia e nuova memoria, il signal associato
 passa atomicamente da `pending` a `resolved`, così Loop 2g non può giudicare e
@@ -1030,6 +1052,12 @@ concordanti, uno dei quali non ambiguo. Lo stesso valore o tipo può quindi
 ricorrere in codici, aziende e prodotti diversi senza trasferire i loro fatti
 attraverso il solo nome comune.
 
+Quando il frame conserva un composto grafico come `NomePP` ma l'annotatore ha
+prodotto separatamente l'ancora `Nome` e l'acronimo `PP`, 2j puo' scomporre
+soltanto quel suffisso maiuscolo esplicito. L'espansione richiede allora
+l'intersezione dei due schemi. Non e' fuzzy matching: `ICMA` non viene unita a
+`ICMA2`, e un acronimo contestuale da solo continua a non aprire memoria.
+
 Dal frame semantico versione 6, non è però la semplice presenza lessicale di un
 nome a decidere l'espansione. La Gemma già chiamata per interpretare ogni turno
 produce anche `memory_retrieval`: `needed`, una lista di entità focali con ruolo
@@ -1061,11 +1089,16 @@ precedente. Il boot ricostruisce subito la proiezione; la maintenance la aggiorn
 dopo 2f, 2e e propagazione di provenienza.
 
 Su una query non temporale il RAG può seguire un solo arco a partire dai risultati
-semantici già pertinenti oppure da un focus esplicito del piano Gemma. L'espansione
-è limitata a due fonti e a un terzo degli slot ordinari; non si attiva dalle
+semantici già pertinenti oppure da un focus esplicito del piano Gemma. Le domande
+puntuali restano limitate a due fonti e a un terzo degli slot ordinari. Per
+`overview` e `timeline`, il bundle entity-first può usare fino a quattro fonti e
+due terzi dei sei slot, lasciando comunque spazio agli hit semantici della
+domanda; le fonti dirette hanno precedenza sui derivati. Non si attiva dalle
 memorie ambientali recenti, nelle sessioni sperimentali, nel demo o quando la
 query impone una finestra temporale. Nel prompt entrano esclusivamente i documenti
 `euri:memory:*` originali, con gli stessi flag epistemici e la stessa provenienza.
+Il cap largo ha rollback tramite
+`EURI_MEMORY_SCHEMA_OVERVIEW_RETRIEVAL_MAX=2`.
 
 ### Compilatore del contesto semantico
 
@@ -1324,3 +1357,7 @@ Non usare `scripts/audit_memory.py --delete`, `--fix-*`, `--backfill-*` o
 23. Una memoria recuperata non rende grounded il referente della domanda: davanti
     ad alternative incompatibili Euri chiede quale, e lo scambio irrisolto non
     diventa memoria passiva.
+24. Un insight promosso internamente non diventa un fatto di progetto: nelle
+    ricostruzioni fattuali resta separato finché manca una conferma esterna.
+25. Una correzione deve conservare il tipo dei nodi esposti nella risposta:
+    memoria, turno e insight non sono bersagli epistemicamente equivalenti.

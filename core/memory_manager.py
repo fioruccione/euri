@@ -1724,6 +1724,19 @@ class MemoryManager:
         self._active_domains_cache = (domains, now_ts)
         return domains
 
+    def _touch_insights(self, insights: list[dict]) -> None:
+        """Conta soltanto insight che hanno davvero raggiunto il prompt."""
+        for insight in insights or []:
+            insight_id = str(insight.get("id") or "").removeprefix("euri:insight:")
+            if not insight_id:
+                continue
+            try:
+                self.r.json().numincrby(
+                    f"euri:insight:{insight_id}", "$.recalled_count", 1
+                )
+            except Exception as exc:
+                logger.debug(f"Touch insight fallito su {insight_id[:8]}: {exc}")
+
     def search_insights(
         self,
         query: str,
@@ -1805,9 +1818,9 @@ class MemoryManager:
             # Incrementa recalled_count solo sui sopravvissuti
             docs = []
             for _vs, item, doc_id in survivors:
-                if touch:
-                    self.r.json().numincrby(doc_id, "$.recalled_count", 1)
                 docs.append(item)
+            if touch:
+                self._touch_insights(docs)
             return docs
         except Exception as e:
             logger.error(f"Errore ricerca insights: {e}")
@@ -2149,6 +2162,15 @@ class MemoryManager:
             else f"euri:last_rag_ctx:{scope}"
         )
 
+    @staticmethod
+    def _last_rag_nodes_key(memory_scope: str | None = None) -> str:
+        scope = normalize_scope(memory_scope or current_scope())
+        return (
+            "euri:last_rag_nodes"
+            if scope == PERSONAL_SCOPE
+            else f"euri:last_rag_nodes:{scope}"
+        )
+
     def set_last_rag_ctx(
         self,
         ids: list[str],
@@ -2163,6 +2185,9 @@ class MemoryManager:
         key = self._last_rag_ctx_key(memory_scope)
         if not ids:
             self.r.delete(key)
+            # Un clear esplicito del contesto legacy non deve lasciare una
+            # manifestazione tipizzata appartenente a un turno precedente.
+            self.r.delete(self._last_rag_nodes_key(memory_scope))
             return
         # SET atomico con TTL nello stesso comando: elimina la finestra delete→rpush in
         # cui un lettore vedeva la lista vuota, e la chiave orfana senza TTL se il processo
@@ -2185,6 +2210,62 @@ class MemoryManager:
             return data if isinstance(data, list) else []
         except (ValueError, TypeError):
             return []
+
+    def set_last_rag_nodes(
+        self,
+        nodes: list[dict],
+        *,
+        memory_scope: str | None = None,
+    ) -> None:
+        """Persistenza effimera e tipizzata dei nodi realmente nel prompt.
+
+        Non duplica i contenuti. Conserva soltanto identita', tipo e provenienza
+        necessarie a collegare una correzione alla risposta contestata. TTL e
+        separazione di scope coincidono con ``last_rag_ctx``.
+        """
+        key = self._last_rag_nodes_key(memory_scope)
+        clean: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        for raw in nodes or []:
+            if not isinstance(raw, dict):
+                continue
+            kind = str(raw.get("kind") or "memory").strip().lower()
+            if kind not in {"memory", "insight", "turn"}:
+                continue
+            node_id = str(raw.get("id") or "")
+            for prefix in ("euri:memory:", "euri:insight:", "euri:turn:"):
+                node_id = node_id.removeprefix(prefix)
+            identity = (kind, node_id)
+            if not node_id or identity in seen:
+                continue
+            seen.add(identity)
+            clean.append({
+                "kind": kind,
+                "id": node_id,
+                "retrieval_path": str(raw.get("retrieval_path") or ""),
+                "source": str(raw.get("source") or ""),
+                "requires_verification": bool(raw.get("requires_verification")),
+                "epistemic_status": str(raw.get("epistemic_status") or ""),
+            })
+        if not clean:
+            self.r.delete(key)
+            return
+        self.r.set(key, json.dumps(clean, ensure_ascii=False), ex=3600)
+
+    def get_last_rag_nodes(
+        self,
+        *,
+        memory_scope: str | None = None,
+    ) -> list[dict]:
+        key = self._last_rag_nodes_key(memory_scope)
+        try:
+            raw = self.r.get(key)
+            data = json.loads(raw) if raw else []
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return []
+        if not isinstance(data, list):
+            return []
+        return [dict(item) for item in data if isinstance(item, dict)]
 
     def get_last_euri_turn(self) -> str:
         """Ultimo turno di Euri nella conversazione di oggi (stringa vuota se assente)."""
@@ -2261,6 +2342,7 @@ class MemoryManager:
         risposta_euri: str,
         correzione_user: str,
         rag_ctx_ids: list[str],
+        rag_ctx_nodes: list[dict] | None = None,
     ) -> str:
         """
         Salva un correction signal per analisi notturna del Loop 2g.
@@ -2279,12 +2361,31 @@ class MemoryManager:
             if explicit_correction
             else "proposal_only"
         )
+        typed_nodes = [
+            {
+                "kind": str(node.get("kind") or "memory"),
+                "id": str(node.get("id") or ""),
+                "retrieval_path": str(node.get("retrieval_path") or ""),
+                "source": str(node.get("source") or ""),
+                "requires_verification": bool(node.get("requires_verification")),
+                "epistemic_status": str(node.get("epistemic_status") or ""),
+            }
+            for node in (rag_ctx_nodes or [])
+            if isinstance(node, dict) and node.get("id")
+        ]
         doc = {
             "id": sid,
             "prompt_original": prompt_originale,
             "risposta_euri": risposta_euri,
             "correzione_user": correzione_user,
             "rag_ctx_ids": rag_ctx_ids or [],
+            "rag_ctx_nodes": typed_nodes,
+            # Candidati, non colpevoli: erano nel prompt contestato ma la sola
+            # esposizione non prova che siano stati usati nella risposta.
+            "candidate_derived_ids": list(dict.fromkeys(
+                str(node["id"]) for node in typed_nodes
+                if node["kind"] == "insight"
+            )),
             "quarantined_memory_ids": [],
             "status": "dismissed" if audit_only else "pending",
             "verdict": "not_a_correction" if audit_only else None,

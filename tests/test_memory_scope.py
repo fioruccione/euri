@@ -178,6 +178,20 @@ def test_idempotency_and_last_rag_context_are_scope_separated():
         memory_scope="experiment_alpha"
     ) == ["test-id"]
 
+    manager.set_last_rag_nodes(
+        [{"kind": "insight", "id": "insight-personal", "source": "dream"}],
+        memory_scope="personal",
+    )
+    manager.set_last_rag_nodes(
+        [{"kind": "memory", "id": "memory-test", "source": "user"}],
+        memory_scope="experiment_alpha",
+    )
+    assert manager.get_last_rag_nodes(memory_scope="personal")[0]["kind"] == "insight"
+    assert manager.get_last_rag_nodes(memory_scope="experiment_alpha")[0]["id"] == "memory-test"
+
+    manager.set_last_rag_ctx([], memory_scope="personal")
+    assert manager.get_last_rag_nodes(memory_scope="personal") == []
+
 
 def test_saved_memory_carries_current_scope():
     class _CommitRedis(_Redis):

@@ -318,7 +318,9 @@ def test_semantic_focus_opens_named_schema_when_base_retrieval_misses_it():
     )
 
     schema_nodes = [n for n in rag.nodes if n["retrieval_path"] == "schema_expansion"]
-    assert len(schema_nodes) == 2
+    # Le panoramiche usano il bundle entity-first largo (max 4) invece del
+    # tetto puntuale a due fonti.
+    assert len(schema_nodes) == 3
     assert all(node["id"].startswith("l") for node in schema_nodes)
     assert rag.diagnostics["schema_expansion"]["activation_mode"] == "semantic"
 
@@ -399,6 +401,37 @@ def test_provenance_goal_exposes_source_metadata_without_inventing_origin():
     assert "non inventare deduzioni" in rag.text
 
 
+def test_overview_opens_compound_entity_schema_and_reserves_wide_bundle():
+    project = [
+        _doc(
+            f"z{i}",
+            ["Alpha", "ZX"],
+            f"Il progetto Alpha ZX contiene il dettaglio tecnico {i}.",
+            domain=f"area-{i % 2}",
+        )
+        for i in range(1, 6)
+    ]
+    unrelated = _doc("other", ["Altro Tema"], "Nota su Altro Tema.")
+    redis = _Redis([*project, unrelated])
+    build_schema_projection(redis)
+    memory = _Memory(redis, [unrelated])
+
+    rag = build_rag_context(
+        "Fammi una panoramica completa di AlphaZX.",
+        memory,
+        mode="search",
+        semantic_frame=_semantic_frame(("AlphaZX", "focus", 0.99), goal="overview"),
+    )
+
+    schema_nodes = [
+        node for node in rag.nodes
+        if node["retrieval_path"] == "schema_expansion"
+    ]
+    assert len(schema_nodes) == 4
+    assert all(node["id"].startswith("z") for node in schema_nodes)
+    assert len(rag.diagnostics["schema_expansion"]["focused_schema_ids"]) == 2
+
+
 if __name__ == "__main__":
     test_projection_merges_corporate_alias_and_excludes_ambient_or_unsafe_nodes()
     test_numeric_values_and_sentence_starters_do_not_become_schemas()
@@ -411,4 +444,5 @@ if __name__ == "__main__":
     test_semantic_incidental_mention_does_not_expand_schema()
     test_semantic_comparison_keeps_one_source_bucket_per_entity()
     test_provenance_goal_exposes_source_metadata_without_inventing_origin()
+    test_overview_opens_compound_entity_schema_and_reserves_wide_bundle()
     print("test_memory_schema: OK")

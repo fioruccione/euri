@@ -166,9 +166,15 @@ Fase 3, due repliche per braccio:
 - `adjacent_structured_anchor`: 0/2;
 - `interpreted_query_anchor` in formato metadati: 0/2.
 
-La Fase 4 e' rimasta sospesa su una chiamata Ollama durante la notte. E' stata
-terminata il 01/09/2026; non ha scritto il report e non produce alcuna evidenza.
-Va ripetuta con timeout di trasporto esplicito prima di modificare il runtime.
+Fase 4, ripetuta il 01/09/2026 con timeout di trasporto esplicito e report
+`research_logs/replay_local_reference_pattern_probe_20260831.json`:
+
+- `history_without_near_duplicate`: 2/2;
+- `full_live_natural_rewrite`: 2/2;
+- `history_only_natural_rewrite`: 2/2.
+
+Il report conserva payload hash, ordine dei bracci, risposte integrali e raw
+originario. Non legge Redis e non avvia daemon, Dream o Pulse.
 
 ## Conclusione limitata dai dati
 
@@ -178,8 +184,11 @@ FPP20 e induce una ripetizione stabile di quel pattern. Il RAG non e' la causa
 unica, ma peggiora il caso locale da 2/2 a 1/2. Contratti generici e metadati
 aggiuntivi non recuperano il comportamento nel prompt lungo.
 
-La prossima ipotesi resta quindi una riscrittura naturale, deterministica e
-reversibile del turno interpretato, con `source_turn_ref` esplicito e raw
-immutato. Non e' ancora autorizzata come implementazione: prima serve chiudere
-la Fase 4 con timeout e regressioni su cambio di stato, ambiguita' reale e
-referente gia' grounded.
+La Fase 4 attribuisce la collisione alla coppia quasi duplicata e autorizza la
+direzione minima: riscrittura naturale, deterministica e reversibile del turno
+interpretato, con `source_turn_ref` esplicito e raw immutato. Non autorizza
+fuzzy matching o una regola che indovini lo stato: il runtime deve riscrivere
+soltanto quando l'ultima risposta e il turno owner che l'ha provocata sono nello
+stesso scope/segmento e quel turno nomina esplicitamente attuale, proposto o
+precedente. I casi generici e l'astensione restano regressioni obbligatorie;
+l'accettazione live dopo riavvio resta separata dal replay offline.

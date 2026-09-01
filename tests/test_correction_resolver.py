@@ -477,6 +477,21 @@ def test_c6_signal_enrichment_preserves_original_context_and_quarantines_candida
         risposta_euri="Non trovo Hikma 2.",
         correzione_user=CORRECTION,
         rag_ctx_ids=["wrong-context"],
+        rag_ctx_nodes=[
+            {
+                "kind": "memory",
+                "id": "wrong-context",
+                "source": "reflection",
+                "retrieval_path": "base_rag",
+            },
+            {
+                "kind": "insight",
+                "id": "derived-gpu",
+                "requires_verification": True,
+                "epistemic_status": "internally_convergent",
+                "retrieval_path": "insight_rag",
+            },
+        ],
     )
 
     quarantined = memory.extend_correction_signal_context(
@@ -485,6 +500,8 @@ def test_c6_signal_enrichment_preserves_original_context_and_quarantines_candida
 
     signal = docs[f"euri:correction:{sid}"]
     assert signal["rag_ctx_ids"] == ["wrong-context"]
+    assert signal["candidate_derived_ids"] == ["derived-gpu"]
+    assert signal["rag_ctx_nodes"][1]["kind"] == "insight"
     assert signal["resolution_rag_ctx_ids"] == [OLD_ID, "other"]
     assert quarantined == [OLD_ID]
     assert signal["quarantined_memory_ids"] == [OLD_ID]
