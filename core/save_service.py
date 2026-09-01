@@ -517,6 +517,7 @@ def save_memory_command(
     fresh: bool = True,
     recent_history=None,
     active_artifact: dict | None = None,
+    semantic_frame: dict | None = None,
 ) -> dict:
     """
     Esegue SAVE_MEMORY in modo channel-agnostic a partire dal comando completo `text`.
@@ -614,6 +615,12 @@ def save_memory_command(
         "correction": "correct",
         "replacement": "replace",
     }.get(kind, "add")
+    from core.semantic_turn import frame_requests_explicit_memory_correction
+    if frame_requests_explicit_memory_correction(semantic_frame):
+        # Il referente mnemonico e i fatti durevoli sono già stati validati dal
+        # contratto condiviso. Il resolver del contenuto può ancora proporre
+        # ``add``: non gli consentiamo di annullare l'atto correttivo dell'owner.
+        operation = "correct"
     correction_text = ""
     if operation == "correct":
         from core.correction_resolver import build_correction_evidence

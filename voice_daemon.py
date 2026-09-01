@@ -1063,7 +1063,7 @@ class VoiceDaemon:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
 
-    def _handle_save_memory(self, text: str):
+    def _handle_save_memory(self, text: str, *, semantic_frame: dict | None = None):
         from core.save_service import save_memory_command
         # Se c'è una scadenza parsabile, è un todo mascherato da memory
         due_at = extract_due_date(text)
@@ -1088,6 +1088,7 @@ class VoiceDaemon:
             fresh=fresh,
             recent_history=recent_history,
             active_artifact=self.executor.get_session_artifact(),
+            semantic_frame=semantic_frame,
         )
         if result["saved"]:
             self.memory.log_conversation(_OWNER_NAME, text)
@@ -4290,6 +4291,8 @@ class VoiceDaemon:
                 semantic_frame=semantic_frame,
                 semantic_action_veto=frame_action_veto,
             )
+        elif intent == Intent.SAVE_MEMORY:
+            handler(text, semantic_frame=semantic_frame)
         elif intent == Intent.WEB_SEARCH:
             handler(text, semantic_frame=semantic_frame)
         elif intent == Intent.TEACH:

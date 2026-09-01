@@ -1505,6 +1505,55 @@ def test_semantic_frame_cannot_revoke_an_explicit_save_command():
     ) == "SAVE_MEMORY"
 
 
+def test_explicit_last_memory_correction_routes_chat_to_save_memory():
+    frame = {
+        "status": "interpreted",
+        "confidence": 1.0,
+        "requires_clarification": False,
+        "primary_intent": "CHAT",
+        "speech_acts": ["CORRECT_FACT"],
+        "raw_text": (
+            "Euri, una precisazione: sull'ultima memoria la vite bimetallica "
+            "è di serie solo sulla Yizumi, mentre sulla Chen Hsong è un extra."
+        ),
+        "memory_disposition": "candidate",
+        "facts": [{
+            "claim": "La vite bimetallica è di serie solo sulla Yizumi.",
+            "modality": "asserted",
+            "durability": "reusable",
+        }],
+    }
+
+    assert arbitrate_routable_intent(
+        frame,
+        "CHAT",
+        allowed={"CHAT", "SAVE_MEMORY"},
+    ) == "SAVE_MEMORY"
+
+
+def test_ordinary_fact_correction_without_memory_target_stays_chat():
+    frame = {
+        "status": "interpreted",
+        "confidence": 1.0,
+        "requires_clarification": False,
+        "primary_intent": "CHAT",
+        "speech_acts": ["CORRECT_FACT"],
+        "raw_text": "Una precisazione: Italrek alimenta ICMA1 e ICMA3, non Gamma.",
+        "memory_disposition": "candidate",
+        "facts": [{
+            "claim": "Italrek alimenta ICMA1 e ICMA3, non Gamma.",
+            "modality": "asserted",
+            "durability": "reusable",
+        }],
+    }
+
+    assert arbitrate_routable_intent(
+        frame,
+        "CHAT",
+        allowed={"CHAT", "SAVE_MEMORY"},
+    ) == "CHAT"
+
+
 def test_negated_tool_request_cannot_become_execute():
     frame = {
         "status": "interpreted",
@@ -1661,6 +1710,8 @@ if __name__ == "__main__":
     test_ungrounded_action_label_cannot_hijack_a_memory_answer()
     test_memory_answer_is_search_not_an_operational_effect()
     test_shared_frame_routes_natural_remember_request_without_magic_phrase()
+    test_explicit_last_memory_correction_routes_chat_to_save_memory()
+    test_ordinary_fact_correction_without_memory_target_stays_chat()
     test_owner_bootstrap_requires_direct_high_confidence_address()
     test_pre_gate_frame_does_not_persist_corrections_until_accepted()
     print("OK — semantic turn")

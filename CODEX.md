@@ -1,5 +1,391 @@
 # Regola di lavoro — mappa mnemonica canonica
 
+# Handoff Euri - 2026-09-01 - Consuntivo Claude, aggiornato dopo le verifiche Codex
+
+Questo blocco fu scritto da Claude come audit in sola lettura e passaggio di
+consegne. Codex lo ha riallineato allo stato successivo della stessa giornata:
+il difetto numerico della sezione 7 è stato corretto e verificato; il confronto
+multi-documento è stato implementato e provato dal vivo; la memoria esplicita
+del confronto vocale è stata poi riparata come descritto nella sezione 13.
+
+## 1. Risultato principale: i paletti tengono al confine e non mutano
+
+Verificato su tre sessioni vocali reali (ICMA 2, barzellette, prospezione
+Keter). Euri ha commesso un errore fattuale a voce — ICMA 2 descritta come
+"vite singola" quando `ccc77585` (fonte user) dice bivite. **L'errore è rimasto
+all'output e non è arrivato al substrato:** turno `no_store`, learner passivo
+4/4 e 2/2 esclusi, `CORRECT_FACT` instradato fuori dal canale passivo,
+correction signal nato `proposal_only` con `quarantined_memory_ids` vuoto.
+Nell'intera giornata **un solo nodo creato da correzione** (`1ce3d56d`, GPU),
+dettato esplicitamente. Zero supersessioni, zero quarantene, zero mutazioni
+automatiche.
+
+Formulazione di Stefano, che è quella giusta: i paletti funzionano **e non hanno
+corretto niente**. Il compromesso va però chiamato tale: paletti che non mutano
+non riparano. La bivite è poi entrata in memoria, ma dall'**episodio narrativo**
+(`a2527dbb`, 12:26) e non dal resolver, che alle 12:30 era ancora `pending`.
+
+## 2. Ipotesi mia testata e MORTA — non ri-derivarla
+
+Avevo diagnosticato che la forma del nodo causasse l'errore (fatto sepolto come
+incidentale contro narrazione derivata fluente). **Falso.** Preregistrazione
+congelata prima dell'esecuzione, replay offline del payload reale verbatim
+(`body_sha256` `c32aed97…`), 3 bracci interlacciati, N=20, codifica a regex
+definita in anticipo.
+
+Esito: A (baseline) 20/20 corretto, B (fatto spostato in nodo autonomo) 20/20,
+C (senza la riflessione) 20/20. **B−A = 0/20** contro soglia 10/20. Il payload
+reale produce la risposta giusta 20 volte su 20: l'errore osservato era un
+evento raro di campionamento, non un difetto di struttura. Limite superiore al
+95% su p(errore): ~14% — non è dimostrato che sia zero.
+
+Cade con essa la raccomandazione "un fatto, un nodo" che avevo derivato.
+
+## 3. Difetto riprodotto, con meccanismo esatto
+
+`detect_correction` produce falsi positivi che entrano nella coda delle
+correzioni. Il 01/09 alle 10:27 la domanda «Euri, ti ricordi quando parlavamo di
+costruire le barzellette come le facevi tu?» ha creato il signal `ebab7470`,
+appaiando come "correzione" il turno corrente alla coppia precedente (bivite,
+24 minuti prima).
+
+Gate: `voice_daemon.py:3156`, `detect_correction(text) OR
+frame_is_correction(semantic_frame)`. È un **OR**: il frame non può vetare. Il
+frame era corretto e non ambiguo (`SEARCH`, `[REQUEST_MEMORY_SEARCH]`,
+confidence 1.0). Ha scattato `_CORRECTION_PATTERNS`, livello 1, pattern
+`\bricordi\s+(che|di|quando)\b`, match su "ricordi quando".
+
+Contenimento OK (`proposal_only`, nessuna mutazione). Danno: voce spuria nella
+coda, seduta sopra lo scambio che il live di CORR-01 deve misurare. Stessa
+famiglia del finding "turno-non-risposta". Nessuna proposta implementativa:
+allargare o stringere il regex è la strada già scartata tre volte.
+
+## 4. Osservazioni verificate, senza intervento richiesto
+
+- **RETR-04 non è mai stato rieseguito dopo `1d70c68`.** La panoramica Regrado
+  che aveva prodotto la GPU come componente di simulazione è del 08:33, cioè
+  **prima** del riavvio delle 09:47. `_insight_is_allowed_for_evidence_goal` e
+  il `touch=touch and not factual_insight_gate` esistono nel codice ma **non
+  sono mai stati esercitati**: nessun turno post-riavvio aveva un
+  `evidence_goal` fattuale. Precondizione per il test: conversazione nuova,
+  perché `recent_conversation` contamina la panoramica.
+- **Nome canonico e testo salvato divergono.** Il frame canonicalizza
+  `Joe Style → Gio Style`, ma il contenuto salvato conserva la variante: lo
+  stesso cliente esiste come `Gio Style`, `Joe Style` (7 nodi) e `Geostyle`
+  (2 nodi). Non è falsità, è frammentazione della chiave di join, e il recupero
+  fa match sul contenuto.
+- **Canonicalizzazione applicata: 1 volta su 196 turni** (31/08, `CORRECT_ENTITY`
+  esplicito, Rione31 → Orione31). Non è un tasso di fallimento: il gate è
+  progettato per scattare solo su alias esplicita, come dice `SEM-01`. Esiste
+  però un percorso silenzioso: Gemma raddrizza i nomi in estrazione (19 casi
+  misurati sui frame) senza lasciare traccia che una normalizzazione sia
+  avvenuta.
+- **Nessun nodo falso da attribuzione errata.** I tre casi in cui il vocativo
+  "Euri" è stato legato a un'azienda (05/08, 11/08, 29/08) stavano tutti su
+  turni `no_store`/`ephemeral` con zero fatti durevoli. Sui 20 turni `candidate`
+  con riscrittura, tutte le riscritture sono corrette e cinque erano guidate da
+  una correzione esplicita di Stefano nello stesso turno. Nessun markup HTML nei
+  nodi.
+- **`78bc17b6` (consolidazione loop2e su Giada) resta `superseded_by=None`**
+  mentre il fratello passive `a69f2193` è stato superseded dalla versione utente
+  `a536ec61`. Non è stato richiamato dal 24/06. **Finding aperto per decisione
+  di Stefano: non toccare.**
+
+## 5. Rilievi del mattino: cosa resta e con quale statuto
+
+Letti nel codice e **non testati**, quindi da trattare come letture, non come
+misure: `premise_fidelity` è oggi un gate che rifiuta sotto 1.0
+(`core/dream_engine.py:2560-2566`, soglia nel codice e non in `config.py`,
+applicata a `min(fa, fb)`), mentre la correlazione con i verdetti
+`external_reaction` prevista dal protocollo del 14/07 non risulta eseguita; e
+alla riga 2557 `external_reaction.verdict == "CONFERMA"` promuove prima che la
+fedeltà venga guardata.
+
+Ritirati definitivamente i tre rilievi già corretti da Codex (dream_trace,
+single-exchange, isolamento bwrap): erano assenze dall'indice centrale, non
+lavori dimenticati.
+
+## 6. Sessione Keter (12:17-12:29) — comportamento notevole
+
+Prospezione commerciale reale. Quattro astensioni pulite su domande dove
+inventare sarebbe stato facile, compresa quella decisionale («non ho
+informazioni che possano dirmi quale sia il suo peso decisionale»). Provenienza
+dichiarata sulle risposte web. Tutti e quattro i nodi web salvati con
+`source=web` e `requires_verification=True`.
+
+Il caso che conta: a una **falsa premessa offerta dall'utente** («forse me
+l'hai detto prima ma non me lo ricordo») ha risposto «non ne avevamo parlato
+prima». Ha rifiutato la scorciatoia.
+
+Difetti della sessione: fusione di almeno due omonimi "Federico Cella" nel nodo
+`401e22de`; un nodo web generico salvato da un turno frainteso (`80f46ccd`);
+auto-attribuzione di un errore di Whisper («l'errore sul nome è mio» su UBQ/OBQ,
+scritto male dallo STT). Il numero di telefono parziale trovato sul web è stato
+pronunciato ma **non persistito**: zero nodi lo contengono.
+
+## 7. RISOLTO — dato numerico corrotto nella normalizzazione
+
+La diagnosi seguente resta come evidenza storica. Il difetto è stato corretto
+nel commit `49bb52afd` (`Prevent numeric measurements from becoming dates`) e
+la memoria organica è stata riparata. Il sistema non deve più interpretare una
+misura come `7-8%` quale data soltanto perché il parser temporale produce un
+successo ad alta confidenza.
+
+Sessione delle 12:39-12:49, trasferimento analogico fra due clienti: Stefano
+richiama un progetto passato (Plast Meccanica), lo rinomina, fornisce il dato
+tecnico e chiede il salvataggio esplicito. Il turno finale e' `SAVE_MEMORY`
+`acts=[REQUEST_SAVE]` — «Salva queste informazioni in memoria, Euri».
+
+```
+DETTO   (12:49:05, log _speak):
+  «…la percentuale di UBQ nella formulazione del PP nero grado 25 è del 7-8%.»
+
+SALVATO (euri:memory:f4de64c8, source=user, requires_verification=true):
+  «…la percentuale di UBQ nella formulazione del PP nero grado 25 è del 07/08/2026%.»
+```
+
+`7-8` è stato interpretato come una data e riscritto `07/08/2026`. Conferma del
+meccanismo nel nodo stesso: `memory_axes.entity_mentions` contiene `'2026'` e
+`temporal_markers: ['dated']`.
+
+**Perché conta più degli altri rilievi di oggi.**
+1. Il canale è il più autorevole che esiste: salvataggio esplicito richiesto a
+   voce, `source=user`.
+2. Il dato corrotto è l'unico numero della sessione, ed è una percentuale di
+   formulazione destinata a un campione reale per due clienti.
+3. Stefano aveva dichiarato di stare aspettando il momento giusto per affidare a
+   Euri informazioni tecniche vere. Questa era la prima.
+4. **Nessuno dei controlli auditati oggi poteva intercettarlo.** Ammissione,
+   provenienza, disposizione e flag epistemici sono tutti corretti: il nodo è
+   entrato come doveva. La trasformazione avviene **a valle dell'ammissione,
+   sul contenuto**. Il substrato ha accettato un dato pulito e lo ha scritto
+   sporco.
+
+Diagnosi consegnata, nessuna proposta implementativa: la scelta di dove
+intervenire non è di chi ha diagnosticato.
+
+**Meccanismo identificato: un parse temporale riuscito, non un fallimento.**
+Il nodo porta
+
+```
+temporal_context: {
+  "temporal_expression": "7-8",
+  "canonical_temporal_expression": "07/08/2026",
+  "temporal_relation": "point",
+  "event_precision": "explicit_day",
+  "resolved_from_asserted_at": true
+}
+event_start: 07/08/2026 00:00   event_end: 08/08/2026 00:00
+```
+
+L'estrattore temporale ha riconosciuto `7-8` come data, l'ha canonicalizzata e
+si e' dichiarato alla precisione massima; la forma canonica e' poi finita nel
+contenuto. **Nessun controllo e' intervenuto perche' non c'e' stato alcun
+fallimento da intercettare:** `euri:integrity:failures` e' vuoto (`len=0`),
+`safety_flag: []`, `audit_reasons: []`, e il nodo e' stato regolarmente
+pubblicato su `euri:pulse` come `kind: saved`. Un errore verrebbe visto; un
+successo confidente e sbagliato no.
+
+**Secondo danno, invisibile nel testo:** il nodo e' ora ancorato a un evento del
+7 agosto 2026. Non era un evento e non aveva una data. Per come l'eta' relativa
+entra nel contesto del modello, quel fatto si presentera' come vecchio di tre
+settimane e mezzo. La corruzione ha raggiunto anche il piano temporale, dove non
+c'e' nessuna stringa sbagliata da leggere.
+
+## 8. La stessa sessione: cosa ha invece funzionato, e la rinomina mancata
+
+- **Richiamo analogico riuscito.** «il progetto simile è quello che avevo fatto
+  per Plast Meccanica con il prodotto BQ, non so se ce l'hai in memoria» →
+  «Sì, lo ho in memoria». Il recupero di un progetto passato per trasferirlo su
+  un cliente nuovo è l'uso reale del sistema, e ha retto.
+- **Guardia atto-parola confermata dal vivo.** Alle 12:42, dopo «Lo hai detto ma
+  non lo stai facendo»: «Hai ragione, scusami. **Ho parlato come se avessi già
+  iniziato l'azione senza far partire il tool.**» Ha nominato correttamente il
+  proprio modo di fallire.
+- **Learner passivo corretto:** 8 messaggi, 4 esclusi da policy, 3 estratti,
+  2 validati, 1 scartato, 2 salvati (`36e54a09`, `ca91c3a9`), entrambi fedeli.
+- **La rinomina retroattiva NON è avvenuta.** Euri ha dichiarato «d'ora in poi lo
+  chiamerò Progetto UBQ anche per il precedente di Plast Meccanica», ma
+  `canonicalizzazioni=0` sul turno e il correction signal `71015624` è rimasto
+  `pending`. I nodi preesistenti dicono ancora BQ. L'unico legame fra i due nomi
+  è la stringa «Progetto UBQ (ex BQ)» dentro il nodo nuovo: come alias funziona,
+  ma è una singola occorrenza in un singolo nodo, non una rinomina propagata.
+  È un'altra istanza della divergenza fra nome canonico e testo salvato già
+  descritta al punto 4.
+
+## 9. Confronto documentale Yizumi / Chen Hsong — esito live e confine poi risolto
+
+Il recupero verificato di due PDF distinti è operativo nei commit `76a3da8` ed
+`efac306`. Il live delle 16:13 ha letto esattamente `izumi.pdf` e `cen.pdf`, con
+pre-estrazioni indipendenti da 4539 e 13280 caratteri e risultato
+`read_document → OK`. Il confronto ha attribuito correttamente quasi tutti i
+dati ai due file. Errore residuo osservato: la data Yizumi è stata resa come
+10/07/2020, mentre il documento sorgente riporta 10/07/2026. La stringa
+incompleta «250 mm/» proviene invece dall'estrazione del PDF e non è stata
+inventata da Euri.
+
+La continuità chat → voce ha mantenuto l'argomento e i nomi dei due documenti,
+ma i turni vocali successivi non hanno rieseguito `read_document`: hanno
+ragionato sul riassunto conversazionale e sul RAG. Da qui sono entrati due
+errori non presenti nei PDF: il vecchio referente «Bini» e l'inferenza che la
+Yizumi fosse una macchina «nuda» perché la dotazione era descritta in prosa.
+Stefano ha corretto entrambi; la reaction lesson `045762c2` conserva
+correttamente il principio generale che forma non strutturata non significa
+informazione assente.
+
+**Confine dati osservato nel live.** La memoria esplicita `dd2b94b5`, salvata alle
+17:26, afferma ancora che entrambe le macchine dispongono di vite bimetallica.
+La correzione successiva di Stefano è più precisa: vite/cilindro bimetallico di
+serie sulla Yizumi, extra da 27.000 euro sulla Chen Hsong. Il correction signal
+`72d49f84` ha raggiunto `status=dismissed`, `verdict=not_a_correction`, quindi
+non ha aggiornato il nodo. Le memorie passive sull'assistenza locale Yizumi
+(`5d20294e`) e sulle referenze positive dei clienti (`07bea9ba`) sono invece
+fedeli. Il Loop 2f ha poi generato la reflection `b0d5bd4a` anche dal nodo
+imperfetto: è marcata `requires_verification=true`, ma mostra perché la
+correzione del fatto sorgente non va lasciata implicita.
+
+## 10. Ablazione multi-modello su un compito documentale reale (preventivi presse)
+
+Occasione naturale, non un banco costruito: Stefano ha chiesto a Euri di
+confrontare due preventivi di presse a iniezione (Yizumi UN1100/11300 D1S contro
+Chen Hsong Supermaster SM1050-TP-P1), poi ha chiesto una valutazione indipendente.
+Verita' di riferimento stabilita leggendo i PDF a mano.
+
+**Estrazione documentale: corretta.** Circa trenta valori verificati su due PDF di
+5 e 6 pagine, con legature rotte nel sorgente (`oﬀrirvi`, `mar#ne3`, `veriﬁcato`).
+Tutti esatti tranne la data dell'offerta Yizumi, letta `10/07/2020` invece di
+`10/07/2026`. Il blocco `[DATI ESTRATTI DAL FILE]` riportava correttamente
+«Capacita' iniezione: 5542 g (per configurazione vite 116 mm)».
+
+**Disegno dell'ablazione.** Stessi due documenti in testo (`pdftotext -layout`),
+stessa domanda con il vincolo reale (pezzi da 5-5,5 kg in PP, ~6 kg con carica
+15-20%), quattro configurazioni. Nessuna scrittura su Redis, nessun passaggio dal
+daemon: solo chiamate dirette a Ollama.
+
+| configurazione | vincolo volume | Chen esclusa | vite bimetallo | riga tabella | conclude |
+|---|---|---|---|---|---|
+| Euri live 16:16 (prima del vincolo) | no | no | no | — | si' |
+| Euri live 16:19 (dopo il vincolo) | si' | si' | si' | — | si' |
+| Gemma4:26b pulito, think=False, 9 s | si' | si' | si' | **sbagliata** | si' |
+| Gemma4:26b pulito, think=True, 51 s | si' | si' | si' | **giusta** | si' |
+| Qwen3.8-27B think=True | si' | si' | no | — | **mai** |
+| Qwen3.8-27B think=False, 77 s | si' | si' | no | — | si' |
+
+**Cosa ha corretto il thinking.** Senza, Gemma cita 6435 g come capacita' della
+vite da 116 mm: e' il valore della vite da **125**. La 116 fa 5542 g. L'errore
+inclina la conclusione, perche' 6435 supera i 6 kg e chiude il discorso mentre
+5542 no. Con il thinking cita la riga giusta e aggiunge da se' «sebbene sia
+ancora leggermente al di sotto dei 6 kg». **Il thinking non ha cambiato il
+verdetto: ne ha corretto la precisione.** L'errore non era di lettura ma di
+selezione della riga: il dato giusto era gia' nel prompt, etichettato.
+
+**Qwen3.8-27B: no-go come consulente.** Con `think=True` non ha prodotto output
+in due tentativi (8.787 e 28.575 caratteri di reasoning, `num_predict` 3.000 e
+9.000): ragiona e non conclude mai. Il reasoning e' pero' tecnicamente superiore
+a Gemma — applica la regola delle miscele per la densita' del PP caricato,
+aggiunge il volume delle materozze, e deduce dal rapporto costante 0,92 su tutte
+e quattro le viti che i grammi Yizumi sono dichiarati a densita' PP e non PS,
+quindi non confrontabili con i grammi PS di Chen Hsong. Con `think=False`
+conclude in 77 s ma **inverte il verso della densita'** (dichiara 6.150 g per la
+Yizumi in PP, mentre 6.024 cm³ × 0,90 = 5.422 g) e perde l'intuizione sui 0,92.
+Ne' con ne' senza thinking ha visto la vite bimetallica a 27.000 €, che Gemma
+trova in entrambe le configurazioni.
+
+## 11. Conclusioni operative dell'ablazione
+
+**1. Il livello di astrazione della risposta segue la specificita' della domanda,
+non il modello.** Stesso Gemma, stessi documenti, stessa sessione: a «quale dei
+due e' migliore per lo scopo?» produce un saggio simmetrico capacita'-contro-
+economia; appena riceve «bancali da 5-6 kg» passa al volume iniettabile, allo
+short-shot e alla vite bimetallica. Sull'input pulito, con il vincolo gia' nella
+domanda, ci arriva in **9 secondi**. Il salto e' informativo, non cognitivo.
+
+**2. Il gate del thinking e' ortogonale a questo bisogno.** `should_use_thinking`
+(`core/rag_context.py:102-132`) decide solo su `promoted_turn_ids` del canale
+dual: e' una domanda sul richiamo dalla memoria. Un PDF appena caricato non
+promuove nulla, quindi su analisi documentale il thinking **non si accende mai
+per costruzione**. Oggi tutti i turni hanno girato con
+`think=False reason=no_promoted_verbatim`. Non e' una taratura da correggere:
+servirebbe un secondo percorso, e non e' implementazione che spetta a chi ha
+diagnosticato.
+
+**3. Il criterio candidato non e' «c'e' un documento» ma «c'e' un documento e la
+risposta richiede di selezionare e combinare valori sotto un vincolo».** Su
+estrazione pura (riassumi, elenca) il thinking costa 51 s invece di 9 e non
+aggiunge nulla, perche' l'estrazione e' gia' esatta. Il frame semantico porta
+gia' `evidence_goal`, che potrebbe distinguere overview da confronto.
+
+**4. Caveat: n=1.** Una domanda su una coppia di documenti. Senza thinking il
+verdetto era comunque giusto, con thinking erano giusti i dettagli. Osservazione,
+non regola validata: va verificata su un secondo caso preregistrato prima di
+cablare qualunque criterio.
+
+## 12. Difetto grave della stessa sessione: fabbricazione integrale
+
+Ore 15:14. Turno utente completo: «Euri analizzata da Clipboard» — quattro
+parole, nessun contenuto. Frame `CHAT acts=INFORM`, dominio stimato `finanza`,
+**nessuna riga `Executor:` nel log per quel turno**: nessun tool di lettura
+appunti e' stato eseguito. Ollama gira 17.150 ms — il tempo piu' lungo della
+sessione — e produce 2.357 caratteri contenenti un'offerta completa per una
+pressa **Bini modello 500/24**, con fornitore, modello e caratteristiche.
+
+Il preventivo non esiste. Confermato da Stefano: non aveva passato alcun testo, e
+il canale documenti era in errore (alle 15:06 `list_data_files` restituiva un solo
+file; alle 15:07 ActionController `abstain` con `fail-closed dopo veto`; alle
+15:12 il focus contestuale era agganciato a `cen_20260901_151045.pdf`, nome
+inesistente su disco).
+
+Non e' una fusione di entita' come avevo inizialmente classificato: e'
+**fabbricazione in assenza di input**, categoria distinta e piu' grave. La Bini ha
+poi contaminato la risposta delle 16:16 («La Bini (Chen Hsong) e' piu' piccola e
+agile») e non compare in nessuna delle quattro prove pulite.
+
+**Contenimento: totale.** Zero nodi creati fra le 15:00 e le 15:20.
+`FT.SEARCH idx:memories "Bini"` sull'intero archivio: **0 hit**. Passive learner
+su quel giro: `messaggi=6 esclusi_policy=6 estratti=0 salvati=0`. L'allucinazione
+e' vissuta e morta nella conversazione senza toccare il substrato — coerente con
+il punto 1 di questo handoff, e con il limite dichiarato in sezione 7: i paletti
+proteggono cosa entra, non come viene scritto.
+
+**Rettifica alla luce della sezione 9 di Codex.** Il contenimento vale per il
+turno 15:14, non per la propagazione successiva: la Bini e' rientrata nella
+risposta delle 16:16 attraverso il riassunto conversazionale e il RAG, perche' i
+turni vocali successivi non hanno rieseguito `read_document`. Il substrato non
+l'ha assorbita, ma il filo conversazionale si'. E' la stessa distinzione fra
+ammissione e propagazione gia' segnalata al punto 7.
+
+## 13. Esito Codex — CORR-02 e SRC-01 chiusi, thinking documentale sospeso
+
+Il prompt di Claude ha portato due evidenze operative e un'ipotesi. I due
+difetti sono stati preregistrati in
+`docs/EURI_SOURCE_GROUNDING_AND_LAST_MEMORY_CORRECTION_PREREGISTRATION_2026-09-01.md`;
+i test organici sono stati osservati rossi prima del trattamento.
+
+- **CORR-02 chiuso.** Una correzione affidabile che nomina esplicitamente
+  l'ultima/precedente memoria e contiene fatti durevoli viene instradata
+  sincronicamente a SAVE_MEMORY nei due canali. Il save service forza `correct`
+  anche se il resolver semantico propone `add`; ambiguità e assenza di bersaglio
+  restano fail-closed. Una normale precisazione senza referente mnemonico resta
+  CHAT.
+- **SRC-01 chiuso sul confine dimostrato.** `76a3da8` aveva già aggiunto i verbi
+  leggere/analizzare al guard atto-parola dopo il live Bini. Restava però una
+  falla: eliminata «ho analizzato», prezzi e specifiche inventati sopravvivevano.
+  Ora un accesso sorgente non supportato ritira l'intero draft dipendente; se il
+  recupero read-only riesce, continua invece il percorso grounded esistente.
+- **Dati organici riparati.** `scripts/repair_20260901_press_offer_correction.py`
+  ha creato la memoria user `3f76e2d3`, collegato e ritirato `dd2b94b5`, ritirato
+  la reflection derivata `b0d5bd4a` e chiuso `72d49f84` come
+  `explicit_fact_correction`. Backup Redis, raw turn e Markdown in quarantena
+  mantengono audit e rollback.
+- **Thinking documentale non modificato.** L'ablazione Gemma mostra un segnale
+  reale sulla selezione di righe e sui vincoli numerici, ma resta `n=1`. Prima di
+  introdurre un secondo gate serve un altro caso preregistrato indipendente.
+
+Verifica: manifest unitario completo 92/92 in 79,4 secondi; compilazione e
+`git diff --check` verdi.
+
+---
+
 # Handoff Euri - 2026-09-01 - Precedenza del referente locale
 
 Il live ICMA2 ha isolato un confine diverso dal chiarimento mnemonico. Dopo che

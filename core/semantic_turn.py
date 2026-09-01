@@ -1984,6 +1984,52 @@ def semantic_intent(frame: dict | None, *, minimum_confidence: float = 0.72) -> 
     return value
 
 
+_EXPLICIT_MEMORY_CORRECTION_REF_RE = re.compile(
+    r"\b(?:sull['’]?\s*|sulla\s+|su\s+|nell['’]?\s*|nella\s+)?"
+    r"(?:l['’]\s*)?(?:ultim[ao]|precedente)\s+(?:memoria|ricordo)\b"
+    r"|\b(?:memoria|ricordo)\s+(?:appena\s+salvat[ao]|precedente)\b",
+    re.IGNORECASE,
+)
+
+
+def frame_requests_explicit_memory_correction(
+    frame: dict | None,
+    *,
+    minimum_confidence: float = 0.72,
+) -> bool:
+    """True se l'owner corregge esplicitamente un nodo mnemonico recente.
+
+    ``CORRECT_FACT`` da solo resta conversazionale: l'autorità di scrittura nasce
+    dal referente mnemonico espresso nel turno e da almeno un fatto durevole.
+    """
+    if not getattr(config, "CORRECTION_RESOLVER_ENABLED", True):
+        return False
+    if not isinstance(frame, dict) or frame.get("status") != "interpreted":
+        return False
+    if frame.get("requires_clarification"):
+        return False
+    if _confidence(frame.get("confidence")) < minimum_confidence:
+        return False
+    acts = {str(item or "").upper() for item in (frame.get("speech_acts") or [])}
+    if not acts.intersection({"CORRECT_FACT", "CORRECT_ENTITY"}):
+        return False
+    text = " ".join(
+        str(frame.get(field) or "")
+        for field in ("raw_text", "interpreted_text")
+    )
+    if not _EXPLICIT_MEMORY_CORRECTION_REF_RE.search(text):
+        return False
+    return any(
+        isinstance(fact, dict)
+        and str(fact.get("claim") or "").strip()
+        and str(fact.get("modality") or "asserted").lower()
+        not in {"questioned", "hypothetical", "planned"}
+        and str(fact.get("durability") or "reusable").lower()
+        not in {"ephemeral", "session_only"}
+        for fact in (frame.get("facts") or [])
+    )
+
+
 def arbitrate_routable_intent(
     frame: dict | None,
     current_intent,
@@ -2005,6 +2051,14 @@ def arbitrate_routable_intent(
     shared = semantic_intent(frame, minimum_confidence=minimum_confidence)
     if current in {"SAVE_MEMORY", "SAVE_TODO", "SAVE_NOTE", "SAVE_LAST"}:
         return current
+    if (
+        current == "CHAT"
+        and "SAVE_MEMORY" in safe_allowed
+        and frame_requests_explicit_memory_correction(
+            frame, minimum_confidence=minimum_confidence
+        )
+    ):
+        return "SAVE_MEMORY"
     if shared in safe_allowed and current in safe_allowed:
         return shared
     return current

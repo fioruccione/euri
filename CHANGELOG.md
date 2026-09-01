@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-09-01 - Correzione dell'ultima memoria e grounding delle letture
+
+- Un frame affidabile che corregge esplicitamente l'ultima/precedente memoria,
+  contiene fatti durevoli e non richiede chiarimento viene ora instradato da
+  CHAT a SAVE_MEMORY sia in voce sia nella Silent Chat. Il save service forza
+  l'operazione `correct` anche se il resolver propone `add`; selezione bounded,
+  domanda in caso di ambiguità e link atomico restano invariati.
+- Una normale precisazione `CORRECT_FACT` che non nomina un referente mnemonico
+  resta conversazionale: il nuovo percorso non trasforma ogni correzione in una
+  scrittura automatica.
+- Se Euri dichiara senza tool di aver letto, consultato o analizzato una sorgente,
+  il guard atto-parola scarta ora l'intero draft dipendente, non soltanto la frase
+  che rivendica l'accesso. Specifiche e prezzi inventati non possono quindi
+  sopravvivere alla rimozione di «ho analizzato il documento».
+- Riparato append-only il caso Yizumi/Chen Hsong: nuova memoria user
+  `3f76e2d3`, vecchia `dd2b94b5` e reflection `b0d5bd4a` ritirate, signal
+  `72d49f84` risolto, backup Redis e Markdown storici in quarantena.
+- Il thinking documentale non è stato modificato: l'ablazione su un solo caso
+  resta un'ipotesi da replicare. Manifest unitario completo: 92/92 in 79,4 s.
+
 ## 2026-09-01 - Lettura multipla documentale verificabile
 
 - La Silent Chat conserva nell'operazione l'intero insieme dei file caricati e

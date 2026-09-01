@@ -10,7 +10,12 @@ from core.correction_resolver import (
     select_correction_target,
 )
 from core.memory_manager import MemoryManager
-from core.save_service import _resolve_content, _save_or_merge, resolve_pending_correction
+from core.save_service import (
+    _resolve_content,
+    _save_or_merge,
+    resolve_pending_correction,
+    save_memory_command,
+)
 from core.semantic_turn import filter_passive_memory_history
 
 
@@ -509,6 +514,87 @@ def test_c6_signal_enrichment_preserves_original_context_and_quarantines_candida
     assert docs["euri:memory:other"].get("correction_pending") is None
 
 
+def test_explicit_last_memory_contract_forces_atomic_correction_not_add():
+    old_id = "press-offer-old"
+    old_content = (
+        "Yizumi e Chen Hsong sono entrambe dotate di vite bimetallica; "
+        "la Yizumi resta preferibile per la capacità volumetrica."
+    )
+    corrected_fact = (
+        "La vite bimetallica è di serie solo sulla Yizumi, mentre sulla "
+        "Chen Hsong è un extra da 27.000 euro."
+    )
+
+    class _Memory:
+        def __init__(self):
+            self.saved = []
+            self.linked = []
+
+        def find_correction_target(self, content, correction_text):
+            assert content == corrected_fact
+            assert "ultima memoria" in correction_text
+            return _candidate(old_id, old_content, 0.94, source="conversation")
+
+        def save_memory(self, content, **kwargs):
+            self.saved.append((content, kwargs))
+            return "press-offer-new"
+
+        def link_correction(self, old_memory_id, new_memory_id):
+            self.linked.append((old_memory_id, new_memory_id))
+            return True
+
+    class _Brain:
+        def resolve_save_intent(self, _text, _history):
+            # Riproduce il fallimento da contenere: il modello capisce il fatto,
+            # ma propone add invece di correct.
+            return {
+                "mode": "direct",
+                "operation": "add",
+                "memory": corrected_fact,
+                "confidence": 1.0,
+            }
+
+        def apply_correction_to_memory(self, existing, correction):
+            assert existing == old_content
+            assert correction == corrected_fact
+            return (
+                "La Yizumi resta preferibile per capacità volumetrica e ha la "
+                "vite bimetallica di serie; sulla Chen Hsong è un extra da "
+                "27.000 euro."
+            )
+
+    frame = {
+        "status": "interpreted",
+        "confidence": 1.0,
+        "requires_clarification": False,
+        "primary_intent": "CHAT",
+        "speech_acts": ["CORRECT_FACT"],
+        "raw_text": (
+            "Euri, una precisazione: sull'ultima memoria la vite bimetallica "
+            "è di serie solo sulla Yizumi, mentre sulla Chen Hsong è un extra."
+        ),
+        "memory_disposition": "candidate",
+        "facts": [{
+            "claim": corrected_fact,
+            "modality": "asserted",
+            "durability": "reusable",
+        }],
+    }
+    memory = _Memory()
+    result = save_memory_command(
+        frame["raw_text"],
+        memory,
+        _Brain(),
+        recent_history=[{"role": "assistant", "content": old_content}],
+        semantic_frame=frame,
+    )
+
+    assert result["corrected"] is True
+    assert result["correction_of"] == old_id
+    assert memory.linked == [(old_id, "press-offer-new")]
+    assert memory.saved[0][1]["final_fields"]["correction_pending"] is True
+
+
 if __name__ == "__main__":
     test_c1_icma_selects_complete_old_fact_not_new_passive_duplicate()
     test_c2_equivalent_old_targets_are_ambiguous()
@@ -522,4 +608,5 @@ if __name__ == "__main__":
     test_c5_atomic_link_closes_the_signal_that_quarantined_the_antecedent()
     test_c5_failed_link_leaves_new_version_pending()
     test_c6_signal_enrichment_preserves_original_context_and_quarantines_candidate()
+    test_explicit_last_memory_contract_forces_atomic_correction_not_add()
     print("test_correction_resolver: OK")

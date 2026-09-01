@@ -100,6 +100,20 @@ _ARTIFACT_AVAILABILITY_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Se una lettura/analisi di una sorgente non è avvenuta, anche le conclusioni che
+# seguono nello stesso draft sono prive di fondamento. In quel caso non basta
+# eliminare la sola frase "ho letto": va ritirata l'intera risposta dipendente.
+_SOURCE_ACCESS_OBJECT = (
+    r"(?:document[oi]|file|pdf|allegat[oi]|testo|appunt[oi]|clipboard|log|"
+    r"pagina|sito|offert[ae]|preventiv[oi]|sched[ae]|report)"
+)
+_UNBACKED_SOURCE_ACCESS_CLAIM_RE = re.compile(
+    rf"\b(?:ho|l['’ ]ho|li ho|le ho|gli ho)\s+"
+    rf"(?:{_ADV}\s+){{0,2}}(?:analizzat|esaminat|consultat|lett)\w*\b"
+    rf"[^.!?\n]{{0,120}}\b{_SOURCE_ACCESS_OBJECT}\b",
+    re.IGNORECASE,
+)
+
 # Un aggiornamento esplicitamente cognitivo non è un effetto operativo. Caso
 # live 06/08: "Ho aggiornato mentalmente il dato" apriva inutilmente il
 # controller e produceva una falsa smentita d'azione. La regola è grammaticale,
@@ -245,6 +259,10 @@ def scrub_unbacked_action_claim(
     commitment = claims_immediate_action_commitment(reply)
     if turn_actions or not (completed or commitment):
         return reply
+    if completed and _UNBACKED_SOURCE_ACCESS_CLAIM_RE.search(
+        _without_cognitive_updates(reply)
+    ):
+        return honest_correction()
     sentences = re.split(r"(?<=[.!?…])\s+", reply.strip())
     kept = [
         s for s in sentences

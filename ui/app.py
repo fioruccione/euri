@@ -1614,6 +1614,7 @@ with main_col:
                             fresh=True,
                             recent_history=recent_history,
                             active_artifact=executor.get_session_artifact(),
+                            semantic_frame=semantic_frame,
                         )
                         if save_res.get("needs_clarification"):
                             st.session_state.sc_pending_memory_correction = {

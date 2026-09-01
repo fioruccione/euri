@@ -125,6 +125,10 @@ SCRUB_CASES = [
     ("claim analisi clipboard falsa → coda onesta",
      "Ho analizzato il testo che hai copiato negli appunti.", set(),
      lambda out: "ho analizzato" not in out.lower() and out == _TAIL),
+    ("lettura assente elimina anche le conclusioni dipendenti",
+     "Ho analizzato il testo che hai copiato negli appunti. Si tratta dell'offerta "
+     "Bini 500/24: costa 148.000 euro e inietta 1483 cm³.", set(),
+     lambda out: out == _TAIL and "Bini" not in out and "148.000" not in out),
     ("sto preparando → niente background finto",
      "Sto preparando il documento.", set(),
      lambda out: out == _COMMITMENT_TAIL),
