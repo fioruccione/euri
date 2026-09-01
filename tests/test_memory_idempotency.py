@@ -204,6 +204,34 @@ def test_direct_save_materializes_elliptical_date_before_commit():
     assert end.isoformat().startswith("2026-08-25T00:00:00")
 
 
+def test_direct_save_preserves_numeric_measurement_range():
+    redis = FakeRedis()
+    manager = _manager(redis)
+    asserted_at = 1788259744.019418
+    content = (
+        "Nel Progetto UBQ, la percentuale nella formulazione del PP nero "
+        "grado 25 è del 7-8%."
+    )
+    with (
+        patch("core.memory_manager.assign_domain", return_value="chimica polimeri"),
+        patch("core.memory_manager.process_memory_outbox_event", return_value=True),
+    ):
+        mid = manager.save_memory(
+            content,
+            source="user",
+            idempotent=True,
+            temporal_context={"asserted_at": asserted_at},
+        )
+
+    doc = redis.docs[f"euri:memory:{mid}"]
+    assert doc["content"] == content
+    assert doc["event_start"] is None
+    assert doc["event_end"] is None
+    assert doc["temporal_context"]["temporal_expression"] == ""
+    assert "dated" not in doc["memory_axes"]["temporal_markers"]
+    assert "2026" not in doc["memory_axes"]["entity_mentions"]
+
+
 def test_final_fields_are_committed_before_outbox_visibility():
     redis = FakeRedis()
     manager = _manager(redis)
@@ -279,6 +307,7 @@ if __name__ == "__main__":
     test_stale_mapping_is_replaced()
     test_temporal_context_is_canonical_memory_metadata()
     test_direct_save_materializes_elliptical_date_before_commit()
+    test_direct_save_preserves_numeric_measurement_range()
     test_final_fields_are_committed_before_outbox_visibility()
     test_final_fields_cannot_replace_canonical_identity()
     test_precommit_guard_can_cancel_stale_background_publication()

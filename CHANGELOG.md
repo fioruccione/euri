@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-09-01 - Le misure numeriche non diventano date
+
+- Il resolver temporale distingue ora le date numeriche dagli intervalli tecnici:
+  forme come `7-8%`, `MFI 6/8`, `7/8 kg`, `gradi 17/25` e `Fase 1-2`
+  restano dati sorgente e non producono più date, event-time o marcatori `dated`.
+- Le date autentiche con slash o anno completo e le ellissi calendariali già
+  supportate (`7/8`, `14/07/2026`, `fino al 24`) mantengono il comportamento
+  precedente.
+- Aggiunte regressioni sia sul resolver sia sul commit canonico di
+  `MemoryManager`; suite unitaria completa: 92/92.
+- Lo script `repair_20260901_numeric_temporal_ranges.py` ripara con backup e
+  audit i cinque nodi storici individuati, inclusi i due contenuti UBQ alterati
+  da `7-8%` a `07/08/2026%`.
+
 ## 2026-09-01 - Recupero entity-first e confine fattuale degli insight
 
 - RETR-03 e' chiuso offline: i tre bracci della Fase 4 sono 2/2. Il runtime

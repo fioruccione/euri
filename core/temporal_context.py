@@ -58,12 +58,18 @@ _RELATIONAL_DAY_PATTERNS = (
     ),
 )
 
+_NUMERIC_DATE_PATTERN = (
+    r"(?:\d{4}-\d{1,2}-\d{1,2}|"
+    r"\d{1,2}/\d{1,2}(?:/\d{2,4})?|"
+    r"\d{1,2}-\d{1,2}-\d{2,4})"
+)
+
 _TEMPORAL_EXPRESSION_RE = re.compile(
     r"\b(?:questa\s+mattina|stamattina|stamani|stamane|questa\s+sera|stasera|"
     r"stanotte|oggi|ieri|l['’]altro\s+ieri|\d+\s+giorni\s+fa|"
     r"(?:\d+|un['’]?|una|due|tre|quattro|cinque|sei|sette|otto|nove|dieci)"
     r"\s*(?:ora|ore)\s+fa|"
-    r"poco\s+fa|\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?|"
+    rf"poco\s+fa|{_NUMERIC_DATE_PATTERN}|"
     r"(?:luned[iì]|marted[iì]|mercoled[iì]|gioved[iì]|venerd[iì]|sabato|domenica)"
     r"(?:\s+scors[oa])?|"
     r"\d{1,2}\s+(?:gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|"
@@ -71,8 +77,71 @@ _TEMPORAL_EXPRESSION_RE = re.compile(
     re.IGNORECASE,
 )
 _NUMERIC_DATE_RE = re.compile(
-    r"\b(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)\b"
+    rf"\b{_NUMERIC_DATE_PATTERN}\b"
 )
+
+# Una forma numerica simile a una data può essere in realtà una misura o un
+# intervallo tecnico (``7-8%``, ``MFI 6/8``, ``7/8 kg``). In questi casi il
+# resolver deve fallire chiuso: è preferibile non assegnare un event-time che
+# trasformare il dato sorgente e creare una falsa data autorevole.
+_NUMERIC_MEASUREMENT_PREFIX_RE = re.compile(
+    r"(?:\bMFI|\bMFR|\bindice\s+di\s+fluidit[aà]|\bpercentuale|"
+    r"\bconcentrazione|\bdosaggio|\bdose|\brange|\bintervallo|"
+    r"\brapporto|\bvalore|\bgrad[oi])\s*(?:target\s*)?"
+    r"(?:di|del|tra|da|pari\s+a|[èe]'?|[=:])?\s*$",
+    re.IGNORECASE,
+)
+_NUMERIC_MEASUREMENT_SUFFIX_RE = re.compile(
+    r"^\s*(?:[%‰]|°\s*[CFK]|"
+    r"(?:percento|percentual[ei]?|punt[io]\s+percentual[ei]?|"
+    r"mg|mcg|µg|g|kg|q|t|ml|cl|dl|l|mm|cm|km|m|"
+    r"ms|second[oi]|minut[oi]|ore?|giorn[oi]|settimane?|mesi|anni|"
+    r"ppm|ppb|bar|psi|pa|kpa|mpa|rpm|hz|khz|mhz|"
+    r"v|kv|a|ma|w|kw|mw|j|kj|euro|euro/\w+)\b)",
+    re.IGNORECASE,
+)
+
+
+def numeric_date_candidate_is_measurement(
+    text: str,
+    start: int,
+    end: int,
+) -> bool:
+    """True se una forma numerica data-like appartiene a una misura tecnica."""
+    value = str(text or "")
+    prefix = value[max(0, start - 48):start]
+    suffix = value[end:]
+    return bool(
+        _NUMERIC_MEASUREMENT_PREFIX_RE.search(prefix)
+        or _NUMERIC_MEASUREMENT_SUFFIX_RE.match(suffix)
+    )
+
+
+def numeric_date_candidate_is_valid(expression: str) -> bool:
+    """Valida la sola forma calendariale, usando il 2000 per date senza anno."""
+    value = str(expression or "").strip()
+    for pattern, order in (
+        (r"(\d{4})-(\d{1,2})-(\d{1,2})", "ymd"),
+        (r"(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?", "dmy"),
+        (r"(\d{1,2})-(\d{1,2})-(\d{2,4})", "dmy"),
+    ):
+        match = re.fullmatch(pattern, value)
+        if not match:
+            continue
+        first, second, third = match.groups()
+        if order == "ymd":
+            year, month, day = int(first), int(second), int(third)
+        else:
+            day, month = int(first), int(second)
+            year = int(third) if third else 2000
+            if year < 100:
+                year += 2000
+        try:
+            datetime(year, month, day)
+        except ValueError:
+            return False
+        return True
+    return False
 
 
 def _as_timestamp(value: Any) -> float | None:
@@ -181,7 +250,20 @@ def temporal_prompt_contract_legacy_v1() -> str:
 
 
 def _temporal_expression(text: str) -> str:
-    matches = [match.group(0) for match in _TEMPORAL_EXPRESSION_RE.finditer(text or "")]
+    value = str(text or "")
+    matches = [
+        match.group(0)
+        for match in _TEMPORAL_EXPRESSION_RE.finditer(value)
+        if not (
+            _NUMERIC_DATE_RE.fullmatch(match.group(0))
+            and (
+                not numeric_date_candidate_is_valid(match.group(0))
+                or numeric_date_candidate_is_measurement(
+                    value, match.start(), match.end()
+                )
+            )
+        )
+    ]
     if not matches:
         return ""
     # Il testo sorgente può contenere metadiscorso recente ("poco fa") e la
@@ -350,7 +432,7 @@ def resolve_text_event_time(text: str, *, asserted_at: float) -> dict:
     if event_range and expression:
         event_dt = from_timestamp(event_range[0])
         if event_dt is not None and re.fullmatch(
-            r"\d{1,2}[/-]\d{1,2}", expression.strip()
+            r"\d{1,2}/\d{1,2}", expression.strip()
         ):
             canonical_expression = event_dt.strftime("%d/%m/%Y")
             resolved_from_asserted_at = True

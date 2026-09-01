@@ -10,6 +10,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from core.temporal_context import (
+    numeric_date_candidate_is_measurement,
+    numeric_date_candidate_is_valid,
+)
+
 
 SCHEMA_VERSION = 1
 
@@ -36,11 +41,31 @@ _ENTITY_STOP = {
 }
 
 _DATE_RE = re.compile(
-    r"\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b|"
+    r"\b(?:\d{1,2}/\d{1,2}(?:/\d{2,4})?|"
+    r"\d{1,2}-\d{1,2}-\d{2,4})\b|"
     r"\b\d{4}-\d{2}-\d{2}\b|"
     r"\b(?:gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)\b",
     re.IGNORECASE,
 )
+_MONTH_NAMES = {
+    "gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno",
+    "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre",
+}
+
+
+def _has_date_marker(text: str) -> bool:
+    for match in _DATE_RE.finditer(text):
+        if match.group(0).casefold() in _MONTH_NAMES:
+            return True
+        if (
+            numeric_date_candidate_is_valid(match.group(0))
+            and not numeric_date_candidate_is_measurement(
+                text, match.start(), match.end()
+            )
+        ):
+            return True
+    return False
+
 
 _PENDING_RE = re.compile(
     r"\b(?:da\s+validare|in\s+attesa|attende|aspetta|pending|da\s+fare|"
@@ -109,7 +134,7 @@ def analyze_memory_axes(content: str, *, source: str | None = None, created_at: 
         audit_reasons.append("acephalous_subject")
 
     temporal_markers: list[str] = []
-    if _DATE_RE.search(text):
+    if _has_date_marker(text):
         temporal_markers.append("dated")
     if _PENDING_RE.search(text):
         temporal_markers.append("pending")

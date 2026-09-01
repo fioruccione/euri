@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import config
 from core.brain import Brain
+from core.memory_axes import analyze_memory_axes
 from core.temporal_context import (
     derive_passive_memory_metadata,
     history_content_for_prompt,
@@ -172,6 +173,40 @@ def test_generic_memories_resolve_numeric_and_relative_time():
     )
     assert incomplete["canonical_temporal_expression"] == "24 agosto 2026"
     assert incomplete["resolved_from_asserted_at"] is True
+
+
+def test_numeric_measurement_ranges_are_not_dates():
+    asserted_at = _date_ts(2026, 9, 1, 12, 49)
+    cases = (
+        "La percentuale di UBQ è del 7-8%.",
+        "Il valore di MFI è 6/8.",
+        "Il dosaggio previsto è 7/8 kg per lotto.",
+        "I flussi riguardano i gradi 17/25.",
+        "La coppia numerica osservata è 17/25.",
+        "Il checkpoint copre le Fasi 1-2.",
+    )
+
+    for content in cases:
+        resolved = resolve_text_event_time(content, asserted_at=asserted_at)
+        assert resolved["temporal_expression"] == ""
+        assert resolved["canonical_temporal_expression"] == ""
+        assert resolved["event_start"] is None
+        assert resolved["event_end"] is None
+        assert "dated" not in analyze_memory_axes(content)["temporal_markers"]
+
+    explicit = resolve_text_event_time(
+        "La prova è fissata per il 7/8.", asserted_at=asserted_at
+    )
+    assert explicit["temporal_expression"] == "7/8"
+    assert explicit["canonical_temporal_expression"] == "07/08/2026"
+
+    explicit_hyphenated = resolve_text_event_time(
+        "La prova è stata eseguita il 07-08-2026.", asserted_at=asserted_at
+    )
+    assert explicit_hyphenated["temporal_expression"] == "07-08-2026"
+    assert datetime.fromtimestamp(
+        explicit_hyphenated["event_start"], tz=config.TIMEZONE
+    ).date().isoformat() == "2026-08-07"
 
 
 def test_until_bare_day_is_anchored_to_source_turn_and_materialized():
@@ -413,6 +448,7 @@ if __name__ == "__main__":
     test_passive_fact_requires_user_only_source_turns()
     test_passive_anchor_resolves_this_morning_against_assertion_time()
     test_generic_memories_resolve_numeric_and_relative_time()
+    test_numeric_measurement_ranges_are_not_dates()
     test_until_bare_day_is_anchored_to_source_turn_and_materialized()
     test_until_bare_day_rolls_month_and_year_without_matching_quantities()
     test_retrieval_label_exposes_event_assertion_and_expiry_state()
