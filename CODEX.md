@@ -1,5 +1,31 @@
 # Regola di lavoro — mappa mnemonica canonica
 
+# Handoff Euri - 2026-09-01 - Precedenza del referente locale
+
+Il live ICMA2 ha isolato un confine diverso dal chiarimento mnemonico. Dopo che
+Euri aveva risposto «nella configurazione attuale la pompa è dopo il filtro», il
+follow-up «restiamo sulla configurazione che hai appena descritto» e' tornato
+erroneamente alla modifica FPP20 prima del filtro. Il prompt capture prova che
+history e ordine dei turni erano presenti.
+
+Il replay del payload organico e' documentato in
+[`docs/EURI_LOCAL_REFERENCE_PRECEDENCE_PREREGISTRATION_2026-08-31.md`](docs/EURI_LOCAL_REFERENCE_PRECEDENCE_PREREGISTRATION_2026-08-31.md).
+Con la sola ultima coppia Gemma risponde correttamente 2/2; aggiungendo il RAG
+scende a 1/2. Con la storia completa fallisce 3/3 anche senza RAG e non viene
+recuperata da un contratto generale o da metadati strutturati, anche adiacenti
+alla domanda. Nella storia lunga esiste una domanda quasi identica gia'
+associata alla proposta: il modello completa quel pattern invece di seguire il
+referente più recente.
+
+Non e' stata applicata alcuna modifica runtime o Redis. La Fase 4 sulla
+riscrittura naturale e' rimasta sospesa senza report ed e' esclusa dagli esiti.
+Prossimo passo: ripeterla con timeout esplicito. Soltanto se verde valutare un
+resolver read-only che produca una query interpretata naturale con
+`source_turn_ref`, lasciando raw e autorita' fattuale invariati. Non aggiungere
+altri prompt o regole ICMA2-specifiche.
+
+---
+
 # Handoff Euri - 2026-08-31 - Chiarimento mnemonico conversazionale
 
 Il banco ICMA2 ha isolato un difetto diverso dal semplice recall: con la domanda

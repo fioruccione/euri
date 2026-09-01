@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-09-01 - Replay della precedenza conversazionale locale
+
+- Il live ICMA2 ha mostrato che una domanda quasi identica gia' presente nello
+  storico può prevalere sull'ultima risposta e riportare Gemma dalla
+  configurazione attuale alla proposta FPP20, pur con history completa.
+- Un replay byte-faithful del prompt capture non accede a Redis: history sola,
+  history+RAG e contratto generale falliscono 0/3; restringendo alla coppia
+  locale Gemma risponde correttamente 2/2, mentre il RAG la rende instabile 1/2.
+- Prompt e metadati aggiuntivi non risolvono il prompt lungo. La sonda sulla
+  riscrittura naturale è rimasta sospesa senza report ed è esclusa dagli esiti;
+  nessuna modifica runtime è stata applicata.
+
 ## 2026-08-31 - Contesto semantico e chiarimento mnemonico
 
 - Il RAG conserva le memorie narrative e aggiunge una proiezione bounded di
