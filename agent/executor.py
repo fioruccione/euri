@@ -750,13 +750,17 @@ class Executor:
             question = str(params.get("question", "") or "").strip()
             upload_queue = self._streamlit_upload_paths(input_dir)
             q_fold = question.casefold()
-            named_uploads = [
+            exact_named_uploads = [
                 path for path in upload_queue
                 if path.name.casefold() in q_fold
-                or (
-                    len(path.stem) >= 5
-                    and path.stem.casefold() in q_fold
-                )
+            ]
+            # Il prompt UI contiene i filename completi appena salvati. Se almeno
+            # uno è presente, quel set è autoritativo: non allarghiamo per stem,
+            # altrimenti `izumi` trascina anche una vecchia copia `izumi.pdf`
+            # insieme a `izumi_20260901_160913.pdf`.
+            named_uploads = exact_named_uploads or [
+                path for path in upload_queue
+                if len(path.stem) >= 5 and path.stem.casefold() in q_fold
             ]
             shared_active_name = ""
             workspace = getattr(self, "document_workspace", None)

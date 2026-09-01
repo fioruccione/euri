@@ -5,6 +5,9 @@
 - La Silent Chat conserva nell'operazione l'intero insieme dei file caricati e
   l'Executor passa al lettore la richiesta originale: una parafrasi generica del
   controller non può più far ricadere l'analisi sul vecchio documento attivo.
+- Quando il prompt contiene filename completi, questi formano il read-set esatto:
+  un vecchio `izumi.pdf` non viene più riassorbito per somiglianza del nome insieme
+  al nuovo `izumi_<timestamp>.pdf`.
 - `read_document` mantiene i documenti come fonti separate, bilancia il contesto
   grezzo fra i file e chiede a Gemma di attribuire dati e conclusioni al nome della
   fonte prima di confrontarli.

@@ -387,25 +387,28 @@ def test_contextual_multi_document_read_keeps_both_sources_and_original_request(
 
     with tempfile.TemporaryDirectory() as raw_dir:
         data_dir = Path(raw_dir)
-        izumi = data_dir / "izumi.pdf"
-        cen = data_dir / "cen.pdf"
+        old_izumi = data_dir / "izumi.pdf"
+        izumi = data_dir / "izumi_20260901_160913.pdf"
+        cen = data_dir / "cen_20260901_160913.pdf"
+        old_izumi.write_text("Yizumi UN1100, prezzo 295000 euro", encoding="utf-8")
         izumi.write_text("Yizumi UN1100, prezzo 295000 euro", encoding="utf-8")
         cen.write_text("Chen Hsong SM1050, prezzo 292000 euro", encoding="utf-8")
         (data_dir / ".silent_chat_uploads.json").write_text(json.dumps([
-            {"path": str(izumi), "uploaded_at": 10},
-            {"path": str(cen), "uploaded_at": 20},
+            {"path": str(old_izumi), "uploaded_at": 5},
+            {"path": str(cen), "uploaded_at": 10},
+            {"path": str(izumi), "uploaded_at": 20},
         ]), encoding="utf-8")
 
         redis = _Redis()
         workspace = DocumentWorkspace(redis)
         workspace.publish_documents([DocumentWorkspace.file_document(
-            izumi, "vecchia lettura Yizumi"
+            old_izumi, "vecchia lettura Yizumi"
         )], active_filename="izumi.pdf", source_channel="silent_chat")
         workspace.start_operation(
             "document_analysis",
             source_channel="silent_chat",
-            filename="cen.pdf",
-            filenames=["izumi.pdf", "cen.pdf"],
+            filename=izumi.name,
+            filenames=[cen.name, izumi.name],
         )
         executor = Executor()
         executor.document_workspace = workspace
@@ -418,7 +421,7 @@ def test_contextual_multi_document_read_keeps_both_sources_and_original_request(
         executor.brain = brain
         had_shared, old_shared = _install_shared_brain(brain)
         user_text = (
-            "Confronta i file appena caricati izumi.pdf e cen.pdf, "
+            f"Confronta i file appena caricati {cen.name} e {izumi.name}, "
             "attribuendo ogni prezzo alla sua offerta."
         )
         proposal = ActionProposal(
@@ -438,20 +441,21 @@ def test_contextual_multi_document_read_keeps_both_sources_and_original_request(
         assert result["success"] is True
         assert "2 documenti distinti" in result["output"]
         documents, received_question = brain.seen[0]
-        assert list(documents) == ["izumi.pdf", "cen.pdf"]
+        assert list(documents) == [cen.name, izumi.name]
+        assert old_izumi.name not in documents
         assert received_question == user_text
         manifest = result["raw_data"]["document_read_manifest"]
         assert manifest["complete"] is True
         assert manifest["distinct_sha256_count"] == 2
         assert [item["filename"] for item in manifest["read"]] == [
-            "izumi.pdf", "cen.pdf",
+            cen.name, izumi.name,
         ]
-        assert "=== izumi.pdf ===" in result["raw_data"]["context_extra"]
-        assert "=== cen.pdf ===" in result["raw_data"]["context_extra"]
+        assert f"=== {izumi.name} ===" in result["raw_data"]["context_extra"]
+        assert f"=== {cen.name} ===" in result["raw_data"]["context_extra"]
         snapshot = workspace.snapshot()
-        assert workspace.get_active()["filename"] == "cen.pdf"
+        assert workspace.get_active()["filename"] == izumi.name
         assert snapshot["receipts"][0]["read_filenames"] == [
-            "izumi.pdf", "cen.pdf",
+            cen.name, izumi.name,
         ]
 
 
