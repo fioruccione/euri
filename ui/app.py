@@ -1081,6 +1081,62 @@ with main_col:
                     )
                     upload_operation_id = str(staged_operation.get("id") or "")
 
+        # Una proposta conservativa del Loop 2g viene offerta soltanto in un
+        # rerun privo di input. In questo modo non può sequestrare una domanda o
+        # un upload appena arrivati. Voce e UI condividono la stessa lease.
+        if (
+            not prompt
+            and getattr(config, "CORRECTION_OWNER_REVIEW_ENABLED", True)
+            and "sc_pending_correction_review" not in st.session_state
+            and "sc_pending_memory_correction" not in st.session_state
+            and "sc_awaiting" not in st.session_state
+            and time.time() >= st.session_state.get(
+                "sc_correction_review_cooldown_until", 0.0
+            )
+        ):
+            _review_claimed = False
+            try:
+                from core.correction_review import claim_next_review
+                from core.memory_scope import current_scope, is_experimental
+
+                _review_scope = current_scope()
+                _review = None
+                if not is_experimental(_review_scope):
+                    _review = claim_next_review(
+                        r,
+                        memory_manager,
+                        memory_scope=_review_scope,
+                        channel="silent_chat",
+                        lease_ttl_s=60 + max(
+                            30,
+                            int(
+                                getattr(
+                                    config,
+                                    "CORRECTION_OWNER_REVIEW_TIMEOUT_S",
+                                    300,
+                                )
+                            ),
+                        ),
+                    )
+                if _review:
+                    st.session_state.sc_pending_correction_review = _review
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": _review["question"],
+                        "observed_at": time.time(),
+                        "correction_signal_id": _review["signal_id"],
+                    })
+                    brain.record_context_message("assistant", _review["question"])
+                    memory_manager.log_conversation("Euri", _review["question"])
+                    _review_claimed = True
+            except Exception as _review_exc:
+                logger.warning(
+                    "Correction review: proposta Silent Chat fallita ({})",
+                    _review_exc,
+                )
+            if _review_claimed:
+                st.rerun()
+
         # Input utente
         if prompt:
             from core.memory_scope import (
@@ -1090,6 +1146,14 @@ with main_col:
             )
             _scope_command = parse_scope_command(prompt)
             if _scope_command is not None:
+                if _scope_command.action in {"start", "stop"}:
+                    _scope_review = st.session_state.pop(
+                        "sc_pending_correction_review", None
+                    )
+                    if _scope_review:
+                        from core.correction_review import release_review_lease
+
+                        release_review_lease(r, _scope_review)
                 if _scope_command.action == "start" and not _scope_command.label:
                     _scope_reply = (
                         "Dammi un nome per la sessione sperimentale, "
@@ -1145,6 +1209,68 @@ with main_col:
                 with st.chat_message("assistant"):
                     st.markdown(_scope_reply)
                 st.rerun()
+
+            _pending_correction_review = st.session_state.get(
+                "sc_pending_correction_review"
+            )
+            if _pending_correction_review is not None:
+                from core.correction_review import resolve_review
+
+                st.session_state.messages.append({
+                    "role": "user", "content": prompt, "observed_at": time.time()
+                })
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+                with st.chat_message("assistant"):
+                    with st.spinner("Euri verifica la proposta correttiva…"):
+                        try:
+                            _review_result = resolve_review(
+                                r,
+                                memory_manager,
+                                brain,
+                                _pending_correction_review,
+                                prompt,
+                            )
+                        except Exception as _resolve_exc:
+                            logger.warning(
+                                "Correction review: risoluzione UI fallita ({})",
+                                _resolve_exc,
+                            )
+                            _review_result = {
+                                "needs_clarification": True,
+                                "action": "internal_error",
+                                "reply": (
+                                    "Non riesco a verificare la proposta in questo "
+                                    "momento; non ho modificato nulla."
+                                ),
+                            }
+                    st.markdown(_review_result["reply"])
+                if not _review_result.get("needs_clarification"):
+                    st.session_state.pop("sc_pending_correction_review", None)
+                    _review_cooldown = (
+                        30 * 60
+                        if _review_result.get("action") == "later"
+                        else int(
+                            getattr(
+                                config,
+                                "CORRECTION_OWNER_REVIEW_COOLDOWN_S",
+                                300,
+                            )
+                        )
+                    )
+                    st.session_state.sc_correction_review_cooldown_until = (
+                        time.time() + max(0, _review_cooldown)
+                    )
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": _review_result["reply"],
+                    "observed_at": time.time(),
+                })
+                brain.record_context_message("user", prompt)
+                brain.record_context_message("assistant", _review_result["reply"])
+                memory_manager.log_conversation("Stefano", prompt)
+                memory_manager.log_conversation("Euri", _review_result["reply"])
+                st.stop()
 
             # ── Curiosity loop (Euri Pulse, ramo efferente) — versione scritta ───
             # Stessa orchestrazione della voce (core.reaction, una sola verità), ma

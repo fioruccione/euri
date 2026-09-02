@@ -384,6 +384,46 @@ i test organici sono stati osservati rossi prima del trattamento.
 Verifica: manifest unitario completo 92/92 in 79,4 secondi; compilazione e
 `git diff --check` verdi.
 
+## 14. Esito Codex — CORR-03 chiude il ramo `proposal_only`
+
+L'audit di Claude era corretto sul difetto operativo: cinque signal erano
+`proposed` con `requires_owner_confirmation=true`, ma nessun componente li
+leggeva. Non era invece corretto estenderlo a «zero mutazioni del 2g»: il signal
+`4b1926a3` aveva creato organicamente la lesson `045762c2`. Anche la collisione
+`euri:memory:utility_shadow:latest` è rumore legacy già separato dal namespace
+attivo `euri:utility:memory_shadow:*`, non perdita corrente di MEM-03.
+
+La chiusura implementata conserva il confine di autorità: il 2g propone, voce e
+Silent Chat competono sulla stessa lease, Stefano decide. L'applicazione rilegge
+il nodo mostrato sotto hash e usa `MemoryManager.link_correction`; rinvio e
+timeout hanno backoff, un link incompleto resta in quarantena e non viene
+ripetuto come se nulla fosse. Quando manca un antecedente, Euri non salva il
+vecchio testo conversazionale: chiede una nuova frase esatta.
+
+Il primo replay dei cinque casi reali è stato decisivo: il KNN libero collegava
+UBQ alla memoria su Federico Cella e la Bini al confronto corretto Yizumi/Chen
+Hsong. Il trattamento è stato corretto prima del GO: un target deve appartenere
+anche alla provenienza congelata nel signal. Il secondo replay ha escluso tutti
+i target non provati e ha verificato che documenti e lease Redis fossero
+identici prima e dopo. I cinque signal storici non sono stati consumati.
+
+Il confine temporale non dipende da una data o da ID speciali: il 2g aggiornato
+appone `owner_review_contract_version=1` prima di pubblicare una nuova proposta.
+Voce e UI reclamano soltanto quel contratto; i cinque signal legacy sono
+accessibili unicamente al replay read-only esplicito. Al riavvio, quindi, non
+diventano domande arretrate rivolte a Stefano.
+
+La revisione finale ha chiuso anche la race post-consenso: il Lua canonico di
+`MemoryManager.link_correction` verifica che il signal owner sia ancora
+`proposed` e versionato, poi collega vecchio/nuovo e risolve il signal nella
+stessa esecuzione. Una sonda Redis Stack reale con tre chiavi effimere ha
+verificato l'intera transazione; le chiavi sono state eliminate nel `finally`.
+
+Preregistrazione e deviazione dichiarata:
+`docs/EURI_CORRECTION_OWNER_REVIEW_PREREGISTRATION_2026-09-01.md`.
+Il live resta in coda dietro RETR-03: usare un signal nuovo, non trasformare i
+cinque casi di sviluppo in una validazione indipendente.
+
 ---
 
 # Handoff Euri - 2026-09-01 - Precedenza del referente locale

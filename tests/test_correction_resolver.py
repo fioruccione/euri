@@ -9,6 +9,13 @@ from core.correction_resolver import (
     build_correction_evidence,
     select_correction_target,
 )
+from core.correction_review import (
+    claim_next_review,
+    classify_review_answer,
+    defer_review,
+    preview_signal_review,
+    resolve_review,
+)
 from core.memory_manager import MemoryManager
 from core.save_service import (
     _resolve_content,
@@ -372,15 +379,35 @@ class _Redis:
     def eval(
         self, script, numkeys, old_key, new_key,
         new_id_json, old_id_json, resolved_at, signal_prefix,
+        owner_contract_version,
     ):
         self.eval_calls.append((script, numkeys, old_key, new_key))
         if self.link_result[0] in (b"1", "1", 1):
+            sid = self.docs[old_key].get("correction_signal_id")
+            owner_sid = self.docs[new_key].get("owner_correction_signal_id")
+            owner_signal = (
+                self.docs.get(f"{signal_prefix}{owner_sid}") if owner_sid else None
+            )
+            if owner_sid:
+                if not owner_signal or owner_signal.get("status") != "proposed":
+                    return [b"0", b"owner_signal_not_proposed"]
+                if owner_signal.get("requires_owner_confirmation") is not True:
+                    return [b"0", b"owner_confirmation_not_required"]
+                if owner_signal.get("owner_review_contract_version") != int(
+                    owner_contract_version
+                ):
+                    return [b"0", b"owner_contract_mismatch"]
             self.docs[old_key]["superseded_by"] = json.loads(new_id_json)
             self.docs[old_key]["correction_pending"] = False
             self.docs[new_key]["correction_of"] = json.loads(old_id_json)
             self.docs[new_key]["correction_pending"] = False
             self.docs[new_key]["correction_resolved_at"] = float(resolved_at)
-            sid = self.docs[old_key].get("correction_signal_id")
+            if owner_sid:
+                owner_signal["status"] = "resolved"
+                owner_signal["verdict"] = "owner_confirmed_memory_correction"
+                owner_signal["requires_owner_confirmation"] = False
+                owner_signal["resolved_old_memory_id"] = json.loads(old_id_json)
+                owner_signal["resolved_new_memory_id"] = json.loads(new_id_json)
             signal = self.docs.get(f"{signal_prefix}{sid}") if sid else None
             if signal and signal.get("status") == "pending":
                 signal["status"] = "resolved"
@@ -439,6 +466,66 @@ def test_c5_atomic_link_closes_the_signal_that_quarantined_the_antecedent():
     assert signal["verdict"] == "explicit_fact_correction"
     assert signal["resolved_old_memory_id"] == OLD_ID
     assert signal["resolved_new_memory_id"] == "new"
+
+
+def test_corr03_atomic_link_closes_versioned_owner_signal_in_same_eval():
+    docs = {
+        f"euri:memory:{OLD_ID}": {
+            "id": OLD_ID,
+            "superseded_by": None,
+        },
+        "euri:memory:new": {
+            "id": "new",
+            "correction_of": OLD_ID,
+            "correction_pending": True,
+            "owner_correction_signal_id": "signal-owner",
+        },
+        "euri:correction:signal-owner": {
+            "id": "signal-owner",
+            "status": "proposed",
+            "requires_owner_confirmation": True,
+            "owner_review_contract_version": 1,
+        },
+    }
+    redis = _Redis(docs)
+    memory = MemoryManager(redis, embedder=None)
+
+    assert memory.link_correction(OLD_ID, "new") is True
+    signal = docs["euri:correction:signal-owner"]
+    assert len(redis.eval_calls) == 1
+    assert signal["status"] == "resolved"
+    assert signal["verdict"] == "owner_confirmed_memory_correction"
+    assert signal["requires_owner_confirmation"] is False
+    assert signal["resolved_old_memory_id"] == OLD_ID
+    assert signal["resolved_new_memory_id"] == "new"
+
+
+def test_corr03_atomic_link_rejects_stale_owner_signal_before_memory_mutation():
+    docs = {
+        f"euri:memory:{OLD_ID}": {
+            "id": OLD_ID,
+            "superseded_by": None,
+        },
+        "euri:memory:new": {
+            "id": "new",
+            "correction_of": OLD_ID,
+            "correction_pending": True,
+            "owner_correction_signal_id": "signal-owner",
+        },
+        "euri:correction:signal-owner": {
+            "id": "signal-owner",
+            "status": "dismissed",
+            "requires_owner_confirmation": False,
+            "owner_review_contract_version": 1,
+        },
+    }
+    redis = _Redis(docs)
+    memory = MemoryManager(redis, embedder=None)
+    memory._record_integrity_failure = lambda *_args: None
+
+    assert memory.link_correction(OLD_ID, "new") is False
+    assert docs[f"euri:memory:{OLD_ID}"]["superseded_by"] is None
+    assert docs["euri:memory:new"]["correction_pending"] is True
 
 
 def test_c5_failed_link_leaves_new_version_pending():
@@ -595,6 +682,432 @@ def test_explicit_last_memory_contract_forces_atomic_correction_not_add():
     assert memory.saved[0][1]["final_fields"]["correction_pending"] is True
 
 
+class _ReviewRedis:
+    def __init__(self, docs):
+        self.docs = docs
+        self.strings = {}
+        self.eval_calls = []
+        self.j = _JSON(docs)
+
+    def json(self):
+        return self.j
+
+    def scan_iter(self, pattern):
+        prefix = pattern.rstrip("*")
+        return iter(sorted(key for key in self.docs if key.startswith(prefix)))
+
+    def set(self, key, value, nx=False, ex=None, **_kwargs):
+        if nx and key in self.strings:
+            return False
+        self.strings[key] = value
+        return True
+
+    def get(self, key):
+        return self.strings.get(key)
+
+    def delete(self, key):
+        return 1 if self.strings.pop(key, None) is not None else 0
+
+    def eval(self, script, _numkeys, key, *args):
+        self.eval_calls.append((script, key, args))
+        if "JSON.SET" in script:
+            if key not in self.docs:
+                return 0
+            for index in range(0, len(args), 2):
+                self.docs[key][args[index]] = json.loads(args[index + 1])
+            return 1
+        token = args[0]
+        if self.strings.get(key) != token:
+            return 0
+        return self.delete(key)
+
+
+class _ReviewMemory:
+    def __init__(self, redis, target=None):
+        self.r = redis
+        self.target = target
+        self.saved = []
+        self.linked = []
+        self.link_ok = True
+
+    def find_correction_target(self, content, correction_text, **_kwargs):
+        assert content == correction_text
+        return dict(self.target) if self.target else None
+
+    def save_memory(self, content, **kwargs):
+        mid = f"review-new-{len(self.saved) + 1}"
+        self.saved.append((mid, content, kwargs))
+        self.r.docs[f"euri:memory:{mid}"] = {
+            "id": mid,
+            "content": content,
+            "source": kwargs.get("source"),
+            "memory_scope": "personal",
+            **(kwargs.get("final_fields") or {}),
+        }
+        return mid
+
+    def link_correction(self, old_id, new_id):
+        self.linked.append((old_id, new_id))
+        if not self.link_ok:
+            return False
+        self.r.docs[f"euri:memory:{old_id}"]["superseded_by"] = new_id
+        new_doc = self.r.docs[f"euri:memory:{new_id}"]
+        new_doc["correction_pending"] = False
+        signal_id = new_doc.get("owner_correction_signal_id")
+        if signal_id:
+            signal = self.r.docs[f"euri:correction:{signal_id}"]
+            signal.update({
+                "status": "resolved",
+                "verdict": "owner_confirmed_memory_correction",
+                "requires_owner_confirmation": False,
+                "resolved_old_memory_id": old_id,
+                "resolved_new_memory_id": new_id,
+            })
+        return True
+
+
+class _ReviewBrain:
+    def __init__(self, rewritten):
+        self.rewritten = rewritten
+
+    def apply_correction_to_memory(self, existing, correction):
+        assert existing
+        assert correction
+        return self.rewritten
+
+
+def _review_docs():
+    return {
+        "euri:correction:organic": {
+            "id": "organic",
+            "status": "proposed",
+            "proposed_verdict": "bad_memory",
+            "requires_owner_confirmation": True,
+            "owner_review_contract_version": 1,
+            "memory_scope": "personal",
+            "created_at": 10.0,
+            "correzione_user": "La ICMA 2 è una bivite, non una monovite.",
+            "resolution_rag_ctx_ids": ["icma"],
+        },
+        "euri:memory:icma": {
+            "id": "icma",
+            "content": "La ICMA 2 è una monovite con filtro RAS500.",
+            "source": "user",
+            "memory_scope": "personal",
+            "superseded_by": None,
+        },
+    }
+
+
+def test_corr03_claim_is_single_channel_and_does_not_mutate_memory():
+    docs = _review_docs()
+    redis = _ReviewRedis(docs)
+    target = _candidate("icma", docs["euri:memory:icma"]["content"], 0.95)
+    memory = _ReviewMemory(redis, target=target)
+    before = dict(docs["euri:memory:icma"])
+
+    voice = claim_next_review(
+        redis, memory, memory_scope="personal", channel="voice",
+        now=20.0, token="voice-token",
+    )
+    ui = claim_next_review(
+        redis, memory, memory_scope="personal", channel="silent_chat",
+        now=21.0, token="ui-token",
+    )
+
+    assert voice is not None
+    assert ui is None
+    assert docs["euri:memory:icma"] == before
+    assert "La ICMA 2 è una bivite" in voice["question"]
+    assert "La ICMA 2 è una monovite" in voice["question"]
+    assert voice["target_id"] == "icma"
+    assert voice["question_id"] == voice["signal_id"] == "organic"
+
+
+def test_corr03_read_only_preview_and_timeout_backoff():
+    docs = _review_docs()
+    redis = _ReviewRedis(docs)
+    target = _candidate("icma", docs["euri:memory:icma"]["content"], 0.95)
+    memory = _ReviewMemory(redis, target=target)
+    before_docs = {key: dict(value) for key, value in docs.items()}
+
+    preview = preview_signal_review(
+        redis,
+        memory,
+        signal_key="organic",
+        memory_scope="personal",
+        now=20.0,
+    )
+
+    assert preview is not None
+    assert preview["channel"] == "read_only_preview"
+    assert redis.strings == {}
+    assert docs == before_docs
+
+    review = claim_next_review(
+        redis, memory, memory_scope="personal", channel="voice",
+        now=21.0, token="voice-token",
+    )
+    assert defer_review(redis, review, reason="voice_timeout", now=22.0)
+    assert docs["euri:correction:organic"]["status"] == "proposed"
+    assert docs["euri:correction:organic"]["review_after"] > 22.0
+    assert redis.strings == {}
+
+
+def test_corr03_apply_links_exact_snapshot_then_resolves_signal():
+    docs = _review_docs()
+    redis = _ReviewRedis(docs)
+    target = _candidate("icma", docs["euri:memory:icma"]["content"], 0.95)
+    memory = _ReviewMemory(redis, target=target)
+    review = claim_next_review(
+        redis, memory, memory_scope="personal", channel="voice",
+        now=20.0, token="voice-token",
+    )
+
+    result = resolve_review(
+        redis, memory, _ReviewBrain("La ICMA 2 è una bivite con filtro RAS500."),
+        review, "A, applicala a quella memoria.", now=30.0,
+    )
+
+    signal = docs["euri:correction:organic"]
+    assert result["corrected"] is True
+    assert memory.linked == [("icma", "review-new-1")]
+    assert signal["status"] == "resolved"
+    assert signal["verdict"] == "owner_confirmed_memory_correction"
+    assert signal["resolved_old_memory_id"] == "icma"
+    assert signal["resolved_new_memory_id"] == "review-new-1"
+    assert any("JSON.SET" in script for script, _key, _args in redis.eval_calls)
+
+
+def test_corr03_stale_target_never_writes_and_reopens_proposal():
+    docs = _review_docs()
+    redis = _ReviewRedis(docs)
+    target = _candidate("icma", docs["euri:memory:icma"]["content"], 0.95)
+    memory = _ReviewMemory(redis, target=target)
+    review = claim_next_review(
+        redis, memory, memory_scope="personal", channel="voice",
+        now=20.0, token="voice-token",
+    )
+    docs["euri:memory:icma"]["content"] = "Il nodo è cambiato nel frattempo."
+
+    result = resolve_review(
+        redis, memory, _ReviewBrain("non deve essere usato"), review,
+        "A", now=30.0,
+    )
+
+    assert result["action"] == "stale"
+    assert memory.saved == []
+    assert memory.linked == []
+    assert docs["euri:correction:organic"]["status"] == "proposed"
+
+
+def test_corr03_changed_signal_never_uses_the_answer_to_the_old_question():
+    docs = _review_docs()
+    redis = _ReviewRedis(docs)
+    target = _candidate("icma", docs["euri:memory:icma"]["content"], 0.95)
+    memory = _ReviewMemory(redis, target=target)
+    review = claim_next_review(
+        redis, memory, memory_scope="personal", channel="voice",
+        now=20.0, token="voice-token",
+    )
+    docs["euri:correction:organic"]["correzione_user"] = (
+        "La correzione è stata sostituita da un contenuto diverso."
+    )
+
+    result = resolve_review(
+        redis, memory, _ReviewBrain("non deve essere usato"),
+        review, "A", now=30.0,
+    )
+
+    assert result["action"] == "signal_changed"
+    assert memory.saved == []
+    assert memory.linked == []
+
+
+def test_corr03_separate_dismiss_later_and_unknown_are_fail_closed():
+    docs = _review_docs()
+    redis = _ReviewRedis(docs)
+    memory = _ReviewMemory(redis, target=None)
+    review = claim_next_review(
+        redis, memory, memory_scope="personal", channel="silent_chat",
+        now=20.0, token="ui-token",
+    )
+    assert classify_review_answer(review, "forse ne parliamo") == "unknown"
+    unknown = resolve_review(
+        redis, memory, _ReviewBrain("x"), review, "forse ne parliamo", now=21.0,
+    )
+    assert unknown["needs_clarification"] is True
+    assert memory.saved == []
+
+    separate_prompt = resolve_review(
+        redis, memory, _ReviewBrain("x"), review,
+        "A, registrala separatamente", now=22.0,
+    )
+    assert separate_prompt["needs_clarification"] is True
+    assert memory.saved == []
+    uncertain_fact = resolve_review(
+        redis, memory, _ReviewBrain("x"), review,
+        "Non me lo ricordo con sicurezza", now=22.5,
+    )
+    assert uncertain_fact["needs_clarification"] is True
+    assert memory.saved == []
+    separate = resolve_review(
+        redis, memory, _ReviewBrain("x"), review,
+        "La ICMA 2 è una bivite, non una monovite.", now=23.0,
+    )
+    assert separate["separate"] is True
+    assert memory.linked == []
+    assert docs["euri:correction:organic"]["status"] == "resolved"
+
+    docs2 = _review_docs()
+    redis2 = _ReviewRedis(docs2)
+    memory2 = _ReviewMemory(redis2, target=None)
+    review2 = claim_next_review(
+        redis2, memory2, memory_scope="personal", channel="voice",
+        now=20.0, token="voice-token",
+    )
+    later = resolve_review(
+        redis2, memory2, _ReviewBrain("x"), review2,
+        "più tardi", now=25.0,
+    )
+    assert later["action"] == "later"
+    assert docs2["euri:correction:organic"]["status"] == "proposed"
+    assert docs2["euri:correction:organic"]["review_after"] > 25.0
+
+    review3 = claim_next_review(
+        redis2, memory2, memory_scope="personal", channel="voice",
+        now=4000.0, token="voice-token-2",
+    )
+    dismissed = resolve_review(
+        redis2, memory2, _ReviewBrain("x"), review3,
+        "B, era solo per quella conversazione", now=4001.0,
+    )
+    assert dismissed["action"] == "dismiss"
+    assert docs2["euri:correction:organic"]["status"] == "dismissed"
+    assert memory2.saved == []
+
+
+def test_corr03_target_outside_signal_provenance_is_not_offered():
+    docs = _review_docs()
+    docs["euri:correction:organic"]["resolution_rag_ctx_ids"] = ["other"]
+    redis = _ReviewRedis(docs)
+    memory = _ReviewMemory(
+        redis,
+        target=_candidate("icma", docs["euri:memory:icma"]["content"], 0.99),
+    )
+
+    review = claim_next_review(
+        redis, memory, memory_scope="personal", channel="voice",
+        now=20.0, token="voice-token",
+    )
+
+    assert review["mode"] == "unresolved"
+    assert review["target_id"] == ""
+    assert "non trovo un antecedente sicuro" in review["question"]
+
+
+def test_corr03_already_present_creates_no_duplicate():
+    docs = _review_docs()
+    redis = _ReviewRedis(docs)
+    old = docs["euri:memory:icma"]["content"]
+    memory = _ReviewMemory(redis, target=_candidate("icma", old, 0.95))
+    review = claim_next_review(
+        redis, memory, memory_scope="personal", channel="voice",
+        now=20.0, token="voice-token",
+    )
+    result = resolve_review(
+        redis, memory, _ReviewBrain(old), review, "A", now=30.0,
+    )
+
+    assert result["action"] == "already_present"
+    assert memory.saved == []
+    assert docs["euri:correction:organic"]["status"] == "resolved"
+    assert docs["euri:correction:organic"]["verdict"] == "already_present"
+
+
+def test_corr03_link_failure_quarantines_new_version_without_retrying_proposal():
+    docs = _review_docs()
+    redis = _ReviewRedis(docs)
+    memory = _ReviewMemory(
+        redis,
+        target=_candidate("icma", docs["euri:memory:icma"]["content"], 0.95),
+    )
+    memory.link_ok = False
+    review = claim_next_review(
+        redis, memory, memory_scope="personal", channel="voice",
+        now=20.0, token="voice-token",
+    )
+
+    result = resolve_review(
+        redis,
+        memory,
+        _ReviewBrain("La ICMA 2 è una bivite con filtro RAS500."),
+        review,
+        "A",
+        now=30.0,
+    )
+
+    signal = docs["euri:correction:organic"]
+    assert result["action"] == "link_failed"
+    assert signal["status"] == "repair_required"
+    assert signal["requires_owner_confirmation"] is False
+    assert docs["euri:memory:icma"].get("superseded_by") is None
+    assert docs["euri:memory:review-new-1"]["correction_pending"] is True
+    assert any(
+        "JSON.SET" in script and "PERSIST" in script
+        for script, _key, _args in redis.eval_calls
+    )
+
+
+def test_corr03_non_proposed_or_other_scope_is_not_claimed():
+    for status in ("pending", "dismissed", "analyzed", "resolved"):
+        docs = _review_docs()
+        docs["euri:correction:organic"]["status"] = status
+        redis = _ReviewRedis(docs)
+        assert claim_next_review(
+            redis, _ReviewMemory(redis), memory_scope="personal",
+            channel="voice", now=20.0, token="x",
+        ) is None
+
+    docs = _review_docs()
+    docs["euri:correction:organic"]["memory_scope"] = "experiment:other"
+    redis = _ReviewRedis(docs)
+    assert claim_next_review(
+        redis, _ReviewMemory(redis), memory_scope="personal",
+        channel="voice", now=20.0, token="x",
+    ) is None
+
+
+def test_corr03_legacy_proposals_are_replayable_but_never_claimed_runtime():
+    docs = _review_docs()
+    docs["euri:correction:organic"].pop("owner_review_contract_version")
+    redis = _ReviewRedis(docs)
+    memory = _ReviewMemory(redis)
+
+    assert claim_next_review(
+        redis, memory, memory_scope="personal", channel="voice",
+        now=20.0, token="runtime",
+    ) is None
+    assert preview_signal_review(
+        redis,
+        memory,
+        signal_key="organic",
+        memory_scope="personal",
+        now=20.0,
+    ) is None
+    replay = preview_signal_review(
+        redis,
+        memory,
+        signal_key="organic",
+        memory_scope="personal",
+        now=20.0,
+        include_legacy=True,
+    )
+    assert replay is not None
+    assert replay["channel"] == "read_only_preview"
+    assert redis.strings == {}
+
+
 if __name__ == "__main__":
     test_c1_icma_selects_complete_old_fact_not_new_passive_duplicate()
     test_c2_equivalent_old_targets_are_ambiguous()
@@ -606,7 +1119,20 @@ if __name__ == "__main__":
     test_recent_correction_turn_is_part_of_bounded_resolution_evidence()
     test_c5_atomic_link_updates_both_sides_in_one_eval()
     test_c5_atomic_link_closes_the_signal_that_quarantined_the_antecedent()
+    test_corr03_atomic_link_closes_versioned_owner_signal_in_same_eval()
+    test_corr03_atomic_link_rejects_stale_owner_signal_before_memory_mutation()
     test_c5_failed_link_leaves_new_version_pending()
     test_c6_signal_enrichment_preserves_original_context_and_quarantines_candidate()
     test_explicit_last_memory_contract_forces_atomic_correction_not_add()
+    test_corr03_claim_is_single_channel_and_does_not_mutate_memory()
+    test_corr03_read_only_preview_and_timeout_backoff()
+    test_corr03_apply_links_exact_snapshot_then_resolves_signal()
+    test_corr03_stale_target_never_writes_and_reopens_proposal()
+    test_corr03_changed_signal_never_uses_the_answer_to_the_old_question()
+    test_corr03_separate_dismiss_later_and_unknown_are_fail_closed()
+    test_corr03_target_outside_signal_provenance_is_not_offered()
+    test_corr03_already_present_creates_no_duplicate()
+    test_corr03_link_failure_quarantines_new_version_without_retrying_proposal()
+    test_corr03_non_proposed_or_other_scope_is_not_claimed()
+    test_corr03_legacy_proposals_are_replayable_but_never_claimed_runtime()
     print("test_correction_resolver: OK")

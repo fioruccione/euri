@@ -806,6 +806,20 @@ INITIATIVE_CONTEXTUAL_COOLDOWN_S = 3 * 60
 INITIATIVE_PULSE_BLOCK_MS = 5000
 INITIATIVE_PENDING_MIN_AGE_S = 5  # stabilizza memory/saved prima di idratare (post-flag passive)
 
+# Chiusura delle proposte conservative del Loop 2g. Il Dream non acquisisce
+# autorita': voce e Silent Chat condividono una lease e il resolver atomico
+# parte soltanto dopo una scelta esplicita dell'owner.
+CORRECTION_OWNER_REVIEW_CONTRACT_VERSION = 1
+CORRECTION_OWNER_REVIEW_ENABLED = (
+    os.environ.get("EURI_CORRECTION_OWNER_REVIEW_ENABLED", "1") == "1"
+)
+CORRECTION_OWNER_REVIEW_TIMEOUT_S = int(
+    os.environ.get("EURI_CORRECTION_OWNER_REVIEW_TIMEOUT_S", "300")
+)
+CORRECTION_OWNER_REVIEW_COOLDOWN_S = int(
+    os.environ.get("EURI_CORRECTION_OWNER_REVIEW_COOLDOWN_S", "300")
+)
+
 # FaceAuth — riconoscimento facciale locale (sorella visiva di SpeakerAuth).
 # Il VisualGate distingue due segnali che prima collassavano in uno:
 #   "qualcuno è presente"  → basta per ASCOLTARE (SpeakerAuth protegge i comandi)

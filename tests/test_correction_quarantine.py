@@ -490,6 +490,7 @@ def test_loop2g_proposal_only_cannot_mutate_memory_on_bad_memory_verdict():
     assert signal["status"] == "proposed"
     assert signal["proposed_verdict"] == "bad_memory"
     assert signal["requires_owner_confirmation"] is True
+    assert signal["owner_review_contract_version"] == 1
     assert signal["verdict"] is None
 
 

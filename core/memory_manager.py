@@ -106,6 +106,39 @@ end
 if declared ~= cjson.decode(ARGV[2]) then
     return {'0', 'new_antecedent_mismatch'}
 end
+-- CORR-03 dichiara il signal sul nodo nuovo. Se presente, la proposta deve
+-- essere ancora reclamabile: il controllo avviene nella stessa transazione
+-- che pubblica la nuova versione, eliminando la race risposta/chiusura.
+local owner_signal_raw = redis.call(
+    'JSON.GET', KEYS[2], '$.owner_correction_signal_id'
+)
+local owner_signal_id = owner_signal_raw and cjson.decode(owner_signal_raw)[1]
+local owner_signal_key = nil
+if owner_signal_id and owner_signal_id ~= cjson.null then
+    owner_signal_key = ARGV[4] .. owner_signal_id
+    if redis.call('EXISTS', owner_signal_key) == 0 then
+        return {'0', 'missing_owner_signal'}
+    end
+    local owner_status_raw = redis.call('JSON.GET', owner_signal_key, '$.status')
+    local owner_status = owner_status_raw and cjson.decode(owner_status_raw)[1]
+    local owner_required_raw = redis.call(
+        'JSON.GET', owner_signal_key, '$.requires_owner_confirmation'
+    )
+    local owner_required = owner_required_raw and cjson.decode(owner_required_raw)[1]
+    local owner_version_raw = redis.call(
+        'JSON.GET', owner_signal_key, '$.owner_review_contract_version'
+    )
+    local owner_version = owner_version_raw and cjson.decode(owner_version_raw)[1]
+    if owner_status ~= 'proposed' then
+        return {'0', 'owner_signal_not_proposed'}
+    end
+    if owner_required ~= true then
+        return {'0', 'owner_confirmation_not_required'}
+    end
+    if owner_version ~= tonumber(ARGV[5]) then
+        return {'0', 'owner_contract_mismatch'}
+    end
+end
 local signal_raw = redis.call('JSON.GET', KEYS[1], '$.correction_signal_id')
 local signal_id = signal_raw and cjson.decode(signal_raw)[1]
 redis.call('JSON.SET', KEYS[1], '$.superseded_by', ARGV[1])
@@ -114,7 +147,19 @@ redis.call('JSON.SET', KEYS[2], '$.correction_of', ARGV[2])
 redis.call('JSON.SET', KEYS[2], '$.correction_relation', '"explicit_fact_correction"')
 redis.call('JSON.SET', KEYS[2], '$.correction_pending', 'false')
 redis.call('JSON.SET', KEYS[2], '$.correction_resolved_at', ARGV[3])
-if signal_id and signal_id ~= cjson.null then
+if owner_signal_key then
+    redis.call('JSON.SET', owner_signal_key, '$.status', '"resolved"')
+    redis.call(
+        'JSON.SET', owner_signal_key, '$.verdict',
+        '"owner_confirmed_memory_correction"'
+    )
+    redis.call(
+        'JSON.SET', owner_signal_key, '$.requires_owner_confirmation', 'false'
+    )
+    redis.call('JSON.SET', owner_signal_key, '$.resolved_old_memory_id', ARGV[2])
+    redis.call('JSON.SET', owner_signal_key, '$.resolved_new_memory_id', ARGV[1])
+    redis.call('JSON.SET', owner_signal_key, '$.resolved_at', ARGV[3])
+elseif signal_id and signal_id ~= cjson.null then
     local signal_key = ARGV[4] .. signal_id
     if redis.call('EXISTS', signal_key) == 1 then
         local status_raw = redis.call('JSON.GET', signal_key, '$.status')
@@ -1453,6 +1498,7 @@ class MemoryManager:
                 json.dumps(old_id),
                 f"{to_timestamp(now()):.6f}",
                 "euri:correction:",
+                str(config.CORRECTION_OWNER_REVIEW_CONTRACT_VERSION),
             )
             ok, reason = result
             if isinstance(ok, bytes):

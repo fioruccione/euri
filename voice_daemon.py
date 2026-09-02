@@ -283,6 +283,7 @@ class VoiceDaemon:
         self._pending_reschedule: _PendingState | None = None  # impegno da spostare, manca la data (timeout 120s)
         self._pending_action: _PendingState | None = None  # proposta ad alto impatto in attesa owner
         self._pending_memory_correction: _PendingState | None = None  # correzione ambigua, attesa conferma soggetto
+        self._pending_correction_review: _PendingState | None = None  # proposta 2g in attesa della scelta owner
         self._pending_readback: _PendingState | None = None   # memoria riletta, attesa correzione/aggiunta (180s)
         self._pending_write: _PendingState | None = None  # richiesta scrittura file in attesa (timeout 120s)
         self._awaiting_reaction: _PendingState | None = None  # insight su cui Euri ha chiesto conferma, in attesa della reazione di Stefano (timeout 300s)
@@ -290,6 +291,7 @@ class VoiceDaemon:
         self._pending_guest_review: _PendingState | None = None  # claim ospite chiesto esplicitamente a Stefano
         self._ideation_thread: threading.Thread | None = None
         self._guest_review_cooldown_until: float = 0.0
+        self._correction_review_cooldown_until: float = 0.0
         self._last_created_file: str | None = None  # ultimo file creato da Euri (per "aprilo")
         self._last_created_file_ts: float = 0.0  # quando — recency per disambiguare "apri il documento"
         self._last_speech_content: str = ""      # ultima risposta lunga di Euri (per "scrivilo")
@@ -393,6 +395,8 @@ class VoiceDaemon:
             self._awaiting_reaction = state
         elif payload.get("kind") == "memory_verification" and data.get("memory_id"):
             self._awaiting_memory_verification = state
+        elif payload.get("kind") == "correction_review" and data.get("signal_id"):
+            self._pending_correction_review = state
         else:
             return
         self.present.set_pending_question(question_id, question)
@@ -3541,6 +3545,132 @@ class VoiceDaemon:
         logger.info(f"Guest mode: turno isolato — '{text[:70]}'")
         self._speak(reply, opens_conversation=False)
 
+    def _correction_review_blocked(self) -> bool:
+        return any((
+            self._teach_recovery_mode,
+            self._teach_mode,
+            self._teach_confirm_mode,
+            self._audit_confirm_mode,
+            self._pending_todo is not None,
+            self._pending_reschedule is not None,
+            self._pending_action is not None,
+            self._pending_memory_correction is not None,
+            self._pending_readback is not None,
+            self._pending_write is not None,
+            self._awaiting_reaction is not None,
+            self._awaiting_memory_verification is not None,
+            getattr(self, "_pending_guest_review", None) is not None,
+        ))
+
+    def _offer_next_correction_review(self) -> bool:
+        """Propone una sola chiusura 2g, condividendo la lease con la UI."""
+        if (
+            not getattr(config, "CORRECTION_OWNER_REVIEW_ENABLED", True)
+            or not getattr(self, "_running", True)
+            or getattr(self, "_pending_correction_review", None)
+            or time.time() < getattr(self, "_correction_review_cooldown_until", 0.0)
+            or self._correction_review_blocked()
+        ):
+            return False
+        try:
+            from core.correction_review import claim_next_review
+            from core.memory_scope import get_active_scope, is_experimental
+
+            scope = get_active_scope(self.r)
+            if is_experimental(scope):
+                return False
+            review = claim_next_review(
+                self.r,
+                self.memory,
+                memory_scope=scope,
+                channel="voice",
+                # La lease sopravvive di poco al pending locale: sul timeout
+                # il daemon possiede ancora il token e può scrivere il backoff.
+                lease_ttl_s=60 + max(
+                    30,
+                    int(getattr(config, "CORRECTION_OWNER_REVIEW_TIMEOUT_S", 300)),
+                ),
+            )
+        except Exception as exc:
+            logger.warning("Correction review: proposta vocale fallita ({})", exc)
+            return False
+        if not review:
+            return False
+        timeout = max(
+            30,
+            int(getattr(config, "CORRECTION_OWNER_REVIEW_TIMEOUT_S", 300)),
+        )
+        self._pending_correction_review = _PendingState(review, timeout=timeout)
+        self._persist_pending_continuity(
+            "correction_review", self._pending_correction_review
+        )
+        self.present.set_pending_question(review["signal_id"], review["question"])
+        self.brain.record_context_message("assistant", review["question"])
+        self.memory.log_conversation(_ASSISTANT_NAME, review["question"])
+        self._speak(review["question"])
+        return True
+
+    def _handle_pending_correction_review(self, text: str) -> None:
+        pending = self._pending_correction_review
+        if pending is None:
+            return
+        from core.correction_review import resolve_review
+
+        try:
+            result = resolve_review(
+                self.r,
+                self.memory,
+                self.brain,
+                pending.data,
+                text,
+            )
+        except Exception as exc:
+            logger.warning("Correction review: risoluzione vocale fallita ({})", exc)
+            result = {
+                "needs_clarification": True,
+                "action": "internal_error",
+                "reply": (
+                    "Non riesco a verificare la proposta in questo momento; "
+                    "non ho modificato nulla."
+                ),
+            }
+        reply = result.get("reply") or "Non ho applicato alcuna modifica."
+        self.memory.log_conversation(_OWNER_NAME, text)
+        self.memory.log_conversation(_ASSISTANT_NAME, reply)
+        self.brain.record_context_message("user", text)
+        self.brain.record_context_message("assistant", reply)
+        if result.get("needs_clarification"):
+            # La seconda domanda (per esempio la frase esatta da ricordare)
+            # diventa il pending durevole, non resta soltanto nello stato RAM.
+            pending.data["question"] = reply
+            timeout = max(
+                30,
+                int(getattr(config, "CORRECTION_OWNER_REVIEW_TIMEOUT_S", 300)),
+            )
+            self._pending_correction_review = _PendingState(
+                pending.data,
+                timeout=timeout,
+            )
+            self._persist_pending_continuity(
+                "correction_review", self._pending_correction_review
+            )
+            self.present.set_pending_question(
+                pending.data.get("signal_id"), reply
+            )
+        else:
+            self._pending_correction_review = None
+            self._clear_pending_continuity()
+            self.present.clear_pending_question(pending.data.get("signal_id"))
+            cooldown = (
+                30 * 60
+                if result.get("action") == "later"
+                else int(
+                    getattr(config, "CORRECTION_OWNER_REVIEW_COOLDOWN_S", 300)
+                )
+            )
+            self._correction_review_cooldown_until = time.time() + max(0, cooldown)
+        self._speak(reply)
+
     def _guest_review_blocked(self) -> bool:
         return any((
             self._teach_recovery_mode,
@@ -3550,6 +3680,8 @@ class VoiceDaemon:
             self._pending_todo is not None,
             self._pending_reschedule is not None,
             self._pending_action is not None,
+            self._pending_memory_correction is not None,
+            getattr(self, "_pending_correction_review", None) is not None,
             self._pending_readback is not None,
             self._pending_write is not None,
             self._awaiting_reaction is not None,
@@ -3677,6 +3809,15 @@ class VoiceDaemon:
                     self._pending_memory_correction.data.get("question_id")
                 )
                 self._pending_memory_correction = None
+            if self._pending_correction_review:
+                from core.correction_review import release_review_lease
+
+                release_review_lease(self.r, self._pending_correction_review.data)
+                self.present.clear_pending_question(
+                    self._pending_correction_review.data.get("signal_id")
+                )
+                self._pending_correction_review = None
+                self._clear_pending_continuity()
             state = start_experiment(
                 self.r,
                 command.label,
@@ -3714,6 +3855,15 @@ class VoiceDaemon:
                     self._pending_memory_correction.data.get("question_id")
                 )
                 self._pending_memory_correction = None
+            if self._pending_correction_review:
+                from core.correction_review import release_review_lease
+
+                release_review_lease(self.r, self._pending_correction_review.data)
+                self.present.clear_pending_question(
+                    self._pending_correction_review.data.get("signal_id")
+                )
+                self._pending_correction_review = None
+                self._clear_pending_continuity()
             previous = stop_experiment(self.r)
             self.turn_store.restore_into(self.brain, "personal")
             if previous.get("active"):
@@ -3832,6 +3982,26 @@ class VoiceDaemon:
                 logger.debug("Guest review pending scaduta; claim ancora in quarantena")
             else:
                 self._handle_pending_guest_review(text)
+                return
+
+        if self._pending_correction_review:
+            if self._pending_correction_review.expired():
+                from core.correction_review import defer_review
+
+                defer_review(
+                    self.r,
+                    self._pending_correction_review.data,
+                    reason="voice_timeout",
+                )
+                self.present.clear_pending_question(
+                    self._pending_correction_review.data.get("signal_id")
+                )
+                self._pending_correction_review = None
+                self._clear_pending_continuity()
+                self._correction_review_cooldown_until = time.time() + 30 * 60
+                logger.debug("Correction review pending scaduta; rinviata senza mutazioni")
+            else:
+                self._handle_pending_correction_review(text)
                 return
 
         if self.memory.is_silent_mode():
@@ -5181,10 +5351,13 @@ class VoiceDaemon:
             return "awaiting_reaction"
         if self._awaiting_memory_verification:
             return "awaiting_memory_verification"
+        if getattr(self, "_pending_correction_review", None):
+            return "awaiting_correction_review"
         if any([
             self._pending_todo,
             self._pending_reschedule,
             self._pending_action,
+            self._pending_memory_correction,
             self._pending_readback,
             self._pending_write,
             self._teach_recovery_mode,
@@ -5654,7 +5827,8 @@ class VoiceDaemon:
                             logger.warning(
                                 "TEACH recovery: snapshot legacy/non autorizzato eliminato"
                             )
-                        self._offer_next_guest_claim()
+                        if not self._offer_next_correction_review():
+                            self._offer_next_guest_claim()
 
                 # Salta se proactive_agent sta parlando
                 if self.r.exists("euri:audio:lock"):
@@ -5863,7 +6037,8 @@ class VoiceDaemon:
                             owner_authenticated=actor_id == _OWNER_ID,
                         )
                         if actor_id == _OWNER_ID:
-                            self._offer_next_guest_claim()
+                            if not self._offer_next_correction_review():
+                                self._offer_next_guest_claim()
                 finally:
                     try:
                         if self.present.snapshot().phase is InteractionPhase.PROCESSING:

@@ -676,6 +676,72 @@ def test_teach_confirmation_cannot_save_without_authorized_origin():
     print("OK  TEACH save: conferma insufficiente senza origine autorizzata")
 
 
+def test_correction_review_followup_replaces_durable_pending_question():
+    import core.correction_review as correction_review
+
+    continuity_calls = []
+    spoken = []
+
+    class Memory:
+        def log_conversation(self, *_args, **_kwargs):
+            return None
+
+    class Brain:
+        def record_context_message(self, *_args, **_kwargs):
+            return None
+
+    class Continuity:
+        def set_pending(self, kind, data, scope, timeout_s):
+            continuity_calls.append((kind, dict(data), scope, timeout_s))
+
+        def clear_pending(self, _scope):
+            raise AssertionError("il pending non va chiuso durante il chiarimento")
+
+    class TurnStore:
+        continuity = Continuity()
+
+    class Redis:
+        def get(self, _key):
+            return None
+
+    d = vd.VoiceDaemon.__new__(vd.VoiceDaemon)
+    d.r = Redis()
+    d.memory = Memory()
+    d.brain = Brain()
+    d.turn_store = TurnStore()
+    d.present = CognitivePresent(conversation_window_s=45, focus_window_s=300)
+    d._pending_correction_review = vd._PendingState({
+        "signal_id": "signal-1",
+        "question_id": "signal-1",
+        "question": "A o B?",
+        "memory_scope": "personal",
+    }, timeout=300)
+    d.present.set_pending_question("signal-1", "A o B?")
+    d._speak = lambda text, **_kwargs: spoken.append(text)
+
+    original = correction_review.resolve_review
+    def _resolve(_r, _memory, _brain, review, _text):
+        review["stage"] = "awaiting_separate_fact"
+        return {
+            "needs_clarification": True,
+            "reply": "Dimmi il fatto completo.",
+        }
+    correction_review.resolve_review = _resolve
+    try:
+        d._handle_pending_correction_review("A")
+    finally:
+        correction_review.resolve_review = original
+
+    assert d._pending_correction_review is not None
+    assert d._pending_correction_review.data["stage"] == "awaiting_separate_fact"
+    assert d._pending_correction_review.data["question"] == "Dimmi il fatto completo."
+    assert continuity_calls[-1][0] == "correction_review"
+    assert continuity_calls[-1][1]["question_id"] == "signal-1"
+    assert d.present.snapshot().pending_question_text == "Dimmi il fatto completo."
+    assert spoken == ["Dimmi il fatto completo."]
+    print("OK  correction review: follow-up e continuità aggiornati insieme")
+
+
 if __name__ == "__main__":
     test_addressed_guard()
     test_passive_weak_and_mixed_segment()
@@ -699,6 +765,7 @@ if __name__ == "__main__":
     test_implicit_read_log_requires_sentence_level_commitment()
     test_teach_snapshot_requires_a_semantic_authorization_contract()
     test_teach_confirmation_cannot_save_without_authorized_origin()
+    test_correction_review_followup_replaces_durable_pending_question()
     print("PASS")
 
 

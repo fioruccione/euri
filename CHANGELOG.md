@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-09-02 - Chiusura owner delle correzioni proposte
+
+- Le valutazioni conservative `proposal_only` del Loop 2g non restano più in
+  una coda senza consumer: voce e Silent Chat possono sottoporre oldest-first
+  una proposta all'owner, condividendo una lease Redis per scope.
+- La domanda non muta memorie. `APPLY` è disponibile soltanto per l'esatto nodo
+  mostrato e riletto sotto scope, stato e hash; il target deve inoltre appartenere
+  alla provenienza già congelata nel correction signal. Un KNN semanticamente
+  vicino ma estraneo al turno non può diventare antecedente a posteriori.
+- `DISMISS` chiude senza scrivere, `LATER` usa un backoff durevole e `SEPARATE`
+  richiede una seconda frase owner completa: nessuna LLM trasforma in silenzio
+  lo sfogo o il contesto della correzione in un nuovo fatto.
+- Il link resta la transazione canonica di `MemoryManager`. Se fallisce dopo la
+  creazione, la versione nuova resta `correction_pending` e il signal diventa
+  `repair_required`, impedendo retry duplicati e false dichiarazioni di successo.
+- Per `APPLY`, la stessa Lua collega le due versioni e chiude il signal owner:
+  non esiste più una finestra in cui il fatto è già corretto ma la proposta resta
+  aperta. Anche il testo del signal è vincolato all'hash mostrato nella domanda.
+- Il primo replay read-only sui cinque signal organici ha scoperto due target
+  KNN impropri (UBQ/Federico e Bini/confronto presse); dopo il vincolo di
+  provenienza il secondo replay si è astenuto 5/5 e ha verificato signal e lease
+  invariati. Il 2g marca con `owner_review_contract_version=1` soltanto le nuove
+  proposte: i cinque signal storici restano replayabili ma non possono comparire
+  spontaneamente in voce o UI. Rollback: `EURI_CORRECTION_OWNER_REVIEW_ENABLED=0`.
+
 ## 2026-09-01 - Correzione dell'ultima memoria e grounding delle letture
 
 - Un frame affidabile che corregge esplicitamente l'ultima/precedente memoria,

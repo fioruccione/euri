@@ -44,6 +44,7 @@ from core.loop2f_policy import (
     relation_from_assessment as loop2f_relation_from_assessment,
 )
 from core.ideation_tournament import run_tournament_pipeline
+from core.correction_review import OWNER_REVIEW_CONTRACT_VERSION
 
 
 CROSS_EPISODE_SEEN_KEY = "euri:cross_episode:seen"
@@ -4377,6 +4378,15 @@ Rispondi SOLO con UNA parola: NOT_A_CORRECTION, BAD_MEMORY, BAD_REASONING, o AMB
                             "$.requires_owner_confirmation",
                             verdict != "not_a_correction",
                         )
+                        if verdict != "not_a_correction":
+                            # Scritto prima di status=proposed: un crash non può
+                            # esporre al runtime una proposta priva del contratto
+                            # owner corrente. I signal storici restano audit.
+                            self._r.json().set(
+                                key,
+                                "$.owner_review_contract_version",
+                                OWNER_REVIEW_CONTRACT_VERSION,
+                            )
                         self._r.json().set(
                             key,
                             "$.status",

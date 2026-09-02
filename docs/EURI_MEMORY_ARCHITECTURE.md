@@ -912,6 +912,32 @@ bersaglio `correction_pending`; Loop 2g distingue poi:
 - `ambiguous`: conserva prudenza.
 
 I segnali `proposal_only` non hanno autorità per mutare da soli una memoria.
+Quando il 2g li porta a `status=proposed`, appone prima
+`owner_review_contract_version=1`: `core/correction_review.py` può
+mostrarne uno all'owner, oldest-first. Voce e Silent Chat condividono una lease
+Redis per scope: la domanda non costituisce una scrittura cognitiva e soltanto
+il possessore del token può chiudere la proposta. Un antecedente è proponibile
+solo se, oltre a superare il resolver bounded, appartiene al contesto o ai
+candidati già congelati nel signal; un KNN corrente estraneo al turno contestato
+non acquisisce retroattivamente provenienza.
+
+Le proposte storiche prive della versione restano documenti di audit e possono
+essere ricostruite soltanto dal replay diagnostico esplicito; non sono una coda
+runtime. Questo impedisce che l'attivazione di un consumer nuovo trasformi
+retroattivamente il corpus di sviluppo in cinque domande organiche all'owner.
+
+La scelta `APPLY` rilegge l'esatto nodo mostrato, ne verifica scope, stato e hash,
+e verifica che anche il testo del signal sia lo stesso mostrato all'owner. Il link
+Redis pubblica insieme `correction_of`/`superseded_by` e chiude il signal
+versionato: una caduta non può lasciare la memoria corretta con la proposta ancora
+aperta. `DISMISS` non scrive
+memorie e `LATER` mantiene la proposta con backoff. `SEPARATE` apre invece un
+secondo turno: l'owner deve dettare una frase completa, salvata verbatim come
+fonte user; il sistema non distilla col modello il vecchio testo conversazionale.
+Se la creazione della nuova versione riesce ma il link fallisce, il nodo resta
+`correction_pending` e il signal passa a `repair_required`: nessun retry può
+pubblicare doppioni o dichiarare una correzione inesistente. Rollback runtime:
+`EURI_CORRECTION_OWNER_REVIEW_ENABLED=0`.
 
 Il signal conserva due viste non intercambiabili: `rag_ctx_ids` documenta il
 contesto memory-only legacy della risposta contestata, mentre `rag_ctx_nodes`
